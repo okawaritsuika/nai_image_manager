@@ -18,6 +18,7 @@ REALCUGAN_DOWNLOAD_URL = (
     f"https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/"
     f"{REALCUGAN_VERSION}/{REALCUGAN_ZIP_NAME}"
 )
+GIT_DOWNLOAD_URL = "https://git-scm.com/download/win"
 
 
 class NaiaSetupManager:
@@ -111,6 +112,9 @@ class NaiaSetupManager:
 
     def check_upscale_installed(self):
         return os.path.exists(self.realcugan_exe)
+
+    def check_git_installed(self):
+        return shutil.which("git") is not None
 
     def get_active_python(self):
         """
@@ -241,6 +245,19 @@ class NaiaSetupManager:
         )
         self.btn_install_py.pack(fill="x", pady=5)
 
+        self.btn_install_git = tk.Button(
+            btn_frame,
+            text="Git 공식 다운로드 페이지 열기",
+            command=self.open_git_site,
+            bg="#f39c12",
+            fg="#000",
+            font=("Malgun Gothic", 12, "bold"),
+            pady=12,
+            cursor="hand2",
+            relief="raised"
+        )
+        self.btn_install_git.pack(fill="x", pady=5)
+
         self.btn_venv = tk.Button(
             btn_frame,
             text="▶ 1단계: 실행 환경 필수 패키지 확인/설치",
@@ -348,6 +365,8 @@ class NaiaSetupManager:
             self.btn_ai.config(state=state)
         if hasattr(self, "btn_upscale"):
             self.btn_upscale.config(state=state)
+        if hasattr(self, "btn_install_git"):
+            self.btn_install_git.config(state=state)
 
     def run_cmd_thread(self, cmd_list, success_msg, work_text, on_complete=None):
         if self.is_working:
@@ -446,8 +465,22 @@ class NaiaSetupManager:
         has_core = venv_core_ready if has_venv else system_core_ready
         has_ai = self.check_ai_installed_for(self.active_python) if self.active_python else False
         has_upscale = self.check_upscale_installed()
+        has_git = self.check_git_installed()
 
         self.btn_install_py.pack_forget()
+
+        if has_git:
+            self.btn_install_git.config(
+                bg="#2ecc71",
+                text="Git 설치 확인됨 - update.bat으로 업데이트 가능",
+                fg="#000"
+            )
+        else:
+            self.btn_install_git.config(
+                bg="#f39c12",
+                text="Git 공식 다운로드 페이지 열기",
+                fg="#000"
+            )
 
         if has_core:
             self.status_card.config(highlightbackground=self.success_color)
@@ -532,6 +565,9 @@ class NaiaSetupManager:
     # ==========================================================
     def open_python_site(self):
         webbrowser.open("https://www.python.org/downloads/")
+
+    def open_git_site(self):
+        webbrowser.open(GIT_DOWNLOAD_URL)
 
     # ==========================================================
     # 1단계: 필수 패키지 / .venv 자동 생성
