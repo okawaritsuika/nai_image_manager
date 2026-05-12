@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>NAI ImageManager - 다키 제작소</title>
+    <link rel="stylesheet" href="/static/style_lab.css">
+</head>
+<body>
+    <header class="main-header">
+        <div class="header-container-fluid">
+            <div class="header-logo" onclick="location.href='/'">
+                🛏️ 다키 제작소 <span>NAI ImageManger</span>
+            </div>
+
+            <nav class="header-nav">
+                <button onclick="location.href='/'" class="nav-button secondary">🏠 갤러리 돌아가기</button>
+                <button onclick="location.href='/style-lab'" class="nav-button secondary">🧪 그림체 연구소</button>
+                <button onclick="location.href='/canvas'" class="nav-button secondary">🖼️ 캔버스</button>
+                <button onclick="openTagDictionary()" class="nav-button secondary">태그 사전</button>
+                <button onclick="openSettings()" class="nav-button secondary">⚙️ 설정</button>
+            </nav>
+        </div>
+    </header>
+
+    <div class="layout daki-workshop-layout">
+        <div class="panel panel-left">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px;">
+                <h3 style="margin:0;">설정 및 프롬프트</h3>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button id="promptViewToggle" class="secondary" onclick="togglePromptViewMode()" style="font-size:11px; padding:5px 9px;">텍스트 편집</button>
+                    <button class="secondary" onclick="openDakiArtStyleModal()" style="font-size:11px; padding:5px 9px;">그림체 가져오기</button>
+                    <button class="secondary" onclick="openPromptGroupManager()" style="font-size:11px; padding:5px 9px;">그룹 관리</button>
+                </div>
+            </div>
+
+            <div class="prompt-section-card" style="margin-bottom: 12px; padding: 12px;">
+                <div class="tabs-container">
+                    <button id="btn-tab-base" class="active" onclick="switchPromptTab('base')">Base Prompt</button>
+                    <button id="btn-tab-negative" onclick="switchPromptTab('negative')">Negative Prompt</button>
+                </div>
+
+                <div id="tab-base" style="display: block;">
+                    <div class="prompt-block" style="margin-bottom: 0;">
+                        <div class="prompt-block-title">Base Prompt</div>
+                        <div id="basePromptTokens" class="prompt-token-surface"></div>
+                        <textarea id="basePrompt" class="prompt-raw-textarea" rows="12" placeholder="다키마쿠라용 베이스 프롬프트를 입력하세요."></textarea>
+                    </div>
+                </div>
+
+                <div id="tab-negative" style="display: none;">
+                    <div class="prompt-block" style="margin-bottom: 0;">
+                        <div class="prompt-block-title">Negative Prompt</div>
+                        <div id="negativePromptTokens" class="prompt-token-surface"></div>
+                        <textarea id="negPrompt" class="prompt-raw-textarea" rows="12"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <label style="margin:0;">Character Prompt (캐릭터 인식/형상)</label>
+                    <button type="button" class="secondary" style="padding:6px 10px; font-size:12px;" onclick="addCharacterPromptEditor()">+ 추가</button>
+                </div>
+
+                <div id="charPromptList"></div>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 12px;">
+                <label>해상도 선택 (Resolution)</label>
+                <select id="resPreset" onchange="updateResolution()" style="margin-bottom: 8px;">
+                    <optgroup label="NovelAI 기본 (Normal)">
+                        <option value="832x1216">Portrait (832 x 1216)</option>
+                        <option value="1216x832">Landscape (1216 x 832)</option>
+                        <option value="1024x1024">Square (1024 x 1024)</option>
+                    </optgroup>
+                    <optgroup label="다키마쿠라 (5:16 비율)">
+                        <option value="512x1664" selected>최소/무료 (512 x 1664)</option>
+                        <option value="768x2496">권장/퍼펙트 (768 x 2496)</option>
+                        <option value="1024x3008">최대 해상도 (1024 x 3008)</option>
+                    </optgroup>
+                    <option value="manual">직접 입력 (64배수)</option>
+                </select>
+                <div class="inline-group">
+                    <input type="number" id="width" value="512" step="64" oninput="onManualInput()">
+                    <span style="color: var(--text-muted);">x</span>
+                    <input type="number" id="height" value="1664" step="64" oninput="onManualInput()">
+                </div>
+                <div id="ratioInfo" style="font-size: 11px; margin-top: 6px; color: var(--text-muted);">비율 계산 중...</div>
+            </div>
+
+            <div class="form-group">
+                <label>생성 설정 (Generation Settings)</label>
+                <div class="compact-settings-container">
+                    <div class="param-row">
+                        <div class="param-item" title="Guidance Scale">
+                            <span class="param-label">Scale</span>
+                            <input type="number" id="scale" value="5.0" step="0.1">
+                        </div>
+                        <div class="param-item" title="CFG Rescale">
+                            <span class="param-label">Rescale</span>
+                            <input type="number" id="cfgRescale" value="0.4" step="0.01">
+                        </div>
+                        <div class="param-item" title="Steps">
+                            <span class="param-label">Steps</span>
+                            <input type="number" id="steps" value="28">
+                        </div>
+                    </div>
+                    <div class="param-row">
+                        <div class="param-item full-width">
+                            <span class="param-label">Sampler</span>
+                            <select id="sampler">
+                                <option value="k_euler_ancestral" selected>k_euler_ancestral</option>
+                                <option value="k_dpmpp_2s_ancestral">k_dpmpp_2s_ancestral</option>
+                                <option value="ddim_v3">ddim_v3</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top: auto; padding-top: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 6px;">
+                    <button class="secondary" onclick="saveConfig()" style="font-size: 11px; padding: 4px 8px;">현재 설정 저장</button>
+                    <div style="font-size: 12px; font-weight: 600;" id="expectedAnlas">비용 계산 중...</div>
+                </div>
+                <button onclick="generateImage()" style="width: 100%; padding: 12px; font-size: 14px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,184,148,0.35); background: var(--success);">다키 이미지 생성하기</button>
+            </div>
+        </div>
+
+        <div class="panel panel-center" style="flex: 2.5; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0;">
+            <div id="loadingIndicator" style="display: none; color: var(--text-muted); font-weight: 500; margin: 20px;">생성 중... 잠시만 기다려주세요.</div>
+            <img id="previewImage" src="" alt="Preview" style="max-height: 100%; max-width: 100%; object-fit: contain;">
+        </div>
+
+        <div class="panel panel-right" style="flex: 1;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <h3 style="margin: 0; font-size:15px;">생성 기록</h3>
+                <div style="text-align: right; background: var(--btn-secondary); padding: 4px 8px; border-radius: 6px;">
+                    <div style="font-size: 11px; font-weight: 600; color: var(--success);" id="currentAnlas">조회 중...</div>
+                    <div style="font-size: 9px; color: var(--text-muted); margin-top: 2px; cursor: pointer;" onclick="checkAnlas()">새로고침</div>
+                </div>
+            </div>
+            <button id="saveBtn" class="success" style="display:none; width: 100%; margin-bottom: 12px; padding: 10px; font-size: 13px;" onclick="openDakiGallerySaveModal()">생성물 전체 갤러리 저장</button>
+            <p style="font-size: 11px; color: var(--text-muted); margin-top: 0; margin-bottom: 12px;">이미지를 클릭하면 프롬프트가 복원됩니다.</p>
+            <div id="historyArea" style="flex: 1; overflow-y: auto;"></div>
+        </div>
+    </div>
+
+    <div id="settingsModal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 style="margin-top:0; font-size:16px;">설정</h3>
+            <div class="form-group">
+                <label>NAI API Key</label>
+                <input type="password" id="apiKey" placeholder="pst-..." onchange="checkAnlas()" autocomplete="new-password" spellcheck="false" data-lpignore="true" data-1p-ignore="true">
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top: 20px;">
+                <button class="secondary" onclick="closeSettings()">닫기</button>
+                <button class="success" onclick="saveConfig(); closeSettings()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tagDictionaryModal" class="modal-overlay">
+        <div class="modal-content tag-dictionary-modal">
+            <div class="tag-dictionary-header">
+                <h3>태그 사전</h3>
+                <button class="icon-btn danger" onclick="closeTagDictionary()">×</button>
+            </div>
+            <div class="tag-dictionary-search">
+                <input type="text" id="tagSearchInput" placeholder="단보루 태그 또는 한글명 검색" oninput="searchTagDictionary()">
+                <button class="secondary" onclick="searchTagDictionary(true)">검색</button>
+            </div>
+            <div class="tag-dictionary-layout">
+                <div id="tagDictionaryResults" class="tag-dictionary-results"></div>
+                <div class="tag-dictionary-editor">
+                    <div class="form-group">
+                        <label>태그</label>
+                        <input type="text" id="tagNameInput" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>한글 번역</label>
+                        <input type="text" id="tagKoInput" placeholder="예: 스커트">
+                    </div>
+                    <div class="form-group">
+                        <label>한글 분류</label>
+                        <input type="text" id="tagGroupInput" list="tagGroupOptions" placeholder="예: 하의">
+                        <datalist id="tagGroupOptions">
+                            <option value="표정"></option>
+                            <option value="상의"></option>
+                            <option value="하의"></option>
+                            <option value="의상"></option>
+                            <option value="신체"></option>
+                            <option value="성인"></option>
+                        </datalist>
+                    </div>
+                    <div id="tagDictionaryMeta" class="tag-dictionary-meta">검색 결과를 선택하세요.</div>
+                    <button class="success" onclick="saveTagDictionaryOverride()">저장</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="groupSelectionPopover" class="prompt-group-popover" style="display:none;">
+        <button id="btnStartPromptGroup" onclick="showPromptGroupNameInput()">그룹묶기</button>
+        <div id="promptGroupNameBox" style="display:none; gap:6px; align-items:center;">
+            <input type="text" id="promptGroupNameInput" placeholder="그룹명">
+            <button onclick="saveSelectedPromptGroup()">저장</button>
+        </div>
+    </div>
+
+    <div id="promptGroupModal" class="modal-overlay">
+        <div class="modal-content" style="width: 520px; max-width: 92vw;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h3 style="margin:0; font-size:16px;">프롬프트 그룹 관리</h3>
+                <button class="icon-btn danger" onclick="closePromptGroupManager()">×</button>
+            </div>
+            <div id="promptGroupList" style="display:flex; flex-direction:column; gap:8px; max-height:50vh; overflow-y:auto;"></div>
+        </div>
+    </div>
+
+    <div id="imageContextMenu" style="display:none; position:fixed; z-index:10000; min-width:220px; background:var(--card-bg); border:1px solid var(--border-color); border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,0.6); overflow:hidden;">
+        <button class="image-context-item" onclick="copyContextImage()">이미지 복사</button>
+        <button class="image-context-item" onclick="saveContextImage()">다른 이름으로 저장</button>
+        <button class="image-context-item" onclick="revealContextImage()">경로 탐색</button>
+        <button class="image-context-item" onclick="openPromptViewer()">Prompt 보기</button>
+        <button class="image-context-item" onclick="sendContextImageToCanvas()">캔버스로 가져오기</button>
+    </div>
+
+    <div id="promptLayer" class="modal-overlay" style="display:none; z-index:10001;">
+        <div class="modal-content" style="max-width:900px; max-height:85vh; overflow:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h3 id="promptTitle" style="margin:0;">Prompt Viewer</h3>
+                <button class="icon-btn danger" onclick="closePromptViewer()">×</button>
+            </div>
+            <div id="promptBodyContent"></div>
+        </div>
+    </div>
+
+    <div id="tagTranslationModal" class="modal-overlay">
+        <div class="modal-content" style="max-width: 460px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0;">태그 한글 저장</h3>
+                <button class="icon-btn danger" onclick="closeTagTranslationModal()">×</button>
+            </div>
+
+            <div style="margin-bottom:10px; font-size:12px; color:var(--text-muted);">
+                <div>태그: <strong id="tagTranslationTargetTag"></strong></div>
+                <div id="tagTranslationPartPicker"
+                    style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">
+                </div>
+                <div id="tagTranslationEffectiveTag"
+                    style="margin-top:6px; font-size:11px; color:var(--text-muted);">
+                </div>
+            </div>
+
+            <input
+                id="tagTranslationInput"
+                type="text"
+                style="width:100%;"
+                placeholder="예: 긴 머리  또는  헤어 / 긴 머리"
+            />
+
+            <div style="margin-top:10px; font-size:11px; color:var(--text-muted); line-height:1.5;">
+                그냥 글자만 입력하면 앱 분류 "기타"로 저장됩니다.<br>
+                "분류 / 번역" 형식으로 입력하면 왼쪽을 분류, 오른쪽을 한글 번역으로 저장합니다.
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+                <button class="secondary" onclick="closeTagTranslationModal()">취소</button>
+                <button onclick="saveTagTranslationFromModal()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="dakiGallerySaveModal" class="modal-overlay">
+        <div class="modal-content" style="max-width:560px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h3 style="margin:0; font-size:16px;">생성물 갤러리 저장</h3>
+                <button class="icon-btn danger" onclick="closeDakiGallerySaveModal()">×</button>
+            </div>
+
+            <div id="dakiGallerySaveSummary"
+                 style="font-size:13px; color:var(--text-muted); margin-bottom:14px;">
+                저장할 생성물 수를 확인 중...
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:10px;">
+                <label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer;">
+                    <input id="dakiSaveUseClassifier" type="checkbox" checked>
+                    <span>
+                        <strong>기존 자동 판별 로직 사용</strong><br>
+                        <small style="color:var(--text-muted);">image_logic.process 기반으로 수위/캐릭터/커스텀 규칙 분류를 적용</small>
+                    </span>
+                </label>
+
+                <label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer;">
+                    <input id="dakiSaveIgnoreNsfw" type="checkbox">
+                    <span>
+                        <strong>수위 판별 무시</strong><br>
+                        <small style="color:var(--text-muted);">체크하면 R-19 판별을 건너뛰고 일반 기준으로 저장</small>
+                    </span>
+                </label>
+
+                <label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer;">
+                    <input id="dakiSaveIgnoreCharacter" type="checkbox">
+                    <span>
+                        <strong>캐릭터 판별 무시</strong><br>
+                        <small style="color:var(--text-muted);">체크하면 캐릭터 폴더 분류를 건너뜀</small>
+                    </span>
+                </label>
+
+                <label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer;">
+                    <input id="dakiSaveUseAiNsfw" type="checkbox">
+                    <span>
+                        <strong>AI NSFW 판별 사용</strong><br>
+                        <small style="color:var(--text-muted);">설치된 경우 AI 판별을 함께 사용</small>
+                    </span>
+                </label>
+
+                <label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer;">
+                    <input id="dakiSaveUseGpu" type="checkbox" checked>
+                    <span>
+                        <strong>GPU 사용</strong><br>
+                        <small style="color:var(--text-muted);">AI NSFW 판별 사용 시 GPU 사용</small>
+                    </span>
+                </label>
+
+                <label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer;">
+                    <input id="dakiSaveDeleteAfter" type="checkbox" checked>
+                    <span>
+                        <strong>저장 성공 후 생성 기록 삭제</strong><br>
+                        <small style="color:var(--text-muted);">갤러리에 저장된 임시 생성물을 다키 제작소 목록에서 제거</small>
+                    </span>
+                </label>
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
+                <button class="secondary" onclick="closeDakiGallerySaveModal()">취소</button>
+                <button id="dakiGallerySaveSubmitBtn" class="success" onclick="saveGeneratedDakiImagesToGallery()">갤러리에 저장</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="dakiArtStyleModal" class="modal-overlay">
+        <div class="modal-content daki-art-style-modal">
+            <div class="daki-art-style-header">
+                <h3>그림체 가져오기</h3>
+                <button class="icon-btn danger" onclick="closeDakiArtStyleModal()">×</button>
+            </div>
+
+            <div class="daki-art-style-toolbar">
+                <div class="daki-art-style-tabs">
+                    <button id="dakiStyleTabSaved" class="active" onclick="switchDakiArtStyleTab('saved_styles')">
+                        그림체 보관함
+                    </button>
+                    <button id="dakiStyleTabWeighted" onclick="switchDakiArtStyleTab('weighted_artists')">
+                        가중치 / 원본 순서
+                    </button>
+                </div>
+
+                <input id="dakiArtStyleSearchInput"
+                    type="text"
+                    placeholder="그림체 이름 또는 프롬프트 검색"
+                    oninput="renderDakiArtStyleList()">
+            </div>
+
+            <div class="daki-art-style-layout">
+                <div id="dakiArtStyleList" class="daki-art-style-list"></div>
+
+                <div id="dakiArtStyleDetail" class="daki-art-style-detail">
+                    <div class="daki-art-style-empty">왼쪽에서 그림체를 선택하세요.</div>
+                </div>
+            </div>
+        </div>
+    </div>  
+    <script src="/static/daki_workshop.js"></script>
+</body>
+</html>

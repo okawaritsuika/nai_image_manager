@@ -1,0 +1,541 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>NAI Image Server Archive</title>
+    <link rel="stylesheet" href="/static/index.css">
+</head>
+<body>
+    <div class="header-main">
+        <div class="header-row">
+            <div id="nav-tabs"></div>
+            <div class="header-row-right">
+                <button onclick="location.href='/style-lab'" style="background: #6c5ce7; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(108, 92, 231, 0.3);">🧪 그림체 연구소</button> 
+                <button onclick="location.href='/daki-workshop'" style="background: #00b894; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(0, 184, 148, 0.3);">🛏️ 다키 제작소</button>
+                <button onclick="location.href='/canvas'" style="background: #6366f1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);">🖼️ 캔버스</button>
+
+                <button id="galleryHeaderToolsToggle"
+                        onclick="toggleGalleryHeaderTools()"
+                        class="gallery-header-tools-toggle">
+                    도구 펼치기 ▼
+                </button>
+
+                <div id="galleryHeaderTools" class="gallery-header-tools collapsed">
+                    <button onclick="openFolderMgr()" style="background: #0984e3; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px;">📁 폴더 관리</button>               
+                    <button onclick="toggleBrandManager()" style="background: #ff007c; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(255, 0, 124, 0.3);">👑 브랜드 관리</button>
+                    <button onclick="toggleArtStyleManager()" style="background: #f1c40f; color: #000; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(241, 196, 15, 0.3);">🎨 그림체 관리</button>
+                    <button onclick="openGalleryTagManager()" style="background: #2dd4bf; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(45, 212, 191, 0.3);">🏷️ 태그 관리</button>
+                    <button onclick="toggleStats()" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">📊 통계 보기</button>
+                </div>
+                <div style="font-weight:900; font-size: 13px; margin-right: 10px;">
+                    대표: <span id="count-thm" style="color:var(--thumb);">0</span> |
+                    삭제: <span id="count-del" style="color:var(--accent);">0</span>
+                </div>
+                <button id="applyBtn" class="copy-btn-mega" onclick="applyChanges()" style="padding: 8px 20px; font-size: 13px;">🚀 서버에 즉시 반영하기</button>
+                <label style="background: #1a1a24; padding: 8px 15px; border-radius: 25px; border: 1px solid #ff4d4d; display: flex; gap: 8px; align-items: center; cursor: pointer; color: #ff4d4d; font-size: 12px; font-weight: bold; box-shadow: 0 0 10px rgba(255, 77, 77, 0.1);">
+                    <input type="checkbox" id="toggle-reasons" checked onchange="toggleReasons()" style="accent-color: #ff4d4d; width: 14px; height: 14px; cursor: pointer;">
+                    사유 보기
+                </label>
+            </div>
+        </div>
+
+        <div class="header-row" style="justify-content: flex-end;">
+            <div style="display:flex; gap: 10px; align-items: center;">
+                <div style="background: #0a0a0f; padding: 6px 15px; border-radius: 25px; border: 1px solid #39ff14; display: flex; gap: 12px; align-items: center;">
+                    <span style="font-size: 10px; font-weight: bold; color: #39ff14;">DAKI</span>
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="dakiFilter" value="all" class="view-radio" checked onchange="setDakiFilter('all')"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>전체</label>
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="dakiFilter" value="hide" class="view-radio" onchange="setDakiFilter('hide')"><div class="view-circle" style="background:#f44; width:12px; height:12px;"></div>제외</label>
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer; color:#39ff14; font-size:11px;"><input type="radio" name="dakiFilter" value="only" class="view-radio" onchange="setDakiFilter('only')"><div class="view-circle" style="background:#39ff14; width:12px; height:12px;"></div>다키만</label>
+                </div>
+                <div style="background: #1a1a24; padding: 6px 15px; border-radius: 25px; border: 1px solid #333; display: flex; gap: 12px; align-items: center;">
+                    <span style="font-size: 10px; font-weight: bold; color: #888;">SORT</span>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="name" class="view-radio" checked onchange="loadData()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>이름순</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="count" class="view-radio" onchange="loadData()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>갯수순</label>
+                    <div style="width:1px; height:12px; background:#444; margin: 0 5px;"></div>
+                    <span style="font-size: 10px; font-weight: bold; color: #888;">VIEW</span>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#39ff14; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="general" class="view-radio" checked onchange="loadData()"><div class="view-circle" style="background:#39ff14; width:12px; height:12px;"></div>일반</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ff007c; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="r18" class="view-radio" onchange="loadData()"><div class="view-circle" style="background:#ff007c; width:12px; height:12px;"></div>R-19</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ff8c00; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="all" class="view-radio" onchange="loadData()"><div class="view-circle" style="background:#ff8c00; width:12px; height:12px;"></div>전체</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#888; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="trash" class="view-radio" onchange="loadData()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>🗑️ 휴지통</label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="breadcrumb-path" style="padding: 10px 40px; background: #0f0f15; border-bottom: 1px solid #222; font-size: 14px; color: #888;"></div>
+
+    <div id="brand-filter-bar">
+        <span id="main-filter-label" style="font-size: 14px; font-weight: 900; color: #ff007c;">👑 BRAND FILTER</span>
+
+        <select id="brandSelect" class="filter-select" onchange="onBrandChange()">
+            <option value="ALL">전체 브랜드</option>
+        </select>
+
+        <select id="galleryArtStyleSelect" class="filter-select gallery-final-filter" onchange="onGalleryArtStyleChange()" style="display:none;">
+            <option value="ALL">전체 그림체</option>
+        </select>
+
+        <span id="galleryFilterLoading" class="gallery-filter-loading" style="display:none;">프롬프트/그림체 정보 읽는 중...</span>
+    </div>
+
+    <div id="galleryTagFilterBar" class="gallery-tag-filter-bar"></div>
+
+    <div id="char-chip-container"></div>
+
+    <div class="search-wrapper">
+        <div class="search-container">
+            <textarea id="folder-search" rows="1" placeholder="🔍 폴더 이름 실시간 검색..." oninput="handleSearch(this.value)"></textarea>
+            <button id="clear-search" onclick="clearSearch()">×</button>
+        </div>
+    </div>
+    </div>
+
+    <div id="content"><div class="loading-text">서버에서 구조를 불러오는 중입니다...<br>🚀</div></div>
+
+    <div id="reviewBoard"><div class="rv-header"><span>작업 리스트 확인</span><span onclick="toggleRv()" style="cursor:pointer; font-size:24px;">&times;</span></div><div class="rv-body" id="rvBody"></div></div>
+    <button id="viewRvBtn" onclick="toggleRv()">👁️ 리뷰 보드</button>
+    <button id="topBtn" onclick="scrollToTop()">TOP</button>
+    <div id="zoomLayer" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:9000; align-items:center; justify-content:center; cursor:zoom-out;" onclick="closeZoom()">
+        <img id="zoomImg" style="max-width:95%; max-height:95%; object-fit:contain; box-shadow: 0 0 30px rgba(0,0,0,0.5);">
+    </div>
+
+    <div id="galleryUpscaleLayer" class="gallery-upscale-layer">
+        <div class="gallery-upscale-card">
+            <div class="gallery-upscale-header">
+                <div>
+                    <h3>업스케일</h3>
+                    <div id="galleryUpscaleMeta" class="gallery-upscale-meta">이미지 정보 없음</div>
+                </div>
+                <button class="gallery-upscale-close" onclick="closeGalleryUpscaleModal()">×</button>
+            </div>
+
+            <div class="gallery-upscale-section">
+                <label>목표 해상도</label>
+                <div class="gallery-upscale-preset-row">
+                    <button type="button" onclick="applyGalleryUpscalePreset(2500, 8000)">
+                        2500 × 8000
+                    </button>
+                    <button type="button" onclick="applyGalleryUpscalePreset(5000, 16000)">
+                        5000 × 16000
+                    </button>
+                </div>
+
+                <div class="gallery-upscale-resolution-row">
+                    <input id="galleryUpscaleWidthInput"
+                        type="number"
+                        min="64"
+                        max="20000"
+                        step="1"
+                        value="2500"
+                        oninput="handleGalleryUpscaleWidthInput()">
+                    <span>×</span>
+                    <input id="galleryUpscaleHeightInput"
+                        type="number"
+                        min="64"
+                        max="20000"
+                        step="1"
+                        value="8000"
+                        oninput="handleGalleryUpscaleHeightInput()">
+                </div>
+
+                <label class="gallery-upscale-check">
+                    <input id="galleryUpscaleRatioLock" type="checkbox" checked>
+                    <span>원본 비율 유지</span>
+                </label>
+
+                <div id="galleryUpscaleRatioInfo" class="gallery-upscale-help">
+                    목표 해상도를 입력하세요.
+                </div>
+            </div>
+
+            <div class="gallery-upscale-section">
+                <label>모델</label>
+                <select id="galleryUpscaleEngine">
+                    <option value="realcugan" selected>Real-CUGAN / 애니 그림 추천</option>
+                    <option value="lanczos">Lanczos / 엔진 없을 때 임시 리사이즈</option>
+                </select>
+                <div class="gallery-upscale-help">
+                    Real-CUGAN은 setup의 3단계 업스케일 엔진 설치 후 사용할 수 있습니다.
+                </div>
+            </div>
+
+            <div class="gallery-upscale-section">
+                <label>처리 방식</label>
+
+                <div class="gallery-upscale-quality-list">
+                    <label class="gallery-upscale-quality-item">
+                        <input type="radio" name="galleryUpscaleQuality" value="fast">
+                        <span>
+                            <strong>빠른 처리</strong>
+                            <small>테스트용 / 여러 장 처리용. 처리 시간이 짧고 디테일 보정은 약합니다.</small>
+                        </span>
+                    </label>
+
+                    <label class="gallery-upscale-quality-item">
+                        <input type="radio" name="galleryUpscaleQuality" value="standard" checked>
+                        <span>
+                            <strong>균형 처리 추천</strong>
+                            <small>속도와 화질의 균형을 맞춘 기본 모드입니다. 애니 일러스트에 무난합니다.</small>
+                        </span>
+                    </label>
+
+                    <label class="gallery-upscale-quality-item">
+                        <input type="radio" name="galleryUpscaleQuality" value="high">
+                        <span>
+                            <strong>최종본 고품질</strong>
+                            <small>더 오래 걸리지만 선과 디테일 보존을 우선합니다. 최종 출력용에 적합합니다.</small>
+                        </span>
+                    </label>
+                </div>
+
+                <div class="gallery-upscale-help">
+                    목표 해상도는 그대로 유지됩니다. 처리 방식은 같은 해상도 안에서 속도, 선명도, 디테일 보존 정도를 조절합니다.
+                </div>
+            </div>
+
+            <div class="gallery-upscale-actions">
+                <button class="secondary" onclick="closeGalleryUpscaleModal()">닫기</button>
+                <button class="success" onclick="startGalleryUpscale()">업스케일 시작</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="galleryUpscaleJobPanel" class="gallery-upscale-job-panel">
+        <div class="gallery-upscale-job-header">
+            <strong>업스케일 작업</strong>
+            <button onclick="hideGalleryUpscaleJobsPanel()">×</button>
+        </div>
+        <div id="galleryUpscaleJobList" class="gallery-upscale-job-list"></div>
+    </div>
+
+
+    <script src="/static/index.js"></script>
+    <div id="statsLayer">
+        <div class="stats-card">
+            <div class="stats-header">
+                <span style="font-size:18px; font-weight:900;">📊 NAI 아카이브 정밀 통계</span>
+                <span onclick="toggleStats()" style="cursor:pointer; font-size:24px;">&times;</span>
+            </div>
+            <div class="stats-body" id="statsBody"></div>
+        </div>
+    </div>
+    <div id="brandLayer" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:8500; align-items:center; justify-content:center;">
+        <div class="stats-card" style="border-color: #ff007c; width: 95%; max-width: 1000px;">
+            <div class="stats-header" style="background: #ff007c;">
+                <span style="font-size:18px; font-weight:900;">👑 BRAND MANAGER (통계 및 명칭 관리)</span>
+                <span onclick="toggleBrandManager()" style="cursor:pointer; font-size:24px;">&times;</span>
+            </div>
+            <div class="stats-body">
+                 <div style="margin-bottom:20px; display:flex; gap:10px; align-items:center;">
+                    <input type="text" id="brand-mgr-search" placeholder="🔍 관리할 브랜드 검색..." oninput="filterBrandMgrTable()"
+                           style="flex:1; background:#000; border:1px solid #444; color:#fff; padding:12px 20px; border-radius:30px; outline:none;">
+
+                    <div style="display:flex; gap:5px;">
+                        <button onclick="setAllBrandCheck(true)" style="background:#222; color:#39ff14; border:1px solid #333; padding:8px 15px; border-radius:20px; font-weight:bold; cursor:pointer;">☑ 전체 체크</button>
+                        <button onclick="setAllBrandCheck(false)" style="background:#222; color:#ff4d4d; border:1px solid #333; padding:8px 15px; border-radius:20px; font-weight:bold; cursor:pointer;">☐ 전체 해제</button>
+                    </div>
+
+                    <button id="bulkSaveBtn" onclick="saveAllBrandChanges()"
+                            style="background:#39ff14; color:#000; border:none; padding:10px 25px; border-radius:30px; font-weight:bold; cursor:pointer; box-shadow: 0 0 15px rgba(57, 255, 20, 0.3);">
+                        🚀 일괄 저장
+                    </button>
+                </div>
+                <div id="brandMgrTableContainer" style="overflow-x:auto;"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="artStyleLayer" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:8600; align-items:center; justify-content:center;">
+        <div class="stats-card" style="border-color: #f1c40f; width: 95%; max-width: 1100px;">
+            <div class="stats-header" style="background: #f1c40f; color:#000;">
+                <span style="font-size:18px; font-weight:900;">🎨 ART STYLE MANAGER (그림체 수집 및 통계)</span>
+                <span onclick="toggleArtStyleManager()" style="cursor:pointer; font-size:24px;">&times;</span>
+            </div>
+            <div class="stats-body">
+                 <div style="margin-bottom:20px; display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
+                    <div style="display:flex; background:#222; border-radius:30px; overflow:hidden; border:1px solid #444;">
+                        <button id="btnFilterAll" onclick="setArtStyleFilter('all')" style="background:#f1c40f; color:#000; border:none; padding:10px 20px; font-weight:bold; cursor:pointer; transition:0.2s;">전체 보기</button>
+                        <button id="btnFilterStd" onclick="setArtStyleFilter('std')" style="background:transparent; color:#fff; border:none; padding:10px 20px; font-weight:bold; cursor:pointer; transition:0.2s;">조합형 (알파벳순)</button>
+                        <button id="btnFilterWeight" onclick="setArtStyleFilter('weight')" style="background:transparent; color:#fff; border:none; padding:10px 20px; font-weight:bold; cursor:pointer; transition:0.2s;">가중치 (원본 순서)</button>
+                    </div>
+
+                    <input type="text" id="art-style-search" placeholder="🔍 관리할 그림체 검색..." oninput="filterArtStyleTable()"
+                           style="flex:1; background:#000; border:1px solid #444; color:#fff; padding:12px 20px; border-radius:30px; outline:none;">
+
+                    <button id="bulkSaveArtBtn" onclick="saveAllArtStyleChanges()"
+                            style="background:#39ff14; color:#000; border:none; padding:10px 25px; border-radius:30px; font-weight:bold; cursor:pointer; box-shadow: 0 0 15px rgba(57, 255, 20, 0.3);">
+                        🚀 일괄 저장
+                    </button>
+                </div>
+                <div id="artStyleTableContainer" style="overflow-x:auto; max-height: calc(80vh - 150px);"></div>
+            </div>
+        </div>
+    </div>
+    <div id="artStyleDetailLayer" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:8700; align-items:center; justify-content:center;">
+        <div class="stats-card" style="border-color: #f1c40f; width: 500px; max-width: 90%;">
+            <div class="stats-header" style="background: #f1c40f; color:#000;">
+                <span style="font-size:16px; font-weight:900;">🎨 전체 그림체 구성 아티스트</span>
+                <span onclick="closeArtStyleDetail()" style="cursor:pointer; font-size:24px;">&times;</span>
+            </div>
+            <div class="stats-body" style="padding:20px;">
+                <textarea id="artStyleDetailArea" readonly
+                          style="width:100%; height:250px; background:#000; border:1px solid #444; color:#f1c40f; padding:15px; border-radius:10px; font-family:monospace; font-size:13px; line-height:1.6; resize:none; outline:none;"></textarea>
+                <div style="margin-top:15px; text-align:right;">
+                    <button onclick="copyArtStyleDetail()" style="background:#222; color:#fff; border:1px solid #555; padding:8px 20px; border-radius:5px; cursor:pointer; font-weight:bold;">📋 클립보드 복사</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="folderLayer" style="display:none; position:fixed; top:10%; left:50%; transform:translateX(-50%); width:85%; max-width:1000px; height:80%; background:#1a1a24; border:1px solid #444; border-radius:12px; z-index:4000; box-shadow:0 10px 40px rgba(0,0,0,0.8); flex-direction:column; overflow:hidden;">
+
+        <div id="ruleTagsExpandedLayer" style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:4001; justify-content:center; align-items:center;">
+            <div style="background:#1e1e2e; padding:25px; border-radius:12px; width:85%; height:85%; display:flex; flex-direction:column; border:1px solid #444; box-shadow:0 10px 30px rgba(0,0,0,0.9);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                    <h3 style="color:#0984e3; margin:0;">📝 프롬프트 대량 입력 (쉼표 또는 줄바꿈으로 구분)</h3>
+                    <button onclick="closeTagsExpanded()" style="background:none; border:none; color:#888; font-size:24px; cursor:pointer;">&times;</button>
+                </div>
+                <textarea id="ruleTagsExpandedText" style="flex:1; background:#121218; color:#39ff14; border:1px solid #333; border-radius:8px; padding:15px; font-family:Consolas; font-size:14px; resize:none; outline:none;" placeholder="여기에 대량의 프롬프트를 붙여넣으세요..."></textarea>
+                <div style="text-align:right; margin-top:20px;">
+                    <button onclick="applyTagsExpanded()" style="background:#0984e3; color:#fff; border:none; padding:12px 30px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px;">적용 및 닫기</button>
+                </div>
+            </div>
+        </div>
+
+        <div style="padding:20px 25px; background:#121218; border-bottom:1px solid #2a2a35; display:flex; justify-content:space-between; align-items:center;">
+            <h2 style="margin:0; color:#0984e3; font-size:20px;">📁 정밀 라우팅 규칙 설정 (우선순위 엔진)</h2>
+            <button onclick="closeFolderMgr()" style="background:none; border:none; color:#888; font-size:28px; cursor:pointer; line-height:1;">&times;</button>
+        </div>
+
+        <div style="padding:20px 25px; background:#161625; border-bottom:1px solid #2a2a35;">
+            <div style="display:flex; gap:10px; align-items:stretch; margin-bottom:12px;">
+                <input type="text" id="ruleFolderName" placeholder="이동할 폴더명 (예: _Comic)" style="flex:1; padding:12px 15px; background:#222230; border:1px solid #3b3b4f; color:#fff; border-radius:8px; outline:none; font-family:'Malgun Gothic'; font-size:14px;">
+
+                <div style="flex:2; display:flex; background:#222230; border:1px solid #3b3b4f; border-radius:8px; overflow:hidden;">
+                    <input type="text" id="ruleTags" placeholder="감지할 프롬프트/태그 입력..." style="flex:1; padding:12px 15px; background:none; border:none; color:#fff; outline:none; font-family:'Malgun Gothic'; font-size:14px;">
+                    <button onclick="openTagsExpanded()" style="background:#3b3b4f; color:#fff; border:none; border-left:1px solid #2a2a35; padding:0 15px; cursor:pointer; font-weight:bold; transition:background 0.2s;" onmouseover="this.style.background='#4b4b6b'" onmouseout="this.style.background='#3b3b4f'">⤢ 크게</button>
+                </div>
+
+                <select id="ruleCondition" onchange="toggleMatchCount()" style="padding:0 15px; background:#222230; border:1px solid #3b3b4f; color:#fff; border-radius:8px; outline:none; cursor:pointer; font-family:'Malgun Gothic'; font-size:14px;">
+                    <option value="any">지정 개수 이상 일치</option>
+                    <option value="all">전체 일치 (All)</option>
+                </select>
+
+                <div id="matchCountWrapper" style="display:flex; align-items:center; background:#222230; border:1px solid #3b3b4f; border-radius:8px; padding:0 10px; transition:opacity 0.2s;">
+                    <input type="number" id="ruleMatchCount" value="1" min="1" style="width:45px; padding:12px 0; background:none; border:none; color:#00f2ff; font-weight:bold; text-align:center; outline:none; font-size:15px;">
+                    <span style="color:#888; font-size:13px; margin-right:5px;">개</span>
+                </div>
+
+                <button onclick="addFolderRule()" style="background:#00b894; color:#fff; border:none; padding:0 25px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; transition:background 0.2s;" onmouseover="this.style.background='#00d2a6'" onmouseout="this.style.background='#00b894'">➕ 추가</button>
+            </div>
+            <div style="font-size:12px; color:#ff6b6b; font-weight:bold;">⚠️ 위에서부터 아래 순서대로 검사합니다. [기본 분류]를 만나면 검사를 종료하므로 그 아래 규칙은 무시됩니다!</div>
+        </div>
+
+        <div style="flex:1; overflow-y:auto; padding:20px 25px; background:#1a1a24;" id="folderMgrTableContainer"></div>
+
+        <div style="padding:15px 25px; background:#121218; border-top:1px solid #2a2a35; text-align:right;">
+            <button onclick="saveFolderRules()" style="background:#0984e3; color:#fff; border:none; padding:12px 35px; border-radius:30px; font-weight:bold; cursor:pointer; font-size:14px; box-shadow: 0 4px 15px rgba(9, 132, 227, 0.4); transition:transform 0.1s;" onmousedown="this.style.transform='scale(0.98)'" onmouseup="this.style.transform='scale(1)'">💾 서버에 전체 규칙 저장</button>
+        </div>
+    </div>
+    <div id="imageContextMenu">
+        <button class="image-context-item" onclick="copyContextImage()">이미지 복사</button>
+        <button class="image-context-item" onclick="saveContextImage()">다른 이름으로 저장</button>
+        <button class="image-context-item" onclick="revealContextImage()">경로 탐색</button>
+        <button class="image-context-item" onclick="openPromptViewer()">Prompt 보기</button>
+        <button class="image-context-item" onclick="sendContextImageToCanvas()">캔버스로 가져오기</button>
+        <button class="image-context-item" onclick="openGalleryInpaintFromContext()">인페인팅</button>
+    </div>
+    <div id="promptLayer">
+        <div class="prompt-card">
+            <div class="prompt-header">
+                <span id="promptTitle" style="font-size:18px; font-weight:900;">📝 Prompt Viewer</span>
+                <span onclick="closePromptViewer()" style="cursor:pointer; font-size:24px;">&times;</span>
+            </div>
+            <div class="prompt-body" id="promptBodyContent"></div>
+        </div>
+    </div>
+
+    <div id="galleryInpaintLayer">
+        <div class="gallery-inpaint-card">
+            <div class="gallery-inpaint-header">
+                <div class="gallery-inpaint-title">갤러리 인페인팅</div>
+                <button class="gallery-inpaint-close" onclick="closeGalleryInpaint()">×</button>
+            </div>
+
+            <div id="galleryInpaintMeta" class="gallery-inpaint-meta">이미지 정보 없음</div>
+
+            <div class="gallery-inpaint-toolbar">
+                <div class="gallery-inpaint-tool-wrap" id="galleryBrushWrap">
+                    <button class="gallery-inpaint-tool-btn active"
+                            onclick="setGalleryInpaintTool('brush', this)"
+                            title="브러시">
+                        ● 브러시
+                    </button>
+                    <div class="gallery-inpaint-size-popover">
+                        <input type="range" min="8" max="320" step="4" value="96"
+                            oninput="setGalleryInpaintBrushSize(this.value)">
+                        <div class="gallery-inpaint-size-readout">96px</div>
+                    </div>
+                </div>
+
+                <div class="gallery-inpaint-tool-wrap" id="galleryEraserWrap">
+                    <button class="gallery-inpaint-tool-btn"
+                            onclick="setGalleryInpaintTool('eraser', this)"
+                            title="지우개">
+                        ◌ 지우개
+                    </button>
+                    <div class="gallery-inpaint-size-popover">
+                        <input type="range" min="8" max="320" step="4" value="96"
+                            oninput="setGalleryInpaintBrushSize(this.value)">
+                        <div class="gallery-inpaint-size-readout">96px</div>
+                    </div>
+                </div>
+
+                <button class="gallery-inpaint-tool-btn"
+                        onclick="openGalleryInpaintPrompt()">
+                    프롬프트
+                </button>
+
+                <button id="galleryInpaintMaskToggleBtn"
+                        class="gallery-inpaint-tool-btn"
+                        onclick="toggleGalleryInpaintMaskVisible()">
+                    선택범위 숨김
+                </button>
+
+                <label class="gallery-inpaint-logo-toggle"
+                    title="체크 시 base prompt에서 로고/워터마크/텍스트 계열 태그를 제거하고 로고 제거 프롬프트를 추가합니다.">
+                    <input id="galleryInpaintLogoRemovalCheck"
+                        type="checkbox">
+                    <span>로고 제거</span>
+                </label>
+
+                <button class="gallery-inpaint-tool-btn success"
+                        onclick="requestGalleryInpaint()">
+                    인페인팅
+                </button>
+
+                <button class="gallery-inpaint-tool-btn danger"
+                        onclick="overwriteGalleryInpaintResult()">
+                    덮어쓰기
+                </button>
+
+                <button class="gallery-inpaint-tool-btn success"
+                        onclick="saveGalleryInpaintResultAsNew()">
+                    새로 저장
+                </button>
+            </div>
+
+            <div class="gallery-inpaint-body">
+                <div id="galleryInpaintImageWrap">
+                    <img id="galleryInpaintImage" src="" alt="gallery inpaint target">
+                    <canvas id="galleryInpaintOverlay"></canvas>
+
+                    <div id="galleryInpaintLoading" class="gallery-inpaint-loading">
+                        <div class="gallery-inpaint-loading-spinner"></div>
+                        <div id="galleryInpaintLoadingText" class="gallery-inpaint-loading-text">
+                            인페인팅 처리 중...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="galleryInpaintPromptLayer">
+        <div class="gallery-inpaint-prompt-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+                <h3 style="margin:0; color:#00f2ff;">인페인팅 프롬프트</h3>
+                <button class="gallery-inpaint-close" onclick="closeGalleryInpaintPrompt()">×</button>
+            </div>
+
+            <label>Base Prompt</label>
+            <textarea id="galleryInpaintBasePrompt" rows="4"></textarea>
+
+            <label>Character Prompt</label>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+                <div style="font-size:12px; color:#888;">
+                    여러 개의 캐릭터 프롬프트를 개별로 관리합니다.
+                </div>
+                <button type="button"
+                        class="gallery-inpaint-tool-btn"
+                        style="padding:6px 10px; font-size:12px;"
+                        onclick="addGalleryInpaintCharPromptEditor()">
+                    + 추가
+                </button>
+            </div>
+
+            <div id="galleryInpaintCharPromptList"></div>
+
+            <label>Negative Prompt</label>
+            <textarea id="galleryInpaintNegativePrompt" rows="4"></textarea>
+
+            <div style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px;">
+                <div>
+                    <label>Strength</label>
+                    <input id="galleryInpaintStrength" type="number" value="0.65" min="0" max="1" step="0.01">
+                </div>
+                <div>
+                    <label>Noise</label>
+                    <input id="galleryInpaintNoise" type="number" value="0.2" min="0" max="1" step="0.01">
+                </div>
+            </div>
+
+            <div class="gallery-inpaint-prompt-actions">
+                <button class="image-context-item" style="width:auto; border:1px solid #333;" onclick="closeGalleryInpaintPrompt()">닫기</button>
+                <button class="gallery-inpaint-tool-btn success" onclick="saveGalleryInpaintPrompt()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="galleryInpaintBrushCursor"></div>
+
+    <div id="galleryTagPicker" class="gallery-tag-picker"></div>
+
+    <div id="galleryTagManagerLayer" class="gallery-tag-manager-layer">
+        <div class="gallery-tag-manager-card">
+            <div class="gallery-tag-manager-header">
+                <span>🏷️ 갤러리 태그 관리</span>
+                <button type="button" onclick="closeGalleryTagManager()">×</button>
+            </div>
+
+            <div class="gallery-tag-manager-body">
+                <div class="gallery-tag-add-card simple">
+                    <div class="gallery-tag-add-mode-card">
+                        <input type="file" id="galleryTagImageInput" accept="image/*" style="display:none;">
+                        <button type="button" class="gallery-tag-add-icon-btn" onclick="document.getElementById('galleryTagImageInput').click()">
+                            ＋ 그림 태그 추가
+                        </button>
+                        <div id="galleryTagImagePreview" class="gallery-tag-image-preview"></div>
+                    </div>
+
+                    <div class="gallery-tag-add-mode-card text">
+                        <div class="gallery-tag-text-add-row">
+                            <input type="text" id="galleryTagTextInput" maxlength="12" placeholder="글자 태그 예: 확인 / 보류 / 중요">
+                            <button type="button" class="gallery-tag-add-text-btn" onclick="addGalleryTextTagFromManager()">글자 태그 추가</button>
+                        </div>
+
+                        <div class="gallery-tag-color-row">
+                            <label>
+                                글자색
+                                <input type="color" id="galleryTagTextColorInput" value="#ffffff">
+                            </label>
+                            <label>
+                                배경색
+                                <input type="color" id="galleryTagBgColorInput" value="#2563eb">
+                            </label>
+                            <div id="galleryTagTextPreview" class="gallery-tag-text-preview">확인</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="galleryTagManagerList" class="gallery-tag-manager-list"></div>
+            </div>
+
+            <div class="gallery-tag-manager-footer">
+                <button type="button" class="gallery-tag-secondary-btn" onclick="closeGalleryTagManager()">닫기</button>
+                <button type="button" class="gallery-tag-save-btn" onclick="saveGalleryTagsFromManager()">저장</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
