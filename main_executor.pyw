@@ -1,62 +1,71 @@
 ﻿# -*- coding: utf-8 -*-
 import os
 import sys
+import subprocess
+
+
+def get_app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# ---------------------------------------------------------
+# .venv 우선 진입
+# 프로젝트 모듈(utils, image_logic 등)을 import하기 전에 반드시 실행한다.
+# ---------------------------------------------------------
+APP_DIR = get_app_dir()
+
+if sys.prefix == sys.base_prefix:
+    venv_python_candidates = []
+
+    if os.name == "nt":
+        venv_python_candidates.extend([
+            os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe"),
+            os.path.join(APP_DIR, ".venv", "Scripts", "python.exe"),
+        ])
+    else:
+        venv_python_candidates.append(
+            os.path.join(APP_DIR, ".venv", "bin", "python")
+        )
+
+    for venv_python in venv_python_candidates:
+        if os.path.exists(venv_python):
+            creation_flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+            subprocess.Popen(
+                [venv_python] + sys.argv,
+                cwd=APP_DIR,
+                creationflags=creation_flags
+            )
+            sys.exit(0)
+
+
+# ---------------------------------------------------------
+# .venv 진입 후 또는 시스템 Python 사용 가능 시 일반 패키지 로드
+# ---------------------------------------------------------
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, messagebox
 from threading import Thread
 from datetime import datetime
-import subprocess
 import webbrowser
 import sqlite3
 import importlib
-import ctypes # 🛡️ [추가] 관리자 권한 제어용
+import ctypes
 
-import utils
-import image_logic
 
-try:
-    import danbooru_sync
-except ImportError:
-    pass
-
-# -*- coding: utf-8 -*-
-import sys
-import os
-import subprocess
-
-# -*- coding: utf-8 -*-
-import sys
-import os
-import subprocess
-
-# 🌟 1. 가상환경(.venv) 강제 납치 로직 (가장 먼저 실행되어야 함!)
-if sys.prefix == sys.base_prefix:
-    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "Scripts", "pythonw.exe")
-    if os.path.exists(venv_python):
-        subprocess.Popen([venv_python] + sys.argv, creationflags=0x08000000)
-        sys.exit(0)
-
-# ---------------------------------------------------------
-# 가상환경 진입 성공 후 일반 패키지 로드
-import tkinter as tk
-from tkinter import filedialog, scrolledtext, messagebox
-from threading import Thread
-from datetime import datetime
-import webbrowser
-import sqlite3
-import ctypes # 🛡️ 관리자 권한 제어용
-
-# 🌟 2. 필수 패키지 누락 정밀 검사 (가상환경도 없고 시스템 파이썬도 없는 경우)
 try:
     import utils
     import image_logic
+
     try:
         import danbooru_sync
     except ImportError:
-        pass
+        danbooru_sync = None
+
 except ImportError as e:
     root = tk.Tk()
-    root.withdraw() # 빈 창 숨기기
+    root.withdraw()
+
     error_msg = (
         "⚠️ 프로그램 실행에 필요한 필수 라이브러리가 설치되어 있지 않습니다.\n\n"
         f"누락된 모듈: {e.name}\n\n"
@@ -64,10 +73,12 @@ except ImportError as e:
         "1. 동봉된 'naim_setup.py'를 실행하여 [1단계: 가상환경 세팅]을 완료해주세요.\n"
         "2. 수동으로 설치하시려면 터미널(CMD)을 열고 아래 명령어를 입력하세요:\n"
         "   pip install flask requests pillow\n\n"
-        "※ 가상환경(.venv)이 존재하지 않으며, 현재 PC의 파이썬에도 패키지가 누락된 상태입니다."
+        "※ .venv가 없거나, 현재 사용 중인 Python 환경에 필수 패키지가 누락된 상태입니다."
     )
-    messagebox.showerror("NAIA 3.0 - 실행 오류", error_msg)
+
+    messagebox.showerror("NAI Image Manager - 실행 오류", error_msg)
     sys.exit(1)
+
 
 class NaiaHyperExecutor:
     def __init__(self, root):
@@ -80,8 +91,14 @@ class NaiaHyperExecutor:
         self.config = utils.load_config()
         self.full_path = self.config.get("path", os.getcwd())
 
-        self.show_alert_var = tk.BooleanVar(value=True)
-        self.is_fast_mode = tk.BooleanVar(value=True)
+        classify_settings = self.config.get("classify_settings", {})
+        if not isinstance(classify_settings, dict):
+            classify_settings = {}
+
+        self.show_alert_var = tk.BooleanVar(value=bool(classify_settings.get("show_alert", True)))
+        self.is_fast_mode = tk.BooleanVar(value=bool(classify_settings.get("is_fast_mode", True)))
+        self.classify_method_var = tk.StringVar(value=str(classify_settings.get("method", "copy")))
+
         self.stop_requested = False
         self.log_visible = False
 
@@ -91,7 +108,6 @@ class NaiaHyperExecutor:
         self.server_ready = False
         self.server_monitor_token = 0
 
-        self.classify_method_var = tk.StringVar(value="copy")
         self.server_status_var = tk.StringVar(value="🔴 서버 중지됨")
         self.is_syncing = False
 
@@ -381,19 +397,102 @@ class NaiaHyperExecutor:
                   font=("Malgun Gothic", 9, "bold"), relief="flat", padx=10).pack(side="right", padx=(10, 0))
 
         opt_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
-        opt_frame.pack(fill="x", pady=2)
+        opt_frame.pack(fill="x", pady=(2, 4))
 
-        tk.Checkbutton(opt_frame, text="알림창 끄기", variable=self.show_alert_var, onvalue=False, offvalue=True,
-                       bg="#1e1e2e", fg="#ccc", selectcolor="#222").pack(side="left")
-        tk.Checkbutton(opt_frame, text="⚡ 분류 이력 활용 (고속)", variable=self.is_fast_mode, bg="#1e1e2e", fg="#ffb300",
-                       selectcolor="#222").pack(side="left", padx=5)
-        tk.Radiobutton(opt_frame, text="복사", variable=self.classify_method_var, value="copy", bg="#1e1e2e", fg="#ccc",
-                       selectcolor="#222").pack(side="left")
-        tk.Radiobutton(opt_frame, text="이동", variable=self.classify_method_var, value="move", bg="#1e1e2e", fg="#ccc",
-                       selectcolor="#222").pack(side="left")
+        option_top_row = tk.Frame(opt_frame, bg="#1e1e2e")
+        option_top_row.pack(fill="x")
 
-        tk.Button(opt_frame, text="⚠️ 이력 초기화", command=self.reset_history, bg="#4a1a1a", fg="#ff6b6b",
-                  font=("Malgun Gothic", 8, "bold"), relief="flat").pack(side="right")
+        tk.Checkbutton(
+            option_top_row,
+            text="알림창 끄기",
+            variable=self.show_alert_var,
+            onvalue=False,
+            offvalue=True,
+            bg="#1e1e2e",
+            fg="#ccc",
+            selectcolor="#222"
+        ).pack(side="left")
+
+        tk.Checkbutton(
+            option_top_row,
+            text="⚡ 분류 이력 활용 (고속)",
+            variable=self.is_fast_mode,
+            bg="#1e1e2e",
+            fg="#ffb300",
+            selectcolor="#222"
+        ).pack(side="left", padx=5)
+
+        tk.Button(
+            option_top_row,
+            text="분류 설정 저장",
+            command=self.save_classify_settings,
+            bg="#2d3436",
+            fg="#55efc4",
+            font=("Malgun Gothic", 8, "bold"),
+            relief="flat",
+            width=13
+        ).pack(side="right", padx=(6, 0))
+
+        tk.Button(
+            option_top_row,
+            text="이력 초기화",
+            command=self.reset_history,
+            bg="#4a1a1a",
+            fg="#ff6b6b",
+            font=("Malgun Gothic", 8, "bold"),
+            relief="flat",
+            width=11
+        ).pack(side="right", padx=(6, 0))
+
+        method_row = tk.Frame(opt_frame, bg="#1e1e2e")
+        method_row.pack(fill="x", pady=(6, 0))
+
+        method_frame = tk.LabelFrame(
+            method_row,
+            text="새 분류 파일 처리 방식",
+            bg="#1e1e2e",
+            fg="#00f2ff",
+            font=("Malgun Gothic", 8, "bold"),
+            padx=8,
+            pady=4,
+            bd=1,
+            relief="groove"
+        )
+        method_frame.pack(side="left", fill="x", expand=True)
+
+        tk.Radiobutton(
+            method_frame,
+            text="📄 복사: 원본 유지",
+            variable=self.classify_method_var,
+            value="copy",
+            bg="#1e1e2e",
+            fg="#39ff14",
+            selectcolor="#222",
+            activebackground="#1e1e2e",
+            activeforeground="#39ff14",
+            font=("Malgun Gothic", 9, "bold")
+        ).pack(side="left", padx=(4, 18))
+
+        tk.Radiobutton(
+            method_frame,
+            text="📦 이동: 원본을 분류 폴더로 이동",
+            variable=self.classify_method_var,
+            value="move",
+            bg="#1e1e2e",
+            fg="#ffb300",
+            selectcolor="#222",
+            activebackground="#1e1e2e",
+            activeforeground="#ffb300",
+            font=("Malgun Gothic", 9, "bold")
+        ).pack(side="left", padx=(0, 12))
+
+        tk.Label(
+            method_frame,
+            text="※ 재정렬은 항상 이동 방식",
+            bg="#1e1e2e",
+            fg="#888",
+            font=("Malgun Gothic", 8)
+        ).pack(side="right", padx=(8, 2))
 
         # ==========================================
         # ⚙️ 구역 2: 시스템 및 AI 세팅
@@ -403,10 +502,14 @@ class NaiaHyperExecutor:
         ai_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
         ai_frame.pack(fill="x")
 
-        self.use_ai_var = tk.BooleanVar(value=False)
-        self.use_gpu_var = tk.BooleanVar(value=False)
-        self.skip_nsfw_var = tk.BooleanVar(value=False)
-        self.skip_char_var = tk.BooleanVar(value=False)  # 🌟 [신규] 캐릭터 판별 무시 변수
+        classify_settings = self.config.get("classify_settings", {})
+        if not isinstance(classify_settings, dict):
+            classify_settings = {}
+
+        self.use_ai_var = tk.BooleanVar(value=bool(classify_settings.get("use_ai", False)))
+        self.use_gpu_var = tk.BooleanVar(value=bool(classify_settings.get("use_gpu", False)))
+        self.skip_nsfw_var = tk.BooleanVar(value=bool(classify_settings.get("skip_nsfw", False)))
+        self.skip_char_var = tk.BooleanVar(value=bool(classify_settings.get("skip_char", False)))  # 🌟 [신규] 캐릭터 판별 무시 변수
 
         tk.Checkbutton(ai_frame, text="🤖 딥러닝 AI 야짤 정밀 판독", variable=self.use_ai_var, bg="#1e1e2e", fg="#00f2ff",
                        selectcolor="#222", font=("Malgun Gothic", 9, "bold")).pack(side="left")
@@ -424,7 +527,7 @@ class NaiaHyperExecutor:
         perf_frame.pack(fill="x", pady=2)
 
         tk.Label(perf_frame, text="스레드:", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#fff").pack(side="left")
-        self.thread_count_var = tk.IntVar(value=4)
+        self.thread_count_var = tk.IntVar(value=int(classify_settings.get("thread_count", 4)))
         self.thread_spin = tk.Spinbox(perf_frame, from_=1, to=64, textvariable=self.thread_count_var, width=4,
                                       bg="#2a2a35", fg="#fff", border=0, command=self.update_thread_guide)
         self.thread_spin.pack(side="left", padx=5)
@@ -432,7 +535,7 @@ class NaiaHyperExecutor:
 
         tk.Label(perf_frame, text="AI 감도(%):", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#fff").pack(
             side="left", padx=(10, 0))
-        self.threshold_var = tk.DoubleVar(value=99.980)
+        self.threshold_var = tk.DoubleVar(value=float(classify_settings.get("ai_threshold_percent", 99.980)))
         self.threshold_spin = tk.Spinbox(perf_frame, from_=90.000, to=99.999, increment=0.001, format="%.3f",
                                          textvariable=self.threshold_var, width=6, bg="#2a2a35", fg="#ffb300", border=0)
         self.threshold_spin.pack(side="left", padx=5)
@@ -723,6 +826,430 @@ class NaiaHyperExecutor:
             self.root.after(0, lambda: self.btn_sync.config(state="normal"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
 
+    def _read_thread_count_for_settings(self):
+        try:
+            value = int(self.thread_count_var.get())
+        except Exception:
+            value = 4
+        return max(1, min(64, value))
+
+    def _read_ai_threshold_percent_for_settings(self):
+        try:
+            value = float(self.threshold_var.get())
+        except Exception:
+            value = 99.980
+        return max(0.0, min(100.0, value))
+
+    def save_classify_settings(self, silent=False):
+        try:
+            settings = {
+                "method": self.classify_method_var.get(),
+                "show_alert": bool(self.show_alert_var.get()),
+                "is_fast_mode": bool(self.is_fast_mode.get()),
+                "use_ai": bool(self.use_ai_var.get()),
+                "use_gpu": bool(self.use_gpu_var.get()),
+                "skip_nsfw": bool(self.skip_nsfw_var.get()),
+                "skip_char": bool(self.skip_char_var.get()),
+                "thread_count": self._read_thread_count_for_settings(),
+                "ai_threshold_percent": self._read_ai_threshold_percent_for_settings(),
+            }
+
+            utils.save_config({"classify_settings": settings})
+
+            if not silent:
+                self.log("💾 분류 설정을 저장했습니다.")
+                messagebox.showinfo(
+                    "분류 설정 저장",
+                    "현재 분류 설정을 저장했습니다.\n\n다음 실행부터 이 설정이 자동으로 적용됩니다."
+                )
+
+        except Exception as e:
+            self.log(f"❌ 분류 설정 저장 실패: {e}")
+            if not silent:
+                messagebox.showerror("분류 설정 저장 실패", str(e))
+
+    def show_action_confirm_dialog(
+        self,
+        title,
+        icon,
+        target_title,
+        target_value,
+        method_title,
+        method_value,
+        method_desc,
+        options,
+        confirm_text,
+        accent_color,
+        warning_text=None,
+    ):
+        result = {"ok": False}
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.configure(bg="#151522")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        outer = tk.Frame(dialog, bg="#151522", padx=18, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        header = tk.Frame(outer, bg="#151522")
+        header.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            header,
+            text=f"{icon} {title}",
+            bg="#151522",
+            fg=accent_color,
+            font=("Malgun Gothic", 16, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            header,
+            text="작업을 시작하기 전에 아래 설정을 확인해주세요.",
+            bg="#151522",
+            fg="#cfd3dc",
+            font=("Malgun Gothic", 9)
+        ).pack(anchor="w", pady=(4, 0))
+
+        def add_card(parent, card_title, body_builder, border_color="#33334a"):
+            card = tk.Frame(
+                parent,
+                bg="#202033",
+                highlightthickness=1,
+                highlightbackground=border_color,
+                padx=12,
+                pady=10
+            )
+            card.pack(fill="x", pady=(0, 10))
+
+            tk.Label(
+                card,
+                text=card_title,
+                bg="#202033",
+                fg="#a29bfe",
+                font=("Malgun Gothic", 10, "bold")
+            ).pack(anchor="w", pady=(0, 6))
+
+            body_builder(card)
+            return card
+
+        def build_target(card):
+            tk.Label(
+                card,
+                text=target_value,
+                bg="#202033",
+                fg="#ffffff",
+                font=("Malgun Gothic", 9),
+                justify="left",
+                wraplength=560
+            ).pack(anchor="w")
+
+        add_card(outer, target_title, build_target)
+
+        def build_method(card):
+            badge_bg = "#0f5132" if "복사" in method_value else "#6b4f00"
+            badge_fg = "#39ff14" if "복사" in method_value else "#ffdd57"
+
+            row = tk.Frame(card, bg="#202033")
+            row.pack(fill="x")
+
+            tk.Label(
+                row,
+                text=method_value,
+                bg=badge_bg,
+                fg=badge_fg,
+                font=("Malgun Gothic", 10, "bold"),
+                padx=10,
+                pady=4
+            ).pack(side="left")
+
+            tk.Label(
+                card,
+                text=method_desc,
+                bg="#202033",
+                fg="#dfe6e9",
+                font=("Malgun Gothic", 9),
+                justify="left",
+                wraplength=560
+            ).pack(anchor="w", pady=(8, 0))
+
+        add_card(outer, method_title, build_method, border_color=accent_color)
+
+        def build_options(card):
+            for item in options:
+                label = item.get("label", "")
+                value = item.get("value", "")
+                state = item.get("state", None)
+
+                row = tk.Frame(card, bg="#202033")
+                row.pack(fill="x", pady=2)
+
+                tk.Label(
+                    row,
+                    text=label,
+                    bg="#202033",
+                    fg="#dfe6e9",
+                    font=("Malgun Gothic", 9)
+                ).pack(side="left")
+
+                if state is True:
+                    badge_text = value or "ON"
+                    badge_bg = "#0f5132"
+                    badge_fg = "#39ff14"
+                elif state is False:
+                    badge_text = value or "OFF"
+                    badge_bg = "#30303a"
+                    badge_fg = "#8d94a3"
+                else:
+                    badge_text = str(value)
+                    badge_bg = "#16324a"
+                    badge_fg = "#74b9ff"
+
+                tk.Label(
+                    row,
+                    text=badge_text,
+                    bg=badge_bg,
+                    fg=badge_fg,
+                    font=("Malgun Gothic", 8, "bold"),
+                    padx=8,
+                    pady=2
+                ).pack(side="right")
+
+        add_card(outer, "실행 옵션", build_options)
+
+        if warning_text:
+            warning = tk.Frame(
+                outer,
+                bg="#332a12",
+                highlightthickness=1,
+                highlightbackground="#ffb300",
+                padx=12,
+                pady=8
+            )
+            warning.pack(fill="x", pady=(0, 12))
+
+            tk.Label(
+                warning,
+                text=warning_text,
+                bg="#332a12",
+                fg="#ffdd57",
+                font=("Malgun Gothic", 9, "bold"),
+                justify="left",
+                wraplength=560
+            ).pack(anchor="w")
+
+        button_row = tk.Frame(outer, bg="#151522")
+        button_row.pack(fill="x", pady=(4, 0))
+
+        def on_cancel():
+            result["ok"] = False
+            dialog.destroy()
+
+        def on_ok():
+            result["ok"] = True
+            dialog.destroy()
+
+        tk.Button(
+            button_row,
+            text="취소",
+            command=on_cancel,
+            bg="#2d3436",
+            fg="#dfe6e9",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            width=14,
+            pady=6
+        ).pack(side="right", padx=(8, 0))
+
+        tk.Button(
+            button_row,
+            text=confirm_text,
+            command=on_ok,
+            bg=accent_color,
+            fg="#ffffff",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            width=16,
+            pady=6
+        ).pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        dialog.bind("<Escape>", lambda event: on_cancel())
+        dialog.bind("<Return>", lambda event: on_ok())
+
+        dialog.update_idletasks()
+
+        try:
+            parent_x = self.root.winfo_rootx()
+            parent_y = self.root.winfo_rooty()
+            parent_w = self.root.winfo_width()
+            parent_h = self.root.winfo_height()
+            dialog_w = dialog.winfo_width()
+            dialog_h = dialog.winfo_height()
+
+            x = parent_x + max(0, (parent_w - dialog_w) // 2)
+            y = parent_y + max(0, (parent_h - dialog_h) // 2)
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        dialog.focus_force()
+        dialog.wait_window()
+
+        return result["ok"]
+
+    def show_reorg_target_dialog(self):
+        result = {"choice": None}
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("재정렬 대상 선택")
+        dialog.configure(bg="#151522")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        outer = tk.Frame(dialog, bg="#151522", padx=18, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(
+            outer,
+            text="🔄 재정렬 대상 선택",
+            bg="#151522",
+            fg="#e17055",
+            font=("Malgun Gothic", 16, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            outer,
+            text="재정렬할 범위를 선택해주세요.",
+            bg="#151522",
+            fg="#cfd3dc",
+            font=("Malgun Gothic", 9)
+        ).pack(anchor="w", pady=(4, 14))
+
+        def choose(value):
+            result["choice"] = value
+            dialog.destroy()
+
+        full_card = tk.Frame(
+            outer,
+            bg="#202033",
+            highlightthickness=1,
+            highlightbackground="#6c5ce7",
+            padx=12,
+            pady=10
+        )
+        full_card.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            full_card,
+            text="🌐 전체 재정렬",
+            bg="#202033",
+            fg="#a29bfe",
+            font=("Malgun Gothic", 11, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            full_card,
+            text="TOTAL_CLASSIFIED 전체를 다시 검사하고 정리합니다.",
+            bg="#202033",
+            fg="#dfe6e9",
+            font=("Malgun Gothic", 9),
+            justify="left",
+            wraplength=560
+        ).pack(anchor="w", pady=(4, 8))
+
+        tk.Button(
+            full_card,
+            text="전체 재정렬 선택",
+            command=lambda: choose("all"),
+            bg="#6c5ce7",
+            fg="#ffffff",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            pady=6
+        ).pack(fill="x")
+
+        partial_card = tk.Frame(
+            outer,
+            bg="#202033",
+            highlightthickness=1,
+            highlightbackground="#00b894",
+            padx=12,
+            pady=10
+        )
+        partial_card.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            partial_card,
+            text="📁 부분 재정렬",
+            bg="#202033",
+            fg="#55efc4",
+            font=("Malgun Gothic", 11, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            partial_card,
+            text="특정 폴더만 선택해서 그 안의 이미지만 다시 정리합니다.",
+            bg="#202033",
+            fg="#dfe6e9",
+            font=("Malgun Gothic", 9),
+            justify="left",
+            wraplength=560
+        ).pack(anchor="w", pady=(4, 8))
+
+        tk.Button(
+            partial_card,
+            text="부분 재정렬 선택",
+            command=lambda: choose("partial"),
+            bg="#00b894",
+            fg="#ffffff",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            pady=6
+        ).pack(fill="x")
+
+        button_row = tk.Frame(outer, bg="#151522")
+        button_row.pack(fill="x")
+
+        tk.Button(
+            button_row,
+            text="취소",
+            command=lambda: choose(None),
+            bg="#2d3436",
+            fg="#dfe6e9",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            width=14,
+            pady=6
+        ).pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+        dialog.bind("<Escape>", lambda event: choose(None))
+
+        dialog.update_idletasks()
+
+        try:
+            parent_x = self.root.winfo_rootx()
+            parent_y = self.root.winfo_rooty()
+            parent_w = self.root.winfo_width()
+            parent_h = self.root.winfo_height()
+            dialog_w = dialog.winfo_width()
+            dialog_h = dialog.winfo_height()
+
+            x = parent_x + max(0, (parent_w - dialog_w) // 2)
+            y = parent_y + max(0, (parent_h - dialog_h) // 2)
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        dialog.focus_force()
+        dialog.wait_window()
+
+        return result["choice"]
+
     def start_process(self):
         if self.full_path == self.placeholder or not os.path.exists(self.full_path):
             messagebox.showwarning("경고", "올바른 대상 폴더 경로를 선택해주세요.")
@@ -742,16 +1269,36 @@ class NaiaHyperExecutor:
         c_txt = "무시 (하위 폴더 미생성)" if skip_char else "판별 진행"  # 🌟
         t_txt = str(self.thread_count_var.get())
 
-        msg = (
-            f"📋 [새 이미지 분류] 실행 전 설정을 확인해주세요.\n\n"
-            f"▶ 대상 폴더: {self.full_path}\n"
-            f"▶ 파일 처리: {m_txt} / 스레드: {t_txt}개\n"
-            f"▶ 고속 모드: {f_txt} / AI 야짤 판독: {a_txt}\n"
-            f"▶ GPU 가속: {g_txt} / 수위 감지: {s_txt}\n"
-            f"▶ 캐릭 판별: {c_txt}\n\n"
-            f"작업을 시작하시겠습니까?"
+        method_desc = (
+            "원본 이미지는 그대로 두고, 분류 결과 폴더에 복사합니다."
+            if method == "copy"
+            else "원본 이미지를 분류 결과 폴더로 이동합니다. 원래 위치에서는 사라질 수 있습니다."
         )
-        if not messagebox.askyesno("실행 확인", msg): return
+
+        method_value = "복사: 원본 유지" if method == "copy" else "이동: 원본 이동"
+
+        if not self.show_action_confirm_dialog(
+            title="새 이미지 분류 실행 확인",
+            icon="▶",
+            target_title="대상 폴더",
+            target_value=self.full_path,
+            method_title="파일 처리 방식",
+            method_value=method_value,
+            method_desc=method_desc,
+            options=[
+                {"label": "분류 이력 활용", "value": f_txt, "state": is_fast},
+                {"label": "AI 야짤 정밀 판독", "value": a_txt, "state": use_ai},
+                {"label": "GPU 가속", "value": g_txt, "state": self.use_gpu_var.get()},
+                {"label": "수위 감지", "value": s_txt, "state": not skip_nsfw},
+                {"label": "캐릭터 판별", "value": c_txt, "state": not skip_char},
+                {"label": "스레드 수", "value": f"{t_txt}개", "state": None},
+            ],
+            confirm_text="분류 시작",
+            accent_color="#0984e3",
+        ):
+            return
+
+        self.save_classify_settings(silent=True)
 
         self.stop_requested = False
         self.btn_run.config(state="disabled", text="⏳ 분류 작업 중...", bg="#444")
@@ -779,20 +1326,21 @@ class NaiaHyperExecutor:
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
 
     def start_reorg(self):
-        # 🌟 [신규] 전체/부분 재정렬 선택창
-        ans = messagebox.askyesnocancel("재정렬 대상 선택",
-                                        "아카이브 전체를 재정렬할까요, 아니면 특정 폴더만 할까요?\n\n"
-                                        "[예] - 전체 재정렬 (TOTAL_CLASSIFIED)\n"
-                                        "[아니오] - 부분 재정렬 (특정 폴더 선택)\n"
-                                        "[취소] - 실행 취소")
+        # 전체/부분 재정렬 선택창
+        reorg_choice = self.show_reorg_target_dialog()
 
-        if ans is None: return
+        if reorg_choice is None:
+            return
 
         reorg_target = None
-        if ans == False:
+
+        if reorg_choice == "partial":
             initial = os.path.join(os.path.dirname(os.path.abspath(__file__)), "TOTAL_CLASSIFIED")
             selected = filedialog.askdirectory(title="부분 재정렬할 타겟 폴더 선택", initialdir=initial)
-            if not selected: return
+
+            if not selected:
+                return
+
             reorg_target = os.path.normpath(selected)
             disp_target = f"부분 재정렬 ({os.path.basename(reorg_target)})"
         else:
@@ -809,16 +1357,28 @@ class NaiaHyperExecutor:
         c_txt = "무시 (하위 폴더 미생성)" if skip_char else "판별 진행"  # 🌟
         t_txt = str(self.thread_count_var.get())
 
-        msg = (
-            f"📋 [{disp_target}] 실행 전 설정을 확인해주세요.\n\n"
-            f"▶ 스레드: {t_txt}개\n"
-            f"▶ AI 야짤 판독: {a_txt}\n"
-            f"▶ GPU 가속: {g_txt}\n"
-            f"▶ 수위 감지: {s_txt}\n"
-            f"▶ 캐릭 판별: {c_txt}\n\n"
-            f"작업을 시작하시겠습니까?"
-        )
-        if not messagebox.askyesno("실행 확인", msg): return
+        if not self.show_action_confirm_dialog(
+            title="재정렬 실행 확인",
+            icon="🔄",
+            target_title="재정렬 대상",
+            target_value=disp_target,
+            method_title="파일 처리 방식",
+            method_value="이동 고정",
+            method_desc="재정렬은 기존 분류 폴더를 다시 배치하는 작업이므로 항상 이동 방식으로 처리됩니다.",
+            options=[
+                {"label": "AI 야짤 정밀 판독", "value": a_txt, "state": use_ai},
+                {"label": "GPU 가속", "value": g_txt, "state": self.use_gpu_var.get()},
+                {"label": "수위 감지", "value": s_txt, "state": not skip_nsfw},
+                {"label": "캐릭터 판별", "value": c_txt, "state": not skip_char},
+                {"label": "스레드 수", "value": f"{t_txt}개", "state": None},
+            ],
+            confirm_text="재정렬 시작",
+            accent_color="#e17055",
+            warning_text="상단의 복사/이동 선택은 새 분류에만 적용됩니다. 재정렬은 항상 이동 방식입니다.",
+        ):
+            return
+
+        self.save_classify_settings(silent=True)
 
         self.stop_requested = False
         self.btn_reorg.config(state="disabled", text="⏳ 재정렬 중...", bg="#444")
@@ -948,7 +1508,7 @@ class NaiaHyperExecutor:
         if self.log_visible:
             self.log_sidebar.pack_forget()
             # 🌟 로그창 닫았을 때 세로 길이도 줄인 사이즈(780)로 맞춰줍니다.
-            self.root.geometry("750x780")
+            self.root.geometry("800x780")
             self.log_visible = False
         else:
             self.root.geometry("1150x780")
