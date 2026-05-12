@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>NAI ImageManager - 캔버스</title>
+    <link rel="stylesheet" href="/static/style_lab.css">
+    <link rel="stylesheet" href="/static/canvas.css">
+</head>
+<body>
+    <header class="main-header">
+        <div class="header-container-fluid">
+            <div class="header-logo" onclick="location.href='/'">
+                🖼️ 캔버스 <span>NAI ImageManger</span>
+            </div>
+
+            <nav class="header-nav">
+                <button onclick="location.href='/'" class="nav-button secondary">🏠 갤러리 돌아가기</button>
+                <button onclick="location.href='/style-lab'" class="nav-button secondary">🧪 그림체 연구소</button>
+                <button onclick="location.href='/daki-workshop'" class="nav-button secondary">🛏️ 다키 제작소</button>
+                <button onclick="openCanvasDialog()" class="nav-button secondary">새 캔버스</button>
+                <button class="secondary" onclick="openSavedCanvasSetupsModal()">
+                    📂 저장한 캔버스
+                </button>
+                <button class="secondary" onclick="clearCurrentCanvasCompletely()">
+                🧹 캔버스 초기화
+            </button>
+            </nav>
+        </div>
+    </header>
+
+    <main class="canvas-page-layout">
+        <section class="canvas-toolbar panel">
+            <div>
+                <h3>캔버스 설정</h3>
+                <div class="canvas-size-readout">
+                    <span id="canvasSizeText">캔버스 없음</span>
+                    <span id="canvasScaleText">-</span>
+                </div>
+            </div>
+
+            <div class="canvas-tool-group">
+                <button id="layerMoveToolBtn" class="secondary canvas-tool-btn" onclick="toggleLayerMoveMode()">
+                    ✥ 레이어 이동
+                </button>
+                <div id="layerMoveToolHint" class="canvas-tool-hint">
+                    이동 버튼을 켠 뒤 캔버스 위 이미지 레이어를 드래그하세요.
+                </div>
+
+                <div class="canvas-tool-group">
+                    <button id="imageResizeToolBtn"
+                            class="secondary canvas-tool-btn"
+                            onclick="toggleImageResizeMode()">
+                        ⤡ 그림 크기 조절
+                    </button>
+
+                    <label class="canvas-ratio-toggle" style="font-size:12px;">
+                        <input type="checkbox" id="imageResizeRatioLock" checked>
+                        <span>비율 유지</span>
+                    </label>
+
+                    <label class="canvas-ratio-toggle" style="font-size:12px;">
+                        <input type="checkbox" id="imageResizeFineMode">
+                        <span>세밀 조절</span>
+                    </label>
+
+                    <div class="image-align-actions">
+                        <button class="secondary" onclick="alignActiveImageLayer('x')">가운데 X</button>
+                        <button class="secondary" onclick="alignActiveImageLayer('y')">가운데 Y</button>
+                        <button class="secondary" onclick="alignActiveImageLayer('both')">정중앙</button>
+                        <button class="secondary" onclick="fitActiveImageLayerToCanvasAndCenter()">캔버스에 맞춤</button>
+                    </div>
+
+                    <div id="imageResizeToolHint" class="canvas-tool-hint">
+                        버튼을 켠 뒤 이미지 레이어를 선택하고 가장자리/모서리를 드래그하세요.
+                        Alt를 누르면 더 세밀하게, Shift를 누르면 비율 유지 없이 조절합니다.
+                    </div>
+                </div>
+
+                <button id="selectionOverlayToggleBtn"
+                        class="secondary canvas-tool-btn"
+                        onclick="toggleSelectionOverlayVisibility()">
+                    ▣ 선택 영역 숨김
+                </button>
+                <div id="selectionOverlayHint" class="canvas-tool-hint">
+                    선택 영역 박스만 숨기고 인페인팅 결과를 확인합니다.
+                </div>
+
+                <button class="secondary canvas-tool-btn" onclick="saveCurrentCanvasSetup()">
+                    💾 현재 캔버스 저장
+                </button>
+                <div class="canvas-tool-hint">
+                    현재 캔버스 크기, 레이어, 선택 영역, 인페인팅 결과, 프롬프트 제어그룹을 이름 붙여 저장합니다.
+                </div>
+
+                <button class="secondary canvas-tool-btn" onclick="exportMergedCanvasToClassified()">
+                    🖼 통합 내보내기
+                </button>
+                <div class="canvas-tool-hint">
+                    현재 캔버스에 보이는 이미지와 인페인팅 결과를 한 장으로 합성해 캐릭터 폴더로 저장합니다.
+                </div>
+            </div>
+        </section>
+
+        <section class="canvas-workspace">
+            <div id="canvasEmptyState" class="canvas-empty-state">
+                <div class="canvas-empty-icon">🖼️</div>
+                <div class="canvas-empty-title">캔버스가 없습니다</div>
+                <div class="canvas-empty-text">상단의 새 캔버스 버튼을 눌러 해상도를 입력하세요.</div>
+            </div>
+
+            <div id="canvasStage" class="canvas-stage" style="display:none;">
+                <div id="canvasSurface" class="canvas-surface"></div>
+            </div>
+        </section>
+
+        <aside class="canvas-layer-panel panel">
+            <div class="layer-panel-header">
+                <h3>레이어</h3>
+                <div class="layer-panel-actions">
+                    <button class="secondary layer-add-btn" onclick="addCanvasLayer()">+ 레이어</button>
+                    <button class="secondary layer-add-btn" onclick="addCanvasFolder()">+ 폴더</button>
+                    <button class="secondary layer-add-btn" onclick="addSelectionArea()">+ 선택 영역</button>
+                </div>
+            </div>
+
+            <div id="layerList" class="layer-list">
+                <div class="layer-empty">캔버스를 생성하면 레이어가 표시됩니다.</div>
+            </div>
+        </aside>
+    </main>
+
+    <div id="canvasCreateModal" class="modal-overlay">
+        <div class="modal-content canvas-modal">
+            <div class="canvas-modal-header">
+                <h3>새 캔버스 생성</h3>
+                <button class="icon-btn danger" onclick="closeCanvasDialog()">×</button>
+            </div>
+
+            <div class="form-group">
+                <label>다키마쿠라 프리셋</label>
+                <div class="canvas-preset-grid">
+                    <button class="secondary" onclick="applyCanvasPreset(960, 3072)">960 × 3072</button>
+                    <button class="secondary" onclick="applyCanvasPreset(1024, 3277)">1024 × 3277</button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>해상도 입력</label>
+                <div class="canvas-resolution-row">
+                    <input type="number" id="canvasWidthInput" value="960" min="64" step="1" oninput="handleCanvasWidthInput()">
+                    <span>×</span>
+                    <input type="number" id="canvasHeightInput" value="3072" min="64" step="1" oninput="handleCanvasHeightInput()">
+                </div>
+            </div>
+
+            <label class="canvas-ratio-toggle">
+                <input type="checkbox" id="canvasRatioLock" checked>
+                <span>5 : 16 비율 자동 조정</span>
+            </label>
+
+            <div id="canvasRatioInfo" class="canvas-ratio-info">현재 비율 계산 중...</div>
+
+            <div class="canvas-modal-actions">
+                <button class="secondary" onclick="closeCanvasDialog()">취소</button>
+                <button class="success" onclick="createCanvasFromDialog()">캔버스 생성</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="canvasImageLayerContextMenu" class="canvas-layer-context-menu">
+        <button class="canvas-layer-context-item" onclick="fitCanvasSizeToContextImageLayer()">
+            캔버스 크기 맞춤
+        </button>
+
+        <button id="canvasPinImageLayerBtn"
+                class="canvas-layer-context-item"
+                onclick="togglePinnedContextImageLayer()">
+            고정
+        </button>
+
+        <button class="canvas-layer-context-item" onclick="matchClipPromptToContextImageLayer()">
+            프롬프트 맞춤
+        </button>
+    </div>
+
+    <div id="canvasSurfaceContextMenu" class="canvas-layer-context-menu">
+        <button class="canvas-layer-context-item" onclick="openReferenceGenResolutionModal()">
+            참조 이미지 생성
+        </button>
+    </div>
+
+    <div id="canvasSelectionContextMenu" class="canvas-layer-context-menu">
+        <button class="canvas-layer-context-item" onclick="clipSelectionFromContext()">
+            클립
+        </button>
+    </div>
+
+    <div id="referenceGenResolutionModal"
+        class="modal-overlay">
+        <div class="modal-content canvas-modal reference-gen-resolution-modal">
+            <div class="canvas-modal-header">
+                <h3>참조 이미지 생성</h3>
+                <button class="icon-btn danger" onclick="closeReferenceGenResolutionModal()">×</button>
+            </div>
+
+            <div class="form-group">
+                <label>해상도 프리셋</label>
+                <div class="canvas-preset-grid">
+                    <button class="secondary" onclick="applyReferenceGenPreset(512, 1664)">
+                        512 × 1664
+                    </button>
+                    <button class="secondary" onclick="applyReferenceGenPreset(768, 2496)">
+                        768 × 2496
+                    </button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>직접 입력</label>
+                <div class="canvas-resolution-row">
+                    <input type="number"
+                        id="referenceGenWidthInput"
+                        value="512"
+                        min="64"
+                        step="1">
+                    <span>×</span>
+                    <input type="number"
+                        id="referenceGenHeightInput"
+                        value="1664"
+                        min="64"
+                        step="1">
+                </div>
+            </div>
+
+            <div class="canvas-ratio-info">
+                현재 캔버스를 통합한 뒤, 선택한 해상도의 흰 배경 중앙에 비율 유지로 배치합니다.
+            </div>
+
+            <div class="canvas-modal-actions">
+                <button class="secondary" onclick="closeReferenceGenResolutionModal()">취소</button>
+                <button class="success" onclick="createReferenceGenSessionFromDialog()">생성</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="referenceGenLayer"
+        class="reference-gen-layer">
+        <div class="reference-gen-card">
+            <div class="reference-gen-header">
+                <div>
+                    <div class="reference-gen-title">참조 이미지 생성</div>
+                    <div id="referenceGenMeta" class="reference-gen-meta">-</div>
+                </div>
+
+                <button class="reference-gen-close" onclick="closeReferenceGen()">×</button>
+            </div>
+
+            <div class="reference-gen-toolbar">
+                <div class="reference-gen-tool-wrap">
+                    <button class="reference-gen-tool-btn active"
+                            onclick="setReferenceGenTool('brush', this)">
+                        브러시
+                    </button>
+                    <div class="reference-gen-size-popover">
+                        <input type="range"
+                            min="8"
+                            max="320"
+                            step="4"
+                            value="96"
+                            oninput="setReferenceGenBrushSize(this.value)">
+                        <div class="reference-gen-size-readout">96px</div>
+                    </div>
+                </div>
+
+                <div class="reference-gen-tool-wrap">
+                    <button class="reference-gen-tool-btn"
+                            onclick="setReferenceGenTool('eraser', this)">
+                        지우개
+                    </button>
+                    <div class="reference-gen-size-popover">
+                        <input type="range"
+                            min="8"
+                            max="320"
+                            step="4"
+                            value="96"
+                            oninput="setReferenceGenBrushSize(this.value)">
+                        <div class="reference-gen-size-readout">96px</div>
+                    </div>
+                </div>
+
+                <button id="referenceGenMaskToggleBtn"
+                        class="reference-gen-tool-btn"
+                        onclick="toggleReferenceGenMaskVisible()">
+                    선택범위 숨김
+                </button>
+
+                <button class="reference-gen-tool-btn"
+                        onclick="openReferenceGenPrompt()">
+                    프롬프트
+                </button>
+
+                <button class="reference-gen-tool-btn success"
+                        onclick="requestReferenceGenInpaint()">
+                    인페인팅
+                </button>
+
+                <button class="reference-gen-tool-btn success"
+                        onclick="exportReferenceGenToCanvas()">
+                    내보내기
+                </button>
+            </div>
+
+            <div class="reference-gen-body">
+                <div id="referenceGenImageWrap">
+                    <img id="referenceGenImage" alt="reference generation image">
+                    <canvas id="referenceGenOverlay"></canvas>
+                    <div id="referenceGenBrushCursor"></div>
+
+                    <div id="referenceGenLoading" class="reference-gen-loading">
+                        <div class="reference-gen-loading-spinner"></div>
+                        <div id="referenceGenLoadingText" class="reference-gen-loading-text">
+                            인페인팅 처리 중...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="referenceGenPromptLayer"
+        class="reference-gen-prompt-layer">
+        <div class="reference-gen-prompt-card">
+            <div class="canvas-modal-header">
+                <h3>참조 이미지 인페인팅 프롬프트</h3>
+                <button class="icon-btn danger" onclick="closeReferenceGenPrompt()">×</button>
+            </div>
+
+            <div class="clip-prompt-field">
+                <label for="referenceGenBasePrompt">Base Prompt</label>
+                <textarea id="referenceGenBasePrompt" rows="8"></textarea>
+            </div>
+
+            <div class="clip-prompt-field">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                    <label style="margin:0;">Character Prompt</label>
+                    <button type="button"
+                            class="secondary"
+                            style="padding:6px 10px; font-size:12px;"
+                            onclick="addReferenceGenCharPromptEditor()">
+                        + 추가
+                    </button>
+                </div>
+
+                <div id="referenceGenCharPromptList"></div>
+            </div>
+
+            <div class="clip-prompt-field">
+                <label for="referenceGenNegativePrompt">Negative Prompt</label>
+                <textarea id="referenceGenNegativePrompt" rows="6"></textarea>
+            </div>
+
+            <div class="clip-prompt-setting-grid">
+                <div class="clip-prompt-field">
+                    <label for="referenceGenSampler">Sampler</label>
+                    <select id="referenceGenSampler">
+                        <option value="k_euler_ancestral">k_euler_ancestral</option>
+                        <option value="k_euler">k_euler</option>
+                        <option value="k_dpmpp_2m">k_dpmpp_2m</option>
+                        <option value="ddim_v3">ddim_v3</option>
+                    </select>
+                </div>
+
+                <div class="clip-prompt-field">
+                    <label for="referenceGenSteps">Steps</label>
+                    <input id="referenceGenSteps" type="number" min="1" max="50" step="1" value="28">
+                </div>
+
+                <div class="clip-prompt-field">
+                    <label for="referenceGenCfg">CFG</label>
+                    <input id="referenceGenCfg" type="number" min="1" max="20" step="0.1" value="6">
+                </div>
+
+                <div class="clip-prompt-field">
+                    <label for="referenceGenSeed">Seed</label>
+                    <input id="referenceGenSeed" type="number" step="1" value="-1">
+                </div>
+
+                <div class="clip-prompt-field">
+                    <label for="referenceGenStrength">Strength</label>
+                    <input id="referenceGenStrength" type="number" min="0" max="1" step="0.01" value="0.65">
+                </div>
+
+                <div class="clip-prompt-field">
+                    <label for="referenceGenNoise">Noise</label>
+                    <input id="referenceGenNoise" type="number" min="0" max="1" step="0.01" value="0.2">
+                </div>
+            </div>
+
+            <div class="canvas-modal-actions">
+                <button class="secondary" onclick="closeReferenceGenPrompt()">닫기</button>
+                <button class="success" onclick="saveReferenceGenPrompt()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="clipPromptModalOverlay" class="clip-prompt-modal-overlay">
+        <div class="clip-prompt-modal">
+            <div class="clip-prompt-modal-header">
+                <h3>클립 인페인팅 프롬프트</h3>
+                <button class="icon-btn danger" onclick="closeClipPromptModal()">×</button>
+            </div>
+
+            <div class="clip-prompt-grid">
+                <div class="clip-prompt-column">
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                        <div style="font-size:13px; font-weight:900;">프롬프트</div>
+                        <div style="display:flex; gap:6px; align-items:center;">
+                            <button id="clipPromptCollapseToggle" class="secondary" onclick="toggleClipPromptCollapse()" style="font-size:11px; padding:5px 9px;">
+                                접기
+                            </button>
+                            <button id="clipPromptViewToggle" class="secondary" onclick="toggleClipPromptViewMode()" style="font-size:11px; padding:5px 9px;">
+                                텍스트 편집
+                            </button>
+                            <button class="secondary" onclick="openClipPromptGroupManager()" style="font-size:11px; padding:5px 9px;">
+                                그룹 관리
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="clipPromptBody">
+                        <div class="prompt-section-card" style="margin-bottom: 12px; padding: 12px;">
+                            <div class="tabs-container">
+                                <button id="clipBtnTabBase" class="active" onclick="switchClipPromptTab('base')">
+                                    Base Prompt
+                                </button>
+                                <button id="clipBtnTabNegative" onclick="switchClipPromptTab('negative')">
+                                    Negative Prompt
+                                </button>
+                            </div>
+
+                            <div id="clipTabBase" style="display:block;">
+                                <div class="prompt-block" style="margin-bottom: 0;">
+                                    <div id="clipBasePromptTokens" class="prompt-token-surface"></div>
+                                    <textarea id="clipBasePromptInput" class="prompt-raw-textarea" rows="12"></textarea>
+                                </div>
+                            </div>
+
+                            <div id="clipTabNegative" style="display:none;">
+                                <div class="prompt-block" style="margin-bottom: 0;">
+                                    <div id="clipNegativePromptTokens" class="prompt-token-surface"></div>
+                                    <textarea id="clipNegativePromptInput" class="prompt-raw-textarea" rows="12"></textarea>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="clip-prompt-block" data-tab="char">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                <label style="margin:0;">Character Prompt</label>
+                                <button type="button" class="secondary" style="padding:6px 10px; font-size:12px;" onclick="addClipCharPromptEditor()">+ 추가</button>
+                            </div>
+
+                            <div id="clipCharPromptList"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="clip-prompt-column">
+                    <div class="clip-prompt-setting-grid">
+                        <div class="clip-prompt-field">
+                            <label for="clipSamplerInput">Sampler</label>
+                            <select id="clipSamplerInput">
+                                <option value="k_euler_ancestral">k_euler_ancestral</option>
+                                <option value="k_euler">k_euler</option>
+                                <option value="k_dpmpp_2m">k_dpmpp_2m</option>
+                                <option value="ddim_v3">ddim_v3</option>
+                            </select>
+                        </div>
+
+                        <div class="clip-prompt-field">
+                            <label for="clipStepsInput">Steps</label>
+                            <input id="clipStepsInput" type="number" min="1" max="50" step="1" value="28">
+                        </div>
+
+                        <div class="clip-prompt-field">
+                            <label for="clipCfgInput">CFG</label>
+                            <input id="clipCfgInput" type="number" min="1" max="20" step="0.1" value="6">
+                        </div>
+
+                        <div class="clip-prompt-field">
+                            <label for="clipStrengthInput">Strength</label>
+                            <div class="clip-inline-input">
+                                <input id="clipStrengthRange" type="range" min="0" max="1" step="0.01" value="0.65"
+                                    oninput="syncClipRangeNumber('clipStrengthRange','clipStrengthInput')">
+                                <input id="clipStrengthInput" type="number" min="0" max="1" step="0.01" value="0.65"
+                                    oninput="syncClipNumberRange('clipStrengthInput','clipStrengthRange')">
+                            </div>
+                        </div>
+
+                        <div class="clip-prompt-field">
+                            <label for="clipNoiseInput">Noise</label>
+                            <div class="clip-inline-input">
+                                <input id="clipNoiseRange" type="range" min="0" max="1" step="0.01" value="0.2"
+                                    oninput="syncClipRangeNumber('clipNoiseRange','clipNoiseInput')">
+                                <input id="clipNoiseInput" type="number" min="0" max="1" step="0.01" value="0.2"
+                                    oninput="syncClipNumberRange('clipNoiseInput','clipNoiseRange')">
+                            </div>
+                        </div>
+
+                        <div class="clip-prompt-field">
+                            <label for="clipSeedInput">Seed</label>
+                            <input id="clipSeedInput" type="number" step="1" value="-1">
+                        </div>
+                    </div>
+                    
+                    <div class="clip-prompt-control-section">
+                        <button class="secondary clip-control-add-btn" onclick="addClipPromptControlGroup()">
+                            + 제어 그룹 추가
+                        </button>
+
+                        <div id="clipPromptControlGroupList" class="clip-control-group-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="clip-prompt-modal-footer">
+                <button class="secondary" onclick="closeClipPromptModal()">닫기</button>
+                <button class="success" onclick="saveClipPromptModal()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="clipGroupSelectionPopover" class="prompt-group-popover" style="display:none;">
+        <button id="clipBtnStartPromptGroup" onclick="showClipPromptGroupNameInput()">그룹묶기</button>
+        <div id="clipPromptGroupNameBox" style="display:none; gap:6px; align-items:center;">
+            <input type="text" id="clipPromptGroupNameInput" placeholder="그룹명">
+            <button onclick="saveSelectedClipPromptGroup()">저장</button>
+        </div>
+    </div>
+
+    <div id="clipPromptGroupModal" class="modal-overlay">
+        <div class="modal-content" style="width: 520px; max-width: 92vw;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h3 style="margin:0; font-size:16px;">프롬프트 그룹 관리</h3>
+                <button class="icon-btn danger" onclick="closeClipPromptGroupManager()">×</button>
+            </div>
+            <div id="clipPromptGroupList" style="display:flex; flex-direction:column; gap:8px; max-height:50vh; overflow-y:auto;"></div>
+        </div>
+    </div>
+    
+    <div id="savedCanvasSetupsModal" class="modal-overlay">
+        <div class="modal-content saved-canvas-modal">
+            <div class="saved-canvas-modal-header">
+                <h3>저장한 캔버스</h3>
+                <button class="icon-btn danger" onclick="closeSavedCanvasSetupsModal()">×</button>
+            </div>
+
+            <div id="savedCanvasSetupList" class="saved-canvas-list"></div>
+        </div>
+    </div>
+
+    <div id="canvasSaveOptionsModal"
+        class="modal-overlay">
+        <div class="modal-content canvas-modal canvas-save-options-modal">
+            <div class="canvas-modal-header">
+                <h3>현재 캔버스 저장</h3>
+                <button class="icon-btn danger" onclick="closeCanvasSaveOptionsModal()">×</button>
+            </div>
+
+            <div class="form-group">
+                <label>저장 이름</label>
+                <input id="canvasSaveNameInput"
+                    type="text"
+                    placeholder="저장 이름">
+            </div>
+
+            <div class="canvas-save-options">
+                <label class="canvas-save-option">
+                    <input type="radio" name="canvasSaveMode" value="normal" checked>
+                    <span>
+                        <strong>전체 저장</strong>
+                        <small>현재 레이어, 선택영역, 인페인팅, 고정 상태를 그대로 저장</small>
+                    </span>
+                </label>
+
+                <label class="canvas-save-option">
+                    <input type="radio" name="canvasSaveMode" value="mergeAfterSave">
+                    <span>
+                        <strong>저장 후 통합</strong>
+                        <small>전체 저장 후 현재 캔버스에는 통합 이미지 1장만 남김</small>
+                    </span>
+                </label>
+
+                <label class="canvas-save-option">
+                    <input type="radio" name="canvasSaveMode" value="resetAfterSave">
+                    <span>
+                        <strong>저장 후 초기화</strong>
+                        <small>전체 저장 후 현재 캔버스를 빈 캔버스로 초기화</small>
+                    </span>
+                </label>
+
+                <label class="canvas-save-option">
+                    <input type="radio" name="canvasSaveMode" value="imageOnly">
+                    <span>
+                        <strong>그림만 저장</strong>
+                        <small>저장본을 통합 이미지 1장짜리 캔버스로 저장하고 현재 작업은 유지</small>
+                    </span>
+                </label>
+            </div>
+
+            <div class="canvas-modal-actions">
+                <button class="secondary" onclick="closeCanvasSaveOptionsModal()">취소</button>
+                <button class="success" onclick="confirmSaveCurrentCanvasSetup()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tagTranslationModal" class="modal-overlay">
+        <div class="modal-content" style="max-width: 460px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0;">태그 한글 저장</h3>
+                <button class="icon-btn danger" onclick="closeTagTranslationModal()">×</button>
+            </div>
+
+            <div style="margin-bottom:10px; font-size:12px; color:var(--text-muted);">
+                <div>태그: <strong id="tagTranslationTargetTag"></strong></div>
+                <div id="tagTranslationPartPicker"
+                    style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">
+                </div>
+                <div id="tagTranslationEffectiveTag"
+                    style="margin-top:6px; font-size:11px; color:var(--text-muted);">
+                </div>
+            </div>
+
+            <input
+                id="tagTranslationInput"
+                type="text"
+                style="width:100%;"
+                placeholder="예: 긴 머리  또는  헤어 / 긴 머리"
+            />
+
+            <div style="margin-top:10px; font-size:11px; color:var(--text-muted); line-height:1.5;">
+                그냥 글자만 입력하면 앱 분류 "기타"로 저장됩니다.<br>
+                "분류 / 번역" 형식으로 입력하면 왼쪽을 분류, 오른쪽을 한글 번역으로 저장합니다.
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+                <button class="secondary" onclick="closeTagTranslationModal()">취소</button>
+                <button onclick="saveTagTranslationFromModal()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/canvas.js"></script>
+</body>
+</html>

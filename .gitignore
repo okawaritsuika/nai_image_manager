@@ -1,0 +1,39 @@
+# Python/runtime cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Local environment/config secrets
+.env
+.env.*
+*.local
+
+# User-only mutable app data
+artists.json
+styles.json
+gallery_config.json
+gallery_image_tags.json
+lab_config.json
+quality_presets.json
+tag_dictionary_user_overrides.json
+canvas_saved_setups.json
+data/tag_categories_ko.json
+
+# Generated/imported output and user image library
+canvas_imports/
+daki_generated_temp/
+output/
+TOTAL_CLASSIFIED/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
