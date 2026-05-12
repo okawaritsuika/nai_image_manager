@@ -109,7 +109,7 @@ if errorlevel 1 (
 )
 
 echo Checking local changes...
-git status --porcelain > "%TEMP%\naim_git_status.txt"
+git status --porcelain --untracked-files=no > "%TEMP%\naim_git_status.txt"
 if errorlevel 1 (
     echo.
     echo [ERROR] Failed to check local Git status.
