@@ -1400,8 +1400,8 @@ class NaiaHyperExecutor:
         except Exception as e:
             self.log(f"❌ 오류: {e}")
         finally:
-            self.root.after(0, lambda: self.btn_reorg.config(state="normal", text="🔄 전면/부분 재정렬", bg="#e17055"))
-            self.root.after(0, lambda: self.btn_run.config(state="normal", text="▶ 새 이미지 분류", bg="#0984e3"))
+            self.root.after(0, lambda: self.btn_reorg.config(state="normal", text="🔄 재정렬", bg="#e17055"))
+            self.root.after(0, lambda: self.btn_run.config(state="normal", text="▶ 새 분류", bg="#0984e3"))
             self.root.after(0, lambda: self.btn_sync.config(state="normal"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
 
