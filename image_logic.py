@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, json, shutil, sys, re, concurrent.futures, hashlib, gzip, warnings
+import os, json, shutil, sys, re, concurrent.futures, hashlib, gzip, warnings, time
 from PIL import Image
 import utils
 import datetime
@@ -9,6 +9,59 @@ warnings.filterwarnings("ignore")
 USE_AI_FILTER = False
 USE_GPU_MODE = False # 🌟 추가: GPU 사용 여부를 저장할 전역 변수
 nsfw_ai = None
+
+def build_gallery_index_records_from_success(success_records, classified_root):
+    records = []
+    classified_root_abs = os.path.abspath(classified_root)
+
+    for item in success_records or []:
+        if not isinstance(item, dict):
+            continue
+        final_path = item.get("final_path") or item.get("path")
+        if not final_path:
+            continue
+        try:
+            rel_path = os.path.relpath(final_path, classified_root_abs).replace("\\", "/")
+        except Exception:
+            continue
+        if rel_path.startswith(".."):
+            continue
+
+        folder_path = os.path.dirname(rel_path).replace("\\", "/")
+        file_name = os.path.basename(rel_path)
+        mode = "general"
+        if rel_path.startswith("_R-18/") or rel_path.startswith("_R-15/"):
+            mode = "r18"
+        elif rel_path.startswith("_TRASH/"):
+            mode = "trash"
+
+        try:
+            mtime = os.path.getmtime(final_path)
+        except Exception:
+            mtime = time.time()
+
+        names = item.get("character_names") or item.get("names") or []
+        character_names = json.dumps(list(names), ensure_ascii=False) if isinstance(names, (list, tuple, set)) else str(names or "")
+        reasons = item.get("reason") or item.get("nsfw_reasons") or ""
+        reason = "<br>".join(str(v) for v in reasons if v) if isinstance(reasons, (list, tuple)) else str(reasons or "")
+
+        records.append({
+            "rel_path": rel_path,
+            "folder_path": folder_path,
+            "file_name": file_name,
+            "mode": mode,
+            "rating": str(item.get("rating") or ""),
+            "brand": str(item.get("brand") or ""),
+            "character_names": character_names,
+            "is_dakimakura": 1 if item.get("is_dakimakura") else 0,
+            "width": item.get("width"),
+            "height": item.get("height"),
+            "mtime": mtime,
+            "reason": reason,
+            "gallery_tag": ""
+        })
+
+    return records
 
 
 # 🌟 1. AI 설치 여부 확인
@@ -135,7 +188,7 @@ def read_stealth_info(image):
 
 # 🌟 2. 메인 작업자 함수
 # [95라인 부근] 함수 인자에 override_cache를 추가합니다.
-def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, skip_nsfw=False):
+def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, skip_nsfw=False, allow_ai=True, mark_ai_pending=False):
     file_hash = None
     try:
         size = os.path.getsize(full_path)
@@ -154,40 +207,70 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
     char_tags = []
     base_tags = []
     nsfw_reasons = []
+    ai_pending = False
+    meta_source = "none"
+
+    def make_result(rating_value=None):
+        result = (
+            full_path,
+            file_hash,
+            char_tags,
+            base_tags,
+            (2 if is_nsfw else 0) if rating_value is None else rating_value,
+            nsfw_reasons
+        )
+        if mark_ai_pending:
+            return result + (ai_pending, meta_source)
+        return result
+
 
     # 🌟 [수정 1] 캐시 적중 시 수동 분류 꼬리표 달아주기 (문구 통일)
     if override_cache is not None and full_path in override_cache:
         is_nsfw = override_cache[full_path]
-        # 수동 분류임을 갤러리 사유에 명확히 표시 (R-19 용어 사용)
         label = "R-19로 지정됨" if is_nsfw == 2 else "일반짤로 지정됨"
         nsfw_reasons.append(f"✅ [수동] 사용자 분류 ({label})")
-        return is_nsfw, nsfw_reasons
+        return make_result(2 if is_nsfw else 0)
 
     try:
         with Image.open(full_path) as img:
             # --- (생략 없이 기존 메타데이터 추출 로직 그대로 유지) ---
             raw_meta = ""
-            stealth_data = read_stealth_info(img)
-            if stealth_data:
-                raw_meta = stealth_data
-            else:
-                if "parameters" in img.info:
-                    raw_meta = img.info["parameters"]
-                elif "Comment" in img.info:
-                    raw_meta = img.info["Comment"]
-                    if isinstance(raw_meta, bytes):
-                        raw_meta = raw_meta.decode('utf-8', 'ignore')
-                elif hasattr(img, 'getexif'):
-                    exif = img.getexif()
-                    if exif and 37510 in exif:
-                        user_comment = exif[37510]
-                        if isinstance(user_comment, bytes):
-                            raw_meta = user_comment.decode('utf-8', errors='ignore').replace('\x00', '')
-                            if raw_meta.startswith('UNICODE') or raw_meta.startswith('ASCII'):
-                                raw_meta = raw_meta[8:]
-                        else:
-                            raw_meta = str(user_comment)
-            if not raw_meta: raw_meta = "{}"
+            meta_source = "none"
+
+            # 1) 빠른 텍스트 메타데이터를 먼저 확인한다.
+            if "parameters" in img.info:
+                raw_meta = img.info["parameters"]
+                meta_source = "parameters"
+
+            elif "Comment" in img.info:
+                raw_meta = img.info["Comment"]
+                if isinstance(raw_meta, bytes):
+                    raw_meta = raw_meta.decode('utf-8', 'ignore')
+                meta_source = "comment"
+
+            elif hasattr(img, 'getexif'):
+                exif = img.getexif()
+                if exif and 37510 in exif:
+                    user_comment = exif[37510]
+                    if isinstance(user_comment, bytes):
+                        raw_meta = user_comment.decode('utf-8', errors='ignore').replace('\x00', '')
+                        if raw_meta.startswith('UNICODE') or raw_meta.startswith('ASCII'):
+                            raw_meta = raw_meta[8:]
+                    else:
+                        raw_meta = str(user_comment)
+                    if raw_meta:
+                        meta_source = "exif"
+
+            # 2) 텍스트 메타가 없을 때만 무거운 stealth 해독을 시도한다.
+            if not raw_meta:
+                stealth_data = read_stealth_info(img)
+                if stealth_data:
+                    raw_meta = stealth_data
+                    meta_source = "stealth"
+
+            if not raw_meta:
+                raw_meta = "{}"
+                meta_source = "none"
 
             meta = {}
             if raw_meta.strip().startswith('{'):
@@ -246,26 +329,65 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
                     nsfw_reasons.append(f"[키워드] '{match_word}' 단어 발견!")
                 # 🌟 [수정 포인트 2] 대망의 AI 판독 블록 간소화 (소수점 5자리 반올림 적용)
                 elif USE_AI_FILTER:
-                    model = get_nsfw_model()
-                    if model:
-                        ai_img = img.convert('RGB').resize((224, 224))
-                        results = model(ai_img)
-                        hentai_score = next((r['score'] for r in results if r['label'] == 'hentai'), 0)
-                        porn_score = next((r['score'] for r in results if r['label'] == 'porn'), 0)
-                        max_s = max(hentai_score, porn_score)
+                    if not allow_ai:
+                        ai_pending = True
+                    else:
+                        model = get_nsfw_model()
+                        if model:
+                            ai_img = img.convert('RGB').resize((224, 224))
+                            results = model(ai_img)
+                            hentai_score = next((r['score'] for r in results if r['label'] == 'hentai'), 0)
+                            porn_score = next((r['score'] for r in results if r['label'] == 'porn'), 0)
+                            max_s = max(hentai_score, porn_score)
 
-                        # 사유 표시 깔끔하게 통일 (s, q 제거, 소수점 2자리 % 표시)
-                        nsfw_reasons.append(f"[AI] 수위 감지 ({max_s * 100:.3f}%)")
+                            nsfw_reasons.append(f"[AI] 수위 감지 ({max_s * 100:.3f}%)")
 
-                        # 🌟 사용자 지정 문턱값 하나로만 쿨하게 판정 (소수점 5자리에서 반올림)
-                        if round(max_s, 5) >= ai_threshold:
-                            is_nsfw = True
+                            if round(max_s, 5) >= ai_threshold:
+                                is_nsfw = True
+
 
     except Exception as e:
-        return full_path, file_hash, [], [], False, []
+        unreadable_reason = f"__UNREADABLE__:{e}"
+        result = (full_path, file_hash, [], [], -999, [unreadable_reason])
+        if mark_ai_pending:
+            return result + (False, meta_source)
+        return result
 
-    return full_path, file_hash, char_tags, base_tags, (2 if is_nsfw else 0), nsfw_reasons
+    return make_result()
 
+def ai_classify_pending_result(base_result, ai_threshold=0.9998):
+    full_path, file_hash, char_tags, base_tags, rating, nsfw_reasons = base_result
+    nsfw_reasons = list(nsfw_reasons or [])
+
+    is_nsfw = rating == 2
+
+    try:
+        model = get_nsfw_model()
+        if model:
+            with Image.open(full_path) as img:
+                ai_img = img.convert('RGB').resize((224, 224))
+
+            results = model(ai_img)
+            hentai_score = next((r['score'] for r in results if r['label'] == 'hentai'), 0)
+            porn_score = next((r['score'] for r in results if r['label'] == 'porn'), 0)
+            max_s = max(hentai_score, porn_score)
+
+            nsfw_reasons.append(f"[AI] 수위 감지 ({max_s * 100:.3f}%)")
+
+            if round(max_s, 5) >= ai_threshold:
+                is_nsfw = True
+
+    except Exception as e:
+        nsfw_reasons.append(f"⚠️ [AI] 판정 실패: {e}")
+
+    return (
+        full_path,
+        file_hash,
+        char_tags,
+        base_tags,
+        2 if is_nsfw else 0,
+        nsfw_reasons
+    )
 
 def file_io_worker(src, dest, method, nsfw_reasons=None):  # 🌟 인자 추가
     try:
@@ -741,7 +863,7 @@ def scan_and_extract_artists(classified_root, clear_db=False, log_func=print, st
     finally:
         db.close()
 
-def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=False, use_gpu=True, max_workers=None, ai_threshold=0.9998, log_func=print, stop_check=None, progress_update=None, skip_nsfw=False, skip_char_id=False, reorg_target=None):
+def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=False, use_gpu=True, max_workers=None, normal_workers=None, ai_workers=None, ai_threshold=0.9998, log_func=print, stop_check=None, progress_update=None, skip_nsfw=False, skip_char_id=False, reorg_target=None):
     global USE_AI_FILTER, USE_GPU_MODE
     USE_AI_FILTER = use_ai
     USE_GPU_MODE = use_gpu  # 🌟 사용자 선택값을 전역 변수에 저장
@@ -769,7 +891,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
 
     stats = {
         "total_scanned": 0, "success": 0, "skipped_db": 0,
-        "skipped_duplicate": 0, "error": 0
+        "skipped_duplicate": 0, "error": 0, "unreadable": 0
     }
 
     log_func(f"🚀 {action_text} 작업 시작 (단보루 DB 메모리 전체 로딩 + 가짜 캐릭터 차단 모드)")
@@ -850,52 +972,224 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         db.close()
         return
 
-    metadata_results = []
+    job_started_at = time.perf_counter()
 
-    # 🌟 AI 모드 켜짐 여부에 따라 작업자 수(스레드)와 안내 멘트를 다르게 설정합니다.
-    # 🌟 AI 모드 켜짐 여부에 따라 작업자 수와 안내 멘트만 설정
-    # 🌟 [교정] AI 모드에 따라 작업자 수만 결정하고, 루프는 하나로 통합합니다.
-    # 1. AI 여부에 따라 일꾼 수만 결정
-    if max_workers:
-        max_cpu_workers = max_workers
-    elif USE_AI_FILTER:
-        max_cpu_workers = min(4, os.cpu_count() or 2)
-    else:
-        max_cpu_workers = min(32, (os.cpu_count() or 4) * 2)
+    def format_elapsed(seconds):
+        seconds = float(seconds or 0)
+        minutes = int(seconds // 60)
+        remain = seconds - minutes * 60
+        if minutes:
+            return f"{minutes}분 {remain:.1f}초"
+        return f"{remain:.1f}초"
+
+    def emit_progress(current, total, phase="진행 중"):
+        if not progress_update:
+            return
+        try:
+            progress_update(current, total, phase)
+        except TypeError:
+            progress_update(current, total)
+
+    cpu_count = os.cpu_count() or 4
+
+    def clamp_worker_count(value, fallback, upper=64):
+        try:
+            value = int(value)
+        except Exception:
+            value = fallback
+        return max(1, min(upper, value))
+
+    # 기존 max_workers 인자는 하위 호환용으로 일반 스레드에 매핑한다.
+    if normal_workers is None:
+        if max_workers:
+            normal_workers = max_workers
+        elif USE_AI_FILTER:
+            normal_workers = min(32, max(4, cpu_count * 2))
+        else:
+            normal_workers = min(32, cpu_count * 2)
+
+    if ai_workers is None:
+        if max_workers and USE_AI_FILTER:
+            ai_workers = min(4, max_workers)
+        elif USE_AI_FILTER:
+            ai_workers = min(4, max(1, cpu_count // 2))
+        else:
+            ai_workers = 1
+
+    normal_worker_count = clamp_worker_count(normal_workers, min(32, cpu_count * 2), 64)
+    ai_worker_count = clamp_worker_count(ai_workers, min(4, max(1, cpu_count // 2)), 16)
 
     ai_status = "🧠 AI 모드 ON" if USE_AI_FILTER else "⚡ 일반 고속 모드"
-    log_func(f"🔍 [1/3 단계] {total_images}장 스캔 중... ({ai_status} | 🧵 {max_cpu_workers} 스레드 가동)")
+    if USE_AI_FILTER and not skip_nsfw:
+        log_func(
+            f"🔍 [1/3 단계] {total_images}장 스캔 중... "
+            f"({ai_status} | 일반 🧵 {normal_worker_count} / AI 🧠 {ai_worker_count})"
+        )
+    else:
+        log_func(
+            f"🔍 [1/3 단계] {total_images}장 스캔 중... "
+            f"({ai_status} | 일반 🧵 {normal_worker_count})"
+        )
 
-    # 🌟 [교정] 루프는 항상 실행되어야 하므로 들여쓰기를 앞으로 당깁니다.
     metadata_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_cpu_workers) as executor:
-        futures = {
-            # 🌟 맨 끝에 skip_nsfw=skip_nsfw 추가!
-            executor.submit(analyze_file_worker, img, override_cache=OVERRIDE_CACHE, ai_threshold=ai_threshold,
-                            skip_nsfw=skip_nsfw): img for
-            img in all_images}
-        for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
-            if stop_check and stop_check():
-                log_func(f"🛑 [즉시 정지] {i}장 스캔 중단 요청 수락됨.")
-                for f in futures: f.cancel()
-                db.close()
-                return
+    ai_pending_results = []
+    meta_source_counts = {
+        "parameters": 0,
+        "comment": 0,
+        "exif": 0,
+        "stealth": 0,
+        "none": 0
+    }
 
-            try:
-                metadata_results.append(future.result())
-            except Exception as e:
-                log_func(f"⚠️ 스캔 에러: {e}")
+    def record_meta_source(source):
+        source = str(source or "none").strip().lower()
+        if source not in meta_source_counts:
+            source = "none"
+        meta_source_counts[source] += 1
 
-            if progress_update: progress_update(i, total_images)
+    if USE_AI_FILTER and not skip_nsfw:
+        log_func(f"   ▶ 1A: 일반 메타데이터/프롬프트 분석은 {normal_worker_count}스레드로 처리합니다.")
+        stage1a_started_at = time.perf_counter()
+        emit_progress(0, total_images, "1A 일반 분석")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=normal_worker_count) as executor:
+            futures = {
+                executor.submit(
+                    analyze_file_worker,
+                    img,
+                    override_cache=OVERRIDE_CACHE,
+                    ai_threshold=ai_threshold,
+                    skip_nsfw=skip_nsfw,
+                    allow_ai=False,
+                    mark_ai_pending=True
+                ): img for img in all_images
+            }
 
-            if i % 2000 == 0 or i == total_images:
-                log_func(f"   ▶ 스캔 진행 중: {i} / {total_images} 장 ({(i / total_images) * 100:.1f}%)")
+            for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                if stop_check and stop_check():
+                    log_func(f"🛑 [즉시 정지] {i}장 스캔 중단 요청 수락됨.")
+                    for f in futures:
+                        f.cancel()
+                    db.close()
+                    return
 
-    # 스캔 완료 후 2단계로 이동
-    # 스캔 완료 후 2단계로 이동
+                try:
+                    result = future.result()
+                    if len(result) >= 8:
+                        record_meta_source(result[7])
+                    else:
+                        record_meta_source("none")
+
+                    if len(result) >= 7 and result[6]:
+                        ai_pending_results.append(result[:6])
+                    else:
+                        metadata_results.append(result[:6])
+                except Exception as e:
+                    log_func(f"⚠️ 스캔 에러: {e}")
+                    record_meta_source("none")
+
+                emit_progress(i, total_images, "1A 일반 분석")
+
+                if i % 2000 == 0 or i == total_images:
+                    log_func(f"   ▶ 일반 스캔 진행 중: {i} / {total_images} 장 ({(i / total_images) * 100:.1f}%)")
+
+        stage1a_elapsed = time.perf_counter() - stage1a_started_at
+        ai_pending_ratio = (len(ai_pending_results) / max(1, total_images)) * 100
+        log_func(
+            f"⏱️ [계측] 1A 일반 분석 완료: {format_elapsed(stage1a_elapsed)} | "
+            f"AI 판정 대상 {len(ai_pending_results)} / {total_images}장 ({ai_pending_ratio:.1f}%)"
+        )
+        log_func(
+            "📊 [계측] 1A 메타 소스: "
+            f"parameters={meta_source_counts['parameters']}, "
+            f"Comment={meta_source_counts['comment']}, "
+            f"EXIF={meta_source_counts['exif']}, "
+            f"stealth={meta_source_counts['stealth']}, "
+            f"none={meta_source_counts['none']}"
+        )
+
+        if ai_pending_results:
+            log_func(f"   ▶ 1B: AI 판정 필요 이미지 {len(ai_pending_results)}장을 AI 전용 {ai_worker_count}스레드로 처리합니다.")
+            stage1b_started_at = time.perf_counter()
+            emit_progress(0, len(ai_pending_results), "1B AI 판정")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=ai_worker_count) as executor:
+                futures = {
+                    executor.submit(
+                        ai_classify_pending_result,
+                        base_result,
+                        ai_threshold
+                    ): base_result for base_result in ai_pending_results
+                }
+
+                for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                    if stop_check and stop_check():
+                        log_func(f"🛑 [즉시 정지] AI 판정 {i}장 처리 중단 요청 수락됨.")
+                        for f in futures:
+                            f.cancel()
+                        db.close()
+                        return
+
+                    fallback_result = futures[future]
+
+                    try:
+                        metadata_results.append(future.result())
+                    except Exception as e:
+                        log_func(f"⚠️ AI 판정 에러: {e}")
+                        metadata_results.append(fallback_result)
+
+                    emit_progress(i, len(ai_pending_results), "1B AI 판정")
+
+                    if i % 500 == 0 or i == len(ai_pending_results):
+                        log_func(
+                            f"   ▶ AI 판정 진행 중: {i} / {len(ai_pending_results)} 장 "
+                            f"({(i / max(1, len(ai_pending_results))) * 100:.1f}%)"
+                        )
+            stage1b_elapsed = time.perf_counter() - stage1b_started_at
+            log_func(f"⏱️ [계측] 1B AI 판정 완료: {format_elapsed(stage1b_elapsed)}")
+        else:
+            log_func("   ▶ AI 판정이 필요한 이미지가 없습니다.")
+    else:
+        stage1_started_at = time.perf_counter()
+        emit_progress(0, total_images, "1단계 스캔")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=normal_worker_count) as executor:
+            futures = {
+                executor.submit(
+                    analyze_file_worker,
+                    img,
+                    override_cache=OVERRIDE_CACHE,
+                    ai_threshold=ai_threshold,
+                    skip_nsfw=skip_nsfw
+                ): img for img in all_images
+            }
+
+            for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                if stop_check and stop_check():
+                    log_func(f"🛑 [즉시 정지] {i}장 스캔 중단 요청 수락됨.")
+                    for f in futures:
+                        f.cancel()
+                    db.close()
+                    return
+
+                try:
+                    metadata_results.append(future.result())
+                except Exception as e:
+                    log_func(f"⚠️ 스캔 에러: {e}")
+
+                emit_progress(i, total_images, "1단계 스캔")
+
+                if i % 2000 == 0 or i == total_images:
+                    log_func(f"   ▶ 스캔 진행 중: {i} / {total_images} 장 ({(i / total_images) * 100:.1f}%)")
+    if not (USE_AI_FILTER and not skip_nsfw):
+        stage1_elapsed = time.perf_counter() - stage1_started_at
+        log_func(f"⏱️ [계측] 1단계 스캔 완료: {format_elapsed(stage1_elapsed)}")
+
     log_func(f"⚡ [2/3 단계] 초고속 RAM 캐시 기반 캐릭터 식별 및 분류 중...")
+    stage2_started_at = time.perf_counter()
+    emit_progress(0, len(metadata_results), "2/3 분류 경로 결정")
     move_queue = []
     success_records = []
+    gallery_success_records = []
+    gallery_pending_by_src = {}
 
     # 🌟 [해결 1] 루프 밖에서 딱 한 번만 규칙을 읽습니다! (규칙 증발 완벽 차단)
     config = utils.load_config()
@@ -920,6 +1214,42 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     # 🚀 자, 이제 윈도우 방해 없는 초고속 루프 시작
     for i, (full_path, file_hash, char_tags, base_tags, rating, nsfw_reasons) in enumerate(metadata_results, 1):
         img_name = os.path.basename(full_path)
+
+        unreadable_reason = ""
+        if rating == -999:
+            for reason in nsfw_reasons or []:
+                text_reason = str(reason)
+                if text_reason.startswith("__UNREADABLE__:"):
+                    unreadable_reason = text_reason.replace("__UNREADABLE__:", "", 1).strip()
+                    break
+            if not unreadable_reason:
+                unreadable_reason = "이미지 파일을 Pillow가 읽지 못했습니다."
+
+            unreadable_dir = os.path.join(classified_root, "_UNREADABLE", datetime.datetime.now().strftime("%Y-%m-%d"))
+            os.makedirs(unreadable_dir, exist_ok=True)
+
+            dest_path = os.path.join(unreadable_dir, img_name)
+            if os.path.abspath(full_path) == os.path.abspath(dest_path):
+                stats["unreadable"] += 1
+                log_func(f"⚠️ 이미지 판독 실패 유지: {img_name} | {unreadable_reason}")
+                continue
+
+            if os.path.exists(dest_path):
+                base_name, ext = os.path.splitext(img_name)
+                dest_path = os.path.join(
+                    unreadable_dir,
+                    f"{base_name}_{int(time.time() * 1000)}{ext}"
+                )
+
+            unreadable_reasons = [
+                "⚠️ 이미지 판독 실패",
+                unreadable_reason
+            ]
+
+            move_queue.append((full_path, dest_path, img_name, "_UNREADABLE", file_hash, unreadable_reasons))
+            stats["unreadable"] += 1
+            log_func(f"⚠️ 이미지 판독 실패 → _UNREADABLE 이동 예정: {img_name} | {unreadable_reason}")
+            continue
 
         if is_fast and file_hash in processed_hashes:
             if method == "move" and os.path.exists(full_path):
@@ -1228,6 +1558,13 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                     log_func(f"⚠️ 대표/현재 위치 사유 저장 실패: {txt_path} | {e}")
 
             success_records.append((full_path, file_hash, img_name, folder_name))
+            gallery_success_records.append({
+                "final_path": dest_path,
+                "rating": rating,
+                "names": names_list,
+                "is_dakimakura": is_daki,
+                "nsfw_reasons": nsfw_reasons
+            })
             continue
 
         if os.path.exists(dest_path):
@@ -1236,11 +1573,27 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             continue
 
         move_queue.append((full_path, dest_path, img_name, folder_name, file_hash, nsfw_reasons))
+        gallery_pending_by_src[full_path] = {
+            "final_path": dest_path,
+            "rating": rating,
+            "names": names_list,
+            "is_dakimakura": is_daki,
+            "nsfw_reasons": nsfw_reasons
+        }
 
-        if i % 4000 == 0 or i == total_images:
-            log_func(f"   ▶ 매칭 완료: {i} / {total_images} 장")
+        if i % 500 == 0 or i == len(metadata_results):
+            emit_progress(i, len(metadata_results), "2/3 분류 경로 결정")
+
+        if i % 4000 == 0 or i == len(metadata_results):
+            log_func(f"   ▶ 매칭 완료: {i} / {len(metadata_results)} 장")
+
+    stage2_elapsed = time.perf_counter() - stage2_started_at
+    log_func(f"⏱️ [계측] 2단계 분류 경로 결정 완료: {format_elapsed(stage2_elapsed)}")
 
     total_moves = len(move_queue)
+    stage3_started_at = time.perf_counter()
+    emit_progress(0, total_moves, f"3/3 파일 {action_text}")
+
     if total_moves > 0:
         log_func(f"🚚 [3/3 단계] {total_moves}개 파일의 물리적 {action_text} 시작...")
     else:
@@ -1256,8 +1609,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
 
         for i, f in enumerate(concurrent.futures.as_completed(future_to_info), 1):
             # 🌟 [추가] 매 장마다 실시간 UI 숫자 업데이트
-            if progress_update:
-                progress_update(i, total_moves)
+            emit_progress(i, total_moves, f"3/3 파일 {action_text}")
 
             # 🌟 [추가] 사용자가 정지 버튼을 눌렀는지 확인
             if stop_check and stop_check():
@@ -1266,6 +1618,9 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             src, img_name, folder_name, file_hash = future_to_info[f]
             if f.result():
                 success_records.append((src, file_hash, img_name, folder_name))
+                gallery_record = gallery_pending_by_src.get(src)
+                if gallery_record:
+                    gallery_success_records.append(gallery_record)
                 batch_records.append((file_hash, img_name, folder_name))  # 🌟 바구니에 담기
                 stats["success"] += 1
             else:
@@ -1299,6 +1654,9 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             log_func(f"⚠️ 최종 이력 저장 실패: {e}")
 
     # 🌟 재정렬 후 껍데기만 남은 빈 폴더 삭제 로직
+    stage3_elapsed = time.perf_counter() - stage3_started_at
+    log_func(f"⏱️ [계측] 3단계 파일 {action_text} 완료: {format_elapsed(stage3_elapsed)}")
+
     if reorg_mode:
         log_func("🧹 아카이브 청소 중: 비어있는 옛날 폴더들을 삭제합니다...")
         for root, dirs, files in os.walk(classified_root, topdown=False):
@@ -1311,6 +1669,9 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                 except OSError:
                     pass
         log_func("✨ 아카이브 청소 완료!")
+
+    stage_db_started_at = time.perf_counter()
+    emit_progress(0, 1, "DB 저장/갤러리 인덱스")
 
     if success_records:
         log_func("💾 최종 이력을 데이터베이스에 일괄 기록 중입니다...")
@@ -1338,6 +1699,39 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         except Exception as e:
             log_func(f"⚠️ DB 저장 중 오류 발생: {e}")
 
+    if gallery_success_records:
+        try:
+            gallery_records = build_gallery_index_records_from_success(gallery_success_records, classified_root)
+            if gallery_records:
+                db.upsert_gallery_image_records(gallery_records)
+
+                if db.get_gallery_index_state("gallery_index_reset_for_reclassify", "0") == "1":
+                    if stats.get("error", 0) > 0:
+                        db.set_gallery_index_state("full_index_built", "0")
+                        log_func("⚠️ 실패한 이미지가 있어 갤러리 full index 확정을 보류합니다.")
+                    elif stats.get("skipped_duplicate", 0) > 0:
+                        db.set_gallery_index_state("full_index_built", "0")
+                        log_func("⚠️ 파일 중복 스킵이 있어 갤러리 full index 확정을 보류합니다.")
+                    else:
+                        try:
+                            log_func("🧭 전체 재분류 기준으로 갤러리 인덱스 요약을 생성 중입니다...")
+                            db.rebuild_gallery_folder_summaries()
+                            db.set_gallery_index_state("full_index_built", "1")
+                            db.set_gallery_index_state("gallery_index_reset_for_reclassify", "0")
+                            log_func("✅ 갤러리 인덱스를 전체 재분류 결과로 확정했습니다.")
+                        except Exception as index_err:
+                            db.set_gallery_index_state("full_index_built", "0")
+                            log_func(f"⚠️ 갤러리 인덱스 확정 실패: {index_err}")
+        except Exception as e:
+            log_func(f"[WARN] gallery index write failed: {e}")
+
+    stage_db_elapsed = time.perf_counter() - stage_db_started_at
+    emit_progress(1, 1, "DB 저장/갤러리 인덱스")
+    log_func(f"⏱️ [계측] DB 저장/갤러리 인덱스 처리 완료: {format_elapsed(stage_db_elapsed)}")
+
+    total_elapsed = time.perf_counter() - job_started_at
+    log_func(f"⏱️ [계측] 전체 작업 소요 시간: {format_elapsed(total_elapsed)}")
+
     log_func("-" * 50)
     log_func("🏁 [전체 작업 요약 리포트]")
     log_func(f"  1. 총 탐색 이미지: {stats['total_scanned']}장")
@@ -1345,6 +1739,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     log_func(f"  3. 중복 스킵(DB): {stats['skipped_db']}장")
     log_func(f"  4. 중복 스킵(파일존재): {stats['skipped_duplicate']}장")
     log_func(f"  5. 처리 실패(오류): {stats['error']}장")
+    log_func(f"  6. 이미지 판독 실패 격리: {stats.get('unreadable', 0)}장")
     log_func("-" * 50)
     log_func(f"✨ 모든 작업이 완료되었습니다.")
     db.close()
@@ -1452,5 +1847,6 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
             log_func(f"🖼️ 대표 변경 완료: {basename}")
         except Exception as e:
             log_func(f"❌ 대표 변경 중 에러 ({basename}): {e}")
+
 
     db.close()

@@ -54,6 +54,7 @@ const GALLERY_HEADER_TOOLS_COLLAPSED_KEY = 'naia_gallery_header_tools_collapsed_
 let galleryServerSessionId = '';
 let galleryPendingScrollY = null;
 let galleryNavTabsDragState = null;
+let galleryIndexStatusTimer = null;
 const GALLERY_NAV_TABS_DRAG_THRESHOLD = 5;
 
 function getGalleryRadioValue(name, fallback) {
@@ -945,23 +946,266 @@ async function ensureGalleryPromptFilterMeta(currentNode) {
     }
 }
 
-async function loadData() {
+let galleryDataStatusTimer = null;
+
+function stopGalleryDataStatusPolling() {
+    if (galleryDataStatusTimer) {
+        clearInterval(galleryDataStatusTimer);
+        galleryDataStatusTimer = null;
+    }
+}
+
+function formatGalleryElapsed(seconds) {
+    const value = Number(seconds || 0);
+
+    if (!Number.isFinite(value) || value <= 0) {
+        return '0.0초';
+    }
+
+    const minutes = Math.floor(value / 60);
+    const remain = value - minutes * 60;
+
+    if (minutes > 0) {
+        return `${minutes}분 ${remain.toFixed(1)}초`;
+    }
+
+    return `${remain.toFixed(1)}초`;
+}
+
+function renderGalleryDataLoadingState(statusPayload = {}) {
+    const content = document.getElementById('content');
+    if (!content) return;
+
+    if (typeof statusPayload === 'string') {
+        statusPayload = { message: statusPayload };
+    }
+
+    const phase = statusPayload.phase || 'request';
+    const message = statusPayload.message || '갤러리 데이터를 불러오는 중입니다.';
+    const elapsed = formatGalleryElapsed(statusPayload.elapsed);
+    const folders = Number(statusPayload.folders || 0);
+    const images = Number(statusPayload.images || 0);
+    const indexMode = statusPayload.index_mode || '';
+    const isSlow = Number(statusPayload.elapsed || 0) >= 30;
+
+    content.innerHTML = `
+        <div class="gallery-load-state">
+            <div class="gallery-load-spinner"></div>
+            <div class="gallery-load-title">데이터 동기화 중...</div>
+            <div class="gallery-load-message">${escapeHtml(message)}</div>
+            <div class="gallery-load-detail">
+                <span>단계: ${escapeHtml(phase)}</span>
+                <span>경과: ${elapsed}</span>
+                <span>폴더: ${folders.toLocaleString()}개</span>
+                <span>이미지: ${images.toLocaleString()}장</span>
+                ${indexMode ? `<span>모드: ${escapeHtml(indexMode)}</span>` : ''}
+            </div>
+            <div class="gallery-load-hint">
+                ${isSlow
+                    ? '이미지가 많거나 기존 스캔 방식이면 시간이 걸릴 수 있습니다. 서버가 계속 진행 중이면 기다려 주세요.'
+                    : '이미지가 많으면 첫 로딩에 시간이 걸릴 수 있습니다.'}
+            </div>
+            <div class="gallery-load-actions">
+                <button type="button" onclick="loadData()">다시 시도</button>
+                <button type="button" class="secondary" onclick="location.reload()">페이지 새로고침</button>
+            </div>
+        </div>
+    `;
+}
+
+function renderGalleryDataErrorState(message) {
+    const content = document.getElementById('content');
+    if (!content) return;
+    content.innerHTML = `
+        <div class="gallery-load-state error">
+            <div class="gallery-load-title">갤러리 로딩 실패</div>
+            <div class="gallery-load-message">${escapeHtml(message || '연결 실패 또는 서버 오류가 발생했습니다.')}</div>
+            <div class="gallery-load-hint">서버 로그를 확인한 뒤 다시 시도하거나 페이지를 새로고침해 주세요.</div>
+            <div id="galleryIndexProgress" class="gallery-index-progress"></div>
+            <div class="gallery-load-actions">
+                <button type="button" onclick="loadData()">다시 시도</button>
+                <button type="button" class="secondary" onclick="location.reload()">페이지 새로고침</button>
+            </div>
+        </div>
+    `;
+}
+
+function renderGalleryIndexNeededState(payload = {}) {
+    stopGalleryDataStatusPolling();
+
+    const content = document.getElementById('content');
+    if (!content) return;
+
+    const message = payload.message || '빠른 갤러리 인덱스가 아직 없습니다.';
+    const isAutoRunning = Boolean(payload.auto_rebuild_started || payload.rebuild_running);
+
+    content.innerHTML = `
+        <div class="gallery-load-state index-needed">
+            <div class="gallery-load-title">${isAutoRunning ? '⚡ 갤러리 인덱스 자동 생성 중' : '⚡ 갤러리 인덱스가 필요합니다'}</div>
+            <div class="gallery-load-message">${escapeHtml(message)}</div>
+            <div class="gallery-load-hint">
+                기존 분류 결과는 그대로 유지됩니다. 이미지나 폴더를 변경하지 않고,
+                현재 TOTAL_CLASSIFIED 구조를 DB 인덱스로 기록해서 다음 로딩부터 빠르게 엽니다.
+                ${isAutoRunning ? '<br>자동 생성이 진행 중입니다. 완료되면 갤러리를 다시 불러옵니다.' : ''}
+            </div>
+            <div id="galleryIndexProgress" class="gallery-index-progress"></div>
+            <div class="gallery-load-actions">
+                <button type="button" onclick="startGalleryIndexRebuild()">${isAutoRunning ? '인덱스 생성 다시 확인' : '갤러리 인덱스 만들기/복구'}</button>
+                <button type="button" class="secondary" onclick="loadData({ allowScan: true })">기존 방식으로 느리게 열기</button>
+                <button type="button" class="secondary" onclick="location.reload()">페이지 새로고침</button>
+            </div>
+        </div>
+    `;
+}
+
+async function pollGalleryDataStatusOnce() {
+    try {
+        const res = await fetch(`/api/data/status?ts=${Date.now()}`, { cache: 'no-store' });
+        const status = await res.json();
+
+        if (!status || status.status === 'error') {
+            return;
+        }
+
+        if (!galleryDataStatusTimer) {
+            return;
+        }
+
+        if (status.running || status.phase !== 'idle') {
+            renderGalleryDataLoadingState(status);
+        }
+    } catch (e) {
+        console.warn('Gallery data status polling failed:', e);
+    }
+}
+
+function startGalleryDataStatusPolling() {
+    stopGalleryDataStatusPolling();
+
+    renderGalleryDataLoadingState({
+        phase: 'request',
+        message: '갤러리 데이터 요청을 보내는 중입니다.',
+        elapsed: 0,
+        folders: 0,
+        images: 0
+    });
+
+    galleryDataStatusTimer = setInterval(pollGalleryDataStatusOnce, 1000);
+    pollGalleryDataStatusOnce();
+}
+
+function renderGalleryIndexProgress(job = {}) {
+    const box = document.getElementById('galleryIndexProgress') || document.getElementById('content');
+    if (!box) return;
+
+    const total = Number(job.total || 0);
+    const processed = Number(job.processed || 0);
+    const percent = total ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+    const html = `
+        <div class="gallery-index-progress">
+            <div>${escapeHtml(job.message || '갤러리 인덱스 처리 중...')} ${total ? `${processed.toLocaleString()} / ${total.toLocaleString()}` : ''}</div>
+            <div class="gallery-index-progress-bar">
+                <div class="gallery-index-progress-fill" style="width:${percent}%"></div>
+            </div>
+        </div>
+    `;
+
+    if (box.id === 'content') {
+        box.innerHTML = `<div class="gallery-load-state">${html}</div>`;
+    } else {
+        box.innerHTML = html;
+    }
+}
+
+async function startGalleryIndexRebuild() {
+    if (!confirm('기존 분류 결과를 빠르게 열기 위한 갤러리 인덱스를 만듭니다. 이미지/폴더는 변경하지 않습니다. 이미지가 많으면 시간이 걸릴 수 있습니다.')) {
+        return;
+    }
+
+    try {
+        renderGalleryIndexNeededState({ message: '갤러리 인덱스 생성을 시작합니다...' });
+        const res = await fetch('/api/gallery/index/rebuild', { method: 'POST' });
+        const json = await res.json();
+        if (!res.ok || json.status === 'error') throw new Error(json.message || json.error || '인덱스 생성 시작 실패');
+        renderGalleryIndexProgress(json);
+        pollGalleryIndexStatus();
+    } catch (e) {
+        renderGalleryDataErrorState(e.message || String(e));
+    }
+}
+
+async function pollGalleryIndexStatus() {
+    if (galleryIndexStatusTimer) {
+        clearTimeout(galleryIndexStatusTimer);
+        galleryIndexStatusTimer = null;
+    }
+
+    try {
+        const res = await fetch('/api/gallery/index/status');
+        const json = await res.json();
+        if (!res.ok || json.status === 'error') throw new Error(json.message || json.error || '인덱스 상태 조회 실패');
+        renderGalleryIndexProgress(json);
+
+        if (json.running) {
+            galleryIndexStatusTimer = setTimeout(pollGalleryIndexStatus, 1000);
+            return;
+        }
+
+        if (json.full_index_built || (json.done && !json.error)) {
+            renderGalleryDataLoadingState('인덱스 생성 완료. 갤러리를 다시 불러옵니다...');
+            await loadData();
+            return;
+        }
+
+        if (json.error) {
+            renderGalleryDataErrorState(json.error);
+            return;
+        }
+
+        // 자동 생성 직후에는 서버 스레드 상태 반영이 아주 잠깐 늦을 수 있으므로 한 번 더 확인한다.
+        galleryIndexStatusTimer = setTimeout(pollGalleryIndexStatus, 1000);
+    } catch (e) {
+        renderGalleryDataErrorState(e.message || String(e));
+    }
+}
+
+async function loadData(options = {}) {
     try {
         const sessionState = readGallerySessionState();
 
-        document.getElementById('content').innerHTML = '<div class="loading-text">데이터 동기화 중...</div>';
+        startGalleryDataStatusPolling();
 
         const mode = getGalleryRadioValue('viewMode', 'general');
         const sort = getGalleryRadioValue('sortMode', 'name');
 
         saveGalleryPersistentUi();
 
-        const res = await fetch(`/api/data?mode=${encodeURIComponent(mode)}&sort=${encodeURIComponent(sort)}`);
+        const allowScan = Boolean(options.allowScan);
+        const url = `/api/data?mode=${encodeURIComponent(mode)}&sort=${encodeURIComponent(sort)}${allowScan ? '&allow_scan=1' : ''}`;
+
+        const res = await fetch(url, {
+            cache: 'no-store'
+        });
         const json = await res.json();
 
-        if (json.error) {
-            document.getElementById('content').innerHTML = `<div class="loading-text" style="color:red;">${json.error}</div>`;
+        if (!res.ok || json.status === 'error') {
+            throw new Error(json.error || json.message || `HTTP ${res.status}`);
+        }
+
+        if (json.needs_index || json.index_mode === 'needs_index') {
+            renderGalleryIndexNeededState(json);
+
+            if (json.auto_rebuild_started || json.rebuild_running) {
+                pollGalleryIndexStatus();
+            }
+
             return;
+        }
+
+        stopGalleryDataStatusPolling();
+
+        if (json.index_mode === 'scan_fallback') {
+            console.info('Gallery index unavailable; using scan fallback.');
         }
 
         rootTree = json.tree;
@@ -1014,7 +1258,10 @@ async function loadData() {
         }
     } catch (e) {
         console.error(e);
-        document.getElementById('content').innerHTML = '<div class="loading-text" style="color:red;">연결 실패!</div>';
+        stopGalleryDataStatusPolling();
+        renderGalleryDataErrorState(e.message || e);
+    } finally {
+        stopGalleryDataStatusPolling();
     }
 }
 

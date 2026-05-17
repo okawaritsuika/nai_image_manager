@@ -510,9 +510,13 @@ class NaiaHyperExecutor:
         self.use_gpu_var = tk.BooleanVar(value=bool(classify_settings.get("use_gpu", False)))
         self.skip_nsfw_var = tk.BooleanVar(value=bool(classify_settings.get("skip_nsfw", False)))
         self.skip_char_var = tk.BooleanVar(value=bool(classify_settings.get("skip_char", False)))  # 🌟 [신규] 캐릭터 판별 무시 변수
+        legacy_thread_count = int(classify_settings.get("thread_count", 4) or 4)
+        normal_thread_default = int(classify_settings.get("normal_thread_count", legacy_thread_count) or legacy_thread_count)
+        ai_thread_default = int(classify_settings.get("ai_thread_count", min(4, legacy_thread_count)) or min(4, legacy_thread_count))
 
         tk.Checkbutton(ai_frame, text="🤖 딥러닝 AI 야짤 정밀 판독", variable=self.use_ai_var, bg="#1e1e2e", fg="#00f2ff",
-                       selectcolor="#222", font=("Malgun Gothic", 9, "bold")).pack(side="left")
+                       selectcolor="#222", font=("Malgun Gothic", 9, "bold"),
+                       command=self.update_thread_guide).pack(side="left")
         tk.Checkbutton(ai_frame, text="🚀 GPU 가속", variable=self.use_gpu_var, bg="#1e1e2e", fg="#39ff14",
                        selectcolor="#222", font=("Malgun Gothic", 9, "bold")).pack(side="left", padx=(10, 5))
         tk.Checkbutton(ai_frame, text="🙈 수위 무시", variable=self.skip_nsfw_var, bg="#1e1e2e", fg="#ff9ff3",
@@ -526,12 +530,22 @@ class NaiaHyperExecutor:
         perf_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
         perf_frame.pack(fill="x", pady=2)
 
-        tk.Label(perf_frame, text="스레드:", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#fff").pack(side="left")
-        self.thread_count_var = tk.IntVar(value=int(classify_settings.get("thread_count", 4)))
-        self.thread_spin = tk.Spinbox(perf_frame, from_=1, to=64, textvariable=self.thread_count_var, width=4,
-                                      bg="#2a2a35", fg="#fff", border=0, command=self.update_thread_guide)
-        self.thread_spin.pack(side="left", padx=5)
-        self.thread_spin.bind("<KeyRelease>", lambda e: self.update_thread_guide())
+        tk.Label(perf_frame, text="일반:", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#fff").pack(side="left")
+        self.normal_thread_count_var = tk.IntVar(value=normal_thread_default)
+        self.normal_thread_spin = tk.Spinbox(perf_frame, from_=1, to=64, textvariable=self.normal_thread_count_var, width=4,
+                                             bg="#2a2a35", fg="#fff", border=0, command=self.update_thread_guide)
+        self.normal_thread_spin.pack(side="left", padx=5)
+        self.normal_thread_spin.bind("<KeyRelease>", lambda e: self.update_thread_guide())
+
+        tk.Label(perf_frame, text="AI:", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#00f2ff").pack(side="left", padx=(8, 0))
+        self.ai_thread_count_var = tk.IntVar(value=ai_thread_default)
+        self.ai_thread_spin = tk.Spinbox(perf_frame, from_=1, to=16, textvariable=self.ai_thread_count_var, width=4,
+                                         bg="#2a2a35", fg="#00f2ff", border=0, command=self.update_thread_guide)
+        self.ai_thread_spin.pack(side="left", padx=5)
+        self.ai_thread_spin.bind("<KeyRelease>", lambda e: self.update_thread_guide())
+
+        # 기존 코드 호환용 별칭. 새 코드에서는 normal_thread_count_var를 사용한다.
+        self.thread_count_var = self.normal_thread_count_var
 
         tk.Label(perf_frame, text="AI 감도(%):", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#fff").pack(
             side="left", padx=(10, 0))
@@ -694,18 +708,36 @@ class NaiaHyperExecutor:
 
     def update_thread_guide(self):
         try:
-            t = self.thread_count_var.get()
-        except:
-            t = 4
+            normal_t = int(self.normal_thread_count_var.get())
+        except Exception:
+            normal_t = 4
 
-        if t <= 4:
-            msg, color = "🟢 [안정 권장] VRAM 보호 및 온도 유지", "#2ecc71"
-        elif t <= 15:
-            msg, color = "🟡 [CPU/다중작업] RAM 중심 (GPU 모드 주의)", "#f1c40f"
-        elif t <= 32:
-            msg, color = "🚀 [일반 고속] SSD 대역폭 한계 활용", "#3498db"
+        try:
+            ai_t = int(self.ai_thread_count_var.get())
+        except Exception:
+            ai_t = 2
+
+        use_ai = bool(self.use_ai_var.get())
+
+        if normal_t <= 4:
+            normal_msg, color = "일반 안정", "#2ecc71"
+        elif normal_t <= 15:
+            normal_msg, color = "일반 균형", "#f1c40f"
+        elif normal_t <= 32:
+            normal_msg, color = "일반 고속", "#3498db"
         else:
-            msg, color = "⚠️ [익스트림] 시스템 버벅임 주의", "#e74c3c"
+            normal_msg, color = "일반 익스트림", "#e74c3c"
+
+        if use_ai:
+            if ai_t <= 2:
+                ai_msg = "AI 안정"
+            elif ai_t <= 4:
+                ai_msg = "AI 균형"
+            else:
+                ai_msg = "AI 공격적"
+            msg = f"🧵 {normal_msg} {normal_t}개 / 🧠 {ai_msg} {ai_t}개"
+        else:
+            msg = f"🧵 {normal_msg} {normal_t}개 / AI 꺼짐"
 
         self.guide_text_var.set(msg)
         self.lbl_thread_guide.config(fg=color)
@@ -722,22 +754,25 @@ class NaiaHyperExecutor:
             except:
                 pass
 
+        rec_normal_threads = min(32, max(4, cpu_cores * 2))
+
         if use_ai:
             if vram_gb > 0:
                 if vram_gb <= 4.5:
-                    rec_threads = 1
+                    rec_ai_threads = 1
                 elif vram_gb <= 6.5:
-                    rec_threads = 2
+                    rec_ai_threads = 2
                 elif vram_gb <= 8.5:
-                    rec_threads = 4
+                    rec_ai_threads = 3
                 else:
-                    rec_threads = 6
+                    rec_ai_threads = 4
             else:
-                rec_threads = max(1, cpu_cores // 2)
+                rec_ai_threads = max(1, min(4, cpu_cores // 2))
         else:
-            rec_threads = min(32, cpu_cores * 2)
+            rec_ai_threads = max(1, min(4, cpu_cores // 2))
 
-        self.thread_count_var.set(rec_threads)
+        self.normal_thread_count_var.set(rec_normal_threads)
+        self.ai_thread_count_var.set(rec_ai_threads)
         self.update_thread_guide()
 
     def _on_path_click(self, event):
@@ -777,9 +812,22 @@ class NaiaHyperExecutor:
         self.btn_stop.config(state="disabled", text="🛑 정지 명령 접수됨!", bg="#ff8c00")
         self.log("🛑 정지 버튼이 클릭되었습니다. 현재 작업이 끝나는 대로 멈춥니다.")
 
-    def update_progress(self, current, total):
-        self.root.after(0, lambda: self.lbl_progress.config(
-            text=f"진행 중: {current} / {total} ({(current / total) * 100:.1f}%)"))
+    def update_progress(self, current, total, phase="진행 중"):
+        def apply():
+            try:
+                current_num = int(current or 0)
+                total_num = int(total or 0)
+                percent = (current_num / total_num) * 100 if total_num else 0
+            except Exception:
+                current_num = current
+                total_num = total
+                percent = 0
+
+            self.lbl_progress.config(
+                text=f"{phase}: {current_num} / {total_num} ({percent:.1f}%)"
+            )
+
+        self.root.after(0, apply)
 
     def reset_history(self):
         if messagebox.askyesno("히스토리 초기화", "모든 분류 기록과 태그 캐시를 삭제하시겠습니까?"):
@@ -826,12 +874,23 @@ class NaiaHyperExecutor:
             self.root.after(0, lambda: self.btn_sync.config(state="normal"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
 
-    def _read_thread_count_for_settings(self):
+    def _read_normal_thread_count_for_settings(self):
         try:
-            value = int(self.thread_count_var.get())
+            value = int(self.normal_thread_count_var.get())
         except Exception:
             value = 4
         return max(1, min(64, value))
+
+    def _read_ai_thread_count_for_settings(self):
+        try:
+            value = int(self.ai_thread_count_var.get())
+        except Exception:
+            value = 2
+        return max(1, min(16, value))
+
+    def _read_thread_count_for_settings(self):
+        # 기존 코드 호환용. 일반 스레드 값을 반환한다.
+        return self._read_normal_thread_count_for_settings()
 
     def _read_ai_threshold_percent_for_settings(self):
         try:
@@ -850,7 +909,9 @@ class NaiaHyperExecutor:
                 "use_gpu": bool(self.use_gpu_var.get()),
                 "skip_nsfw": bool(self.skip_nsfw_var.get()),
                 "skip_char": bool(self.skip_char_var.get()),
-                "thread_count": self._read_thread_count_for_settings(),
+                "thread_count": self._read_normal_thread_count_for_settings(),
+                "normal_thread_count": self._read_normal_thread_count_for_settings(),
+                "ai_thread_count": self._read_ai_thread_count_for_settings(),
                 "ai_threshold_percent": self._read_ai_threshold_percent_for_settings(),
             }
 
@@ -1267,7 +1328,7 @@ class NaiaHyperExecutor:
         g_txt = "켜짐" if self.use_gpu_var.get() else "꺼짐"
         s_txt = "무시 (전부 일반짤 처리)" if skip_nsfw else "판독 진행"
         c_txt = "무시 (하위 폴더 미생성)" if skip_char else "판별 진행"  # 🌟
-        t_txt = str(self.thread_count_var.get())
+        t_txt = f"일반 {self.normal_thread_count_var.get()} / AI {self.ai_thread_count_var.get()}"
 
         method_desc = (
             "원본 이미지는 그대로 두고, 분류 결과 폴더에 복사합니다."
@@ -1291,7 +1352,7 @@ class NaiaHyperExecutor:
                 {"label": "GPU 가속", "value": g_txt, "state": self.use_gpu_var.get()},
                 {"label": "수위 감지", "value": s_txt, "state": not skip_nsfw},
                 {"label": "캐릭터 판별", "value": c_txt, "state": not skip_char},
-                {"label": "스레드 수", "value": f"{t_txt}개", "state": None},
+                {"label": "스레드 수", "value": str(t_txt), "state": None},
             ],
             confirm_text="분류 시작",
             accent_color="#0984e3",
@@ -1313,7 +1374,9 @@ class NaiaHyperExecutor:
         threshold_val = self.threshold_var.get() / 100.0
         try:
             image_logic.process(source, method=method, is_fast=is_fast, use_ai=use_ai, use_gpu=use_gpu,
-                                max_workers=self.thread_count_var.get(), ai_threshold=threshold_val,
+                                normal_workers=self.normal_thread_count_var.get(),
+                                ai_workers=self.ai_thread_count_var.get(),
+                                ai_threshold=threshold_val,
                                 log_func=self.log, stop_check=lambda: self.stop_requested,
                                 progress_update=self.update_progress, skip_nsfw=skip_nsfw, skip_char_id=skip_char)
             self.log("✅ [작업 완료] 새 이미지 처리가 끝났습니다.")
@@ -1355,7 +1418,7 @@ class NaiaHyperExecutor:
         g_txt = "켜짐" if self.use_gpu_var.get() else "꺼짐"
         s_txt = "무시 (모두 기존 폴더/일반짤 처리)" if skip_nsfw else "판독 진행"
         c_txt = "무시 (하위 폴더 미생성)" if skip_char else "판별 진행"  # 🌟
-        t_txt = str(self.thread_count_var.get())
+        t_txt = f"일반 {self.normal_thread_count_var.get()} / AI {self.ai_thread_count_var.get()}"
 
         if not self.show_action_confirm_dialog(
             title="재정렬 실행 확인",
@@ -1370,7 +1433,7 @@ class NaiaHyperExecutor:
                 {"label": "GPU 가속", "value": g_txt, "state": self.use_gpu_var.get()},
                 {"label": "수위 감지", "value": s_txt, "state": not skip_nsfw},
                 {"label": "캐릭터 판별", "value": c_txt, "state": not skip_char},
-                {"label": "스레드 수", "value": f"{t_txt}개", "state": None},
+                {"label": "스레드 수", "value": str(t_txt), "state": None},
             ],
             confirm_text="재정렬 시작",
             accent_color="#e17055",
@@ -1392,7 +1455,10 @@ class NaiaHyperExecutor:
         threshold_val = self.threshold_var.get() / 100.0
         try:
             image_logic.process(self.full_path, method="move", is_fast=False, reorg_mode=True, use_ai=use_ai,
-                                use_gpu=use_gpu, max_workers=self.thread_count_var.get(), ai_threshold=threshold_val,
+                                use_gpu=use_gpu,
+                                normal_workers=self.normal_thread_count_var.get(),
+                                ai_workers=self.ai_thread_count_var.get(),
+                                ai_threshold=threshold_val,
                                 log_func=self.log, stop_check=lambda: self.stop_requested,
                                 progress_update=self.update_progress, skip_nsfw=skip_nsfw, skip_char_id=skip_char,
                                 reorg_target=reorg_target)

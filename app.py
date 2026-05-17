@@ -27,6 +27,18 @@ from urllib.parse import urlsplit, unquote, quote
 
 app = Flask(__name__)
 
+GALLERY_INDEX_REBUILD_LOCK = threading.Lock()
+GALLERY_INDEX_REBUILD_JOB = {
+    "running": False,
+    "processed": 0,
+    "total": 0,
+    "message": "",
+    "error": "",
+    "done": False,
+    "started_at": 0,
+    "finished_at": 0
+}
+
 # 경로 설정
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 CLASSIFIED_DIR = os.path.join(CURRENT_DIR, "TOTAL_CLASSIFIED")
@@ -70,6 +82,45 @@ DANBOORU_CATEGORY_COLORS = {
 TAG_DICTIONARY_USER_OVERRIDES = os.path.join(CURRENT_DIR, 'tag_dictionary_user_overrides.json')
 GALLERY_IMAGE_TAGS_FILE = os.path.join(CURRENT_DIR, "gallery_image_tags.json")
 GALLERY_SERVER_SESSION_ID = f"gallery_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+GALLERY_DATA_STATUS_LOCK = threading.Lock()
+GALLERY_DATA_LOAD_STATUS = {
+    "running": False,
+    "phase": "idle",
+    "message": "대기 중",
+    "mode": "",
+    "sort": "",
+    "started_at": 0,
+    "updated_at": 0,
+    "finished_at": 0,
+    "elapsed": 0,
+    "folders": 0,
+    "images": 0,
+    "index_mode": "",
+    "error": ""
+}
+
+
+def update_gallery_data_status(**kwargs):
+    now = time.time()
+    with GALLERY_DATA_STATUS_LOCK:
+        GALLERY_DATA_LOAD_STATUS.update(kwargs)
+        GALLERY_DATA_LOAD_STATUS["updated_at"] = now
+
+        started_at = float(GALLERY_DATA_LOAD_STATUS.get("started_at") or 0)
+        if started_at:
+            GALLERY_DATA_LOAD_STATUS["elapsed"] = max(0, now - started_at)
+
+
+def get_gallery_data_status_snapshot():
+    with GALLERY_DATA_STATUS_LOCK:
+        status = dict(GALLERY_DATA_LOAD_STATUS)
+
+    started_at = float(status.get("started_at") or 0)
+    if started_at and status.get("running"):
+        status["elapsed"] = max(0, time.time() - started_at)
+
+    return status
+
 UPSCALE_OUTPUT_FOLDER_NAME = "_upscaled"
 UPSCALE_IGNORE_FILE_NAME = ".ignore"
 CANVAS_SETUPS_FILE = os.path.join(CURRENT_DIR, "canvas_saved_setups.json")
@@ -876,15 +927,31 @@ def install_ai():
         return jsonify({"status": "error", "message": str(e)})
 
 
-@app.route('/api/data')
-def get_data():
-    mode = request.args.get('mode', 'general')
-    sort_by = request.args.get('sort', 'name')
-
+def build_gallery_data_payload_from_scan(mode, sort_by):
     if not os.path.exists(CLASSIFIED_DIR):
-        return jsonify({"tree": {"name": "ROOT", "folders": [], "images": [], "total_images": 0}, "baseDir": ""})
+        update_gallery_data_status(
+            running=False,
+            phase="done",
+            message="분류 폴더가 아직 없습니다.",
+            finished_at=time.time(),
+            folders=0,
+            images=0,
+            error=""
+        )
+        return {
+            "tree": {"name": "ROOT", "folders": [], "images": [], "total_images": 0},
+            "baseDir": "",
+            "brand_map": {},
+            "brand_visibility": {},
+            "server_session_id": GALLERY_SERVER_SESSION_ID,
+            "gallery_tags": {"tags": [], "image_tags": {}}
+        }
 
     tree_dict = {"name": "ROOT", "path": "", "folders": {}, "images": [], "thumb": None, "total_images": 0}
+    update_gallery_data_status(
+        phase="prepare",
+        message="갤러리 태그와 폴더명 정보를 준비 중입니다."
+    )
     gallery_tag_config = load_gallery_image_tags_config()
 
     # 1. 갤러리 표시용 DB 폴더명 매핑을 먼저 로드
@@ -894,26 +961,57 @@ def get_data():
     folder_names_map = load_folder_display_names(db, verbose=True)
 
     # 3. 모드 설정에 따른 스캔 경로 구성 (이제 매핑 로직은 여기서 빠집니다)
+    update_gallery_data_status(
+        phase="scan_config",
+        message="갤러리 스캔 범위를 계산 중입니다."
+    )
+
     scan_configs = []
     if mode == 'general':
-        scan_configs.append({"path": CLASSIFIED_DIR, "ignore": ["_R-18", "_R-15", "_TRASH"]})
+        scan_configs.append({"path": CLASSIFIED_DIR, "ignore": ["_R-18", "_R-15", "_TRASH", "_UNREADABLE"]})
     elif mode == 'r18':
         scan_configs.append({"path": os.path.join(CLASSIFIED_DIR, "_R-18"), "ignore": []})
         scan_configs.append({"path": os.path.join(CLASSIFIED_DIR, "_R-15"), "ignore": []})
     elif mode == 'all':
-        scan_configs.append({"path": CLASSIFIED_DIR, "ignore": ["_R-18", "_R-15", "_TRASH"]})
+        scan_configs.append({"path": CLASSIFIED_DIR, "ignore": ["_R-18", "_R-15", "_TRASH", "_UNREADABLE"]})
         scan_configs.append({"path": os.path.join(CLASSIFIED_DIR, "_R-18"), "ignore": []})
         scan_configs.append({"path": os.path.join(CLASSIFIED_DIR, "_R-15"), "ignore": []})
     elif mode == 'trash':
         scan_configs.append({"path": os.path.join(CLASSIFIED_DIR, "_TRASH"), "ignore": []})
 
     # 정렬 기준에 따라 폴더를 정렬
+    scan_progress = {
+        "folders": 0,
+        "images": 0,
+        "last_status_at": 0
+    }
+
+    def maybe_update_scan_status(force=False):
+        now = time.time()
+
+        if not force and now - scan_progress.get("last_status_at", 0) < 1.0:
+            return
+
+        scan_progress["last_status_at"] = now
+        update_gallery_data_status(
+            phase="scan",
+            message=f"폴더 스캔 중... 폴더 {scan_progress['folders']}개 / 이미지 {scan_progress['images']}장",
+            folders=scan_progress["folders"],
+            images=scan_progress["images"],
+            index_mode="scan_fallback"
+        )
+
     def scan_recursive(physical_path, virtual_node, ignore_list=[]):
         if not os.path.exists(physical_path): return
         try:
             with os.scandir(physical_path) as entries:
+                scan_progress["folders"] += 1
+                maybe_update_scan_status()
+
                 for entry in entries:
                     if entry.name in ignore_list: continue
+                    if entry.name == "_UNREADABLE":
+                        continue
 
                     if entry.is_dir():
                         if entry.name == UPSCALE_OUTPUT_FOLDER_NAME:
@@ -927,6 +1025,8 @@ def get_data():
                                             continue
 
                                         rel_img = os.path.relpath(up_entry.path, CLASSIFIED_DIR).replace('\\', '/')
+                                        scan_progress["images"] += 1
+                                        maybe_update_scan_status()
                                         mtime = os.path.getmtime(up_entry.path)
                                         cached = db.get_file_metadata(rel_img)
 
@@ -984,6 +1084,8 @@ def get_data():
 
                     elif entry.is_file() and entry.name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
                         rel_img = os.path.relpath(entry.path, CLASSIFIED_DIR).replace('\\', '/')
+                        scan_progress["images"] += 1
+                        maybe_update_scan_status()
                         mtime = os.path.getmtime(entry.path)
                         cached = db.get_file_metadata(rel_img)
 
@@ -1019,8 +1121,18 @@ def get_data():
             print(f"⚠️ 폴더 스캔 실패: {physical_path} | {scan_err}")
 
     # 2. 하위 폴더 정리
+    update_gallery_data_status(
+        phase="scan",
+        message="분류 폴더를 스캔 중입니다.",
+        folders=0,
+        images=0,
+        index_mode="scan_fallback"
+    )
+
     for config in scan_configs:
         scan_recursive(config["path"], tree_dict, config["ignore"])
+
+    maybe_update_scan_status(force=True)
 
     # 3. 폴더 리스트 정렬 및 빈 폴더 제거
     def finalize_tree(node, depth=0):
@@ -1056,7 +1168,21 @@ def get_data():
         if not node["thumb"] and node["images"]:
             node["thumb"] = main_img if main_img else node["images"][0]["path"]
 
+    update_gallery_data_status(
+        phase="finalize",
+        message="폴더 개수와 대표 이미지를 정리 중입니다.",
+        folders=scan_progress["folders"],
+        images=scan_progress["images"]
+    )
+
     finalize_tree(tree_dict, depth=0)
+
+    update_gallery_data_status(
+        phase="brand_map",
+        message="브랜드/캐릭터 표시 정보를 구성 중입니다.",
+        folders=scan_progress["folders"],
+        images=scan_progress["images"]
+    )
 
     # 브랜드 매핑 및 표시 설정 구성
     # app.py 내 brand_map 생성 부분 보강
@@ -1095,7 +1221,7 @@ def get_data():
 
     db.close()
 
-    return jsonify({
+    return {
         "tree": tree_dict,
         "baseDir": "TOTAL_CLASSIFIED",
         "brand_map": brand_map,
@@ -1105,7 +1231,481 @@ def get_data():
             "tags": gallery_tag_config.get("tags", []),
             "image_tags": gallery_tag_config.get("image_tags", {})
         }
+    }
+
+
+def build_gallery_brand_payload(db, tree_dict):
+    brand_map = {}
+    brand_visibility = {}
+    try:
+        needed_brand_keys = collect_gallery_tree_brand_lookup_keys(tree_dict)
+        cursor = db.conn.cursor()
+        cursor.execute(
+            "SELECT tag, clean_name, brand, brand_kr, COALESCE(is_visible, 1) "
+            "FROM known_characters "
+            "WHERE brand IS NOT NULL AND brand != 'Unknown'"
+        )
+        for row in cursor.fetchall():
+            tag, clean_name, brand, brand_kr, is_visible = row[0], row[1], row[2], row[3], row[4]
+            aliases = build_character_brand_lookup_aliases(tag, clean_name)
+            matched_aliases = [alias for alias in aliases if alias in needed_brand_keys]
+            if not matched_aliases:
+                continue
+            display_brand = brand_kr if brand_kr else brand.replace('_', ' ').replace('The ', '').title()
+            for alias in matched_aliases:
+                brand_map[alias] = display_brand
+            brand_visibility[display_brand] = is_visible
+    except Exception as e:
+        print(f"?좑툘 留ㅽ븨 ?ㅻ쪟: {e}")
+    return brand_map, brand_visibility
+
+
+def build_gallery_data_payload_from_index(mode, sort_by):
+    db = utils.HistoryDB()
+    try:
+        gallery_tag_config = load_gallery_image_tags_config()
+        tree = {"name": "ROOT", "path": "", "folders": {}, "images": [], "thumb": None, "total_images": 0}
+        folder_nodes = {"": tree}
+        cursor = db.conn.cursor()
+
+        select_cols = "SELECT rel_path, folder_path, file_name, width, height, mtime, reason, gallery_tag FROM gallery_images"
+
+        if mode == "general":
+            cursor.execute(f"""
+                {select_cols}
+                WHERE rel_path NOT LIKE '_R-18/%'
+                  AND rel_path NOT LIKE '_R-15/%'
+                  AND rel_path NOT LIKE '_TRASH/%'
+            """)
+        elif mode == "r18":
+            cursor.execute(f"""
+                {select_cols}
+                WHERE rel_path LIKE '_R-18/%'
+                   OR rel_path LIKE '_R-15/%'
+                   OR (mode = 'r18' AND rel_path NOT LIKE '_TRASH/%')
+            """)
+        elif mode == "trash":
+            cursor.execute(f"""
+                {select_cols}
+                WHERE rel_path LIKE '_TRASH/%'
+                   OR mode = 'trash'
+            """)
+        else:
+            cursor.execute(f"""
+                {select_cols}
+                WHERE rel_path NOT LIKE '_TRASH/%'
+                  AND (
+                        mode IN ('general', 'r18')
+                        OR rel_path LIKE '_R-18/%'
+                        OR rel_path LIKE '_R-15/%'
+                  )
+            """)
+
+        def get_node(folder_path):
+            folder_path = str(folder_path or "").replace("\\", "/").strip("/")
+            if folder_path in folder_nodes:
+                return folder_nodes[folder_path]
+            parent_path = os.path.dirname(folder_path).replace("\\", "/")
+            parent = get_node(parent_path)
+            name = os.path.basename(folder_path)
+            node = {"name": name, "path": folder_path, "folders": {}, "images": [], "thumb": None, "total_images": 0}
+            parent["folders"][name] = node
+            folder_nodes[folder_path] = node
+            return node
+
+        for rel_path, folder_path, file_name, width, height, mtime, reason, gallery_tag in cursor.fetchall():
+            display_folder_path = normalize_gallery_display_folder_path(folder_path)
+            node = get_node(display_folder_path)
+            node["images"].append({
+                "name": file_name,
+                "path": rel_path,
+                "w": width,
+                "h": height,
+                "mtime": mtime,
+                "reason": reason or "",
+                "gallery_tag": gallery_tag or get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
+            })
+
+        def finalize_tree(node, depth=0):
+            folder_list = list(node["folders"].values())
+            for child in folder_list:
+                finalize_tree(child, depth + 1)
+                node["total_images"] += child["total_images"]
+                if not node["thumb"] and child.get("thumb"):
+                    node["thumb"] = child["thumb"]
+            node["total_images"] += len(node["images"])
+            node["images"].sort(key=lambda x: (-float(x.get("mtime") or 0), x["name"]))
+            main_img = next((img["path"] for img in node["images"] if img["name"].startswith("000_MAIN_")), None)
+            if not node["thumb"] and node["images"]:
+                node["thumb"] = main_img if main_img else node["images"][0]["path"]
+            folder_list = [f for f in folder_list if f["total_images"] > 0]
+            if depth == 0:
+                order_map = {"1_Solo": 1, "2_Duo": 2, "3_Group": 3, "No_Metadata": 99}
+                folder_list.sort(key=lambda x: (order_map.get(x["name"], 50), x["name"]))
+            elif mode == "trash":
+                folder_list.sort(key=lambda x: x["name"], reverse=True)
+            elif sort_by == "count":
+                folder_list.sort(key=lambda x: (x["name"] == "No_Metadata", -x["total_images"]))
+            else:
+                folder_list.sort(key=lambda x: (x["name"] == "No_Metadata", x["name"]))
+            node["folders"] = folder_list
+
+        finalize_tree(tree)
+        brand_map, brand_visibility = build_gallery_brand_payload(db, tree)
+        return {
+            "tree": tree,
+            "baseDir": "TOTAL_CLASSIFIED",
+            "brand_map": brand_map,
+            "brand_visibility": brand_visibility,
+            "server_session_id": GALLERY_SERVER_SESSION_ID,
+            "gallery_tags": {
+                "tags": gallery_tag_config.get("tags", []),
+                "image_tags": gallery_tag_config.get("image_tags", {})
+            }
+        }
+    finally:
+        db.close()
+
+
+@app.route('/api/data/status')
+def get_gallery_data_status():
+    return jsonify({
+        "status": "success",
+        **get_gallery_data_status_snapshot()
     })
+
+
+@app.route('/api/data')
+def get_data():
+    mode = request.args.get('mode', 'general')
+    sort_by = request.args.get('sort', 'name')
+    allow_scan = request.args.get('allow_scan', '0') == '1'
+    index_mode = "scan_fallback"
+    data_started_perf = time.perf_counter()
+    data_started_wall = time.time()
+
+    update_gallery_data_status(
+        running=True,
+        phase="start",
+        message="갤러리 데이터 요청을 시작했습니다.",
+        mode=mode,
+        sort=sort_by,
+        started_at=data_started_wall,
+        finished_at=0,
+        elapsed=0,
+        folders=0,
+        images=0,
+        index_mode="scan_fallback",
+        error=""
+    )
+    print(f"[갤러리] /api/data 시작: mode={mode}, sort={sort_by}")
+
+    try:
+        db = utils.HistoryDB()
+        has_full_index = db.has_full_gallery_index()
+        db.close()
+    except Exception:
+        has_full_index = False
+
+    if has_full_index:
+        try:
+            update_gallery_data_status(
+                phase="index",
+                message="갤러리 인덱스에서 데이터를 불러오는 중입니다.",
+                index_mode="full_index"
+            )
+            payload = build_gallery_data_payload_from_index(mode, sort_by)
+            index_mode = "full_index"
+        except Exception as e:
+            print(f"gallery index fallback: {e}")
+            if not allow_scan:
+                auto_started, rebuild_running = start_gallery_index_rebuild_background(auto=True)
+                elapsed = time.perf_counter() - data_started_perf
+
+                update_gallery_data_status(
+                    running=False,
+                    phase="needs_index",
+                    message="갤러리 인덱스 로딩에 실패해 자동 복구 중입니다.",
+                    finished_at=time.time(),
+                    elapsed=elapsed,
+                    index_mode="needs_index",
+                    error=str(e)
+                )
+
+                print(
+                    f"[갤러리] full index 로딩 실패: 자동 인덱스 복구 "
+                    f"auto_started={auto_started}, rebuild_running={rebuild_running}, error={e}"
+                )
+
+                return jsonify({
+                    "status": "success",
+                    "needs_index": True,
+                    "auto_rebuild_started": bool(auto_started),
+                    "rebuild_running": bool(rebuild_running),
+                    "index_mode": "needs_index",
+                    "message": "갤러리 인덱스 로딩에 실패해 자동으로 복구 중입니다. 완료되면 갤러리를 다시 불러옵니다.",
+                    "error": str(e),
+                    "tree": {"name": "ROOT", "folders": [], "images": [], "total_images": 0},
+                    "baseDir": "TOTAL_CLASSIFIED",
+                    "brand_map": {},
+                    "brand_visibility": {},
+                    "server_session_id": GALLERY_SERVER_SESSION_ID,
+                    "gallery_tags": load_gallery_image_tags_config()
+                })
+            payload = build_gallery_data_payload_from_scan(mode, sort_by)
+    else:
+        if not allow_scan:
+            auto_started, rebuild_running = start_gallery_index_rebuild_background(auto=True)
+            elapsed = time.perf_counter() - data_started_perf
+
+            update_gallery_data_status(
+                running=False,
+                phase="needs_index",
+                message="빠른 갤러리 인덱스가 없어 자동 생성 중입니다.",
+                finished_at=time.time(),
+                elapsed=elapsed,
+                folders=0,
+                images=0,
+                index_mode="needs_index",
+                error=""
+            )
+
+            print(
+                f"[갤러리] full index 없음: 자동 인덱스 생성 "
+                f"auto_started={auto_started}, rebuild_running={rebuild_running}, mode={mode}, sort={sort_by}"
+            )
+
+            return jsonify({
+                "status": "success",
+                "needs_index": True,
+                "auto_rebuild_started": bool(auto_started),
+                "rebuild_running": bool(rebuild_running),
+                "index_mode": "needs_index",
+                "message": "빠른 갤러리 인덱스가 없어 자동으로 생성 중입니다. 완료되면 갤러리를 다시 불러옵니다.",
+                "tree": {"name": "ROOT", "folders": [], "images": [], "total_images": 0},
+                "baseDir": "TOTAL_CLASSIFIED",
+                "brand_map": {},
+                "brand_visibility": {},
+                "server_session_id": GALLERY_SERVER_SESSION_ID,
+                "gallery_tags": load_gallery_image_tags_config()
+            })
+
+        update_gallery_data_status(
+            phase="scan",
+            message="사용자 요청으로 기존 전체 스캔 방식으로 불러오는 중입니다.",
+            index_mode="scan_fallback"
+        )
+        payload = build_gallery_data_payload_from_scan(mode, sort_by)
+
+    elapsed = time.perf_counter() - data_started_perf
+    status_snapshot = get_gallery_data_status_snapshot()
+    update_gallery_data_status(
+        running=False,
+        phase="done",
+        message=f"갤러리 데이터 준비 완료 ({elapsed:.1f}초)",
+        finished_at=time.time(),
+        elapsed=elapsed,
+        folders=status_snapshot.get("folders", 0),
+        images=status_snapshot.get("images", 0),
+        index_mode=index_mode,
+        error=""
+    )
+
+    print(
+        f"[갤러리] /api/data 완료: mode={mode}, sort={sort_by}, index_mode={index_mode}, "
+        f"folders={status_snapshot.get('folders', 0)}, images={status_snapshot.get('images', 0)}, elapsed={elapsed:.1f}s"
+    )
+
+    payload["status"] = "success"
+    payload["index_mode"] = index_mode
+    return jsonify(payload)
+
+
+def infer_gallery_mode_from_rel_path(rel_path):
+    rel_path = str(rel_path or "").replace("\\", "/").strip("/")
+    if rel_path.startswith("_TRASH/"):
+        return "trash"
+    if rel_path.startswith("_R-18/") or rel_path.startswith("_R-15/"):
+        return "r18"
+    return "general"
+
+
+def normalize_gallery_display_folder_path(folder_path):
+    text = str(folder_path or "").replace("\\", "/").strip("/")
+
+    for prefix in ("_R-18/", "_R-15/", "_TRASH/"):
+        if text.startswith(prefix):
+            return text[len(prefix):].strip("/")
+
+    if text in {"_R-18", "_R-15", "_TRASH"}:
+        return ""
+
+    return text
+
+
+def gallery_index_rebuild_worker():
+    batch = []
+    batch_size = 2000
+    db = None
+    try:
+        with GALLERY_INDEX_REBUILD_LOCK:
+            GALLERY_INDEX_REBUILD_JOB.update({
+                "running": True,
+                "processed": 0,
+                "total": 0,
+                "message": "이미지 목록 수집 중...",
+                "error": "",
+                "done": False,
+                "started_at": time.time(),
+                "finished_at": 0
+            })
+
+        db = utils.HistoryDB()
+        db.clear_gallery_index()
+
+        image_paths = []
+        for root, dirs, files in os.walk(CLASSIFIED_DIR):
+            dirs[:] = [d for d in dirs if not os.path.exists(os.path.join(root, d, ".ignore"))]
+            if os.path.exists(os.path.join(root, ".ignore")):
+                dirs[:] = []
+                continue
+            for file_name in files:
+                if file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                    image_paths.append(os.path.join(root, file_name))
+
+        with GALLERY_INDEX_REBUILD_LOCK:
+            GALLERY_INDEX_REBUILD_JOB["total"] = len(image_paths)
+            GALLERY_INDEX_REBUILD_JOB["message"] = "갤러리 인덱스 작성 중..."
+
+        gallery_tag_config = load_gallery_image_tags_config()
+
+        for index, full_path in enumerate(image_paths, 1):
+            rel_path = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
+            folder_path = os.path.dirname(rel_path).replace("\\", "/")
+            if os.path.basename(folder_path) == UPSCALE_OUTPUT_FOLDER_NAME:
+                folder_path = os.path.dirname(folder_path).replace("\\", "/")
+            file_name = os.path.basename(rel_path)
+            try:
+                mtime = os.path.getmtime(full_path)
+            except Exception:
+                mtime = time.time()
+
+            cached = db.get_file_metadata(rel_path)
+            width = cached[0] if cached and cached[2] == mtime else None
+            height = cached[1] if cached and cached[2] == mtime else None
+
+            batch.append({
+                "rel_path": rel_path,
+                "folder_path": folder_path,
+                "file_name": file_name,
+                "mode": infer_gallery_mode_from_rel_path(rel_path),
+                "mtime": mtime,
+                "width": width,
+                "height": height,
+                "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
+            })
+
+            if len(batch) >= batch_size:
+                db.upsert_gallery_image_records(batch)
+                batch = []
+
+            if index % 500 == 0 or index == len(image_paths):
+                with GALLERY_INDEX_REBUILD_LOCK:
+                    GALLERY_INDEX_REBUILD_JOB["processed"] = index
+
+        if batch:
+            db.upsert_gallery_image_records(batch)
+
+        with GALLERY_INDEX_REBUILD_LOCK:
+            GALLERY_INDEX_REBUILD_JOB["message"] = "폴더 요약 생성 중..."
+            GALLERY_INDEX_REBUILD_JOB["processed"] = len(image_paths)
+
+        db.rebuild_gallery_folder_summaries()
+        db.set_gallery_index_state("full_index_built", "1")
+
+        with GALLERY_INDEX_REBUILD_LOCK:
+            GALLERY_INDEX_REBUILD_JOB.update({
+                "running": False,
+                "done": True,
+                "message": "인덱스 생성 완료",
+                "finished_at": time.time()
+            })
+    except Exception as e:
+        try:
+            if db:
+                db.set_gallery_index_state("full_index_built", "0")
+        except Exception:
+            pass
+        with GALLERY_INDEX_REBUILD_LOCK:
+            GALLERY_INDEX_REBUILD_JOB.update({
+                "running": False,
+                "done": True,
+                "error": str(e),
+                "message": "인덱스 생성 실패",
+                "finished_at": time.time()
+            })
+    finally:
+        if db:
+            db.close()
+
+
+def start_gallery_index_rebuild_background(auto=False):
+    """
+    갤러리 인덱스를 백그라운드에서 생성한다.
+    이미 실행 중이면 새로 시작하지 않는다.
+    반환값:
+      (started, running)
+      started=True  : 이번 호출에서 새 작업 시작
+      running=True  : 이미 실행 중이거나 방금 시작됨
+    """
+    with GALLERY_INDEX_REBUILD_LOCK:
+        if GALLERY_INDEX_REBUILD_JOB.get("running"):
+            return False, True
+
+        GALLERY_INDEX_REBUILD_JOB.update({
+            "running": True,
+            "processed": 0,
+            "total": 0,
+            "message": "갤러리 인덱스 자동 생성 준비 중..." if auto else "갤러리 인덱스 생성 준비 중...",
+            "error": "",
+            "done": False,
+            "started_at": time.time(),
+            "finished_at": 0
+        })
+
+    thread = threading.Thread(target=gallery_index_rebuild_worker, daemon=True)
+    thread.start()
+    return True, True
+
+
+@app.route('/api/gallery/index/rebuild', methods=['POST'])
+def start_gallery_index_rebuild():
+    start_gallery_index_rebuild_background(auto=False)
+
+    with GALLERY_INDEX_REBUILD_LOCK:
+        payload = dict(GALLERY_INDEX_REBUILD_JOB)
+
+    return jsonify({"status": "success", **payload})
+
+
+@app.route('/api/gallery/index/status')
+def gallery_index_status():
+    try:
+        db = utils.HistoryDB()
+        full_index_built = db.has_full_gallery_index()
+        db.close()
+    except Exception:
+        full_index_built = False
+
+    with GALLERY_INDEX_REBUILD_LOCK:
+        payload = dict(GALLERY_INDEX_REBUILD_JOB)
+
+    payload.update({
+        "status": "success",
+        "full_index_built": bool(full_index_built),
+        "index_mode_available": bool(full_index_built)
+    })
+    return jsonify(payload)
 
 
 @app.route('/api/gallery/tags', methods=['GET'])
