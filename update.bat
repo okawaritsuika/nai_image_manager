@@ -31,8 +31,10 @@ echo [INFO] This usually means you downloaded the ZIP version.
 echo.
 echo This updater can convert this folder into a Git-managed folder.
 echo Source files may be overwritten with the latest GitHub version.
-echo A backup will be created before conversion.
-echo User data files should remain if they are ignored by Git.
+echo No automatic backup will be created.
+echo Large user data folders such as TOTAL_CLASSIFIED will not be copied or backed up.
+echo If you are worried, please make your own backup before continuing.
+echo User data files should remain as untracked or ignored files.
 echo.
 set /p CONFIRM=Convert this folder and update now? (Y/N):
 
@@ -43,9 +45,6 @@ if /I not "%CONFIRM%"=="Y" (
     pause
     exit /b 0
 )
-
-call :CREATE_BACKUP
-if errorlevel 1 exit /b 1
 
 echo.
 echo Initializing Git repository...
@@ -84,7 +83,8 @@ git reset --hard origin/%BRANCH%
 if errorlevel 1 (
     echo.
     echo [ERROR] Failed to synchronize files with GitHub.
-    echo Your backup folder was already created before this step.
+    echo No automatic backup was created by this updater.
+    echo If needed, check your existing folder contents before retrying.
     echo.
     pause
     exit /b 1
@@ -169,37 +169,4 @@ echo.
 echo [OK] Update complete.
 echo.
 pause
-exit /b 0
-
-
-:CREATE_BACKUP
-for /f "tokens=1-4 delims=/-. " %%A in ("%date%") do set "DATE_PART=%%A%%B%%C%%D"
-for /f "tokens=1-4 delims=:., " %%A in ("%time%") do set "TIME_PART=%%A%%B%%C%%D"
-set "DATE_PART=%DATE_PART: =0%"
-set "TIME_PART=%TIME_PART: =0%"
-set "BACKUP_DIR=_update_backup_%DATE_PART%_%TIME_PART%"
-
-echo.
-echo Creating backup before conversion...
-mkdir "%BACKUP_DIR%"
-if errorlevel 1 (
-    echo.
-    echo [ERROR] Failed to create backup folder.
-    echo Update was stopped for safety.
-    echo.
-    pause
-    exit /b 1
-)
-
-robocopy "." "%BACKUP_DIR%" /E /XD ".git" "%BACKUP_DIR%" ".venv" "__pycache__" /XF "update.bat" >nul
-if errorlevel 8 (
-    echo.
-    echo [ERROR] Failed to create backup.
-    echo Update was stopped for safety.
-    echo.
-    pause
-    exit /b 1
-)
-
-echo [OK] Backup created: %BACKUP_DIR%
 exit /b 0

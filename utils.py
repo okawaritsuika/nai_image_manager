@@ -5,6 +5,7 @@ import re
 import sqlite3
 import hashlib
 import socket
+import time
 
 CONFIG_FILE = "gallery_config.json"
 
@@ -192,6 +193,47 @@ class HistoryDB:
                     PRIMARY KEY (path, artist_name)
                 )
             ''')
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS gallery_images (
+                    rel_path TEXT PRIMARY KEY,
+                    folder_path TEXT,
+                    file_name TEXT,
+                    mode TEXT,
+                    rating TEXT,
+                    brand TEXT,
+                    character_names TEXT,
+                    is_dakimakura INTEGER DEFAULT 0,
+                    width INTEGER,
+                    height INTEGER,
+                    mtime REAL,
+                    reason TEXT,
+                    gallery_tag TEXT,
+                    updated_at REAL
+                )
+            ''')
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS gallery_folders (
+                    folder_path TEXT PRIMARY KEY,
+                    parent_path TEXT,
+                    folder_name TEXT,
+                    mode TEXT,
+                    total_images INTEGER DEFAULT 0,
+                    direct_images INTEGER DEFAULT 0,
+                    thumb_path TEXT,
+                    updated_at REAL
+                )
+            ''')
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS gallery_index_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at REAL
+                )
+            ''')
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_images_folder_path ON gallery_images(folder_path)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_images_mode ON gallery_images(mode)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_folders_parent_path ON gallery_folders(parent_path)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_folders_mode ON gallery_folders(mode)")
 
     def extract_characters_from_prompt(self, prompt_text):
         if not prompt_text: return []
@@ -277,8 +319,19 @@ class HistoryDB:
 
     def reset_db(self):
         try:
+            now = time.time()
             with self.conn:
                 self.conn.execute("DELETE FROM processed_files")
+                self.conn.execute("DELETE FROM gallery_images")
+                self.conn.execute("DELETE FROM gallery_folders")
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("full_index_built", "0", now)
+                )
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("gallery_index_reset_for_reclassify", "1", now)
+                )
             return True
         except:
             return False
@@ -356,6 +409,169 @@ class HistoryDB:
                 self.conn.execute("DELETE FROM file_metadata WHERE path = ? OR path LIKE ?", (clean, like_pattern))
         except Exception as e:
             print(f"DB 폴더 기록 삭제 실패: {e}")
+
+    def normalize_gallery_rel_path(self, path):
+        text = str(path or "").replace("\\", "/").strip()
+        while text.startswith("/"):
+            text = text[1:]
+        return text
+
+    def set_gallery_index_state(self, key, value):
+        now = time.time()
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                (str(key), str(value), now)
+            )
+
+    def get_gallery_index_state(self, key, default=None):
+        cur = self.conn.cursor()
+        cur.execute("SELECT value FROM gallery_index_state WHERE key = ?", (str(key),))
+        row = cur.fetchone()
+        return row[0] if row else default
+
+    def has_full_gallery_index(self):
+        return self.get_gallery_index_state("full_index_built", "0") == "1"
+
+    def clear_gallery_index(self):
+        with self.conn:
+            self.conn.execute("DELETE FROM gallery_images")
+            self.conn.execute("DELETE FROM gallery_folders")
+            self.conn.execute(
+                "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                ("full_index_built", "0", time.time())
+            )
+
+    def upsert_gallery_image_records(self, records):
+        if not records:
+            return
+
+        now = time.time()
+        image_rows = []
+        folder_map = {}
+
+        for record in records:
+            rel_path = self.normalize_gallery_rel_path(record.get("rel_path"))
+            if not rel_path:
+                continue
+
+            folder_path = self.normalize_gallery_rel_path(record.get("folder_path") or os.path.dirname(rel_path))
+            file_name = str(record.get("file_name") or os.path.basename(rel_path))
+            mode = str(record.get("mode") or "general")
+
+            image_rows.append((
+                rel_path,
+                folder_path,
+                file_name,
+                mode,
+                str(record.get("rating") or ""),
+                str(record.get("brand") or ""),
+                str(record.get("character_names") or ""),
+                1 if record.get("is_dakimakura") else 0,
+                record.get("width"),
+                record.get("height"),
+                record.get("mtime"),
+                str(record.get("reason") or ""),
+                str(record.get("gallery_tag") or ""),
+                now
+            ))
+
+            folder_name = os.path.basename(folder_path) if folder_path else ""
+            parent_path = os.path.dirname(folder_path).replace("\\", "/") if folder_path else ""
+            folder_map[folder_path] = (folder_path, parent_path, folder_name, mode, now)
+
+        if not image_rows:
+            return
+
+        with self.conn:
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO gallery_images
+                (rel_path, folder_path, file_name, mode, rating, brand, character_names,
+                 is_dakimakura, width, height, mtime, reason, gallery_tag, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                image_rows
+            )
+            self.conn.executemany(
+                """
+                INSERT OR IGNORE INTO gallery_folders
+                (folder_path, parent_path, folder_name, mode, total_images, direct_images, thumb_path, updated_at)
+                VALUES (?, ?, ?, ?, 0, 0, '', ?)
+                """,
+                list(folder_map.values())
+            )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                ("partial_index_updated_at", str(now), now)
+            )
+
+    def rebuild_gallery_folder_summaries(self):
+        now = time.time()
+        cur = self.conn.cursor()
+        cur.execute("SELECT rel_path, folder_path, file_name, mode, mtime FROM gallery_images")
+        images = cur.fetchall()
+        folders = {}
+
+        def ensure_folder(folder_path, mode):
+            folder_path = self.normalize_gallery_rel_path(folder_path)
+            if folder_path not in folders:
+                folders[folder_path] = {
+                    "folder_path": folder_path,
+                    "parent_path": os.path.dirname(folder_path).replace("\\", "/") if folder_path else "",
+                    "folder_name": os.path.basename(folder_path) if folder_path else "",
+                    "mode": mode or "general",
+                    "total_images": 0,
+                    "direct_images": 0,
+                    "thumb_path": "",
+                    "thumb_score": (-1, -1.0)
+                }
+            return folders[folder_path]
+
+        for rel_path, folder_path, file_name, mode, mtime in images:
+            mode = mode or "general"
+            folder_path = self.normalize_gallery_rel_path(folder_path)
+            node = ensure_folder(folder_path, mode)
+            node["direct_images"] += 1
+            score = (1 if str(file_name or "").startswith("000_MAIN_") else 0, float(mtime or 0))
+            if score > node["thumb_score"]:
+                node["thumb_score"] = score
+                node["thumb_path"] = rel_path
+
+            current = folder_path
+            while current:
+                parent_node = ensure_folder(current, mode)
+                parent_node["total_images"] += 1
+                if score > parent_node["thumb_score"]:
+                    parent_node["thumb_score"] = score
+                    parent_node["thumb_path"] = rel_path
+                current = os.path.dirname(current).replace("\\", "/")
+
+        rows = [
+            (
+                item["folder_path"],
+                item["parent_path"],
+                item["folder_name"],
+                item["mode"],
+                item["total_images"],
+                item["direct_images"],
+                item["thumb_path"],
+                now
+            )
+            for item in folders.values()
+            if item["folder_path"]
+        ]
+
+        with self.conn:
+            self.conn.execute("DELETE FROM gallery_folders")
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO gallery_folders
+                (folder_path, parent_path, folder_name, mode, total_images, direct_images, thumb_path, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows
+            )
 
     def close(self):
         self.conn.close()
