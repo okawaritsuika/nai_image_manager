@@ -14,18 +14,20 @@
                 <button onclick="location.href='/daki-workshop'" style="background: #00b894; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(0, 184, 148, 0.3);">🛏️ 다키 제작소</button>
                 <button onclick="location.href='/canvas'" style="background: #6366f1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);">🖼️ 캔버스</button>
 
-                <button id="galleryHeaderToolsToggle"
-                        onclick="toggleGalleryHeaderTools()"
-                        class="gallery-header-tools-toggle">
-                    도구 펼치기 ▼
-                </button>
+                <div class="gallery-header-tools-wrap">
+                    <button id="galleryHeaderToolsToggle"
+                            onclick="toggleGalleryHeaderTools(event)"
+                            class="gallery-header-tools-toggle">
+                        도구 펼치기 ▼
+                    </button>
 
-                <div id="galleryHeaderTools" class="gallery-header-tools collapsed">
-                    <button onclick="openFolderMgr()" style="background: #0984e3; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px;">📁 폴더 관리</button>               
-                    <button onclick="toggleBrandManager()" style="background: #ff007c; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(255, 0, 124, 0.3);">👑 브랜드 관리</button>
-                    <button onclick="toggleArtStyleManager()" style="background: #f1c40f; color: #000; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(241, 196, 15, 0.3);">🎨 그림체 관리</button>
-                    <button onclick="openGalleryTagManager()" style="background: #2dd4bf; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(45, 212, 191, 0.3);">🏷️ 태그 관리</button>
-                    <button onclick="toggleStats()" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">📊 통계 보기</button>
+                    <div id="galleryHeaderTools" class="gallery-header-tools collapsed">
+                        <button onclick="openFolderMgr()" title="폴더 관리" style="background: #0984e3; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px;">📁 폴더</button>               
+                        <button onclick="toggleBrandManager()" title="브랜드 관리" style="background: #ff007c; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(255, 0, 124, 0.3);">👑 브랜드</button>
+                        <button onclick="toggleArtStyleManager()" title="그림체 관리" style="background: #f1c40f; color: #000; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(241, 196, 15, 0.3);">🎨 그림체</button>
+                        <button onclick="openGalleryTagManager()" title="태그 관리" style="background: #2dd4bf; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(45, 212, 191, 0.3);">🏷️ 태그</button>
+                        <button onclick="toggleStats()" title="통계 보기" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">📊 통계</button>
+                    </div>
                 </div>
                 <div style="font-weight:900; font-size: 13px; margin-right: 10px;">
                     대표: <span id="count-thm" style="color:var(--thumb);">0</span> |
@@ -291,12 +293,175 @@
         <div id="ruleTagsExpandedLayer" style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:4001; justify-content:center; align-items:center;">
             <div style="background:#1e1e2e; padding:25px; border-radius:12px; width:85%; height:85%; display:flex; flex-direction:column; border:1px solid #444; box-shadow:0 10px 30px rgba(0,0,0,0.9);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                    <h3 style="color:#0984e3; margin:0;">📝 프롬프트 대량 입력 (쉼표 또는 줄바꿈으로 구분)</h3>
+                    <h3 id="ruleTagsExpandedTitle" style="color:#0984e3; margin:0;">📝 프롬프트 대량 입력 - 개별</h3>
                     <button onclick="closeTagsExpanded()" style="background:none; border:none; color:#888; font-size:24px; cursor:pointer;">&times;</button>
                 </div>
-                <textarea id="ruleTagsExpandedText" style="flex:1; background:#121218; color:#39ff14; border:1px solid #333; border-radius:8px; padding:15px; font-family:Consolas; font-size:14px; resize:none; outline:none;" placeholder="여기에 대량의 프롬프트를 붙여넣으세요..."></textarea>
+                <div class="route-expanded-mode-row">
+                    <div class="route-expanded-mode-buttons">
+                        <button type="button"
+                                id="ruleTagsExpandedSingleBtn"
+                                class="route-mode-btn"
+                                onclick="setRouteTagsExpandedMode('single')">
+                            개별
+                        </button>
+                        <button type="button"
+                                id="ruleTagsExpandedGroupBtn"
+                                class="route-mode-btn"
+                                onclick="setRouteTagsExpandedMode('group')">
+                            묶음
+                        </button>
+                    </div>
+                    <div id="ruleTagsExpandedHint" class="route-expanded-mode-hint">
+                        개별: 콤마와 엔터로 각각 분리합니다.
+                    </div>
+                </div>
+                <textarea id="ruleTagsExpandedText"
+                          class="route-tags-expanded-textarea route-single-mode"
+                          style="flex:1; background:#121218; color:#39ff14; border:1px solid #333; border-radius:8px; padding:15px; font-family:Consolas; font-size:14px; resize:none; outline:none;"
+                          placeholder="여기에 대량의 프롬프트를 붙여넣으세요."></textarea>
                 <div style="text-align:right; margin-top:20px;">
                     <button onclick="applyTagsExpanded()" style="background:#0984e3; color:#fff; border:none; padding:12px 30px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px;">적용 및 닫기</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="routeRuleTestLayer" class="route-test-layer">
+            <div class="route-test-card">
+                <div class="route-test-header">
+                    <div>
+                        <h3>🧪 이 프롬프트/이미지는 어느 폴더로 갈까?</h3>
+                        <p>현재 화면의 규칙으로만 테스트합니다. 실제 파일은 옮기지 않습니다.</p>
+                    </div>
+                    <button type="button" onclick="closeRouteRuleTester()">×</button>
+                </div>
+
+                <div class="route-test-body">
+                    <div class="route-test-section">
+                        <div class="route-test-label">테스트 대상</div>
+                        <div class="route-test-toggle-row">
+                            <button id="routeTestTargetAllBtn" class="route-test-toggle active" onclick="setRouteTestTarget('all')">모든 규칙</button>
+                            <button id="routeTestTargetSingleBtn" class="route-test-toggle" onclick="setRouteTestTarget('single')">특정 규칙</button>
+                            <button id="routeTestTargetPromptBtn" class="route-test-toggle" onclick="setRouteTestTarget('prompt')">프롬프트 입력</button>
+                        </div>
+                        <div id="routeTestRuleChecklistWrap" class="route-test-rule-checklist-wrap" style="display:none;">
+                            <div class="route-test-rule-checklist-toolbar">
+                                <span>테스트할 규칙을 여러 개 선택할 수 있습니다.</span>
+                                <div>
+                                    <button type="button" onclick="setAllRouteTestRulesChecked(true)">전체 선택</button>
+                                    <button type="button" onclick="setAllRouteTestRulesChecked(false)">전체 해제</button>
+                                </div>
+                            </div>
+                            <div id="routeTestRuleChecklist" class="route-test-rule-checklist"></div>
+                        </div>
+                    </div>
+
+                    <div id="routeTestInputModeSection" class="route-test-section">
+                        <div class="route-test-label">입력 방식</div>
+                        <div class="route-test-toggle-row">
+                            <button id="routeTestTabImageBtn" class="route-test-toggle active" onclick="setRouteTestTab('image')">이미지 선택</button>
+                            <button id="routeTestTabFolderBtn" class="route-test-toggle" onclick="setRouteTestTab('folder')">폴더 선택</button>
+                        </div>
+                    </div>
+
+                    <div id="routeTestPromptRulePane" class="route-test-pane" style="display:none;">
+                        <div class="route-test-prompt-mode-row">
+                            <div class="route-test-label small">임시 규칙 방식</div>
+                            <div class="route-test-toggle-row">
+                                <button id="routeTestPromptSingleBtn"
+                                        class="route-test-toggle active"
+                                        onclick="setRouteTestPromptMode('single')">
+                                    개별
+                                </button>
+                                <button id="routeTestPromptGroupBtn"
+                                        class="route-test-toggle"
+                                        onclick="setRouteTestPromptMode('group')">
+                                    묶음
+                                </button>
+                            </div>
+                            <div id="routeTestPromptModeHint" class="route-test-help">
+                                개별: 콤마와 Enter로 나눈 항목 중 지정 개수 이상 일치하면 통과합니다.
+                            </div>
+                        </div>
+                        <textarea id="routeTestPromptText"
+                                  class="route-tags-expanded-textarea route-single-mode"
+                                  placeholder="임시 감지 규칙을 입력하세요. 예: aaaa, bbb, ccc"></textarea>
+                        <div class="route-test-help">
+                            이 내용은 테스트용 임시 규칙으로만 사용되며, 실제 정밀 라우팅 규칙에는 저장되지 않습니다.
+                        </div>
+                    </div>
+
+                    <div id="routeTestImagePane" class="route-test-pane">
+                        <div id="routeTestImageDropZone"
+                             class="route-test-drop-zone"
+                             onclick="document.getElementById('routeTestImageFileInput').click()"
+                             ondragover="handleRouteTestImageDragOver(event)"
+                             ondragleave="handleRouteTestImageDragLeave(event)"
+                             ondrop="handleRouteTestImageDrop(event)">
+                            <div class="route-test-drop-icon">🖼️</div>
+                            <div class="route-test-drop-title">이미지를 여기에 끌어오거나 클릭해서 선택</div>
+                            <div class="route-test-drop-sub">여러 장 선택 가능 · 실제 파일은 이동하지 않습니다.</div>
+                        </div>
+
+                        <input id="routeTestImageFileInput"
+                               type="file"
+                               accept="image/*"
+                               multiple
+                               style="display:none;"
+                               onchange="handleRouteTestImageFiles(this.files)">
+
+                        <div class="route-test-picker-block">
+                            <div class="route-test-picker-header">
+                                <span>선택한 이미지</span>
+                                <button type="button" onclick="clearRouteTestImages()">비우기</button>
+                            </div>
+                            <div id="routeTestSelectedImages" class="route-test-selected-list"></div>
+                        </div>
+
+                        <div class="route-test-help">
+                            선택한 이미지의 프롬프트 메타데이터만 읽어서 테스트합니다. 실제 파일은 이동하지 않습니다.
+                        </div>
+                    </div>
+
+                    <div id="routeTestFolderPane" class="route-test-pane" style="display:none;">
+                        <div class="route-test-folder-select-row">
+                            <div>
+                                <div class="route-test-selected-label">선택한 폴더</div>
+                                <div id="routeTestSelectedFolderLabel" class="route-test-selected-folder">선택 안 함</div>
+                                <div id="routeTestSelectedFolderMeta" class="route-test-folder-meta">
+                                    폴더 선택 버튼으로 테스트할 폴더를 지정하세요.
+                                </div>
+                            </div>
+                            <button type="button" onclick="pickRouteTestFolder()">폴더 선택</button>
+                        </div>
+
+                        <div class="route-test-options route-test-options-grid">
+                            <label class="route-test-sample-label">
+                                <span>검사 수량</span>
+                                <select id="routeTestSampleMode">
+                                    <option value="random100" selected>랜덤 100장</option>
+                                    <option value="first20">처음 20장</option>
+                                    <option value="first100">처음 100장</option>
+                                    <option value="all">전체 검사</option>
+                                </select>
+                            </label>
+                            <label class="route-test-check-label">
+                                <input id="routeTestIncludeSubfolders" type="checkbox">
+                                <span>하위 폴더 포함</span>
+                            </label>
+                            <label class="route-test-check-label">
+                                <input id="routeTestOnlyUnmatched" type="checkbox">
+                                <span>매칭 실패만 표시</span>
+                            </label>
+                        </div>
+                        <div class="route-test-help">폴더는 로컬 앱 서버에서 직접 읽습니다. 파일을 업로드하지 않습니다.</div>
+                    </div>
+
+                    <div class="route-test-actions">
+                        <button type="button" class="route-test-secondary" onclick="cancelRouteFolderTest()">폴더 테스트 중지</button>
+                        <button type="button" class="route-test-primary" onclick="runRouteRuleTest()">테스트 실행</button>
+                    </div>
+
+                    <div id="routeTestResult" class="route-test-result"></div>
                 </div>
             </div>
         </div>
@@ -306,13 +471,34 @@
             <button onclick="closeFolderMgr()" style="background:none; border:none; color:#888; font-size:28px; cursor:pointer; line-height:1;">&times;</button>
         </div>
 
-        <div style="padding:20px 25px; background:#161625; border-bottom:1px solid #2a2a35;">
+        <div id="folderMgrViewToolbarContainer" class="folder-mgr-view-toolbar-container"></div>
+
+        <div id="folderMgrAddPanel" class="folder-mgr-add-panel" style="padding:20px 25px; background:#161625; border-bottom:1px solid #2a2a35;">
+            <div id="routeRuleAddTitle" class="route-rule-add-title">새 상위 규칙 추가</div>
+            <div id="routeRuleAddTargetNotice" class="route-rule-add-target-notice" style="display:none;"></div>
             <div style="display:flex; gap:10px; align-items:stretch; margin-bottom:12px;">
                 <input type="text" id="ruleFolderName" placeholder="이동할 폴더명 (예: _Comic)" style="flex:1; padding:12px 15px; background:#222230; border:1px solid #3b3b4f; color:#fff; border-radius:8px; outline:none; font-family:'Malgun Gothic'; font-size:14px;">
 
                 <div style="flex:2; display:flex; background:#222230; border:1px solid #3b3b4f; border-radius:8px; overflow:hidden;">
-                    <input type="text" id="ruleTags" placeholder="감지할 프롬프트/태그 입력..." style="flex:1; padding:12px 15px; background:none; border:none; color:#fff; outline:none; font-family:'Malgun Gothic'; font-size:14px;">
-                    <button onclick="openTagsExpanded()" style="background:#3b3b4f; color:#fff; border:none; border-left:1px solid #2a2a35; padding:0 15px; cursor:pointer; font-weight:bold; transition:background 0.2s;" onmouseover="this.style.background='#4b4b6b'" onmouseout="this.style.background='#3b3b4f'">⤢ 크게</button>
+                    <input type="text" id="ruleTags" placeholder="감지할 프롬프트/태그 입력..." oninput="updateNewRulePromptText(this.value)" style="flex:1; padding:12px 15px; background:none; border:none; color:#fff; outline:none; font-family:'Malgun Gothic'; font-size:14px;">
+                    <button type="button"
+                            id="newRuleSingleModeBtn"
+                            class="route-mode-btn route-mode-mini active"
+                            onclick="selectNewRouteRulePromptMode('single')">
+                        개별
+                    </button>
+                    <button type="button"
+                            id="newRuleGroupModeBtn"
+                            class="route-mode-btn route-mode-mini"
+                            onclick="selectNewRouteRulePromptMode('group')">
+                        묶음
+                    </button>
+                    <button type="button"
+                            class="route-mode-btn route-mode-mini route-expand-mini"
+                            onclick="openTagsExpanded()"
+                            title="프롬프트 대량 입력">
+                        ⤢
+                    </button>
                 </div>
 
                 <select id="ruleCondition" onchange="toggleMatchCount()" style="padding:0 15px; background:#222230; border:1px solid #3b3b4f; color:#fff; border-radius:8px; outline:none; cursor:pointer; font-family:'Malgun Gothic'; font-size:14px;">
@@ -332,7 +518,8 @@
 
         <div style="flex:1; overflow-y:auto; padding:20px 25px; background:#1a1a24;" id="folderMgrTableContainer"></div>
 
-        <div style="padding:15px 25px; background:#121218; border-top:1px solid #2a2a35; text-align:right;">
+        <div style="padding:15px 25px; background:#121218; border-top:1px solid #2a2a35; display:flex; justify-content:flex-end; gap:10px;">
+            <button onclick="openRouteRuleTester()" class="route-test-open-btn">🧪 규칙 테스트</button>
             <button onclick="saveFolderRules()" style="background:#0984e3; color:#fff; border:none; padding:12px 35px; border-radius:30px; font-weight:bold; cursor:pointer; font-size:14px; box-shadow: 0 4px 15px rgba(9, 132, 227, 0.4); transition:transform 0.1s;" onmousedown="this.style.transform='scale(0.98)'" onmouseup="this.style.transform='scale(1)'">💾 서버에 전체 규칙 저장</button>
         </div>
     </div>

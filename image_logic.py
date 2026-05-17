@@ -994,15 +994,91 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         # 🌟 커스텀 규칙 + 기본 분류 (우선순위 엔진)
         # ----------------------------------------------------
 
-        all_tags = [str(t).lower() for t in (char_tags + base_tags) if t]
-        full_tags_lower = " ".join(all_tags)
+        all_tags = [str(t) for t in (char_tags + base_tags) if t]
+
+        def clean_route_prompt_text(value):
+            return re.sub(r"\s+", " ", str(value or "").strip())
+
+        def route_prompt_match_keys(value):
+            text = clean_route_prompt_text(value).lower()
+            if not text:
+                return set()
+
+            space_text = re.sub(r"\s+", " ", text.replace("_", " ")).strip()
+            underscore_text = re.sub(r"\s+", "_", space_text)
+            compact_text = re.sub(r"[\s_]+", "", space_text)
+
+            return {key for key in (text, space_text, underscore_text, compact_text) if key}
+
+        def dedupe_route_prompts_for_match(items):
+            prompts = []
+            seen = set()
+
+            for item in items or []:
+                prompt = clean_route_prompt_text(item)
+                if not prompt:
+                    continue
+
+                keys = route_prompt_match_keys(prompt)
+                dedupe_key = next(iter(sorted(keys)), "")
+                if not dedupe_key or dedupe_key in seen:
+                    continue
+
+                seen.add(dedupe_key)
+                prompts.append(prompt)
+
+            return prompts
+
+        def normalize_route_tag_groups_for_match(raw_groups):
+            groups = []
+            seen_groups = set()
+
+            if not isinstance(raw_groups, list):
+                return groups
+
+            for raw_group in raw_groups:
+                if isinstance(raw_group, list):
+                    group_items = raw_group
+                else:
+                    group_items = [raw_group]
+
+                group = dedupe_route_prompts_for_match(group_items)
+                if not group:
+                    continue
+
+                group_key = tuple(
+                    next(iter(sorted(route_prompt_match_keys(tag))), "")
+                    for tag in group
+                )
+                if group_key in seen_groups:
+                    continue
+
+                seen_groups.add(group_key)
+                groups.append(group)
+
+            return groups
+
+        full_route_tag_keys = set()
+        for tag in all_tags:
+            full_route_tag_keys.update(route_prompt_match_keys(tag))
+
+        def route_rule_prompt_matches(prompt):
+            return any(key in full_route_tag_keys for key in route_prompt_match_keys(prompt))
 
         def route_rule_matches(rule):
-            rule_tags = [
-                str(t or "").strip().lower()
-                for t in rule.get("tags", [])
-                if str(t or "").strip()
-            ]
+            prompt_mode = "group" if rule.get("prompt_mode") == "group" else "single"
+            rule_tags = dedupe_route_prompts_for_match(rule.get("tags", []))
+            tag_groups = normalize_route_tag_groups_for_match(rule.get("tag_groups", []))
+
+            if prompt_mode == "group":
+                if not tag_groups and rule_tags:
+                    tag_groups = [[tag] for tag in rule_tags]
+
+                return any(
+                    all(route_rule_prompt_matches(tag) for tag in group)
+                    for group in tag_groups
+                    if group
+                )
 
             if not rule_tags:
                 return False
@@ -1016,9 +1092,9 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             match_count = max(1, match_count)
 
             if condition == "all":
-                return all(t in full_tags_lower for t in rule_tags)
+                return all(route_rule_prompt_matches(tag) for tag in rule_tags)
 
-            matched = sum(1 for t in rule_tags if t in full_tags_lower)
+            matched = sum(1 for tag in rule_tags if route_rule_prompt_matches(tag))
             return matched >= match_count
 
         def find_matching_child_route(children):

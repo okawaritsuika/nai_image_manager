@@ -2479,6 +2479,95 @@ def bulk_update_brands():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
+def clean_route_prompt_text(value):
+    text = str(value or "").strip()
+    return re.sub(r"\s+", " ", text)
+
+
+def route_prompt_dedupe_key(value):
+    text = clean_route_prompt_text(value).lower().replace("_", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    compact = re.sub(r"[\s_]+", "", text)
+    return compact or text
+
+
+def dedupe_route_prompts(items):
+    deduped = []
+    seen = set()
+
+    for item in items or []:
+        text = clean_route_prompt_text(item)
+        if not text:
+            continue
+
+        key = route_prompt_dedupe_key(text)
+        if not key or key in seen:
+            continue
+
+        seen.add(key)
+        deduped.append(text)
+
+    return deduped
+
+
+def parse_route_tags_single(raw):
+    if isinstance(raw, str):
+        items = re.split(r"[,\n]+", raw)
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        items = []
+
+    return dedupe_route_prompts(items)
+
+
+def parse_route_tag_groups(raw):
+    groups = []
+
+    if isinstance(raw, str):
+        for line in raw.splitlines():
+            groups.append(re.split(r",+", line))
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, list):
+                groups.append(item)
+            elif isinstance(item, str):
+                groups.append(re.split(r",+", item))
+            else:
+                groups.append([item])
+
+    normalized = []
+    seen_groups = set()
+
+    for group in groups:
+        tags = dedupe_route_prompts(group)
+        if not tags:
+            continue
+
+        group_key = tuple(route_prompt_dedupe_key(tag) for tag in tags)
+        if group_key in seen_groups:
+            continue
+
+        seen_groups.add(group_key)
+        normalized.append(tags)
+
+    return normalized
+
+
+def route_prompt_text_from_rule(rule, tags=None, tag_groups=None, prompt_mode="single"):
+    raw = rule.get("prompt_text")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+
+    if prompt_mode == "group" and tag_groups:
+        return "\n".join(", ".join(group) for group in tag_groups if group)
+
+    if tags:
+        return "\n".join(tags)
+
+    return ""
+
+
 def normalize_custom_route_rules(rules, depth=0):
     if not isinstance(rules, list) or depth > 5:
         return []
@@ -2499,24 +2588,24 @@ def normalize_custom_route_rules(rules, depth=0):
             continue
 
         folder = str(rule.get("folder") or "").strip()
-        raw_tags = rule.get("tags") or []
+        tags = parse_route_tags_single(rule.get("tags") or [])
+        prompt_mode = "group" if rule.get("prompt_mode") == "group" else "single"
+        tag_groups = parse_route_tag_groups(rule.get("tag_groups") or [])
+        prompt_text = route_prompt_text_from_rule(rule, tags, tag_groups, prompt_mode)
 
-        if isinstance(raw_tags, str):
-            tags = [
-                tag.strip().lower()
-                for tag in re.split(r"[,\n]+", raw_tags)
-                if tag.strip()
-            ]
-        elif isinstance(raw_tags, list):
-            tags = [
-                str(tag or "").strip().lower()
-                for tag in raw_tags
-                if str(tag or "").strip()
-            ]
-        else:
-            tags = []
+        if prompt_text:
+            tags_from_text = parse_route_tags_single(prompt_text)
+            groups_from_text = parse_route_tag_groups(prompt_text)
 
-        if not folder or not tags:
+            if tags_from_text:
+                tags = tags_from_text
+            if groups_from_text:
+                tag_groups = groups_from_text
+
+        if prompt_mode == "group" and not tag_groups and tags:
+            tag_groups = [[tag] for tag in tags]
+
+        if not folder or (not prompt_text and not tags and not tag_groups):
             continue
 
         condition = str(rule.get("condition") or "any").strip().lower()
@@ -2540,13 +2629,586 @@ def normalize_custom_route_rules(rules, depth=0):
         normalized.append({
             "type": "custom",
             "folder": folder,
+            "prompt_text": prompt_text,
             "tags": tags,
+            "prompt_mode": prompt_mode,
+            "tag_groups": tag_groups,
             "condition": condition,
             "match_count": match_count,
             "children": normalize_custom_route_rules(children, depth + 1)
         })
 
     return normalized
+
+
+def route_test_clean_prompt_text(value):
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return re.sub(r"[ \t\f\v]+", " ", text)
+
+
+def route_test_match_keys(value):
+    text = route_test_clean_prompt_text(value).lower()
+    if not text:
+        return set()
+
+    space_text = re.sub(r"\s+", " ", text.replace("_", " ")).strip()
+    underscore_text = re.sub(r"\s+", "_", space_text)
+    compact_text = re.sub(r"[\s_]+", "", space_text)
+    return {key for key in (text, space_text, underscore_text, compact_text) if key}
+
+
+def route_test_prompt_tokens_from_text(text):
+    tokens = []
+    seen = set()
+
+    for item in re.split(r"[,\n]+", str(text or "")):
+        token = route_test_clean_prompt_text(item)
+        if not token:
+            continue
+        key = next(iter(sorted(route_test_match_keys(token))), "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        tokens.append(token)
+
+    return tokens
+
+
+def route_test_prompt_tokens_from_prompt_info(prompt_info):
+    prompt_info = prompt_info or {}
+    parts = []
+
+    for key in (
+        "basePrompt", "baseCaption", "prompt", "base_prompt",
+        "negativePrompt", "negative_prompt", "uc",
+        "charPrompt", "characterPrompt"
+    ):
+        value = prompt_info.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+
+    for key in ("charPrompts", "char_prompts"):
+        value = prompt_info.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value if str(item or "").strip())
+        elif isinstance(value, str) and value.strip():
+            parts.append(value)
+
+    return route_test_prompt_tokens_from_text("\n".join(parts))
+
+
+def route_test_build_key_set(tokens):
+    key_set = set()
+    for token in tokens or []:
+        key_set.update(route_test_match_keys(token))
+    return key_set
+
+
+def route_test_rule_prompt_matches(prompt, key_set):
+    return any(key in key_set for key in route_test_match_keys(prompt))
+
+
+def route_test_unique_prompts(items):
+    prompts = []
+    seen = set()
+    for item in items or []:
+        prompt = route_test_clean_prompt_text(item)
+        if not prompt:
+            continue
+        key = next(iter(sorted(route_test_match_keys(prompt))), "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        prompts.append(prompt)
+    return prompts
+
+
+def route_test_rule_matches(rule, key_set):
+    if not isinstance(rule, dict) or rule.get("type") == "default":
+        return {"matched": False, "mode": "default", "matched_tags": [], "missing_tags": [], "message": "기본 분류 규칙은 직접 매칭하지 않습니다."}
+
+    prompt_mode = "group" if rule.get("prompt_mode") == "group" else "single"
+
+    if prompt_mode == "group":
+        tag_groups = parse_route_tag_groups(rule.get("tag_groups") or [])
+        tags = route_test_unique_prompts(rule.get("tags") or [])
+        if not tag_groups and tags:
+            tag_groups = [[tag] for tag in tags]
+
+        group_details = []
+        for index, group in enumerate(tag_groups):
+            needed = route_test_unique_prompts(group)
+            found = [tag for tag in needed if route_test_rule_prompt_matches(tag, key_set)]
+            missing = [tag for tag in needed if tag not in found]
+            passed = bool(needed) and not missing
+            group_details.append({
+                "group_index": index + 1,
+                "needed_tags": needed,
+                "matched_tags": found,
+                "missing_tags": missing,
+                "matched": passed
+            })
+            if passed:
+                return {
+                    "matched": True,
+                    "mode": "group",
+                    "matched_tags": found,
+                    "missing_tags": [],
+                    "passed_group_index": index + 1,
+                    "groups": group_details,
+                    "message": f"묶음 조건 {index + 1}번이 통과했습니다."
+                }
+
+        missing_all = []
+        for detail in group_details:
+            missing_all.extend(detail.get("missing_tags", []))
+        return {
+            "matched": False,
+            "mode": "group",
+            "matched_tags": [],
+            "missing_tags": route_test_unique_prompts(missing_all),
+            "passed_group_index": None,
+            "groups": group_details,
+            "message": "통과한 묶음 조건이 없습니다."
+        }
+
+    tags = route_test_unique_prompts(rule.get("tags") or [])
+    condition = "all" if rule.get("condition") == "all" else "any"
+    try:
+        match_count = int(rule.get("match_count") or 1)
+    except Exception:
+        match_count = 1
+    match_count = max(1, match_count)
+
+    matched_tags = [tag for tag in tags if route_test_rule_prompt_matches(tag, key_set)]
+    missing_tags = [tag for tag in tags if tag not in matched_tags]
+    required_count = len(tags) if condition == "all" else min(match_count, len(tags))
+    matched = bool(tags) and (not missing_tags if condition == "all" else len(matched_tags) >= match_count)
+
+    return {
+        "matched": matched,
+        "mode": "single",
+        "condition": condition,
+        "match_count": match_count,
+        "required_count": required_count,
+        "matched_tags": matched_tags,
+        "missing_tags": missing_tags,
+        "message": "개별 조건이 통과했습니다." if matched else f"필요한 {required_count}개 중 {len(matched_tags)}개만 찾았습니다."
+    }
+
+
+def route_test_get_rule_by_path(rules, path):
+    current = rules
+    rule = None
+    try:
+        for raw_index in path or []:
+            index = int(raw_index)
+            if not isinstance(current, list) or index < 0 or index >= len(current):
+                return None
+            rule = current[index]
+            current = rule.get("children") or []
+        return rule if isinstance(rule, dict) else None
+    except Exception:
+        return None
+
+
+def route_test_get_rule_paths(data):
+    raw_paths = data.get("rule_paths")
+    if isinstance(raw_paths, str):
+        try:
+            raw_paths = json.loads(raw_paths)
+        except Exception:
+            raw_paths = []
+
+    if isinstance(raw_paths, list) and raw_paths and all(isinstance(p, list) for p in raw_paths):
+        return raw_paths
+
+    one = data.get("rule_path")
+    if isinstance(one, str):
+        try:
+            one = json.loads(one)
+        except Exception:
+            one = []
+
+    return [one] if isinstance(one, list) and one else []
+
+
+def route_test_path_key(path):
+    return json.dumps(path or [], ensure_ascii=False)
+
+
+def route_test_is_ancestor_path(parent, child):
+    return (
+        isinstance(parent, list) and
+        isinstance(child, list) and
+        len(parent) < len(child) and
+        child[:len(parent)] == parent
+    )
+
+
+def route_test_selected_path_jobs(rule_paths):
+    paths = [path for path in rule_paths if isinstance(path, list)]
+    unique = []
+    seen = set()
+
+    for path in paths:
+        key = route_test_path_key(path)
+        if key in seen:
+            continue
+        unique.append(path)
+        seen.add(key)
+
+    jobs = []
+
+    for path in unique:
+        selected_ancestors = [
+            other for other in unique
+            if route_test_is_ancestor_path(other, path)
+        ]
+        selected_descendants = [
+            other for other in unique
+            if route_test_is_ancestor_path(path, other)
+        ]
+
+        if selected_ancestors:
+            ancestor = max(selected_ancestors, key=len)
+            jobs.append({"type": "chain", "paths": [ancestor, path]})
+            continue
+
+        if selected_descendants:
+            continue
+
+        jobs.append({"type": "single", "paths": [path]})
+
+    return jobs
+
+
+def route_test_rule_label_by_path(rules, path):
+    labels = []
+    current = rules
+    try:
+        for raw_index in path or []:
+            index = int(raw_index)
+            if not isinstance(current, list) or index < 0 or index >= len(current):
+                return "알 수 없는 규칙"
+            rule = current[index]
+            labels.append(str(rule.get("folder") or "(폴더명 없음)").strip() or "(폴더명 없음)")
+            current = rule.get("children") or []
+    except Exception:
+        return "알 수 없는 규칙"
+
+    return " > ".join(labels) if labels else "알 수 없는 규칙"
+
+
+def route_test_match_rule_chain(rules, key_set, paths):
+    details = []
+    labels = []
+    all_matched = True
+
+    for path in paths:
+        rule = route_test_get_rule_by_path(rules, path)
+        if not rule:
+            all_matched = False
+            details.append({
+                "matched": False,
+                "rule_path": path,
+                "message": "선택한 규칙을 찾을 수 없습니다."
+            })
+            continue
+
+        result = route_test_match_single_rule(rule, key_set)
+        result["rule_path"] = path
+        result["rule_label"] = route_test_rule_label_by_path(rules, path)
+        labels.append(result["rule_label"])
+        details.append(result)
+
+        if not result.get("matched"):
+            all_matched = False
+
+    return {
+        "matched": all_matched,
+        "type": "chain",
+        "rule_label": " > ".join([label.split(" > ")[-1] for label in labels if label]),
+        "details": details,
+        "message": "선택한 상위/하위 규칙 조합을 순서대로 검사했습니다."
+    }
+
+
+def route_test_match_selected_rules(rules, key_set, rule_paths):
+    jobs = route_test_selected_path_jobs(rule_paths)
+    selected_results = []
+
+    for job in jobs:
+        paths = job.get("paths") or []
+
+        if job.get("type") == "chain":
+            selected_results.append(route_test_match_rule_chain(rules, key_set, paths))
+            continue
+
+        path = paths[0] if paths else []
+        rule = route_test_get_rule_by_path(rules, path)
+
+        if not rule:
+            selected_results.append({
+                "matched": False,
+                "type": "single",
+                "rule_path": path,
+                "rule_label": "알 수 없는 규칙",
+                "message": "선택한 규칙을 찾을 수 없습니다."
+            })
+            continue
+
+        result = route_test_match_single_rule(rule, key_set)
+        result["type"] = "single"
+        result["rule_path"] = path
+        result["rule_label"] = route_test_rule_label_by_path(rules, path)
+        selected_results.append(result)
+
+    return {
+        "matched": any(item.get("matched") for item in selected_results),
+        "scope": "single",
+        "selected_rule_count": len([path for path in rule_paths if isinstance(path, list)]),
+        "job_count": len(selected_results),
+        "selected_results": selected_results,
+        "message": "선택한 규칙을 검사했습니다."
+    }
+
+
+def route_test_flatten_rules(rules, parent_label="", parent_path=None):
+    parent_path = parent_path or []
+    flat = []
+
+    for index, rule in enumerate(rules or []):
+        if not isinstance(rule, dict) or rule.get("type") == "default":
+            continue
+        folder = str(rule.get("folder") or "").strip() or "(폴더명 없음)"
+        label = f"{parent_label} > {folder}" if parent_label else folder
+        path = parent_path + [index]
+        flat.append({"path": path, "label": label, "folder": folder, "rule": rule})
+        flat.extend(route_test_flatten_rules(rule.get("children") or [], label, path))
+
+    return flat
+
+
+def route_test_find_matching_route(rules, key_set):
+    details = []
+
+    def walk(rule_list, chain=None):
+        chain = chain or []
+        for rule in rule_list or []:
+            if not isinstance(rule, dict):
+                continue
+            if rule.get("type") == "default":
+                return {"matched": False, "default_reached": True, "final_folder": "Solo / Duo / Group", "rule_chain": chain, "details": details}
+
+            folder = str(rule.get("folder") or "").strip()
+            match_detail = route_test_rule_matches(rule, key_set)
+            details.append({"folder": folder, "label": " > ".join(chain + [folder]) if folder else "", **match_detail})
+            if not match_detail.get("matched"):
+                continue
+
+            next_chain = chain + ([folder] if folder else [])
+            child_result = walk(rule.get("children") or [], next_chain)
+            if child_result and child_result.get("matched"):
+                return child_result
+            return {"matched": True, "default_reached": False, "final_folder": "/".join(next_chain), "rule_chain": next_chain, "details": details}
+
+        return {"matched": False, "default_reached": False, "final_folder": "", "rule_chain": chain, "details": details}
+
+    return walk(rules)
+
+
+def route_test_match_single_rule(rule, key_set):
+    if not rule or rule.get("type") == "default":
+        return {"matched": False, "final_folder": "", "rule_chain": [], "details": [], "message": "선택한 규칙을 찾을 수 없습니다."}
+
+    detail = route_test_rule_matches(rule, key_set)
+    folder = str(rule.get("folder") or "").strip()
+    return {
+        "matched": bool(detail.get("matched")),
+        "default_reached": False,
+        "final_folder": folder if detail.get("matched") else "",
+        "rule_chain": [folder] if folder and detail.get("matched") else [],
+        "details": [{"folder": folder, "label": folder, **detail}],
+        "message": detail.get("message", "")
+    }
+
+
+def route_test_build_prompt_rule(data):
+    text = str(data.get("prompt_rule_text") or "").strip()
+    mode = "group" if data.get("prompt_rule_mode") == "group" else "single"
+
+    if not text:
+        return None
+
+    return {
+        "type": "custom",
+        "folder": "임시 프롬프트 규칙",
+        "prompt_text": text,
+        "tags": parse_route_tags_single(text),
+        "prompt_mode": mode,
+        "tag_groups": parse_route_tag_groups(text),
+        "condition": "any",
+        "match_count": 1,
+        "children": []
+    }
+
+
+def route_test_run_payload(data, tokens):
+    rules = normalize_custom_route_rules(data.get("rules", []))
+    key_set = route_test_build_key_set(tokens)
+
+    target_mode = data.get("target_mode") or data.get("scope") or "all"
+
+    if target_mode == "prompt":
+        temp_rule = route_test_build_prompt_rule(data)
+        if not temp_rule:
+            return {
+                "matched": False,
+                "scope": "prompt",
+                "rule_label": "임시 프롬프트 규칙",
+                "message": "임시 감지 규칙이 비어 있습니다.",
+                "details": []
+            }
+
+        result = route_test_match_single_rule(temp_rule, key_set)
+        result["scope"] = "prompt"
+        result["type"] = "single"
+        result["rule_label"] = "임시 프롬프트 규칙"
+        return result
+
+    if target_mode == "single" or data.get("scope") == "single":
+        return route_test_match_selected_rules(rules, key_set, route_test_get_rule_paths(data))
+
+    return route_test_find_matching_route(rules, key_set)
+
+
+def route_test_prompt_preview_from_tokens(tokens, limit=30):
+    tokens = tokens or []
+    preview = ", ".join(tokens[:limit])
+    if len(tokens) > limit:
+        preview += f" ... plus {len(tokens) - limit} more"
+    return preview
+
+
+def route_test_prompt_text_from_prompt_info(prompt_info):
+    prompt_info = prompt_info or {}
+    parts = []
+
+    base_prompt = str(
+        prompt_info.get("basePrompt")
+        or prompt_info.get("baseCaption")
+        or prompt_info.get("prompt")
+        or prompt_info.get("base_prompt")
+        or ""
+    ).strip()
+
+    char_prompts = prompt_info.get("charPrompts") or prompt_info.get("char_prompts") or []
+    if not isinstance(char_prompts, list):
+        char_prompts = []
+
+    char_prompt = str(
+        prompt_info.get("charPrompt")
+        or prompt_info.get("characterPrompt")
+        or ""
+    ).strip()
+
+    negative_prompt = str(
+        prompt_info.get("negativePrompt")
+        or prompt_info.get("negative_prompt")
+        or prompt_info.get("uc")
+        or ""
+    ).strip()
+
+    if base_prompt:
+        parts.append("[Base Prompt]\n" + base_prompt)
+
+    clean_char_prompts = [str(item or "").strip() for item in char_prompts if str(item or "").strip()]
+    if char_prompt:
+        clean_char_prompts.append(char_prompt)
+
+    if clean_char_prompts:
+        parts.append("[Character Prompt]\n" + "\n".join(clean_char_prompts))
+
+    if negative_prompt:
+        parts.append("[Negative Prompt]\n" + negative_prompt)
+
+    return "\n\n".join(parts).strip()
+
+
+ROUTE_TEST_JOBS = {}
+ROUTE_TEST_LOCK = threading.Lock()
+
+
+def public_route_test_job(job):
+    if not job:
+        return None
+    return {
+        "job_id": job.get("job_id", ""),
+        "state": job.get("state", "queued"),
+        "processed_count": int(job.get("processed_count", 0) or 0),
+        "total_count": int(job.get("total_count", 0) or 0),
+        "matched_count": int(job.get("matched_count", 0) or 0),
+        "unmatched_count": int(job.get("unmatched_count", 0) or 0),
+        "error_count": int(job.get("error_count", 0) or 0),
+        "message": job.get("message", ""),
+        "results": job.get("results", []),
+        "target_mode": job.get("target_mode", "all"),
+        "warning": job.get("warning", "")
+    }
+
+
+def extract_prompt_info_from_image_filelike(file_storage):
+    with Image.open(file_storage.stream) as img:
+        raw_meta = ""
+        stealth_data = image_logic.read_stealth_info(img)
+        if stealth_data:
+            raw_meta = stealth_data
+        elif "parameters" in img.info:
+            raw_meta = img.info["parameters"]
+        elif "Comment" in img.info:
+            raw_meta = img.info["Comment"]
+            if isinstance(raw_meta, bytes):
+                raw_meta = raw_meta.decode("utf-8", "ignore")
+
+        raw_meta = str(raw_meta or "").strip()
+        meta = {}
+        if raw_meta.startswith("{"):
+            try:
+                meta = json.loads(raw_meta)
+                if "Comment" in meta and isinstance(meta["Comment"], str) and meta["Comment"].strip().startswith("{"):
+                    meta = json.loads(meta["Comment"])
+            except Exception:
+                meta = {}
+
+        if meta:
+            v4_prompt = meta.get("v4_prompt", {})
+            caption = v4_prompt.get("caption", {}) if isinstance(v4_prompt, dict) else {}
+            base_caption = str(caption.get("base_caption", "") or "").strip()
+            v4_negative_prompt = meta.get("v4_negative_prompt", {})
+            negative_caption = v4_negative_prompt.get("caption", {}) if isinstance(v4_negative_prompt, dict) else {}
+            char_prompts = []
+            for item in caption.get("char_captions", []) if isinstance(caption.get("char_captions", []), list) else []:
+                if isinstance(item, dict) and str(item.get("char_caption", "")).strip():
+                    char_prompts.append(str(item.get("char_caption", "")).strip())
+            return normalize_prompt_info_for_sidecar({
+                "basePrompt": base_caption or meta.get("prompt", "") or meta.get("basePrompt", ""),
+                "baseCaption": base_caption,
+                "negativePrompt": negative_caption.get("base_caption", "") or meta.get("negative_prompt", "") or meta.get("negativePrompt", "") or meta.get("uc", ""),
+                "charPrompts": char_prompts
+            })
+
+        prompt_part = raw_meta
+        negative_prompt = ""
+        if "Negative prompt:" in raw_meta:
+            prompt_part, negative_prompt = raw_meta.split("Negative prompt:", 1)
+        if "\n" in prompt_part:
+            prompt_part = prompt_part.split("\n")[0]
+        return normalize_prompt_info_for_sidecar({
+            "basePrompt": prompt_part.strip(),
+            "negativePrompt": negative_prompt.strip(),
+            "charPrompts": []
+        })
 
 
 @app.route('/api/custom_rules', methods=['GET'])
@@ -2563,6 +3225,355 @@ def save_custom_rules():
     config["custom_rules"] = normalize_custom_route_rules(data.get("rules", []))
     utils.save_config(config)
     return jsonify({"status": "success"})
+
+
+@app.route('/api/route_test/text', methods=['POST'])
+def route_test_text():
+    try:
+        data = request.json or {}
+        tokens = route_test_prompt_tokens_from_text(data.get("prompt") or "")
+        result = route_test_run_payload(data, tokens)
+        return jsonify({"status": "success", "input_type": "text", "tokens": tokens, "result": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/route_test/image', methods=['POST'])
+def route_test_image():
+    try:
+        data = request.json or {}
+        full_path, real_rel = resolve_gallery_image_path(data.get("path") or "")
+        prompt_info = load_prompt_sidecar(full_path) or extract_prompt_info_from_image(full_path) or {}
+        tokens = route_test_prompt_tokens_from_prompt_info(prompt_info)
+        prompt_text = route_test_prompt_text_from_prompt_info(prompt_info)
+        result = route_test_run_payload(data, tokens)
+        return jsonify({
+            "status": "success",
+            "input_type": "image",
+            "path": real_rel,
+            "file_name": os.path.basename(full_path),
+            "tokens": tokens,
+            "prompt_text": prompt_text,
+            "prompt_preview": route_test_prompt_preview_from_tokens(tokens),
+            "result": result
+        })
+    except FileNotFoundError as e:
+        return jsonify({"status": "error", "message": str(e)}), 404
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/route_test/images', methods=['POST'])
+def route_test_images():
+    try:
+        data = request.json or {}
+        results = []
+        for raw_path in data.get("paths") or []:
+            try:
+                full_path, real_rel = resolve_gallery_image_path(raw_path)
+                prompt_info = load_prompt_sidecar(full_path) or extract_prompt_info_from_image(full_path) or {}
+                tokens = route_test_prompt_tokens_from_prompt_info(prompt_info)
+                prompt_text = route_test_prompt_text_from_prompt_info(prompt_info)
+                results.append({
+                    "status": "success",
+                    "input_type": "image",
+                    "path": real_rel,
+                    "file_name": os.path.basename(full_path),
+                    "tokens": tokens,
+                    "prompt_text": prompt_text,
+                    "prompt_preview": route_test_prompt_preview_from_tokens(tokens),
+                    "result": route_test_run_payload(data, tokens)
+                })
+            except Exception as item_error:
+                results.append({
+                    "status": "error",
+                    "path": str(raw_path or ""),
+                    "file_name": os.path.basename(str(raw_path or "")),
+                    "message": str(item_error),
+                    "result": {"matched": False, "final_folder": "", "rule_chain": [], "details": []}
+                })
+        return jsonify({"status": "success", "input_type": "images", "results": results})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/route_test/images_upload', methods=['POST'])
+def route_test_images_upload():
+    try:
+        data = {
+            "rules": json.loads(request.form.get("rules") or "[]"),
+            "target_mode": request.form.get("target_mode") or request.form.get("scope") or "all",
+            "scope": request.form.get("scope") or "all",
+            "rule_path": json.loads(request.form.get("rule_path") or "[]"),
+            "rule_paths": json.loads(request.form.get("rule_paths") or "[]"),
+            "prompt_rule_text": request.form.get("prompt_rule_text") or "",
+            "prompt_rule_mode": request.form.get("prompt_rule_mode") or "single"
+        }
+        results = []
+        for file_storage in request.files.getlist("files"):
+            try:
+                prompt_info = extract_prompt_info_from_image_filelike(file_storage)
+                tokens = route_test_prompt_tokens_from_prompt_info(prompt_info)
+                prompt_text = route_test_prompt_text_from_prompt_info(prompt_info)
+                results.append({
+                    "status": "success",
+                    "input_type": "uploaded_image",
+                    "file_name": file_storage.filename or "uploaded image",
+                    "tokens": tokens,
+                    "prompt_text": prompt_text,
+                    "prompt_preview": route_test_prompt_preview_from_tokens(tokens),
+                    "result": route_test_run_payload(data, tokens)
+                })
+            except Exception as item_error:
+                results.append({
+                    "status": "error",
+                    "file_name": file_storage.filename or "uploaded image",
+                    "message": str(item_error),
+                    "result": {"matched": False, "final_folder": "", "rule_chain": [], "details": []}
+                })
+        return jsonify({"status": "success", "input_type": "uploaded_images", "results": results})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def route_test_collect_folder_images(folder_full_path, include_subfolders=False):
+    exts = {".png", ".jpg", ".jpeg", ".webp"}
+    images = []
+    if include_subfolders:
+        for root, dirs, files in os.walk(folder_full_path):
+            dirs[:] = [d for d in dirs if d not in {"_TRASH", UPSCALE_OUTPUT_FOLDER_NAME}]
+            for name in files:
+                if os.path.splitext(name)[1].lower() in exts:
+                    images.append(os.path.join(root, name))
+    else:
+        for name in os.listdir(folder_full_path):
+            full_path = os.path.join(folder_full_path, name)
+            if os.path.isfile(full_path) and os.path.splitext(name)[1].lower() in exts:
+                images.append(full_path)
+    images.sort(key=lambda path: os.path.abspath(path).replace("\\", "/").lower())
+    return images
+
+
+def route_test_sample_images(images, sample_mode):
+    sample_mode = sample_mode if sample_mode in ("random100", "first20", "first100", "all") else "random100"
+    if sample_mode == "first20":
+        return images[:20]
+    if sample_mode == "first100":
+        return images[:100]
+    if sample_mode == "random100":
+        return random.sample(images, min(100, len(images)))
+    return images
+
+
+def route_test_update_job(job_id, **patch):
+    with ROUTE_TEST_LOCK:
+        job = ROUTE_TEST_JOBS.get(job_id)
+        if job:
+            job.update(patch)
+
+
+def route_test_folder_worker(job_id):
+    with ROUTE_TEST_LOCK:
+        job = ROUTE_TEST_JOBS.get(job_id)
+    if not job:
+        return
+
+    cancel_event = job.get("_cancel_event")
+    rules = job.get("rules") or []
+    target_mode = job.get("target_mode", "all")
+    scope = job.get("scope", "all")
+    rule_path = job.get("rule_path") or []
+    rule_paths = job.get("rule_paths") or []
+    prompt_rule_text = job.get("prompt_rule_text", "")
+    prompt_rule_mode = job.get("prompt_rule_mode", "single")
+    max_display = int(job.get("max_display", 500) or 500)
+    only_unmatched = bool(job.get("only_unmatched"))
+    route_test_update_job(job_id, state="running", message="Running folder test.")
+
+    for file_index, full_path in enumerate(job.get("files", [])):
+        if cancel_event and cancel_event.is_set():
+            route_test_update_job(job_id, state="cancelled", message="Folder test cancelled.")
+            return
+
+        rel_path = os.path.relpath(full_path, job.get("folder_full_path") or CLASSIFIED_DIR).replace("\\", "/")
+        try:
+            prompt_info = load_prompt_sidecar(full_path) or extract_prompt_info_from_image(full_path) or {}
+            tokens = route_test_prompt_tokens_from_prompt_info(prompt_info)
+            prompt_text = route_test_prompt_text_from_prompt_info(prompt_info)
+            result = route_test_run_payload({
+                "rules": rules,
+                "target_mode": target_mode,
+                "scope": scope,
+                "rule_path": rule_path,
+                "rule_paths": rule_paths,
+                "prompt_rule_text": prompt_rule_text,
+                "prompt_rule_mode": prompt_rule_mode
+            }, tokens)
+            matched = bool(result.get("matched") or result.get("default_reached"))
+            with ROUTE_TEST_LOCK:
+                job = ROUTE_TEST_JOBS.get(job_id)
+                if not job:
+                    return
+                job["processed_count"] += 1
+                job["matched_count"] += 1 if matched else 0
+                job["unmatched_count"] += 0 if matched else 1
+                if ((not only_unmatched) or (not matched)) and len(job["results"]) < max_display:
+                    job["results"].append({
+                        "path": rel_path,
+                        "file_name": os.path.basename(full_path),
+                        "tokens": tokens[:30],
+                        "prompt_text": prompt_text,
+                        "prompt_preview": route_test_prompt_preview_from_tokens(tokens),
+                        "preview_url": f"/api/route_test/folder/preview/{job_id}/{file_index}",
+                        "result": result
+                    })
+                job["message"] = f"{job['processed_count']} / {job['total_count']}"
+        except Exception as e:
+            with ROUTE_TEST_LOCK:
+                job = ROUTE_TEST_JOBS.get(job_id)
+                if not job:
+                    return
+                job["processed_count"] += 1
+                job["error_count"] += 1
+                if len(job["results"]) < max_display:
+                    job["results"].append({
+                        "path": rel_path,
+                        "file_name": os.path.basename(full_path),
+                        "error": str(e),
+                        "preview_url": f"/api/route_test/folder/preview/{job_id}/{file_index}",
+                        "result": {"matched": False, "final_folder": "", "rule_chain": [], "details": []}
+                    })
+
+    route_test_update_job(job_id, state="done", message="Folder test complete.")
+
+
+@app.route('/api/route_test/folder/pick', methods=['POST'])
+def route_test_pick_folder():
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        try:
+            folder_path = filedialog.askdirectory(title="라우팅 테스트할 폴더 선택") or ""
+        finally:
+            root.destroy()
+
+        if not folder_path:
+            return jsonify({"status": "cancelled", "message": "폴더 선택이 취소되었습니다."}), 400
+
+        if not os.path.isdir(folder_path):
+            return jsonify({"status": "error", "message": "선택한 경로가 폴더가 아닙니다."}), 400
+
+        folder_path = os.path.abspath(folder_path)
+        return jsonify({
+            "status": "success",
+            "folder_path": folder_path,
+            "folder_name": os.path.basename(folder_path.rstrip("\\/")) or folder_path
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/route_test/folder/start', methods=['POST'])
+def route_test_folder_start():
+    try:
+        data = request.json or {}
+        raw_folder_path = str(data.get("folder_path") or "").strip()
+        if not raw_folder_path:
+            return jsonify({"status": "error", "message": "폴더 경로를 입력하세요."}), 400
+
+        if os.path.isabs(raw_folder_path):
+            folder_full_path = os.path.abspath(raw_folder_path)
+        else:
+            folder_rel = clean_gallery_rel_path(raw_folder_path)
+            folder_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, folder_rel, strip_prefix="TOTAL_CLASSIFIED/")
+
+        if not os.path.isdir(folder_full_path):
+            return jsonify({"status": "error", "message": "폴더를 찾을 수 없습니다."}), 404
+
+        all_images = route_test_collect_folder_images(folder_full_path, bool(data.get("include_subfolders")))
+        sample_mode = data.get("sample_mode") if data.get("sample_mode") in ("random100", "first20", "first100", "all") else "random100"
+        files = route_test_sample_images(all_images, sample_mode)
+        warning = "전체 검사는 이미지가 많아 오래 걸릴 수 있습니다." if sample_mode == "all" and len(all_images) >= 500 else ""
+        max_display = max(1, min(500, int(data.get("max_display") or 500)))
+        job_id = f"route_test_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        job = {
+            "job_id": job_id,
+            "state": "queued",
+            "processed_count": 0,
+            "total_count": len(files),
+            "matched_count": 0,
+            "unmatched_count": 0,
+            "error_count": 0,
+            "message": "Queued.",
+            "results": [],
+            "warning": warning,
+            "rules": normalize_custom_route_rules(data.get("rules", [])),
+            "target_mode": data.get("target_mode") or data.get("scope") or "all",
+            "scope": "single" if data.get("scope") == "single" else "all",
+            "rule_path": data.get("rule_path") or [],
+            "rule_paths": route_test_get_rule_paths(data),
+            "prompt_rule_text": data.get("prompt_rule_text") or "",
+            "prompt_rule_mode": data.get("prompt_rule_mode") or "single",
+            "files": files,
+            "folder_full_path": folder_full_path,
+            "only_unmatched": bool(data.get("only_unmatched")),
+            "max_display": max_display,
+            "_cancel_event": threading.Event()
+        }
+        with ROUTE_TEST_LOCK:
+            ROUTE_TEST_JOBS[job_id] = job
+        threading.Thread(target=route_test_folder_worker, args=(job_id,), daemon=True).start()
+        return jsonify({"status": "started", "job_id": job_id, "total_count": len(files), "sample_mode": sample_mode, "warning": warning})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/route_test/folder/status/<job_id>')
+def route_test_folder_status(job_id):
+    with ROUTE_TEST_LOCK:
+        job = ROUTE_TEST_JOBS.get(job_id)
+    if not job:
+        return jsonify({"status": "error", "message": "테스트 작업을 찾을 수 없습니다."}), 404
+    return jsonify({"status": "success", "job": public_route_test_job(job)})
+
+
+@app.route('/api/route_test/folder/preview/<job_id>/<int:file_index>')
+def route_test_folder_preview(job_id, file_index):
+    with ROUTE_TEST_LOCK:
+        job = ROUTE_TEST_JOBS.get(job_id)
+
+    if not job:
+        return "Not found", 404
+
+    files = job.get("files") or []
+    if file_index < 0 or file_index >= len(files):
+        return "Not found", 404
+
+    full_path = files[file_index]
+    if not os.path.isfile(full_path):
+        return "Not found", 404
+
+    return send_file(full_path)
+
+
+@app.route('/api/route_test/folder/cancel/<job_id>', methods=['POST'])
+def route_test_folder_cancel(job_id):
+    with ROUTE_TEST_LOCK:
+        job = ROUTE_TEST_JOBS.get(job_id)
+        if not job:
+            return jsonify({"status": "error", "message": "테스트 작업을 찾을 수 없습니다."}), 404
+        cancel_event = job.get("_cancel_event")
+        if cancel_event:
+            cancel_event.set()
+        if job.get("state") in ("queued", "running"):
+            job["state"] = "cancelled"
+            job["message"] = "Folder test cancelled."
+    return jsonify({"status": "success", "job": public_route_test_job(job)})
 
 # 🌟 [추가] 그림체 통계 및 랜덤 썸네일 제공
 # [수정] 그림체 통계 API - 유효한 파일만 샘플로 사용
