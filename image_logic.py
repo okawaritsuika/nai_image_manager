@@ -1774,6 +1774,7 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
                     
                     # 🌟 [추가] 통계 및 그림체 스캔 DB에서도 완전히 기록 말소
                     db.remove_all_file_records(target_path)
+                    db.remove_gallery_image_record(target_path)
 
                     txt_path = os.path.splitext(full_path)[0] + ".txt"
                     if os.path.exists(txt_path):
@@ -1792,6 +1793,18 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
                     
                     # 🌟 [추가] 기존 위치의 DB 기록 말소 (통계 등에서 즉각 제외되도록)
                     db.remove_all_file_records(target_path)
+                    db.remove_gallery_image_record(target_path)
+
+                    try:
+                        if os.path.exists(trash_path):
+                            db.upsert_gallery_image_file(
+                                trash_path,
+                                classified_root=fixed_root,
+                                mode="trash",
+                                reason=""
+                            )
+                    except Exception as e:
+                        log_func(f"⚠️ 휴지통 갤러리 인덱스 추가 실패: {e}")
 
                     old_txt = os.path.splitext(full_path)[0] + ".txt"
                     if os.path.exists(old_txt):
@@ -1801,6 +1814,12 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
                     log_func(f"♻️ 휴지통 이동 완료: {file_name}")
             except Exception as e:
                 log_func(f"❌ 처리 실패 ({file_name}): {e}")
+
+    if deletes:
+        try:
+            db.rebuild_gallery_folder_summaries()
+        except Exception as e:
+            log_func(f"⚠️ 갤러리 폴더 인덱스 갱신 실패: {e}")
 
     # (이후 2. 대표 이미지 변경 썸네일 로직은 기존 코드 그대로 유지)
     # 2. 🌟 대표 이미지 변경 (중복 제거 및 사유 .txt 파일 유지 통합)

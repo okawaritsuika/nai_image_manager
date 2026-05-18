@@ -28,6 +28,7 @@ from urllib.parse import urlsplit, unquote, quote
 app = Flask(__name__)
 
 GALLERY_INDEX_REBUILD_LOCK = threading.Lock()
+GALLERY_INDEX_DB_LOCK = threading.Lock()
 GALLERY_INDEX_REBUILD_JOB = {
     "running": False,
     "processed": 0,
@@ -1561,67 +1562,70 @@ def gallery_index_rebuild_worker():
             })
 
         db = utils.HistoryDB()
-        db.clear_gallery_index()
 
-        image_paths = []
-        for root, dirs, files in os.walk(CLASSIFIED_DIR):
-            dirs[:] = [d for d in dirs if not os.path.exists(os.path.join(root, d, ".ignore"))]
-            if os.path.exists(os.path.join(root, ".ignore")):
-                dirs[:] = []
-                continue
-            for file_name in files:
-                if file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    image_paths.append(os.path.join(root, file_name))
+        with GALLERY_INDEX_DB_LOCK:
+            db.clear_gallery_index()
 
-        with GALLERY_INDEX_REBUILD_LOCK:
-            GALLERY_INDEX_REBUILD_JOB["total"] = len(image_paths)
-            GALLERY_INDEX_REBUILD_JOB["message"] = "갤러리 인덱스 작성 중..."
+            image_paths = []
+            for root, dirs, files in os.walk(CLASSIFIED_DIR):
+                dirs[:] = [d for d in dirs if not os.path.exists(os.path.join(root, d, ".ignore"))]
+                if os.path.exists(os.path.join(root, ".ignore")):
+                    dirs[:] = []
+                    continue
+                for file_name in files:
+                    if file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        image_paths.append(os.path.join(root, file_name))
 
-        gallery_tag_config = load_gallery_image_tags_config()
+            with GALLERY_INDEX_REBUILD_LOCK:
+                GALLERY_INDEX_REBUILD_JOB["total"] = len(image_paths)
+                GALLERY_INDEX_REBUILD_JOB["message"] = "갤러리 인덱스 작성 중..."
 
-        for index, full_path in enumerate(image_paths, 1):
-            rel_path = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
-            folder_path = os.path.dirname(rel_path).replace("\\", "/")
-            if os.path.basename(folder_path) == UPSCALE_OUTPUT_FOLDER_NAME:
-                folder_path = os.path.dirname(folder_path).replace("\\", "/")
-            file_name = os.path.basename(rel_path)
-            try:
-                mtime = os.path.getmtime(full_path)
-            except Exception:
-                mtime = time.time()
+            gallery_tag_config = load_gallery_image_tags_config()
 
-            cached = db.get_file_metadata(rel_path)
-            width = cached[0] if cached and cached[2] == mtime else None
-            height = cached[1] if cached and cached[2] == mtime else None
+            for index, full_path in enumerate(image_paths, 1):
+                rel_path = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
+                folder_path = os.path.dirname(rel_path).replace("\\", "/")
+                if os.path.basename(folder_path) == UPSCALE_OUTPUT_FOLDER_NAME:
+                    folder_path = os.path.dirname(folder_path).replace("\\", "/")
+                file_name = os.path.basename(rel_path)
 
-            batch.append({
-                "rel_path": rel_path,
-                "folder_path": folder_path,
-                "file_name": file_name,
-                "mode": infer_gallery_mode_from_rel_path(rel_path),
-                "mtime": mtime,
-                "width": width,
-                "height": height,
-                "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
-            })
+                try:
+                    mtime = os.path.getmtime(full_path)
+                except Exception:
+                    mtime = time.time()
 
-            if len(batch) >= batch_size:
+                cached = db.get_file_metadata(rel_path)
+                width = cached[0] if cached and cached[2] == mtime else None
+                height = cached[1] if cached and cached[2] == mtime else None
+
+                batch.append({
+                    "rel_path": rel_path,
+                    "folder_path": folder_path,
+                    "file_name": file_name,
+                    "mode": infer_gallery_mode_from_rel_path(rel_path),
+                    "mtime": mtime,
+                    "width": width,
+                    "height": height,
+                    "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
+                })
+
+                if len(batch) >= batch_size:
+                    db.upsert_gallery_image_records(batch)
+                    batch = []
+
+                if index % 500 == 0 or index == len(image_paths):
+                    with GALLERY_INDEX_REBUILD_LOCK:
+                        GALLERY_INDEX_REBUILD_JOB["processed"] = index
+
+            if batch:
                 db.upsert_gallery_image_records(batch)
-                batch = []
 
-            if index % 500 == 0 or index == len(image_paths):
-                with GALLERY_INDEX_REBUILD_LOCK:
-                    GALLERY_INDEX_REBUILD_JOB["processed"] = index
+            with GALLERY_INDEX_REBUILD_LOCK:
+                GALLERY_INDEX_REBUILD_JOB["message"] = "폴더 요약 생성 중..."
+                GALLERY_INDEX_REBUILD_JOB["processed"] = len(image_paths)
 
-        if batch:
-            db.upsert_gallery_image_records(batch)
-
-        with GALLERY_INDEX_REBUILD_LOCK:
-            GALLERY_INDEX_REBUILD_JOB["message"] = "폴더 요약 생성 중..."
-            GALLERY_INDEX_REBUILD_JOB["processed"] = len(image_paths)
-
-        db.rebuild_gallery_folder_summaries()
-        db.set_gallery_index_state("full_index_built", "1")
+            db.rebuild_gallery_folder_summaries()
+            db.set_gallery_index_state("full_index_built", "1")
 
         with GALLERY_INDEX_REBUILD_LOCK:
             GALLERY_INDEX_REBUILD_JOB.update({
@@ -2885,6 +2889,9 @@ def empty_trash_folder():
         # 🌟 [추가] 휴지통 폴더 내에 남아있던 그림체 스캔 등 모든 하위 찌꺼기 기록 완벽 정리
         folder_rel_path = f"_TRASH/{folder_name}"
         db.remove_folder_records(folder_rel_path)
+        with GALLERY_INDEX_DB_LOCK:
+            db.remove_gallery_folder_records(folder_rel_path)
+            db.rebuild_gallery_folder_summaries()
         
         return jsonify({"status": "success", "message": f"[{folder_name}] 폴더가 완전히 비워졌습니다."})
     except Exception as e:
@@ -5843,8 +5850,49 @@ def export_merged_canvas():
 
         rel_path = os.path.relpath(save_path, CLASSIFIED_DIR).replace("\\", "/")
 
-        if has_prompt_info_text(final_prompt_info):
-            sync_gallery_prompt_art_styles_for_path(rel_path, final_prompt_info)
+        db = utils.HistoryDB()
+        index_updated = False
+        index_full_built = False
+        index_verified = False
+        index_rebuild_started = False
+        index_rebuild_running = False
+
+        try:
+            with GALLERY_INDEX_DB_LOCK:
+                index_full_built = db.has_full_gallery_index()
+
+                if index_full_built:
+                    gallery_tag_config = load_gallery_image_tags_config()
+                    gallery_record = db.upsert_gallery_image_file(
+                        save_path,
+                        classified_root=CLASSIFIED_DIR,
+                        rel_path=rel_path,
+                        mode=infer_gallery_mode_from_rel_path(rel_path),
+                        character_names=json.dumps([c["clean"] for c in chars], ensure_ascii=False),
+                        is_dakimakura=1 if is_dakimakura else 0,
+                        width=width or img.width,
+                        height=height or img.height,
+                        reason="",
+                        gallery_tag=get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
+                    )
+
+                    db.rebuild_gallery_folder_summaries()
+                    db.set_gallery_index_state("full_index_built", "1")
+
+                    index_verified = db.gallery_image_record_exists(gallery_record["rel_path"])
+                    index_updated = bool(index_verified)
+
+                if has_prompt_info_text(final_prompt_info):
+                    upsert_gallery_prompt_art_styles(db, rel_path, final_prompt_info)
+
+        finally:
+            db.close()
+
+        if not index_updated:
+            try:
+                index_rebuild_started, index_rebuild_running = start_gallery_index_rebuild_background(auto=True)
+            except Exception as rebuild_error:
+                print(f"⚠️ 캔버스 내보내기 후 갤러리 인덱스 자동 갱신 시작 실패: {rebuild_error}")
 
         return jsonify({
             "status": "success",
@@ -5853,7 +5901,12 @@ def export_merged_canvas():
             "sidecar_saved": sidecar_saved,
             "embedded_metadata_saved": embedded_metadata_saved,
             "characters": [c["clean"] for c in chars],
-            "isDakimakura": is_dakimakura
+            "isDakimakura": is_dakimakura,
+            "index_updated": index_updated,
+            "index_full_built": index_full_built,
+            "index_verified": index_verified,
+            "index_rebuild_started": index_rebuild_started,
+            "index_rebuild_running": index_rebuild_running
         })
 
     except Exception as e:

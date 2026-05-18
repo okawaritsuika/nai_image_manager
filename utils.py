@@ -394,6 +394,73 @@ class HistoryDB:
         except Exception as e:
             print(f"DB 기록 삭제 실패: {e}")
 
+    def gallery_image_record_exists(self, rel_path):
+        clean = self.normalize_gallery_rel_path(rel_path)
+        if clean.startswith("TOTAL_CLASSIFIED/"):
+            clean = clean[len("TOTAL_CLASSIFIED/"):]
+        if clean.startswith("/image/"):
+            clean = clean[len("/image/"):]
+        clean = clean.lstrip("/")
+
+        if not clean:
+            return False
+
+        cur = self.conn.cursor()
+        cur.execute("SELECT 1 FROM gallery_images WHERE rel_path = ? LIMIT 1", (clean,))
+        return cur.fetchone() is not None
+
+    def remove_gallery_image_record(self, rel_path):
+        clean = self.normalize_gallery_rel_path(rel_path)
+        if clean.startswith("TOTAL_CLASSIFIED/"):
+            clean = clean[len("TOTAL_CLASSIFIED/"):]
+        if clean.startswith("/image/"):
+            clean = clean[len("/image/"):]
+        clean = clean.lstrip("/")
+
+        if not clean:
+            return False
+
+        now = time.time()
+        try:
+            with self.conn:
+                self.conn.execute("DELETE FROM gallery_images WHERE rel_path = ?", (clean,))
+                self.conn.execute("DELETE FROM file_metadata WHERE path = ?", (clean,))
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("partial_index_updated_at", str(now), now)
+                )
+            return True
+        except Exception as e:
+            print(f"갤러리 이미지 인덱스 삭제 실패: {e}")
+            return False
+
+    def remove_gallery_folder_records(self, folder_rel_path):
+        clean = self.normalize_gallery_rel_path(folder_rel_path)
+        if clean.startswith("TOTAL_CLASSIFIED/"):
+            clean = clean[len("TOTAL_CLASSIFIED/"):]
+        clean = clean.strip("/")
+
+        if not clean:
+            return False
+
+        like_pattern = clean + "/%"
+        now = time.time()
+
+        try:
+            with self.conn:
+                self.conn.execute(
+                    "DELETE FROM gallery_images WHERE rel_path = ? OR rel_path LIKE ? OR folder_path = ? OR folder_path LIKE ?",
+                    (clean, like_pattern, clean, like_pattern)
+                )
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("partial_index_updated_at", str(now), now)
+                )
+            return True
+        except Exception as e:
+            print(f"갤러리 폴더 인덱스 삭제 실패: {e}")
+            return False
+
     def remove_folder_records(self, folder_rel_path):
         """폴더 삭제 시 하위 파일들의 DB 기록을 일괄 삭제한다."""
         clean = str(folder_rel_path or "").replace("\\", "/").strip("/")
@@ -412,9 +479,39 @@ class HistoryDB:
 
     def normalize_gallery_rel_path(self, path):
         text = str(path or "").replace("\\", "/").strip()
+
+        if not text:
+            return ""
+
+        if "?" in text:
+            text = text.split("?", 1)[0]
+
+        # URL/공개 경로 prefix 제거
+        for prefix in ("/image/", "image/", "/TOTAL_CLASSIFIED/", "TOTAL_CLASSIFIED/"):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+
+        # absolute path가 들어온 경우 TOTAL_CLASSIFIED 기준 상대경로로 변환
+        try:
+            classified_root = os.path.dirname(self.db_path)
+            if os.path.isabs(text):
+                abs_text = os.path.abspath(text)
+                abs_root = os.path.abspath(classified_root)
+                if is_subpath(abs_text, abs_root):
+                    text = os.path.relpath(abs_text, abs_root).replace("\\", "/")
+        except Exception:
+            pass
+
+        # 문자열 중간에 TOTAL_CLASSIFIED가 포함된 absolute-like path 보정
+        marker = "TOTAL_CLASSIFIED/"
+        marker_index = text.replace("\\", "/").find(marker)
+        if marker_index >= 0:
+            text = text[marker_index + len(marker):]
+
         while text.startswith("/"):
             text = text[1:]
-        return text
+
+        return text.replace("\\", "/").strip("/")
 
     def set_gallery_index_state(self, key, value):
         now = time.time()
@@ -441,6 +538,82 @@ class HistoryDB:
                 "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
                 ("full_index_built", "0", time.time())
             )
+
+    def build_gallery_image_record_from_file(self, file_path, classified_root=None, **overrides):
+        classified_root = classified_root or os.path.dirname(self.db_path)
+        raw_path = str(file_path or "")
+
+        if os.path.isabs(raw_path):
+            rel_path = os.path.relpath(raw_path, classified_root).replace("\\", "/")
+            full_path = raw_path
+        else:
+            rel_path = self.normalize_gallery_rel_path(raw_path)
+            full_path = os.path.join(classified_root, rel_path)
+
+        rel_path = self.normalize_gallery_rel_path(rel_path)
+        folder_path = self.normalize_gallery_rel_path(
+            overrides.get("folder_path") or os.path.dirname(rel_path)
+        )
+
+        if os.path.basename(folder_path) == "_upscaled":
+            folder_path = os.path.dirname(folder_path).replace("\\", "/")
+
+        file_name = str(overrides.get("file_name") or os.path.basename(rel_path))
+
+        try:
+            mtime = float(overrides.get("mtime") or os.path.getmtime(full_path))
+        except Exception:
+            mtime = time.time()
+
+        width = overrides.get("width")
+        height = overrides.get("height")
+
+        if width is None or height is None:
+            cached = self.get_file_metadata(rel_path)
+            if cached and cached[2] == mtime:
+                width, height = cached[0], cached[1]
+            else:
+                try:
+                    from PIL import Image
+                    with Image.open(full_path) as img:
+                        width, height = img.size
+                    self.save_file_metadata(rel_path, width, height, mtime)
+                except Exception:
+                    pass
+
+        mode = overrides.get("mode")
+        if not mode:
+            if rel_path.startswith("_TRASH/"):
+                mode = "trash"
+            elif rel_path.startswith("_R-18/") or rel_path.startswith("_R-15/"):
+                mode = "r18"
+            else:
+                mode = "general"
+
+        return {
+            "rel_path": rel_path,
+            "folder_path": folder_path,
+            "file_name": file_name,
+            "mode": mode,
+            "rating": str(overrides.get("rating") or ""),
+            "brand": str(overrides.get("brand") or ""),
+            "character_names": str(overrides.get("character_names") or ""),
+            "is_dakimakura": 1 if overrides.get("is_dakimakura") else 0,
+            "width": width,
+            "height": height,
+            "mtime": mtime,
+            "reason": str(overrides.get("reason") or ""),
+            "gallery_tag": str(overrides.get("gallery_tag") or "")
+        }
+
+    def upsert_gallery_image_file(self, file_path, classified_root=None, **overrides):
+        record = self.build_gallery_image_record_from_file(
+            file_path,
+            classified_root=classified_root,
+            **overrides
+        )
+        self.upsert_gallery_image_records([record])
+        return record
 
     def upsert_gallery_image_records(self, records):
         if not records:

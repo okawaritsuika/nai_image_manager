@@ -8938,7 +8938,15 @@ async function exportMergedCanvasToClassified() {
             throw new Error(data.message || '통합 내보내기에 실패했습니다.');
         }
 
-        alert(`내보내기 완료\n${data.path}`);
+        const exportedPath = data.path || '';
+
+        if (data.index_updated) {
+            showToast(`통합 내보내기 완료: ${exportedPath || '저장됨'}`);
+        } else if (data.index_rebuild_started || data.index_rebuild_running) {
+            showToast('통합 내보내기 완료: 갤러리 인덱스를 갱신 중입니다.');
+        } else {
+            showToast(`통합 내보내기 완료: ${exportedPath || '저장됨'}`);
+        }
 
     } catch (error) {
         alert(`통합 내보내기 실패: ${error.message || error}`);
