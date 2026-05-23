@@ -46,10 +46,26 @@ let windowBrandsData = {};
 let activeImageContext = null;
 let galleryInpaintLastPointerEvent = null;
 let galleryInpaintMaskVisible = true;
+let galleryDesignRenderTimer = null;
+let isGalleryBulkDeleteMode = false;
+let galleryBulkDeleteFolders = new Map();
+let galleryBulkDeleteSelectionBoxState = null;
+let galleryBulkDeleteSuppressNextClick = false;
+
 const GALLERY_INPAINT_TEMP_CATEGORY = 'gallery_inpaint';
 const GALLERY_PERSISTENT_UI_KEY = 'naia_gallery_persistent_ui_v1';
 const GALLERY_SESSION_STATE_KEY = 'naia_gallery_session_state_v1';
 const GALLERY_HEADER_TOOLS_COLLAPSED_KEY = 'naia_gallery_header_tools_collapsed_v1';
+
+const GALLERY_DESIGN_SETTINGS_KEY = 'naia_gallery_design_settings_v1';
+
+let galleryDesignSettings = {
+    imageScalePercent: 100,
+    fixedSizeMode: false,
+    fixedWidth: 260,
+    fixedHeight: 360,
+    navTabRows: 1
+};
 
 let galleryServerSessionId = '';
 let galleryPendingScrollY = null;
@@ -90,6 +106,174 @@ function saveGalleryPersistentUi() {
     } catch (error) {
         console.warn('Gallery persistent UI save failed:', error);
     }
+}
+
+function clampGalleryNumber(value, fallback, min, max) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+        return fallback;
+    }
+
+    return Math.max(min, Math.min(max, number));
+}
+
+function normalizeGalleryDesignSettings(raw) {
+    const data = raw && typeof raw === 'object' ? raw : {};
+
+    return {
+        imageScalePercent: clampGalleryNumber(data.imageScalePercent, 100, 40, 140),
+        fixedSizeMode: Boolean(data.fixedSizeMode),
+        fixedWidth: clampGalleryNumber(data.fixedWidth, 260, 120, 800),
+        fixedHeight: clampGalleryNumber(data.fixedHeight, 360, 120, 1000),
+        navTabRows: clampGalleryNumber(data.navTabRows, 1, 1, 3)
+    };
+}
+
+function getGalleryBaseColumnCount() {
+    return window.innerWidth <= 1400 ? 3 : 4;
+}
+
+function getGalleryColumnCountForScale(scalePercent) {
+    const baseColCount = getGalleryBaseColumnCount();
+    const imageScale = clampGalleryNumber(scalePercent, 100, 40, 140) / 100;
+
+    return Math.max(1, Math.min(12, Math.round(baseColCount / imageScale)));
+}
+
+function getGalleryEffectiveColumnCount() {
+    return getGalleryColumnCountForScale(galleryDesignSettings.imageScalePercent);
+}
+
+function loadGalleryDesignSettings() {
+    try {
+        const raw = localStorage.getItem(GALLERY_DESIGN_SETTINGS_KEY);
+        galleryDesignSettings = normalizeGalleryDesignSettings(raw ? JSON.parse(raw) : {});
+    } catch (error) {
+        console.warn('Gallery design settings restore failed:', error);
+        galleryDesignSettings = normalizeGalleryDesignSettings({});
+    }
+
+    applyGalleryDesignSettingsToDocument();
+}
+
+function saveGalleryDesignSettings() {
+    galleryDesignSettings = normalizeGalleryDesignSettings(galleryDesignSettings);
+
+    try {
+        localStorage.setItem(GALLERY_DESIGN_SETTINGS_KEY, JSON.stringify(galleryDesignSettings));
+    } catch (error) {
+        console.warn('Gallery design settings save failed:', error);
+    }
+}
+
+function applyGalleryDesignSettingsToDocument() {
+    galleryDesignSettings = normalizeGalleryDesignSettings(galleryDesignSettings);
+
+    document.documentElement.style.setProperty(
+        '--gallery-image-scale',
+        String(galleryDesignSettings.imageScalePercent / 100)
+    );
+    document.documentElement.style.setProperty(
+        '--gallery-fixed-image-width',
+        `${galleryDesignSettings.fixedWidth}px`
+    );
+    document.documentElement.style.setProperty(
+        '--gallery-fixed-image-height',
+        `${galleryDesignSettings.fixedHeight}px`
+    );
+    document.documentElement.style.setProperty(
+        '--gallery-nav-tab-rows',
+        String(galleryDesignSettings.navTabRows)
+    );
+
+    document.body.classList.toggle(
+        'gallery-nav-tabs-multiline',
+        galleryDesignSettings.navTabRows > 1
+    );
+
+    syncGalleryDesignSettingsInputs();
+}
+
+function syncGalleryDesignSettingsInputs() {
+    const scaleRange = document.getElementById('galleryImageScaleRange');
+    const scaleInput = document.getElementById('galleryImageScaleInput');
+    const fixedModeInput = document.getElementById('galleryFixedSizeModeInput');
+    const fixedWidthInput = document.getElementById('galleryFixedWidthInput');
+    const fixedHeightInput = document.getElementById('galleryFixedHeightInput');
+
+    if (scaleRange) scaleRange.value = galleryDesignSettings.imageScalePercent;
+    if (scaleInput) scaleInput.value = galleryDesignSettings.imageScalePercent;
+    if (fixedModeInput) fixedModeInput.checked = galleryDesignSettings.fixedSizeMode;
+    if (fixedWidthInput) fixedWidthInput.value = galleryDesignSettings.fixedWidth;
+    if (fixedHeightInput) fixedHeightInput.value = galleryDesignSettings.fixedHeight;
+    document.querySelectorAll('.gallery-design-nav-row-control button, .gallery-design-header-row-control button').forEach((button) => {
+        button.classList.remove('active');
+    });
+
+    const navRowsBtn = document.getElementById(`galleryNavTabRows${galleryDesignSettings.navTabRows}Btn`);
+    if (navRowsBtn) {
+        navRowsBtn.classList.add('active');
+    }
+}
+
+function openGalleryDesignSettings() {
+    const layer = document.getElementById('galleryDesignSettingsLayer');
+    if (!layer) return;
+
+    syncGalleryDesignSettingsInputs();
+    layer.style.display = 'flex';
+}
+
+function closeGalleryDesignSettings() {
+    const layer = document.getElementById('galleryDesignSettingsLayer');
+    if (layer) layer.style.display = 'none';
+}
+
+function setGalleryImageScale(value) {
+    galleryDesignSettings.imageScalePercent = clampGalleryNumber(value, 100, 40, 140);
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+
+    if (galleryDesignRenderTimer) {
+        clearTimeout(galleryDesignRenderTimer);
+    }
+
+    galleryDesignRenderTimer = setTimeout(() => {
+        galleryDesignRenderTimer = null;
+        renderView();
+    }, 80);
+}
+
+function setGalleryFixedSizeMode(enabled) {
+    galleryDesignSettings.fixedSizeMode = Boolean(enabled);
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+    renderView();
+}
+
+function setGalleryFixedSizeValue() {
+    const widthInput = document.getElementById('galleryFixedWidthInput');
+    const heightInput = document.getElementById('galleryFixedHeightInput');
+
+    galleryDesignSettings.fixedWidth = clampGalleryNumber(widthInput?.value, 260, 120, 800);
+    galleryDesignSettings.fixedHeight = clampGalleryNumber(heightInput?.value, 360, 120, 1000);
+
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+}
+
+function setGalleryNavTabRows(rows) {
+    galleryDesignSettings.navTabRows = clampGalleryNumber(rows, 1, 1, 3);
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+}
+
+function resetGalleryDesignSettings() {
+    galleryDesignSettings = normalizeGalleryDesignSettings({});
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+    renderView();
 }
 
 function readGallerySessionState() {
@@ -320,9 +504,15 @@ function toggleGalleryHeaderTools(event) {
     applyGalleryHeaderToolsCollapsedState();
 }
 
+function syncReasonVisibility() {
+    const reasonToggle = document.getElementById('toggle-reasons');
+    const shouldShow = !reasonToggle || reasonToggle.checked;
+
+    document.body.classList.toggle('hide-reasons', !shouldShow);
+}
+
 function toggleReasons() {
-    if (document.getElementById('toggle-reasons').checked) document.body.classList.remove('hide-reasons');
-    else document.body.classList.add('hide-reasons');
+    syncReasonVisibility();
 }
 
 function setDakiFilter(val) {
@@ -612,8 +802,15 @@ async function updateGalleryImageTag(imagePath, tagId) {
 
         galleryImageTags = json.image_tags || galleryImageTags;
         setLocalGalleryImageTag(imagePath, json.tag_id || '');
+
         closeGalleryTagPicker();
-        renderView();
+
+        if (currentGalleryTagFilter === 'ALL') {
+            updateGalleryImageTagButtonDom(imagePath);
+        } else {
+            renderView();
+        }
+
         showToast(json.tag_id ? '태그를 지정했습니다.' : '태그를 제거했습니다.');
     } catch (error) {
         alert(`태그 변경 실패: ${error.message || error}`);
@@ -622,12 +819,16 @@ async function updateGalleryImageTag(imagePath, tagId) {
 
 function renderGalleryImageTagButton(imagePath, tagId) {
     const tag = getGalleryTagDef(tagId);
+    const cleanPath = normalizeGalleryPathKey(imagePath);
+    const safeDataPath = escapeHtml(cleanPath);
+    const safeOnclickPath = JSON.stringify(imagePath).replace(/"/g, '&quot;');
 
     if (!tag) {
         return `
             <button class="gallery-image-tag-btn empty-tag"
+                    data-gallery-tag-path="${safeDataPath}"
                     title="태그 추가"
-                    onclick="openGalleryImageTagPicker(event, ${JSON.stringify(imagePath).replace(/"/g, '&quot;')})">
+                    onclick="openGalleryImageTagPicker(event, ${safeOnclickPath})">
                 +
             </button>
         `;
@@ -635,11 +836,26 @@ function renderGalleryImageTagButton(imagePath, tagId) {
 
     return `
         <button class="gallery-image-tag-btn has-tag"
+                data-gallery-tag-path="${safeDataPath}"
                 title="태그 변경"
-                onclick="openGalleryImageTagPicker(event, ${JSON.stringify(imagePath).replace(/"/g, '&quot;')})">
+                onclick="openGalleryImageTagPicker(event, ${safeOnclickPath})">
             ${renderGalleryTagIcon(tag)}
         </button>
     `;
+}
+
+function updateGalleryImageTagButtonDom(imagePath) {
+    const cleanPath = normalizeGalleryPathKey(imagePath);
+    if (!cleanPath) return;
+
+    const tagId = getGalleryImageTagId(cleanPath);
+
+    document.querySelectorAll('.gallery-image-tag-btn[data-gallery-tag-path]').forEach((button) => {
+        const buttonPath = normalizeGalleryPathKey(button.dataset.galleryTagPath || '');
+        if (buttonPath !== cleanPath) return;
+
+        button.outerHTML = renderGalleryImageTagButton(cleanPath, tagId);
+    });
 }
 
 function imageMatchesGalleryPromptFilter(item, terms) {
@@ -1268,6 +1484,8 @@ async function loadData(options = {}) {
 window.onload = () => {
     applyGalleryHeaderToolsCollapsedState();
     loadGalleryPersistentUi();
+    loadGalleryDesignSettings();
+    syncReasonVisibility();
     bindGalleryNavTabsScroller();
     loadData();
 };
@@ -1399,11 +1617,27 @@ document.addEventListener('click', (event) => {
         applyGalleryHeaderToolsCollapsedState();
     }
 });
+document.addEventListener('pointerdown', beginGalleryBulkDeleteBoxSelection);
+document.addEventListener('pointermove', updateGalleryBulkDeleteBoxSelection);
+document.addEventListener('pointerup', finishGalleryBulkDeleteBoxSelection);
+document.addEventListener('pointercancel', cancelGalleryBulkDeleteBoxSelection);
+document.addEventListener('dragstart', (event) => {
+    if (!isGalleryBulkDeleteMode) return;
+
+    if (
+        event.target.closest?.('.gallery-bulk-delete-selectable') ||
+        event.target.closest?.('.zoomable') ||
+        event.target.tagName === 'IMG'
+    ) {
+        event.preventDefault();
+    }
+});
 document.addEventListener('scroll', () => closeImageContextMenu(), true);
 document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
         closeImageContextMenu();
         closeRouteTestImagePreview();
+        closeGalleryBulkDeleteConfirm();
         localStorage.setItem(GALLERY_HEADER_TOOLS_COLLAPSED_KEY, '1');
         applyGalleryHeaderToolsCollapsedState();
     }
@@ -2987,6 +3221,7 @@ function renderView() {
     cont.appendChild(finalSpacer);
 
     applyGalleryCollapsedState();
+    syncReasonVisibility();
     saveGallerySessionState();
 }
 
@@ -3003,16 +3238,37 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
     container.appendChild(wrapper);
 
     const grid = document.getElementById(`grid-${id}`);
-    const colCount = window.innerWidth <= 1400 ? 3 : 4;
-    const cols = Array.from({length: colCount}, () => {
-        const col = document.createElement('div'); col.className = 'flex-masonry-col';
-        grid.appendChild(col); return col;
-    });
 
+    const colCount = getGalleryEffectiveColumnCount();
+
+    const cols = Array.from({length: colCount}, () => {
+        const col = document.createElement('div');
+        col.className = 'flex-masonry-col';
+        grid.appendChild(col);
+        return col;
+    });
     folders.forEach((child, idx) => {
         const card = document.createElement('div');
-        card.className = 'card';
-        card.onclick = () => {
+        const bulkFolderKey = getGalleryBulkDeleteFolderKey(child);
+
+        card.className = `card gallery-bulk-delete-selectable ${galleryBulkDeleteFolders.has(bulkFolderKey) ? 'bulk-delete-selected' : ''}`;
+        card.dataset.bulkDeleteType = 'folder';
+        card.dataset.bulkDeletePath = bulkFolderKey;
+        card.dataset.bulkDeleteName = child.name || bulkFolderKey;
+
+        card.onclick = (event) => {
+            if (isGalleryBulkDeleteMode) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                if (galleryBulkDeleteSuppressNextClick) {
+                    return;
+                }
+
+                toggleGalleryBulkDeleteFolder(child, card);
+                return;
+            }
+
             currentPath.push(child);
 
             // 폴더 안으로 들어갈 때는 현재 선택한 브랜드/캐릭터를 유지한다.
@@ -3044,7 +3300,7 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
 
         card.innerHTML = `
             <div class="card-body">
-                ${imgSrc ? `<img src="${imgSrc}" class="card-main-img" loading="lazy">` : '<div style="height:150px;background:#222;"></div>'}
+                ${imgSrc ? `<img src="${imgSrc}" class="card-main-img" loading="lazy" draggable="false">` : '<div style="height:150px;background:#222;"></div>'}
                 ${isDaki ? `<div class="daki-badge-neon">DAKIMAKURA</div>` : ''}
                 <div class="count-badge"><span class="count-num">${child.total_images}</span><span>FILES</span></div>
             </div>
@@ -3073,12 +3329,23 @@ function renderImageGrid(container, title, images, parentNode) {
     sec.innerHTML = titleHtml;
     container.appendChild(sec);
 
-    const g = document.createElement('div'); g.className = 'flex-masonry';
-    const colCount = window.innerWidth <= 1400 ? 3 : 4;
-    const cols = Array.from({length: colCount}, () => {
-        const col = document.createElement('div'); col.className = 'flex-masonry-col';
-        g.appendChild(col); return col;
-    });
+    const useFixedSizeGrid = Boolean(galleryDesignSettings.fixedSizeMode);
+
+    const g = document.createElement('div');
+    g.className = useFixedSizeGrid ? 'flex-masonry gallery-fixed-size-grid' : 'flex-masonry';
+
+    const colCount = useFixedSizeGrid
+    ? 0
+    : getGalleryEffectiveColumnCount();
+
+    const cols = useFixedSizeGrid
+        ? []
+        : Array.from({length: colCount}, () => {
+            const col = document.createElement('div');
+            col.className = 'flex-masonry-col';
+            g.appendChild(col);
+            return col;
+        });
 
     const fk = parentNode.path;
 
@@ -3097,11 +3364,13 @@ function renderImageGrid(container, title, images, parentNode) {
         const isSafeFolder = !item.path.includes('_R-18') && !item.path.includes('_R-15');
         const reasonClass = isSafeFolder ? 'reason-safe' : 'reason-nsfw';
 
+        const hasReason = Boolean(item.warning || item.reason);
+
         let warningHtml = '';
-        if (item.warning || item.reason) {
+        if (hasReason) {
             warningHtml = `<div class="nsfw-reason-box">`;
-            if (item.warning) warningHtml += `<div class="${reasonClass}">${item.warning}</div>`;
-            if (item.reason) warningHtml += `<div class="${reasonClass}">${item.reason}</div>`;
+            if (item.warning) warningHtml += `<div class="${reasonClass}">${escapeHtml(item.warning)}</div>`;
+            if (item.reason) warningHtml += `<div class="${reasonClass}">${escapeHtml(item.reason)}</div>`;
             warningHtml += `</div>`;
         }
 
@@ -3115,40 +3384,78 @@ function renderImageGrid(container, title, images, parentNode) {
         let buttonsHtml = '';
         if (isTrashMode) {
             buttonsHtml = `
-                <button onclick="restoreItem('${p}', 'box-${idx}')" style="flex:1; display:flex; align-items:center; justify-content:center; gap:5px; padding:8px 0; background:#122; color:#4ff; border:1px solid #4ff; cursor:pointer; border-radius:6px; font-weight:bold;"><span>⏪</span> <span style="font-size:11px;">복구</span></button>
-                <button onclick="toggleSelect('${p}','${folderId}','${fk}','${item.name}','box-${idx}')" style="flex:1; display:flex; align-items:center; justify-content:center; gap:5px; padding:8px 0; background:#211; color:#f44; border:1px solid #f44; cursor:pointer; border-radius:6px; font-weight:bold;"><span>🔥</span> <span style="font-size:11px;">영구 삭제 대기</span></button>
+                <button class="gallery-card-action-btn"
+                        onclick="restoreItem('${p}', 'box-${idx}')"
+                        style="background:#122; color:#4ff; border:1px solid #4ff;">
+                    <span class="gallery-action-icon">⏪</span>
+                    <span class="gallery-action-label">복구</span>
+                </button>
+                <button class="gallery-card-action-btn"
+                        onclick="toggleSelect('${p}','${folderId}','${fk}','${item.name}','box-${idx}')"
+                        style="background:#211; color:#f44; border:1px solid #f44;">
+                    <span class="gallery-action-icon">🔥</span>
+                    <span class="gallery-action-label">영구 삭제</span>
+                </button>
             `;
         } else {
             buttonsHtml = `
-                <button onclick="toggleSelect('${p}','${folderId}','${fk}','${item.name}','box-${idx}')" style="flex:1; display:flex; align-items:center; justify-content:center; gap:5px; padding:8px 0; background:#211; color:#f44; border:1px solid #f44; cursor:pointer; border-radius:6px; font-weight:bold;"><span>🗑️</span> <span style="font-size:11px;">삭제</span></button>
-                <button onclick="toggleThumb('${fk}','${p}','${folderId}','${item.name}','box-${idx}')" style="flex:1; display:flex; align-items:center; justify-content:center; gap:5px; padding:8px 0; background:#122; color:${thumbBorder}; border:1px solid ${thumbBorder}; cursor:pointer; border-radius:6px; font-weight:bold;"><span>${thumbIcon}</span> <span style="font-size:11px;">${thumbLabel}</span></button>
-                <button onclick="instantToggleNsfw('${p}', this, 'box-${idx}')" style="flex:1; display:flex; align-items:center; justify-content:center; gap:5px; padding:8px 0; background:${tBg}; color:${tCol}; border:1px solid ${tCol}; cursor:pointer; border-radius:6px; font-weight:bold;"><span>${tIcon}</span> <span style="font-size:11px;">${tLbl}</span></button>
+                <button class="gallery-card-action-btn"
+                        onclick="toggleSelect('${p}','${folderId}','${fk}','${item.name}','box-${idx}')"
+                        style="background:#211; color:#f44; border:1px solid #f44;">
+                    <span class="gallery-action-icon">🗑️</span>
+                    <span class="gallery-action-label">삭제</span>
+                </button>
+                <button class="gallery-card-action-btn"
+                        onclick="toggleThumb('${fk}','${p}','${folderId}','${item.name}','box-${idx}')"
+                        style="background:#122; color:${thumbBorder}; border:1px solid ${thumbBorder};">
+                    <span class="gallery-action-icon">${thumbIcon}</span>
+                    <span class="gallery-action-label">${thumbLabel}</span>
+                </button>
+                <button class="gallery-card-action-btn"
+                        onclick="instantToggleNsfw('${p}', this, 'box-${idx}')"
+                        style="background:${tBg}; color:${tCol}; border:1px solid ${tCol};">
+                    <span class="gallery-action-icon">${tIcon}</span>
+                    <span class="gallery-action-label">${tLbl}</span>
+                </button>
             `;
         }
 
         const imgRatio = (item.w && item.h) ? `${item.w} / ${item.h}` : 'auto';
 
         // 🌟 isCurrentThumb 조건 추가!
-        const boxClass = `item-box ${selDeletes.has(p)?'selected':''} ${(selThumbs.get(fk)?.path===p || isCurrentThumb)?'is-thumb':''}`;
-        // 🌟 [수정 1] 따옴표 충돌을 막기 위해 HTML 안전 문자로 변환합니다.
-        const safeImgSrc = JSON.stringify(imgSrc).replace(/"/g, '&quot;');
+        const boxClass = `item-box ${hasReason ? 'has-reason' : ''} ${selDeletes.has(p)?'selected':''} ${(selThumbs.get(fk)?.path===p || isCurrentThumb)?'is-thumb':''}`;        const safeImgSrc = JSON.stringify(imgSrc).replace(/"/g, '&quot;');
         const safeP = JSON.stringify(p).replace(/"/g, '&quot;');
+        const safeFolderId = JSON.stringify(folderId || '').replace(/"/g, '&quot;');
+        const safeFk = JSON.stringify(fk || '').replace(/"/g, '&quot;');
+        const safeFileName = JSON.stringify(item.name || '').replace(/"/g, '&quot;');
+        const cleanBulkImagePath = normalizeGalleryPathKey(p);
 
         const wrapper = document.createElement('div');
         wrapper.innerHTML = `
-            <div class="${boxClass}" id="box-${idx}" data-path="${p}" data-fk="${fk}">
-                <img src="${imgSrc}" loading="lazy" class="zoomable"
-                        onclick="openZoom(${safeImgSrc})"
+            <div class="${boxClass} gallery-bulk-delete-selectable ${selDeletes.has(cleanBulkImagePath) ? 'bulk-delete-selected' : ''}"
+                id="box-${idx}"
+                data-path="${escapeHtml(p)}"
+                data-fk="${escapeHtml(fk)}"
+                data-bulk-delete-type="image"
+                data-bulk-delete-path="${escapeHtml(cleanBulkImagePath)}"
+                data-bulk-delete-folder-id="${escapeHtml(folderId)}"
+                data-bulk-delete-folder-key="${escapeHtml(fk)}"
+                data-bulk-delete-file-name="${escapeHtml(item.name || '')}">
+                <img src="${imgSrc}" loading="lazy" class="zoomable" draggable="false"
+                        onclick="handleGalleryImageCardClick(event, ${safeP}, ${safeFolderId}, ${safeFk}, ${safeFileName}, 'box-${idx}', ${safeImgSrc})"
                         oncontextmenu="openImageContextMenu(event, ${safeP}, ${safeImgSrc})"
-                        style="cursor:zoom-in; width:100%; height:auto; aspect-ratio: ${imgRatio}; display:block; background:#111; object-fit:contain;">
-                ${galleryUpscaleBadgeHtml}
+                        style="cursor:zoom-in; width:100%; height:auto; aspect-ratio: ${imgRatio}; display:block; background:#111; object-fit:contain;">                ${galleryUpscaleBadgeHtml}
                 ${galleryTagButtonHtml}
                 ${warningHtml}
-                <div style="display:flex; justify-content:space-between; gap:8px; padding:10px; background:#0c0c10; border-top:1px solid #333; margin-top:auto;">
+                <div class="gallery-card-actions">
                     ${buttonsHtml}
                 </div>
             </div>`;
-        cols[idx % colCount].appendChild(wrapper.firstElementChild);
+        if (useFixedSizeGrid) {
+            g.appendChild(wrapper.firstElementChild);
+        } else {
+            cols[idx % colCount].appendChild(wrapper.firstElementChild);
+        }
     });
     container.appendChild(g);
 }
@@ -3176,11 +3483,333 @@ function showToast(msg) {
     setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 2000);
 }
 
+function getGalleryBulkDeleteFolderKey(folder) {
+    return normalizeGalleryPathKey(folder?.path || folder?.name || '');
+}
+
+function updateGalleryBulkDeleteModeUi() {
+    document.body.classList.toggle('gallery-bulk-delete-mode', isGalleryBulkDeleteMode);
+
+    const btn = document.getElementById('galleryBulkDeleteModeBtn');
+    if (btn) {
+        btn.classList.toggle('active', isGalleryBulkDeleteMode);
+        btn.innerText = isGalleryBulkDeleteMode ? '🧹 삭제 모드 ON' : '🧹 삭제 모드';
+    }
+
+    updateGalleryBulkDeleteBar();
+    refreshGalleryBulkDeleteSelectionStyles();
+    updateCounter();
+}
+
+function toggleGalleryBulkDeleteMode() {
+    isGalleryBulkDeleteMode = !isGalleryBulkDeleteMode;
+
+    if (!isGalleryBulkDeleteMode) {
+        clearGalleryBulkDeleteSelection(false);
+    }
+
+    updateGalleryBulkDeleteModeUi();
+}
+
+function updateGalleryBulkDeleteBar() {
+    const text = document.getElementById('galleryBulkDeleteCountText');
+    if (!text) return;
+
+    const folderCount = galleryBulkDeleteFolders.size;
+    const imageCount = selDeletes.size;
+
+    if (!folderCount && !imageCount) {
+        text.innerText = '선택 없음';
+        return;
+    }
+
+    text.innerText = `폴더 ${folderCount}개 / 이미지 ${imageCount}장 선택됨`;
+}
+
+function clearGalleryBulkDeleteSelection(updateUi = true) {
+    galleryBulkDeleteFolders.clear();
+    selDeletes.clear();
+
+    if (updateUi) {
+        updateGalleryBulkDeleteModeUi();
+        refreshGrid();
+    }
+}
+
+function toggleGalleryBulkDeleteFolder(folder, element = null) {
+    const key = getGalleryBulkDeleteFolderKey(folder);
+    if (!key) return;
+
+    if (galleryBulkDeleteFolders.has(key)) {
+        galleryBulkDeleteFolders.delete(key);
+    } else {
+        galleryBulkDeleteFolders.set(key, {
+            path: key,
+            name: folder?.name || key
+        });
+    }
+
+    if (element) {
+        element.classList.toggle('bulk-delete-selected', galleryBulkDeleteFolders.has(key));
+    }
+
+    updateGalleryBulkDeleteBar();
+    updateCounter();
+}
+
+function toggleGalleryBulkDeleteImage(imagePath, folderId, folderKey, fileName, boxId) {
+    const cleanPath = normalizeGalleryPathKey(imagePath);
+    const box = document.getElementById(boxId);
+
+    if (!cleanPath) return;
+
+    if (selDeletes.has(cleanPath)) {
+        selDeletes.delete(cleanPath);
+        if (box) {
+            box.classList.remove('selected');
+            box.classList.remove('bulk-delete-selected');
+        }
+    } else {
+        selDeletes.set(cleanPath, {
+            folderId,
+            folderKey,
+            fileName
+        });
+
+        if (box) {
+            box.classList.add('selected');
+            box.classList.add('bulk-delete-selected');
+        }
+    }
+
+    updateGalleryBulkDeleteBar();
+    updateCounter();
+}
+
+function handleGalleryImageCardClick(event, imagePath, folderId, folderKey, fileName, boxId, imgSrc) {
+    if (isGalleryBulkDeleteMode) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (galleryBulkDeleteSuppressNextClick) {
+            return;
+        }
+
+        toggleGalleryBulkDeleteImage(imagePath, folderId, folderKey, fileName, boxId);
+        return;
+    }
+
+    openZoom(imgSrc);
+}
+
+function refreshGalleryBulkDeleteSelectionStyles() {
+    document.querySelectorAll('.gallery-bulk-delete-selectable[data-bulk-delete-type]').forEach((node) => {
+        const type = node.dataset.bulkDeleteType;
+        const path = normalizeGalleryPathKey(node.dataset.bulkDeletePath || '');
+
+        if (type === 'folder') {
+            node.classList.toggle('bulk-delete-selected', galleryBulkDeleteFolders.has(path));
+            return;
+        }
+
+        if (type === 'image') {
+            const selected = selDeletes.has(path);
+            node.classList.toggle('selected', selected);
+            node.classList.toggle('bulk-delete-selected', selected);
+        }
+    });
+}
+
+function selectGalleryBulkDeleteElement(node) {
+    if (!node || !node.dataset) return;
+
+    const type = node.dataset.bulkDeleteType;
+    const path = normalizeGalleryPathKey(node.dataset.bulkDeletePath || '');
+
+    if (!path) return;
+
+    if (type === 'folder') {
+        galleryBulkDeleteFolders.set(path, {
+            path,
+            name: node.dataset.bulkDeleteName || path
+        });
+        node.classList.add('bulk-delete-selected');
+        return;
+    }
+
+    if (type === 'image') {
+        selDeletes.set(path, {
+            folderId: node.dataset.bulkDeleteFolderId || '',
+            folderKey: node.dataset.bulkDeleteFolderKey || '',
+            fileName: node.dataset.bulkDeleteFileName || path.split('/').pop()
+        });
+
+        node.classList.add('selected');
+        node.classList.add('bulk-delete-selected');
+    }
+}
+
+function beginGalleryBulkDeleteBoxSelection(event) {
+    if (!isGalleryBulkDeleteMode) return;
+    if (event.button !== 0) return;
+
+    if (
+        event.target.closest('button, input, select, textarea, a') ||
+        event.target.closest('.gallery-bulk-delete-bar') ||
+        event.target.closest('.gallery-tag-picker') ||
+        event.target.closest('.gallery-image-tag-btn')
+    ) {
+        return;
+    }
+
+    const selectable = event.target.closest('.gallery-bulk-delete-selectable');
+
+    galleryBulkDeleteSelectionBoxState = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        currentX: event.clientX,
+        currentY: event.clientY,
+        moved: false,
+        box: null,
+        startedOnSelectable: Boolean(selectable)
+    };
+
+    event.preventDefault();
+
+    try {
+        event.target.setPointerCapture?.(event.pointerId);
+    } catch (e) {}
+}
+
+function updateGalleryBulkDeleteBoxSelection(event) {
+    const state = galleryBulkDeleteSelectionBoxState;
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+
+    if (!state.moved && Math.hypot(dx, dy) < 6) {
+        return;
+    }
+
+    if (!state.box) {
+        const box = document.createElement('div');
+        box.className = 'gallery-bulk-delete-selection-box';
+        document.body.appendChild(box);
+        state.box = box;
+    }
+
+    state.moved = true;
+    state.currentX = event.clientX;
+    state.currentY = event.clientY;
+
+    const left = Math.min(state.startX, state.currentX);
+    const top = Math.min(state.startY, state.currentY);
+    const width = Math.abs(state.currentX - state.startX);
+    const height = Math.abs(state.currentY - state.startY);
+
+    state.box.style.left = `${left}px`;
+    state.box.style.top = `${top}px`;
+    state.box.style.width = `${width}px`;
+    state.box.style.height = `${height}px`;
+
+    const boxRect = state.box.getBoundingClientRect();
+
+    document.querySelectorAll('.gallery-bulk-delete-selectable[data-bulk-delete-type]').forEach((node) => {
+        const rect = node.getBoundingClientRect();
+
+        const hit = !(
+            rect.right < boxRect.left ||
+            rect.left > boxRect.right ||
+            rect.bottom < boxRect.top ||
+            rect.top > boxRect.bottom
+        );
+
+        if (hit) {
+            selectGalleryBulkDeleteElement(node);
+        }
+    });
+
+    updateGalleryBulkDeleteBar();
+    updateCounter();
+
+    event.preventDefault();
+}
+
+function finishGalleryBulkDeleteBoxSelection(event) {
+    const state = galleryBulkDeleteSelectionBoxState;
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    if (state.box) {
+        state.box.remove();
+    }
+
+    if (state.moved) {
+        galleryBulkDeleteSuppressNextClick = true;
+        setTimeout(() => {
+            galleryBulkDeleteSuppressNextClick = false;
+        }, 160);
+    }
+
+    galleryBulkDeleteSelectionBoxState = null;
+}
+
+function cancelGalleryBulkDeleteBoxSelection() {
+    if (galleryBulkDeleteSelectionBoxState?.box) {
+        galleryBulkDeleteSelectionBoxState.box.remove();
+    }
+
+    galleryBulkDeleteSelectionBoxState = null;
+}
+
+function openGalleryBulkDeleteConfirm() {
+    const layer = document.getElementById('galleryBulkDeleteConfirmLayer');
+    if (!layer) return;
+
+    const folderCount = galleryBulkDeleteFolders.size;
+    const imageCount = selDeletes.size;
+
+    const folderCountEl = document.getElementById('galleryBulkDeleteConfirmFolderCount');
+    const imageCountEl = document.getElementById('galleryBulkDeleteConfirmImageCount');
+
+    if (folderCountEl) folderCountEl.innerText = String(folderCount);
+    if (imageCountEl) imageCountEl.innerText = String(imageCount);
+
+    layer.style.display = 'flex';
+}
+
+function closeGalleryBulkDeleteConfirm() {
+    const layer = document.getElementById('galleryBulkDeleteConfirmLayer');
+    if (layer) layer.style.display = 'none';
+}
+
+function confirmGalleryBulkDeleteSelection() {
+    closeGalleryBulkDeleteConfirm();
+    applyChanges();
+}
+
+function applyGalleryBulkDeleteSelection() {
+    const folderCount = galleryBulkDeleteFolders.size;
+    const imageCount = selDeletes.size;
+
+    if (!folderCount && !imageCount) {
+        showToast('선택된 항목이 없습니다.');
+        return;
+    }
+
+    openGalleryBulkDeleteConfirm();
+}
+
 function updateCounter() {
     document.getElementById('count-thm').innerText = selThumbs.size;
-    document.getElementById('count-del').innerText = selDeletes.size;
+
+    const folderDeleteCount = galleryBulkDeleteFolders ? galleryBulkDeleteFolders.size : 0;
+    document.getElementById('count-del').innerText = selDeletes.size + folderDeleteCount;
+
+    updateGalleryBulkDeleteBar();
     updateReview();
-}
+}   
 
 function toggleRv() {
     const b = document.getElementById('reviewBoard');
@@ -3223,6 +3852,8 @@ function refreshGrid() {
             box.classList.toggle('is-thumb', isOriginalThumb);
         }
     });
+
+    refreshGalleryBulkDeleteSelectionStyles();
 }
 
 function normalizeGalleryRelPathForCompare(path) {
@@ -3285,7 +3916,10 @@ function toggleSelect(p, folderId, folderKey, fileName, id) {
 }
 
 async function applyChanges() {
-    if (selThumbs.size === 0 && selDeletes.size === 0) { alert("적용할 변경사항이 없습니다."); return; }
+    if (selThumbs.size === 0 && selDeletes.size === 0 && galleryBulkDeleteFolders.size === 0) {
+        alert("적용할 변경사항이 없습니다.");
+        return;
+    }
 
     const btn = document.getElementById('applyBtn');
     const originalText = "🚀 서버에 즉시 반영하기";
@@ -3299,7 +3933,8 @@ async function applyChanges() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 "thumbs": Array.from(selThumbs.values()).map(v => ({"new_thumb": v.path})),
-                "deletes": Array.from(selDeletes.keys())
+                "deletes": Array.from(selDeletes.keys()),
+                "delete_folders": Array.from(galleryBulkDeleteFolders.keys())
             })
         });
         const result = await res.json();
@@ -3307,6 +3942,8 @@ async function applyChanges() {
         if (result.status === 'success') {
             selThumbs.clear();
             selDeletes.clear();
+            galleryBulkDeleteFolders.clear();
+            updateGalleryBulkDeleteBar();
             updateCounter();
             await loadData();
 

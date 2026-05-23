@@ -4759,3 +4759,690 @@ body.route-card-dragging .route-child-chip {
     font-size: 12px;
     line-height: 1.5;
 }
+
+/* ==========================================================
+   Gallery design settings
+   ========================================================== */
+
+.gallery-design-settings-layer {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 11600;
+    background: rgba(0, 0, 0, 0.78);
+    align-items: center;
+    justify-content: center;
+}
+
+.gallery-design-settings-card {
+    width: 560px;
+    max-width: 92vw;
+    border-radius: 16px;
+    border: 1px solid #8b5cf6;
+    background: #151520;
+    box-shadow: 0 18px 60px rgba(0,0,0,0.72);
+    overflow: hidden;
+}
+
+.gallery-design-settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 18px;
+    background: #8b5cf6;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 900;
+}
+
+.gallery-design-settings-header button {
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 24px;
+    font-weight: 900;
+    cursor: pointer;
+}
+
+.gallery-design-settings-body {
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.gallery-design-setting-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    gap: 16px;
+    align-items: center;
+    padding: 14px;
+    border: 1px solid #303042;
+    border-radius: 12px;
+    background: #101018;
+}
+
+.gallery-design-setting-title {
+    font-size: 14px;
+    font-weight: 900;
+    color: #fff;
+    margin-bottom: 5px;
+}
+
+.gallery-design-setting-desc {
+    font-size: 12px;
+    color: #aaa;
+    line-height: 1.5;
+}
+
+.gallery-design-setting-control,
+.gallery-design-fixed-size-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.gallery-design-setting-control input[type="range"] {
+    width: 150px;
+}
+
+.gallery-design-setting-control input[type="number"],
+.gallery-design-fixed-size-control input[type="number"] {
+    width: 72px;
+    background: #08080d;
+    border: 1px solid #333;
+    color: #fff;
+    border-radius: 8px;
+    padding: 8px 9px;
+    font-weight: 900;
+}
+
+.gallery-design-check-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid #303042;
+    border-radius: 12px;
+    background: #101018;
+    cursor: pointer;
+}
+
+.gallery-design-check-row input {
+    width: 18px;
+    height: 18px;
+    accent-color: #8b5cf6;
+}
+
+.gallery-design-check-row span {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gallery-design-check-row b {
+    color: #fff;
+    font-size: 14px;
+}
+
+.gallery-design-check-row small {
+    color: #aaa;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.gallery-design-settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.gallery-design-settings-actions button {
+    border: none;
+    border-radius: 9px;
+    padding: 10px 16px;
+    background: #8b5cf6;
+    color: #fff;
+    font-weight: 900;
+    cursor: pointer;
+}
+
+.gallery-design-settings-actions button.secondary {
+    background: #252535;
+    color: #ddd;
+    border: 1px solid #444;
+}
+
+/* 일반 masonry 모드: 항상 화면 폭을 가득 쓰고, JS에서 열 개수를 조절한다 */
+.flex-masonry:not(.gallery-fixed-size-grid) {
+    width: 100%;
+}
+
+.flex-masonry:not(.gallery-fixed-size-grid) .item-box {
+    width: 100%;
+}
+
+/* 이미지 카드 하단 버튼 정리 */
+.gallery-card-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    padding: 8px;
+    background: #0c0c10;
+    border-top: 1px solid #333;
+    margin-top: auto;
+}
+
+.gallery-card-action-btn {
+    min-width: 0;
+    min-height: 34px;
+    padding: 7px 4px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-weight: 900;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    box-sizing: border-box;
+    line-height: 1.1;
+}
+
+.gallery-card-action-btn .gallery-action-icon {
+    flex: none;
+    font-size: 14px;
+}
+
+.gallery-card-action-btn .gallery-action-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+}
+
+/* 카드가 작아져도 버튼이 무너지지 않게 더 작은 폭에서는 아이콘 중심 */
+@media (max-width: 1500px) {
+    .gallery-card-action-btn {
+        gap: 3px;
+        padding-left: 3px;
+        padding-right: 3px;
+    }
+
+    .gallery-card-action-btn .gallery-action-label {
+        font-size: 9px;
+    }
+}
+
+/* 고정 크기 모드 */
+.flex-masonry.gallery-fixed-size-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--gallery-fixed-image-width, 260px), var(--gallery-fixed-image-width, 260px)));
+    justify-content: center;
+    align-items: start;
+    gap: 25px 20px;
+}
+
+.flex-masonry.gallery-fixed-size-grid .item-box {
+    width: var(--gallery-fixed-image-width, 260px) !important;
+}
+
+.flex-masonry.gallery-fixed-size-grid .item-box > img.zoomable {
+    width: 100% !important;
+    height: var(--gallery-fixed-image-height, 360px) !important;
+    aspect-ratio: auto !important;
+    object-fit: contain !important;
+    background: #111;
+}
+
+body.gallery-nav-tabs-multiline #nav-tabs {
+    display: grid !important;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(var(--gallery-nav-tab-rows, 1), 42px);
+    grid-auto-columns: max-content;
+
+    gap: 8px 10px;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    padding-bottom: 6px !important;
+
+    cursor: grab;
+    max-width: 100%;
+    align-items: center;
+}
+
+body.gallery-nav-tabs-multiline #nav-tabs.dragging-nav-tabs,
+body.gallery-nav-tabs-multiline #nav-tabs:active {
+    cursor: grabbing;
+}
+
+body.gallery-nav-tabs-multiline #nav-tabs .nav-btn {
+    height: 42px;
+    white-space: nowrap;
+}
+
+body.gallery-nav-tabs-multiline #nav-tabs::-webkit-scrollbar {
+    height: 7px;
+}
+
+body.gallery-nav-tabs-multiline #nav-tabs::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 999px;
+}
+
+body.gallery-nav-tabs-multiline #nav-tabs::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
+}
+/* ==========================================================
+   Gallery design settings - row count buttons
+   ========================================================== */
+
+.gallery-design-nav-row-control,
+.gallery-design-header-row-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px;
+    border-radius: 999px;
+    background: #0b0b12;
+    border: 1px solid #333344;
+}
+
+.gallery-design-nav-row-control button,
+.gallery-design-header-row-control button {
+    min-width: 52px !important;
+    height: 34px !important;
+    padding: 0 12px !important;
+    border-radius: 999px !important;
+    border: 1px solid #3f3f55 !important;
+    background: #232334 !important;
+    color: #cfcfe8 !important;
+    font-size: 12px !important;
+    font-weight: 900 !important;
+    line-height: 1 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease,
+        transform 0.15s ease,
+        box-shadow 0.15s ease;
+}
+
+.gallery-design-nav-row-control button:hover,
+.gallery-design-header-row-control button:hover {
+    background: #30304a !important;
+    border-color: #8b5cf6 !important;
+    color: #ffffff !important;
+    transform: translateY(-1px);
+}
+
+.gallery-design-nav-row-control button.active,
+.gallery-design-header-row-control button.active {
+    background: #8b5cf6 !important;
+    color: #ffffff !important;
+    border-color: #a78bfa !important;
+    box-shadow: 0 0 12px rgba(139, 92, 246, 0.45) !important;
+}
+
+/* ==========================================================
+   Gallery bulk delete mode
+   ========================================================== */
+
+.gallery-bulk-delete-bar {
+    display: none;
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 12000;
+    min-width: 420px;
+    max-width: calc(100vw - 40px);
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid #ef4444;
+    background: rgba(18, 10, 12, 0.96);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.65), 0 0 20px rgba(239,68,68,0.25);
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+body.gallery-bulk-delete-mode .gallery-bulk-delete-bar {
+    display: flex;
+}
+
+.gallery-bulk-delete-info {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    color: #fff;
+    font-size: 13px;
+}
+
+.gallery-bulk-delete-info b {
+    color: #ff6b6b;
+    font-size: 14px;
+}
+
+.gallery-bulk-delete-info span {
+    color: #ddd;
+    font-size: 12px;
+}
+
+.gallery-bulk-delete-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.gallery-bulk-delete-actions button {
+    border: none;
+    border-radius: 9px;
+    padding: 9px 13px;
+    font-weight: 900;
+    cursor: pointer;
+    background: #333344;
+    color: #fff;
+}
+
+.gallery-bulk-delete-actions button.secondary {
+    background: #252535;
+    color: #ddd;
+    border: 1px solid #444;
+}
+
+.gallery-bulk-delete-actions button.danger {
+    background: #ef4444;
+    color: #fff;
+}
+
+#galleryBulkDeleteModeBtn.active {
+    background: #fff !important;
+    color: #ef4444 !important;
+    box-shadow: 0 0 0 2px rgba(239,68,68,0.45), 0 0 18px rgba(239,68,68,0.6) !important;
+}
+
+body.gallery-bulk-delete-mode .gallery-bulk-delete-selectable {
+    cursor: crosshair !important;
+    position: relative;
+}
+
+body.gallery-bulk-delete-mode .gallery-bulk-delete-selectable:hover {
+    outline: 2px dashed rgba(239, 68, 68, 0.7);
+    outline-offset: 3px;
+}
+
+.gallery-bulk-delete-selectable.bulk-delete-selected,
+.gallery-bulk-delete-selectable.selected.bulk-delete-selected {
+    border-color: #ef4444 !important;
+    outline: 3px solid rgba(239, 68, 68, 0.9) !important;
+    outline-offset: 2px;
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.45) !important;
+}
+
+.gallery-bulk-delete-selectable.bulk-delete-selected::after {
+    content: "삭제 선택";
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 30;
+    background: rgba(239, 68, 68, 0.95);
+    color: #fff;
+    border-radius: 999px;
+    padding: 6px 9px;
+    font-size: 11px;
+    font-weight: 900;
+    line-height: 1;
+    pointer-events: none;
+}
+
+body.gallery-bulk-delete-mode .gallery-card-actions {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+.gallery-bulk-delete-selection-box {
+    position: fixed;
+    z-index: 13000;
+    border: 1px solid #ef4444;
+    background: rgba(239, 68, 68, 0.16);
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.35);
+    pointer-events: none;
+}
+
+body.gallery-bulk-delete-mode,
+body.gallery-bulk-delete-mode * {
+    user-select: none !important;
+}
+
+body.gallery-bulk-delete-mode img,
+body.gallery-bulk-delete-mode .zoomable,
+body.gallery-bulk-delete-mode .card-main-img {
+    -webkit-user-drag: none !important;
+    user-drag: none !important;
+    user-select: none !important;
+}
+
+body.gallery-bulk-delete-mode .gallery-bulk-delete-selectable {
+    touch-action: none;
+}
+
+/* ==========================================================
+   Gallery bulk delete confirm modal
+   ========================================================== */
+
+.gallery-bulk-delete-confirm-layer {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 14000;
+    background:
+        radial-gradient(circle at center, rgba(239, 68, 68, 0.18), transparent 42%),
+        rgba(0, 0, 0, 0.78);
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.gallery-bulk-delete-confirm-card {
+    width: 460px;
+    max-width: 92vw;
+    border-radius: 22px;
+    border: 1px solid rgba(239, 68, 68, 0.8);
+    background: linear-gradient(180deg, #1b1115 0%, #101018 100%);
+    box-shadow:
+        0 24px 80px rgba(0, 0, 0, 0.75),
+        0 0 28px rgba(239, 68, 68, 0.25);
+    padding: 26px;
+    color: #fff;
+    text-align: center;
+    animation: bulkDeleteConfirmPop 0.16s ease-out;
+}
+
+@keyframes bulkDeleteConfirmPop {
+    from {
+        opacity: 0;
+        transform: translateY(10px) scale(0.96);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.gallery-bulk-delete-confirm-icon {
+    width: 64px;
+    height: 64px;
+    margin: 0 auto 14px auto;
+    border-radius: 50%;
+    background: rgba(239, 68, 68, 0.18);
+    border: 1px solid rgba(239, 68, 68, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 30px;
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.28);
+}
+
+.gallery-bulk-delete-confirm-title {
+    font-size: 20px;
+    font-weight: 900;
+    letter-spacing: -0.4px;
+    margin-bottom: 10px;
+}
+
+.gallery-bulk-delete-confirm-desc {
+    color: #c9c9d6;
+    font-size: 13px;
+    line-height: 1.65;
+    margin-bottom: 18px;
+}
+
+.gallery-bulk-delete-confirm-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.gallery-bulk-delete-confirm-stats > div {
+    border: 1px solid #363648;
+    border-radius: 14px;
+    background: #0b0b12;
+    padding: 13px 10px;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 5px;
+}
+
+.gallery-bulk-delete-confirm-stats .stat-label {
+    color: #aaa;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.gallery-bulk-delete-confirm-stats b {
+    color: #ff6b6b;
+    font-size: 26px;
+    font-weight: 1000;
+    line-height: 1;
+}
+
+.gallery-bulk-delete-confirm-warning {
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 12px;
+    background: rgba(239, 68, 68, 0.1);
+    color: #ffb4b4;
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 800;
+    margin-bottom: 18px;
+}
+
+.gallery-bulk-delete-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.gallery-bulk-delete-confirm-actions button {
+    min-width: 120px;
+    border: none;
+    border-radius: 12px;
+    padding: 11px 16px;
+    font-size: 13px;
+    font-weight: 900;
+    cursor: pointer;
+}
+
+.gallery-bulk-delete-confirm-actions button.secondary {
+    background: #252535;
+    color: #ddd;
+    border: 1px solid #444;
+}
+
+.gallery-bulk-delete-confirm-actions button.secondary:hover {
+    background: #333348;
+}
+
+.gallery-bulk-delete-confirm-actions button.danger {
+    background: #ef4444;
+    color: #fff;
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.35);
+}
+
+.gallery-bulk-delete-confirm-actions button.danger:hover {
+    background: #ff5a5a;
+}
+
+/* ==========================================================
+   Gallery grid overflow clipping fix
+   ========================================================== */
+
+#content {
+    overflow-x: hidden;
+}
+
+.flex-masonry {
+    box-sizing: border-box !important;
+    max-width: 100% !important;
+}
+
+.flex-masonry *,
+.flex-masonry *::before,
+.flex-masonry *::after {
+    box-sizing: border-box;
+}
+
+.flex-masonry:not(.gallery-fixed-size-grid) {
+    width: 100% !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+}
+
+.flex-masonry-col {
+    min-width: 0;
+}
+
+/* 고정 크기 모드도 padding 때문에 삐져나가지 않게 */
+.flex-masonry.gallery-fixed-size-grid {
+    box-sizing: border-box !important;
+    max-width: 100% !important;
+    overflow-x: hidden;
+}
+
+/* ==========================================================
+   Gallery reason visibility fix
+   ========================================================== */
+
+.item-box.has-reason {
+    content-visibility: visible !important;
+    contain-intrinsic-size: auto !important;
+}
+
+.nsfw-reason-box {
+    display: block;
+    position: relative;
+    z-index: 6;
+    width: 100%;
+    box-sizing: border-box;
+    background: #0b0b10;
+    border-top: 1px solid #333;
+    pointer-events: none;
+}
+
+body:not(.hide-reasons) .nsfw-reason-box {
+    display: block !important;
+}
+
+.nsfw-reason-box .reason-nsfw,
+.nsfw-reason-box .reason-safe {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

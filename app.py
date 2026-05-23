@@ -1521,6 +1521,18 @@ def get_data():
     payload["index_mode"] = index_mode
     return jsonify(payload)
 
+def load_gallery_reason_text_for_image(full_path):
+    txt_path = os.path.splitext(full_path)[0] + ".txt"
+
+    if not os.path.exists(txt_path):
+        return ""
+
+    try:
+        with open(txt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        print(f"⚠️ 갤러리 사유 파일 읽기 실패: {txt_path} | {e}")
+        return ""
 
 def infer_gallery_mode_from_rel_path(rel_path):
     rel_path = str(rel_path or "").replace("\\", "/").strip("/")
@@ -1597,6 +1609,7 @@ def gallery_index_rebuild_worker():
                 cached = db.get_file_metadata(rel_path)
                 width = cached[0] if cached and cached[2] == mtime else None
                 height = cached[1] if cached and cached[2] == mtime else None
+                reason_text = load_gallery_reason_text_for_image(full_path)
 
                 batch.append({
                     "rel_path": rel_path,
@@ -1606,6 +1619,7 @@ def gallery_index_rebuild_worker():
                     "mtime": mtime,
                     "width": width,
                     "height": height,
+                    "reason": reason_text,
                     "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
                 })
 

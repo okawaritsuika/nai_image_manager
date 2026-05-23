@@ -1766,13 +1766,129 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     log_func(f"✨ 모든 작업이 완료되었습니다.")
     db.close()
 
+def collect_delete_image_paths_from_folders(fixed_root, folder_paths, log_func=print):
+    import os
+    import utils
+
+    image_exts = ('.png', '.jpg', '.jpeg', '.webp')
+    results = []
+    seen_files = set()
+    seen_dirs = set()
+
+    def resolve_existing_folder_candidates(raw_folder_path):
+        raw = str(raw_folder_path or "").replace("\\", "/").strip().strip("/")
+
+        if not raw:
+            return []
+
+        # 먼저 요청 경로 그대로 찾는다.
+        candidates = [raw]
+
+        # R-18 / R-15 화면에서 prefix 없이 OLD_STYLE/... 로 넘어온 경우 보정한다.
+        has_known_root_prefix = raw.startswith((
+            "_R-18/",
+            "_R-15/",
+            "_TRASH/",
+            "_UNREADABLE/",
+            "TOTAL_CLASSIFIED/"
+        ))
+
+        if not has_known_root_prefix:
+            candidates.append(f"_R-18/{raw}")
+            candidates.append(f"_R-15/{raw}")
+
+        resolved = []
+
+        for candidate in candidates:
+            try:
+                full_folder_path = utils.resolve_safe_path(
+                    fixed_root,
+                    candidate,
+                    strip_prefix="TOTAL_CLASSIFIED/"
+                )
+            except ValueError as e:
+                log_func(f"❌ 폴더 삭제 경로 거부: {candidate} | {e}")
+                continue
+
+            if not os.path.isdir(full_folder_path):
+                continue
+
+            full_folder_path = os.path.abspath(full_folder_path)
+
+            if full_folder_path in seen_dirs:
+                continue
+
+            seen_dirs.add(full_folder_path)
+            resolved.append(full_folder_path)
+
+        return resolved
+
+    for folder_path in folder_paths or []:
+        raw_folder_path = str(folder_path or "").replace("\\", "/").strip()
+
+        if not raw_folder_path:
+            continue
+
+        folder_candidates = resolve_existing_folder_candidates(raw_folder_path)
+
+        if not folder_candidates:
+            log_func(f"⚠️ 삭제 대상 폴더 없음: {raw_folder_path}")
+            continue
+
+        for full_folder_path in folder_candidates:
+            for root, dirs, files in os.walk(full_folder_path):
+                dirs[:] = [
+                    dirname for dirname in dirs
+                    if not os.path.exists(os.path.join(root, dirname, ".ignore"))
+                ]
+
+                if os.path.exists(os.path.join(root, ".ignore")):
+                    dirs[:] = []
+                    continue
+
+                for file_name in files:
+                    if not file_name.lower().endswith(image_exts):
+                        continue
+
+                    full_file_path = os.path.join(root, file_name)
+                    rel_path = os.path.relpath(full_file_path, fixed_root).replace("\\", "/")
+
+                    if rel_path in seen_files:
+                        continue
+
+                    seen_files.add(rel_path)
+                    results.append(rel_path)
+
+    return results
 
 def handle_integrated_tasks(fixed_root, data, log_func=print):
     import datetime
     import utils  # 🌟 DB 사용을 위해 추가
 
     thumbs = data.get("thumbs", [])
-    deletes = data.get("deletes", [])
+    deletes = list(data.get("deletes", []) or [])
+    delete_folders = list(data.get("delete_folders", []) or [])
+
+    if delete_folders:
+        folder_delete_paths = collect_delete_image_paths_from_folders(
+            fixed_root,
+            delete_folders,
+            log_func=log_func
+        )
+
+        merged_deletes = []
+        seen_delete_paths = set()
+
+        for delete_path in [*deletes, *folder_delete_paths]:
+            clean_delete_path = str(delete_path or "").replace("\\", "/").strip()
+            if not clean_delete_path or clean_delete_path in seen_delete_paths:
+                continue
+
+            seen_delete_paths.add(clean_delete_path)
+            merged_deletes.append(clean_delete_path)
+
+        deletes = merged_deletes
+
     db = utils.HistoryDB()  # 🌟 DB 인스턴스 생성
 
     # 1. 삭제 작업 (휴지통 이동 OR 영구 삭제)

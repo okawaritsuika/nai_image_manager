@@ -33,6 +33,13 @@
                             🔄 인덱스 갱신
                         </button>
                         <button onclick="toggleStats()" title="통계 보기" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">📊 통계</button>
+                        <button onclick="openGalleryDesignSettings()" title="갤러리 디자인 설정" style="background: #8b5cf6; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(139, 92, 246, 0.3);">⚙️ 설정</button>
+                        <button id="galleryBulkDeleteModeBtn"
+                                onclick="toggleGalleryBulkDeleteMode()"
+                                title="삭제 모드"
+                                style="background: #ef4444; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);">
+                            🧹 삭제 모드
+                        </button>
                     </div>
                 </div>
                 <div style="font-weight:900; font-size: 13px; margin-right: 10px;">
@@ -682,7 +689,114 @@
     </div>
 
     <div id="galleryInpaintBrushCursor"></div>
+    <div id="galleryDesignSettingsLayer" class="gallery-design-settings-layer">
+        <div class="gallery-design-settings-card">
+            <div class="gallery-design-settings-header">
+                <span>⚙️ 갤러리 디자인 설정</span>
+                <button onclick="closeGalleryDesignSettings()">×</button>
+            </div>
 
+            <div class="gallery-design-settings-body">
+                <div class="gallery-design-setting-row">
+                    <div>
+                        <div class="gallery-design-setting-title">상단 탭 줄 수</div>
+                        <div class="gallery-design-setting-desc">Solo / Duo / Group 같은 상단 카테고리 버튼을 1줄, 2줄, 3줄로 표시합니다.</div>
+                    </div>
+                    <div class="gallery-design-nav-row-control">
+                        <button type="button" id="galleryNavTabRows1Btn" onclick="setGalleryNavTabRows(1)">1줄</button>
+                        <button type="button" id="galleryNavTabRows2Btn" onclick="setGalleryNavTabRows(2)">2줄</button>
+                        <button type="button" id="galleryNavTabRows3Btn" onclick="setGalleryNavTabRows(3)">3줄</button>
+                    </div>
+                </div>
+
+                <div class="gallery-design-setting-row">
+                    <div>
+                        <div class="gallery-design-setting-title">이미지 크기</div>
+                        <div class="gallery-design-setting-desc">현재 갤러리 크기를 100% 기준으로 줄이거나 키웁니다.</div>
+                    </div>
+                    <div class="gallery-design-setting-control">
+                        <input type="range" id="galleryImageScaleRange" min="40" max="140" step="5" value="100" oninput="setGalleryImageScale(this.value)">
+                        <input type="number" id="galleryImageScaleInput" min="40" max="140" step="5" value="100" oninput="setGalleryImageScale(this.value)">
+                        <span>%</span>
+                    </div>
+                </div>
+
+                <label class="gallery-design-check-row">
+                    <input type="checkbox" id="galleryFixedSizeModeInput" onchange="setGalleryFixedSizeMode(this.checked)">
+                    <span>
+                        <b>고정 크기 모드</b>
+                        <small>이미지 비율에 따라 카드 높이가 달라지지 않게 고정된 썸네일 박스로 표시합니다.</small>
+                    </span>
+                </label>
+
+                <div class="gallery-design-setting-row">
+                    <div>
+                        <div class="gallery-design-setting-title">고정 크기</div>
+                        <div class="gallery-design-setting-desc">고정 크기 모드에서 사용할 썸네일 박스 크기입니다.</div>
+                    </div>
+                    <div class="gallery-design-fixed-size-control">
+                        <input type="number" id="galleryFixedWidthInput" min="120" max="800" step="10" value="260" oninput="setGalleryFixedSizeValue()">
+                        <span>×</span>
+                        <input type="number" id="galleryFixedHeightInput" min="120" max="1000" step="10" value="360" oninput="setGalleryFixedSizeValue()">
+                        <span>px</span>
+                    </div>
+                </div>
+
+                <div class="gallery-design-settings-actions">
+                    <button class="secondary" onclick="resetGalleryDesignSettings()">기본값</button>
+                    <button onclick="closeGalleryDesignSettings()">닫기</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="galleryBulkDeleteBar" class="gallery-bulk-delete-bar">
+        <div class="gallery-bulk-delete-info">
+            <b>🧹 삭제 모드</b>
+            <span id="galleryBulkDeleteCountText">선택 없음</span>
+        </div>
+        <div class="gallery-bulk-delete-actions">
+            <button type="button" class="secondary" onclick="clearGalleryBulkDeleteSelection()">선택 해제</button>
+            <button type="button" class="danger" onclick="applyGalleryBulkDeleteSelection()">선택 항목 휴지통으로</button>
+            <button type="button" onclick="toggleGalleryBulkDeleteMode()">닫기</button>
+        </div>
+    </div>
+    <div id="galleryBulkDeleteConfirmLayer" class="gallery-bulk-delete-confirm-layer"
+        onclick="if (event.target === this) closeGalleryBulkDeleteConfirm()">
+        <div class="gallery-bulk-delete-confirm-card">
+            <div class="gallery-bulk-delete-confirm-icon">🧹</div>
+
+            <div class="gallery-bulk-delete-confirm-title">
+                선택 항목을 휴지통으로 보낼까요?
+            </div>
+
+            <div class="gallery-bulk-delete-confirm-desc">
+                선택한 폴더와 이미지를 휴지통으로 이동합니다.<br>
+                휴지통에서 복구할 수 있지만, 폴더 단위 선택은 내부 이미지 전체가 이동됩니다.
+            </div>
+
+            <div class="gallery-bulk-delete-confirm-stats">
+                <div>
+                    <span class="stat-label">폴더</span>
+                    <b id="galleryBulkDeleteConfirmFolderCount">0</b>
+                    <span>개</span>
+                </div>
+                <div>
+                    <span class="stat-label">이미지</span>
+                    <b id="galleryBulkDeleteConfirmImageCount">0</b>
+                    <span>장</span>
+                </div>
+            </div>
+
+            <div class="gallery-bulk-delete-confirm-warning">
+                현재 선택 내용은 서버에 즉시 반영됩니다.
+            </div>
+
+            <div class="gallery-bulk-delete-confirm-actions">
+                <button type="button" class="secondary" onclick="closeGalleryBulkDeleteConfirm()">취소</button>
+                <button type="button" class="danger" onclick="confirmGalleryBulkDeleteSelection()">휴지통으로 보내기</button>
+            </div>
+        </div>
+    </div>
     <div id="galleryTagPicker" class="gallery-tag-picker"></div>
 
     <div id="galleryTagManagerLayer" class="gallery-tag-manager-layer">
