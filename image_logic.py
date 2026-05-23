@@ -1392,7 +1392,29 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         for tag in all_tags:
             full_route_tag_keys.update(route_prompt_match_keys(tag))
 
+        full_route_prompt_text = clean_route_prompt_text(" ".join(all_tags))
+        full_route_prompt_keys = route_prompt_match_keys(full_route_prompt_text)
+
+        def is_route_like_prompt(pattern):
+            text = clean_route_prompt_text(pattern)
+            return len(text) >= 3 and text.startswith("%") and text.endswith("%")
+
+        def route_like_prompt_inner(pattern):
+            return clean_route_prompt_text(pattern)[1:-1].strip()
+
         def route_rule_prompt_matches(prompt):
+            if is_route_like_prompt(prompt):
+                needle = route_like_prompt_inner(prompt)
+                if not needle:
+                    return False
+
+                needle_keys = route_prompt_match_keys(needle)
+                return any(
+                    needle_key in full_key
+                    for needle_key in needle_keys
+                    for full_key in full_route_prompt_keys
+                )
+
             return any(key in full_route_tag_keys for key in route_prompt_match_keys(prompt))
 
         def route_rule_matches(rule):

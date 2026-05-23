@@ -3310,9 +3310,48 @@ def route_test_build_key_set(tokens):
         key_set.update(route_test_match_keys(token))
     return key_set
 
+def route_test_build_match_context(tokens):
+    token_keys = route_test_build_key_set(tokens)
+    full_prompt_text = route_test_clean_prompt_text(" ".join(str(token or "") for token in (tokens or [])))
+    full_keys = route_test_match_keys(full_prompt_text)
 
-def route_test_rule_prompt_matches(prompt, key_set):
-    return any(key in key_set for key in route_test_match_keys(prompt))
+    return {
+        "token_keys": token_keys,
+        "full_keys": full_keys
+    }
+
+
+def route_test_is_like_prompt(pattern):
+    text = route_test_clean_prompt_text(pattern)
+    return len(text) >= 3 and text.startswith("%") and text.endswith("%")
+
+
+def route_test_like_prompt_inner(pattern):
+    return route_test_clean_prompt_text(pattern)[1:-1].strip()
+
+def route_test_rule_prompt_matches(prompt, match_context):
+    if not isinstance(match_context, dict):
+        match_context = {
+            "token_keys": match_context or set(),
+            "full_keys": set()
+        }
+
+    if route_test_is_like_prompt(prompt):
+        needle = route_test_like_prompt_inner(prompt)
+        if not needle:
+            return False
+
+        needle_keys = route_test_match_keys(needle)
+        full_keys = match_context.get("full_keys") or set()
+
+        return any(
+            needle_key in full_key
+            for needle_key in needle_keys
+            for full_key in full_keys
+        )
+
+    token_keys = match_context.get("token_keys") or set()
+    return any(key in token_keys for key in route_test_match_keys(prompt))
 
 
 def route_test_unique_prompts(items):
@@ -3330,7 +3369,7 @@ def route_test_unique_prompts(items):
     return prompts
 
 
-def route_test_rule_matches(rule, key_set):
+def route_test_rule_matches(rule, match_context):
     if not isinstance(rule, dict) or rule.get("type") == "default":
         return {"matched": False, "mode": "default", "matched_tags": [], "missing_tags": [], "message": "기본 분류 규칙은 직접 매칭하지 않습니다."}
 
@@ -3345,7 +3384,7 @@ def route_test_rule_matches(rule, key_set):
         group_details = []
         for index, group in enumerate(tag_groups):
             needed = route_test_unique_prompts(group)
-            found = [tag for tag in needed if route_test_rule_prompt_matches(tag, key_set)]
+            found = [tag for tag in needed if route_test_rule_prompt_matches(tag, match_context)]
             missing = [tag for tag in needed if tag not in found]
             passed = bool(needed) and not missing
             group_details.append({
@@ -3387,7 +3426,7 @@ def route_test_rule_matches(rule, key_set):
         match_count = 1
     match_count = max(1, match_count)
 
-    matched_tags = [tag for tag in tags if route_test_rule_prompt_matches(tag, key_set)]
+    matched_tags = [tag for tag in tags if route_test_rule_prompt_matches(tag, match_context)]
     missing_tags = [tag for tag in tags if tag not in matched_tags]
     required_count = len(tags) if condition == "all" else min(match_count, len(tags))
     matched = bool(tags) and (not missing_tags if condition == "all" else len(matched_tags) >= match_count)
@@ -3507,7 +3546,7 @@ def route_test_rule_label_by_path(rules, path):
     return " > ".join(labels) if labels else "알 수 없는 규칙"
 
 
-def route_test_match_rule_chain(rules, key_set, paths):
+def route_test_match_rule_chain(rules, match_context, paths):
     details = []
     labels = []
     all_matched = True
@@ -3523,7 +3562,7 @@ def route_test_match_rule_chain(rules, key_set, paths):
             })
             continue
 
-        result = route_test_match_single_rule(rule, key_set)
+        result = route_test_match_single_rule(rule, match_context)
         result["rule_path"] = path
         result["rule_label"] = route_test_rule_label_by_path(rules, path)
         labels.append(result["rule_label"])
@@ -3541,7 +3580,7 @@ def route_test_match_rule_chain(rules, key_set, paths):
     }
 
 
-def route_test_match_selected_rules(rules, key_set, rule_paths):
+def route_test_match_selected_rules(rules, match_context, rule_paths):  
     jobs = route_test_selected_path_jobs(rule_paths)
     selected_results = []
 
@@ -3549,7 +3588,7 @@ def route_test_match_selected_rules(rules, key_set, rule_paths):
         paths = job.get("paths") or []
 
         if job.get("type") == "chain":
-            selected_results.append(route_test_match_rule_chain(rules, key_set, paths))
+            selected_results.append(route_test_match_rule_chain(rules, match_context, paths))
             continue
 
         path = paths[0] if paths else []
@@ -3565,7 +3604,7 @@ def route_test_match_selected_rules(rules, key_set, rule_paths):
             })
             continue
 
-        result = route_test_match_single_rule(rule, key_set)
+        result = route_test_match_single_rule(rule, match_context)
         result["type"] = "single"
         result["rule_path"] = path
         result["rule_label"] = route_test_rule_label_by_path(rules, path)
@@ -3597,7 +3636,7 @@ def route_test_flatten_rules(rules, parent_label="", parent_path=None):
     return flat
 
 
-def route_test_find_matching_route(rules, key_set):
+def route_test_find_matching_route(rules, match_context):
     details = []
 
     def walk(rule_list, chain=None):
@@ -3609,7 +3648,7 @@ def route_test_find_matching_route(rules, key_set):
                 return {"matched": False, "default_reached": True, "final_folder": "Solo / Duo / Group", "rule_chain": chain, "details": details}
 
             folder = str(rule.get("folder") or "").strip()
-            match_detail = route_test_rule_matches(rule, key_set)
+            match_detail = route_test_rule_matches(rule, match_context)
             details.append({"folder": folder, "label": " > ".join(chain + [folder]) if folder else "", **match_detail})
             if not match_detail.get("matched"):
                 continue
@@ -3625,11 +3664,11 @@ def route_test_find_matching_route(rules, key_set):
     return walk(rules)
 
 
-def route_test_match_single_rule(rule, key_set):
+def route_test_match_single_rule(rule, match_context):
     if not rule or rule.get("type") == "default":
         return {"matched": False, "final_folder": "", "rule_chain": [], "details": [], "message": "선택한 규칙을 찾을 수 없습니다."}
 
-    detail = route_test_rule_matches(rule, key_set)
+    detail = route_test_rule_matches(rule, match_context)
     folder = str(rule.get("folder") or "").strip()
     return {
         "matched": bool(detail.get("matched")),
@@ -3663,7 +3702,7 @@ def route_test_build_prompt_rule(data):
 
 def route_test_run_payload(data, tokens):
     rules = normalize_custom_route_rules(data.get("rules", []))
-    key_set = route_test_build_key_set(tokens)
+    match_context = route_test_build_match_context(tokens)
 
     target_mode = data.get("target_mode") or data.get("scope") or "all"
 
@@ -3678,16 +3717,16 @@ def route_test_run_payload(data, tokens):
                 "details": []
             }
 
-        result = route_test_match_single_rule(temp_rule, key_set)
+        result = route_test_match_single_rule(temp_rule, match_context)
         result["scope"] = "prompt"
         result["type"] = "single"
         result["rule_label"] = "임시 프롬프트 규칙"
         return result
 
     if target_mode == "single" or data.get("scope") == "single":
-        return route_test_match_selected_rules(rules, key_set, route_test_get_rule_paths(data))
+        return route_test_match_selected_rules(rules, match_context, route_test_get_rule_paths(data))
 
-    return route_test_find_matching_route(rules, key_set)
+    return route_test_find_matching_route(rules, match_context)
 
 
 def route_test_prompt_preview_from_tokens(tokens, limit=30):
