@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, json, shutil, sys, re, concurrent.futures, hashlib, gzip, warnings, time
+import os, json, shutil, sys, re, concurrent.futures, hashlib, gzip, warnings, time, copy
 from PIL import Image
 import utils
 import datetime
@@ -863,7 +863,377 @@ def scan_and_extract_artists(classified_root, clear_db=False, log_func=print, st
     finally:
         db.close()
 
-def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=False, use_gpu=True, max_workers=None, normal_workers=None, ai_workers=None, ai_threshold=0.9998, log_func=print, stop_check=None, progress_update=None, skip_nsfw=False, skip_char_id=False, reorg_target=None):
+CHARACTER_IGNORE_WORDS = {
+    "girl", "girls", "1girl", "2girls", "3girls", "4girls", "5girls",
+    "boy", "boys", "1boy", "2boys", "solo", "group", "unknown_char",
+    "comic", "no_metadata"
+}
+
+
+def normalize_character_prompt_tag(raw_tag):
+    t_clean = str(raw_tag or "").strip().lower()
+    if not t_clean:
+        return ""
+
+    clean = re.sub(r'^[-0-9.]+:+\s*', '', t_clean)
+    clean = re.sub(r'\s*:+$', '', clean)
+    clean = re.sub(r':[0-9.]+$', '', clean).strip()
+
+    while clean.startswith('(') and clean.endswith(')'):
+        clean = clean[1:-1].strip()
+    while clean.startswith('[') and clean.endswith(']'):
+        clean = clean[1:-1].strip()
+    while clean.startswith('{') and clean.endswith('}'):
+        clean = clean[1:-1].strip()
+
+    clean = re.sub(r'\s+', '_', clean).lower().strip()
+
+    if len(clean) < 2:
+        return ""
+
+    blacklist = [
+        '(medium)', '(object)', '(clothes)', '(creature)', '(species)',
+        '(item)', '(anatomy)', '(background)', '(cosplay)', '(style)',
+        '(studio)', 'artist', 'uniform', 'reality_arc', 'must_include'
+    ]
+
+    if any(b in clean for b in blacklist):
+        return ""
+
+    return clean
+
+
+def build_danbooru_character_cache(db=None, log_func=None):
+    cache = set()
+
+    try:
+        conn = getattr(db, "danbooru_conn", None) if db else None
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM characters")
+            for row in cur.fetchall():
+                name = str(row[0] or "").strip().lower()
+                if name:
+                    cache.add(name)
+    except Exception as e:
+        if log_func:
+            log_func(f"⚠️ 단보루 캐릭터 캐시 로드 실패: {e}")
+
+    return cache
+
+
+def detect_character_names_from_prompt_tags(prompt_tags, danbooru_cache, skip_char_id=False):
+    if skip_char_id:
+        return []
+
+    detected_names = set()
+
+    for tag in prompt_tags or []:
+        clean = normalize_character_prompt_tag(tag)
+        if not clean:
+            continue
+
+        if clean in danbooru_cache:
+            detected_names.add(clean.title())
+
+    final_names = set()
+
+    for name in detected_names:
+        clean_name = str(name or "").strip().lower()
+        if clean_name and clean_name not in CHARACTER_IGNORE_WORDS:
+            final_names.add(name)
+
+    return list(final_names)
+
+
+def clean_route_prompt_text(value):
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def route_prompt_match_keys(value):
+    text = clean_route_prompt_text(value).lower()
+    if not text:
+        return set()
+
+    space_text = re.sub(r"\s+", " ", text.replace("_", " ")).strip()
+    underscore_text = re.sub(r"\s+", "_", space_text)
+    compact_text = re.sub(r"[\s_]+", "", space_text)
+
+    return {key for key in (text, space_text, underscore_text, compact_text) if key}
+
+
+def dedupe_route_prompts_for_match(items):
+    prompts = []
+    seen = set()
+
+    if isinstance(items, str):
+        items = re.split(r"[,\n]+", items)
+
+    for item in items or []:
+        prompt = clean_route_prompt_text(item)
+        if not prompt:
+            continue
+
+        keys = route_prompt_match_keys(prompt)
+        dedupe_key = next(iter(sorted(keys)), "")
+        if not dedupe_key or dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+        prompts.append(prompt)
+
+    return prompts
+
+
+def normalize_route_tag_groups_for_match(raw_groups):
+    groups = []
+    seen_groups = set()
+
+    if isinstance(raw_groups, str):
+        raw_groups = [re.split(r",+", line) for line in raw_groups.splitlines()]
+    if not isinstance(raw_groups, list):
+        return groups
+
+    for raw_group in raw_groups:
+        if isinstance(raw_group, list):
+            group_items = raw_group
+        else:
+            group_items = [raw_group]
+
+        group = dedupe_route_prompts_for_match(group_items)
+        if not group:
+            continue
+
+        group_key = tuple(
+            next(iter(sorted(route_prompt_match_keys(tag))), "")
+            for tag in group
+        )
+        if group_key in seen_groups:
+            continue
+
+        seen_groups.add(group_key)
+        groups.append(group)
+
+    return groups
+
+
+def build_route_tag_key_set(tags):
+    key_set = set()
+    for tag in tags or []:
+        key_set.update(route_prompt_match_keys(tag))
+    return key_set
+
+
+def route_rule_matches_tags(rule, base_tags, char_tags):
+    if not isinstance(rule, dict) or rule.get("type") == "default":
+        return False
+
+    prompt_mode = str(rule.get("prompt_mode") or rule.get("scope") or "single").strip().lower()
+    if prompt_mode in ("base_prompt",):
+        prompt_mode = "base"
+    elif prompt_mode in ("character", "character_prompt", "char_prompt"):
+        prompt_mode = "char"
+
+    raw_tags = rule.get("tags") or []
+    prompt_text_tags = dedupe_route_prompts_for_match(rule.get("prompt_text") or [])
+    rule_tags = dedupe_route_prompts_for_match(raw_tags) or prompt_text_tags
+    if not rule_tags and rule.get("live_direct_tags"):
+        rule_tags = dedupe_route_prompts_for_match(rule.get("live_direct_tags") or [])
+
+    tag_groups = normalize_route_tag_groups_for_match(rule.get("tag_groups", []))
+
+    if prompt_mode == "base":
+        route_tag_keys = build_route_tag_key_set(base_tags)
+    elif prompt_mode == "char":
+        route_tag_keys = build_route_tag_key_set(char_tags)
+    else:
+        route_tag_keys = build_route_tag_key_set(list(base_tags or []) + list(char_tags or []))
+
+    def route_rule_prompt_matches(prompt):
+        return any(key in route_tag_keys for key in route_prompt_match_keys(prompt))
+
+    if prompt_mode == "group":
+        if not tag_groups and rule_tags:
+            tag_groups = [[tag] for tag in rule_tags]
+
+        return any(
+            all(route_rule_prompt_matches(tag) for tag in group)
+            for group in tag_groups
+            if group
+        )
+
+    if not rule_tags:
+        return False
+
+    condition = str(rule.get("condition", "any") or "any").strip().lower()
+    condition_mode = str(rule.get("condition_mode") or "").strip().lower()
+    try:
+        match_count = int(rule.get("match_count", 1) or 1)
+    except Exception:
+        match_count = 1
+    match_count = max(1, match_count)
+
+    if condition == "all":
+        return all(route_rule_prompt_matches(tag) for tag in rule_tags)
+
+    matched = sum(1 for tag in rule_tags if route_rule_prompt_matches(tag))
+    if condition_mode == "count" or condition == "count" or match_count > 1:
+        return matched >= match_count
+
+    return matched > 0
+
+
+def find_matching_child_route_for_tags(children, base_tags, char_tags):
+    children = children or []
+
+    for child in children:
+        if not isinstance(child, dict) or child.get("type") == "default":
+            continue
+
+        if not route_rule_matches_tags(child, base_tags, char_tags):
+            continue
+
+        parts = [str(child.get("folder") or "").strip()]
+        nested_children = (
+            child.get("children")
+            or child.get("sub_rules")
+            or child.get("rules")
+            or []
+        )
+        nested = find_matching_child_route_for_tags(nested_children, base_tags, char_tags)
+
+        if nested:
+            parts.append(nested)
+
+        return os.path.join(*[p for p in parts if p])
+
+    return ""
+
+
+def clean_route_folder_part(part, save_long_name=None):
+    part = str(part or "").strip()
+    part = re.sub(r'[<>:"|?*]', '', part)
+    part = part.strip('. ')
+
+    if not part:
+        return ""
+
+    if len(part) > 100:
+        short_part = part[:100].strip('_ ') + "_and_Others"
+        if callable(save_long_name):
+            save_long_name(short_part, part)
+        part = short_part
+
+    return part
+
+
+def normalize_route_folder_path(raw_path, save_long_name=None):
+    parts = [
+        clean_route_folder_part(part, save_long_name=save_long_name)
+        for part in re.split(r'[\\/]+', str(raw_path or ""))
+    ]
+    parts = [part for part in parts if part]
+
+    if not parts:
+        return "3_Group"
+
+    return os.path.join(*parts)
+
+
+def resolve_custom_route_category(custom_rules, base_tags, char_tags, character_count, save_long_name=None):
+    cat_raw = None
+
+    for rule in custom_rules or []:
+        if not isinstance(rule, dict):
+            continue
+
+        if rule.get("type") == "default":
+            cat_raw = (
+                "1_Solo" if character_count == 1
+                else "2_Duo" if character_count == 2
+                else "3_Group" if character_count >= 3
+                else "0_No_Metadata"
+            )
+            break
+
+        if not route_rule_matches_tags(rule, base_tags, char_tags):
+            continue
+
+        route_parts = [str(rule.get("folder") or "").strip()]
+        children = (
+            rule.get("children")
+            or rule.get("sub_rules")
+            or rule.get("rules")
+            or []
+        )
+        child_route = find_matching_child_route_for_tags(children, base_tags, char_tags)
+        if child_route:
+            route_parts.append(child_route)
+
+        cat_raw = os.path.join(*[p for p in route_parts if p])
+        break
+
+    if not cat_raw:
+        cat_raw = "3_Group"
+
+    return normalize_route_folder_path(cat_raw, save_long_name=save_long_name)
+
+
+def _get_custom_rules_for_run(override_custom_rules=None, log_func=print):
+    if isinstance(override_custom_rules, list):
+        custom_rules = copy.deepcopy(override_custom_rules)
+        try:
+            log_func(f"🧭 override custom_rules 사용: {len(custom_rules)}개")
+        except Exception:
+            pass
+    else:
+        config = utils.load_config()
+        custom_rules = copy.deepcopy(config.get("custom_rules", []))
+
+    if not any(isinstance(r, dict) and r.get("type") == "default" for r in custom_rules):
+        custom_rules.append({"type": "default"})
+
+    return custom_rules
+
+
+def _update_workspace_index_for_success_records(gallery_success_records, classified_root, normal_workers=4, log_func=print, stop_check=None):
+    final_paths = []
+    classified_root_abs = os.path.abspath(classified_root)
+
+    for item in gallery_success_records or []:
+        if not isinstance(item, dict):
+            continue
+        final_path = item.get("final_path") or item.get("path")
+        if not final_path:
+            continue
+        final_path = os.path.abspath(final_path)
+        if os.path.isfile(final_path) and utils.is_subpath(final_path, classified_root_abs):
+            final_paths.append(final_path)
+
+    if not final_paths:
+        return None
+
+    try:
+        import workspace_logic
+        log_func("📚 [워크스페이스 인덱스] 최종 파일 인덱스 갱신 시작...")
+        return workspace_logic.index_classified_file_paths_as_workspace(
+            final_paths,
+            classified_root_abs,
+            normal_workers=normal_workers or 4,
+            incremental=True,
+            log_func=log_func,
+            progress_update=None,
+            stop_check=stop_check
+        )
+    except Exception as e:
+        try:
+            log_func(f"⚠️ 워크스페이스 인덱스 자동 갱신 실패: {e}")
+        except Exception:
+            pass
+        return None
+
+
+def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=False, use_gpu=True, max_workers=None, normal_workers=None, ai_workers=None, ai_threshold=0.9998, log_func=print, stop_check=None, progress_update=None, skip_nsfw=False, skip_char_id=False, reorg_target=None, override_custom_rules=None, update_workspace_index=False):
     global USE_AI_FILTER, USE_GPU_MODE
     USE_AI_FILTER = use_ai
     USE_GPU_MODE = use_gpu  # 🌟 사용자 선택값을 전역 변수에 저장
@@ -908,19 +1278,10 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             OVERRIDE_CACHE[row[0]] = int(row[1])  # bool에서 int로 변경!
     except Exception as e:
         log_func(f"⚠️ 수동 분류 캐시 로드 실패: {e}")
-    ignore_words = {"girl", "girls", "1girl", "2girls", "3girls", "4girls", "5girls",
-                    "boy", "boys", "1boy", "2boys", "solo", "group", "unknown_char", "comic", "no_metadata"}
+    ignore_words = CHARACTER_IGNORE_WORDS
 
-    DANBOORU_RAM_CACHE = set()
-    try:
-        log_func("⚡ 단보루 DB를 메모리(RAM)에 로드 중입니다...")
-        if db.danbooru_conn:
-            cur = db.danbooru_conn.cursor()
-            cur.execute("SELECT name FROM characters")
-            for row in cur.fetchall():
-                DANBOORU_RAM_CACHE.add(row[0].strip().lower())
-    except Exception as e:
-        log_func(f"⚠️ 메모리 로드 중 오류: {e}")
+    log_func("⚡ 단보루 DB를 메모리(RAM)에 로드 중입니다...")
+    DANBOORU_RAM_CACHE = build_danbooru_character_cache(db, log_func=log_func)
 
     processed_hashes = set()
     if is_fast and not reorg_mode:
@@ -1192,10 +1553,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     gallery_pending_by_src = {}
 
     # 🌟 [해결 1] 루프 밖에서 딱 한 번만 규칙을 읽습니다! (규칙 증발 완벽 차단)
-    config = utils.load_config()
-    custom_rules = config.get("custom_rules", [])
-    if not any(r.get("type") == "default" for r in custom_rules):
-        custom_rules.append({"type": "default"})
+    custom_rules = _get_custom_rules_for_run(override_custom_rules=override_custom_rules, log_func=log_func)
 
     # 🌟 [해결 2] 긴 이름 저장 함수도 루프 밖으로 뺍니다. (DB 렉 방지)
     def save_long_name(physical, full):
@@ -1258,40 +1616,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                 stats["skipped_db"] += 1
                 continue
 
-        detected_names = set()
         is_daki = False
-
-        def fast_memory_extract(raw_tag):
-            t_clean = raw_tag.strip().lower()
-            if not t_clean: return None
-
-            # NAI 프롬프트 가중치 기호 제거 (예: {{{tag}}}, tag:1.2 등)
-            clean = re.sub(r'^[-0-9.]+:+\s*', '', t_clean)
-            clean = re.sub(r'\s*:+$', '', clean)
-            clean = re.sub(r':[0-9.]+$', '', clean).strip()
-
-            # 태그 전체를 감싸는 괄호만 안전하게 벗김 (단, march_7th_(honkai) 처럼 일부만 감싸는 건 유지)
-            while clean.startswith('(') and clean.endswith(')'): clean = clean[1:-1].strip()
-            while clean.startswith('[') and clean.endswith(']'): clean = clean[1:-1].strip()
-            while clean.startswith('{') and clean.endswith('}'): clean = clean[1:-1].strip()
-
-            clean = re.sub(r'\s+', '_', clean).lower().strip()
-            if len(clean) < 2: return None
-
-            # [핵심 1] 프롬프트가 캐릭터로 둔갑하는 것을 막는 차단 키워드 추가
-            blacklist = [
-                '(medium)', '(object)', '(clothes)', '(creature)', '(species)',
-                '(item)', '(anatomy)', '(background)', '(cosplay)', '(style)',
-                '(studio)', 'artist', 'uniform', 'reality_arc', 'must_include'
-            ]
-            if any(b in clean for b in blacklist): return None
-
-            # 🌟 [핵심 2] 괄호 패턴(re.search)으로 캐릭터를 때려맞추는 꼼수 완전 삭제!
-            # 오직 '단보루 DB(DANBOORU_RAM_CACHE)'에 정확히 등록된 공식 태그만 인정합니다.
-            if clean in DANBOORU_RAM_CACHE:
-                return clean.title()
-
-            return None
 
         # ----------------------------------------------------
         # 🌟 추출 루프 통합: 괄호가 포함된 태그도 원형 그대로 검사합니다.
@@ -1299,25 +1624,16 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         all_prompt_tags = char_tags + base_tags
 
         for tag in all_prompt_tags:
-            clean_tag = tag.strip().lower()
-            if not clean_tag: continue
-
+            clean_tag = str(tag or "").strip().lower()
             if "dakimakura" in clean_tag:
                 is_daki = True
 
-            if not skip_char_id:
-                # 모든 태그를 DB와 1:1 대조합니다.
-                matched = fast_memory_extract(clean_tag)
-                if matched:
-                    detected_names.add(matched)
-
-        final_names = set()
-        for n in detected_names:
-            clean_n = n.strip().lower()
-            if clean_n and clean_n not in ignore_words:
-                final_names.add(n)
-
-        names_list = list(final_names)
+        names_list = detect_character_names_from_prompt_tags(
+            all_prompt_tags,
+            DANBOORU_RAM_CACHE,
+            skip_char_id=skip_char_id
+        )
+        final_names = set(names_list)
         num = len(names_list)
 
         # ----------------------------------------------------
@@ -1483,36 +1799,13 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
 
             return os.path.join(*parts)
 
-        cat_raw = None
-
-        for rule in custom_rules:
-            if rule.get("type") == "default":
-                cat_raw = "1_Solo" if num == 1 else "2_Duo" if num == 2 else "3_Group" if num >= 3 else "0_No_Metadata"
-                break
-
-            if not route_rule_matches(rule):
-                continue
-
-            route_parts = [str(rule.get("folder") or "").strip()]
-
-            children = (
-                rule.get("children")
-                or rule.get("sub_rules")
-                or rule.get("rules")
-                or []
-            )
-            child_route = find_matching_child_route(children)
-
-            if child_route:
-                route_parts.append(child_route)
-
-            cat_raw = os.path.join(*[p for p in route_parts if p])
-            break
-
-        if not cat_raw:
-            cat_raw = "3_Group"
-
-        cat = normalize_route_folder_path(cat_raw)
+        cat = resolve_custom_route_category(
+            custom_rules,
+            base_tags,
+            char_tags,
+            num,
+            save_long_name=save_long_name
+        )
 
         # 🌟 3단계 등급에 따른 폴더 분배
         if rating in [1, 2]:
@@ -1725,6 +2018,21 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         except Exception as e:
             log_func(f"[WARN] gallery index write failed: {e}")
 
+    if update_workspace_index:
+        workspace_index_result = _update_workspace_index_for_success_records(
+            gallery_success_records,
+            classified_root,
+            normal_workers=normal_workers or 4,
+            log_func=log_func,
+            stop_check=stop_check
+        )
+        if workspace_index_result:
+            log_func(
+                f"📚 [워크스페이스 인덱스] 최종 파일 인덱스 갱신 완료: 갱신 {workspace_index_result.get('indexed', 0)} / "
+                f"스킵 {workspace_index_result.get('skipped_unchanged', 0)} / "
+                f"오류 {workspace_index_result.get('errors', 0)}"
+            )
+
     stage_db_elapsed = time.perf_counter() - stage_db_started_at
     emit_progress(1, 1, "DB 저장/갤러리 인덱스")
     log_func(f"⏱️ [계측] DB 저장/갤러리 인덱스 처리 완료: {format_elapsed(stage_db_elapsed)}")
@@ -1743,6 +2051,421 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     log_func("-" * 50)
     log_func(f"✨ 모든 작업이 완료되었습니다.")
     db.close()
+
+
+def process_file_list(
+    file_paths,
+    method="move",
+    use_ai=False,
+    use_gpu=True,
+    normal_workers=None,
+    ai_workers=None,
+    ai_threshold=0.9998,
+    log_func=print,
+    stop_check=None,
+    progress_update=None,
+    skip_nsfw=False,
+    skip_char_id=False,
+    override_custom_rules=None,
+    is_fast=False,
+    update_workspace_index=True
+):
+    global USE_AI_FILTER, USE_GPU_MODE
+    USE_AI_FILTER = use_ai
+    USE_GPU_MODE = use_gpu
+    if USE_AI_FILTER:
+        get_nsfw_model()
+
+    if getattr(sys, 'frozen', False):
+        current_dir = os.path.dirname(sys.executable)
+    else:
+        current_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+
+    classified_root = os.path.join(current_dir, "TOTAL_CLASSIFIED")
+    os.makedirs(classified_root, exist_ok=True)
+
+    images = []
+    seen_paths = set()
+    for path in file_paths or []:
+        full_path = os.path.abspath(str(path or ""))
+        if full_path in seen_paths:
+            continue
+        seen_paths.add(full_path)
+        if os.path.isfile(full_path) and full_path.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            images.append(full_path)
+
+    stats = {
+        "total_scanned": len(images),
+        "success": 0,
+        "skipped_db": 0,
+        "skipped_duplicate": 0,
+        "error": 0,
+        "unreadable": 0
+    }
+
+    if not images:
+        log_func("실시간 분류 반영 대상 이미지가 없습니다.")
+        return stats
+
+    db = utils.HistoryDB()
+    override_cache = {}
+    try:
+        db.conn.execute("CREATE TABLE IF NOT EXISTS manual_overrides (file_hash TEXT PRIMARY KEY, is_nsfw INTEGER)")
+        cur = db.conn.cursor()
+        cur.execute("SELECT file_hash, is_nsfw FROM manual_overrides")
+        override_cache = {row[0]: int(row[1]) for row in cur.fetchall()}
+    except Exception as e:
+        log_func(f"수동 분류 캐시 로드 실패: {e}")
+
+    danbooru_cache = build_danbooru_character_cache(db, log_func=log_func)
+    custom_rules = _get_custom_rules_for_run(override_custom_rules=override_custom_rules, log_func=log_func)
+
+    cpu_count = os.cpu_count() or 4
+    normal_worker_count = max(1, min(64, int(normal_workers or min(32, cpu_count * 2))))
+    metadata_results = []
+
+    def emit_progress(current, total, phase="분석 중"):
+        if not progress_update:
+            return
+        try:
+            progress_update(current, total, phase)
+        except TypeError:
+            progress_update(current, total)
+
+    log_func(f"실시간 분류 반영 분석 시작: {len(images)}장")
+    emit_progress(0, len(images), "1/3 분석")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=normal_worker_count) as executor:
+        futures = {
+            executor.submit(
+                analyze_file_worker,
+                img,
+                override_cache=override_cache,
+                ai_threshold=ai_threshold,
+                skip_nsfw=skip_nsfw,
+                allow_ai=bool(use_ai)
+            ): img for img in images
+        }
+
+        for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            if stop_check and stop_check():
+                for f in futures:
+                    f.cancel()
+                db.close()
+                return stats
+            try:
+                result = future.result()
+                metadata_results.append(result[:6])
+            except Exception as e:
+                stats["error"] += 1
+                log_func(f"분석 실패: {futures[future]} | {e}")
+            emit_progress(i, len(images), "1/3 분석")
+
+    move_queue = []
+    success_records = []
+    gallery_success_records = []
+    gallery_pending_by_src = {}
+
+    def save_long_name(physical, full):
+        if physical != full:
+            try:
+                with db.conn:
+                    db.conn.execute(
+                        "CREATE TABLE IF NOT EXISTS folder_display_names (physical_name TEXT PRIMARY KEY, full_name TEXT)")
+                    db.conn.execute(
+                        "INSERT OR REPLACE INTO folder_display_names (physical_name, full_name) VALUES (?, ?)",
+                        (physical, full))
+            except Exception as e:
+                log_func(f"긴 폴더명 저장 실패: {physical} | {e}")
+
+    emit_progress(0, len(metadata_results), "2/3 분류 경로 결정")
+    for i, (full_path, file_hash, char_tags, base_tags, rating, nsfw_reasons) in enumerate(metadata_results, 1):
+        img_name = os.path.basename(full_path)
+
+        if rating == -999:
+            unreadable_dir = os.path.join(classified_root, "_UNREADABLE", datetime.datetime.now().strftime("%Y-%m-%d"))
+            os.makedirs(unreadable_dir, exist_ok=True)
+            dest_path = os.path.join(unreadable_dir, img_name)
+            if os.path.exists(dest_path):
+                base_name, ext = os.path.splitext(img_name)
+                dest_path = os.path.join(unreadable_dir, f"{base_name}_{int(time.time() * 1000)}{ext}")
+            move_queue.append((full_path, dest_path, img_name, "_UNREADABLE", file_hash, nsfw_reasons))
+            stats["unreadable"] += 1
+            continue
+
+        all_prompt_tags = list(char_tags or []) + list(base_tags or [])
+        is_daki = any("dakimakura" in str(tag or "").strip().lower() for tag in all_prompt_tags)
+        names_list = detect_character_names_from_prompt_tags(
+            all_prompt_tags,
+            danbooru_cache,
+            skip_char_id=skip_char_id
+        )
+        num = len(names_list)
+
+        cat = resolve_custom_route_category(
+            custom_rules,
+            base_tags,
+            char_tags,
+            num,
+            save_long_name=save_long_name
+        )
+        if rating in [1, 2]:
+            cat = os.path.join("_R-18", cat)
+
+        if skip_char_id:
+            folder_name = ""
+        else:
+            folder_name = "_and_".join(sorted(names_list)) or "Unknown_Char"
+        if is_daki:
+            folder_name += "_Dakimakura" if folder_name else "Dakimakura"
+        folder_name = re.sub(r'[<>:"/\\|?*]', '', folder_name).strip('. ')
+        if len(folder_name) > 100:
+            full_folder_name = folder_name
+            folder_name = folder_name[:100].strip('_ ') + "_and_Others"
+            if is_daki and not folder_name.endswith("Dakimakura"):
+                folder_name += "_Dakimakura"
+            save_long_name(folder_name, full_folder_name)
+
+        dest_dir = os.path.join(classified_root, cat, folder_name)
+        os.makedirs(dest_dir, exist_ok=True)
+        dest_path = os.path.join(dest_dir, img_name)
+
+        if os.path.abspath(full_path) == os.path.abspath(dest_path):
+            success_records.append((full_path, file_hash, img_name, folder_name))
+            gallery_success_records.append({
+                "final_path": dest_path,
+                "rating": rating,
+                "names": names_list,
+                "is_dakimakura": is_daki,
+                "nsfw_reasons": nsfw_reasons
+            })
+            stats["success"] += 1
+            continue
+
+        if os.path.exists(dest_path):
+            stats["skipped_duplicate"] += 1
+            success_records.append((full_path, file_hash, img_name, folder_name))
+            continue
+
+        move_queue.append((full_path, dest_path, img_name, folder_name, file_hash, nsfw_reasons))
+        gallery_pending_by_src[full_path] = {
+            "final_path": dest_path,
+            "rating": rating,
+            "names": names_list,
+            "is_dakimakura": is_daki,
+            "nsfw_reasons": nsfw_reasons
+        }
+        emit_progress(i, len(metadata_results), "2/3 분류 경로 결정")
+
+    total_moves = len(move_queue)
+    emit_progress(0, total_moves, "3/3 파일 이동")
+    max_io_workers = min(16, (os.cpu_count() or 4) * 2)
+    batch_records = []
+    moved_final_paths = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_io_workers) as executor:
+        future_to_info = {
+            executor.submit(file_io_worker, src, dest, method, nsfw_reasons): (src, dest, img_name, folder_name, file_hash)
+            for src, dest, img_name, folder_name, file_hash, nsfw_reasons in move_queue
+        }
+
+        for i, f in enumerate(concurrent.futures.as_completed(future_to_info), 1):
+            emit_progress(i, total_moves, "3/3 파일 이동")
+            if stop_check and stop_check():
+                break
+            src, dest, img_name, folder_name, file_hash = future_to_info[f]
+            try:
+                ok = bool(f.result())
+            except Exception as e:
+                ok = False
+                log_func(f"파일 이동 실패: {src} | {e}")
+            if ok:
+                success_records.append((src, file_hash, img_name, folder_name))
+                moved_final_paths.append(dest)
+                gallery_record = gallery_pending_by_src.get(src)
+                if gallery_record:
+                    gallery_success_records.append(gallery_record)
+                batch_records.append((file_hash, img_name, folder_name))
+                stats["success"] += 1
+            else:
+                stats["error"] += 1
+
+            if len(batch_records) >= 100:
+                try:
+                    with db.conn:
+                        db.conn.executemany(
+                            "INSERT OR IGNORE INTO processed_files (file_hash, file_name, characters) VALUES (?, ?, ?)",
+                            batch_records
+                        )
+                    batch_records = []
+                except Exception as e:
+                    log_func(f"중간 이력 저장 실패: {e}")
+
+    if batch_records:
+        try:
+            with db.conn:
+                db.conn.executemany(
+                    "INSERT OR IGNORE INTO processed_files (file_hash, file_name, characters) VALUES (?, ?, ?)",
+                    batch_records
+                )
+        except Exception as e:
+            log_func(f"최종 이력 저장 실패: {e}")
+
+    if success_records:
+        try:
+            with db.conn:
+                for src, file_hash, img_name, folder_name in success_records:
+                    if file_hash:
+                        db.conn.execute(
+                            "INSERT OR IGNORE INTO processed_files (file_hash, file_name, characters) VALUES (?, ?, ?)",
+                            (file_hash, img_name, folder_name)
+                        )
+        except Exception as e:
+            log_func(f"DB 저장 중 오류 발생: {e}")
+
+    if gallery_success_records:
+        try:
+            gallery_records = build_gallery_index_records_from_success(gallery_success_records, classified_root)
+            if gallery_records:
+                db.upsert_gallery_image_records(gallery_records)
+        except Exception as e:
+            log_func(f"[WARN] gallery index write failed: {e}")
+
+    if update_workspace_index:
+        workspace_index_result = _update_workspace_index_for_success_records(
+            gallery_success_records,
+            classified_root,
+            normal_workers=normal_workers or 4,
+            log_func=log_func,
+            stop_check=stop_check
+        )
+        if workspace_index_result:
+            log_func(
+                f"📚 [워크스페이스 인덱스] 최종 파일 인덱스 갱신 완료: 갱신 {workspace_index_result.get('indexed', 0)} / "
+                f"스킵 {workspace_index_result.get('skipped_unchanged', 0)} / "
+                f"오류 {workspace_index_result.get('errors', 0)}"
+            )
+
+    db.close()
+    emit_progress(1, 1, "완료")
+    return stats
+
+
+def process_workspace_file_items(
+    file_items,
+    method="move",
+    use_ai=False,
+    use_gpu=True,
+    normal_workers=None,
+    ai_workers=None,
+    ai_threshold=0.9998,
+    log_func=print,
+    stop_check=None,
+    progress_update=None,
+    skip_nsfw=False,
+    skip_char_id=False,
+    override_custom_rules=None,
+    is_fast=False,
+    update_workspace_index=True
+):
+    valid_items = []
+    seen_paths = set()
+
+    for item in file_items or []:
+        if not isinstance(item, dict):
+            continue
+        path = os.path.abspath(str(item.get("path") or ""))
+        if not path or path in seen_paths:
+            continue
+        seen_paths.add(path)
+        if not os.path.isfile(path) or not path.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            continue
+
+        next_item = dict(item)
+        next_item["path"] = path
+        next_item["workspace_rel_path"] = str(item.get("workspace_rel_path") or "").replace("\\", "/").strip("/")
+        valid_items.append(next_item)
+
+    path_item_map = {
+        os.path.abspath(item["path"]): item
+        for item in valid_items
+    }
+    move_records = []
+    original_file_io_worker = file_io_worker
+
+    def workspace_file_io_worker(src, dest, io_method, nsfw_reasons=None):
+        ok = original_file_io_worker(src, dest, io_method, nsfw_reasons=nsfw_reasons)
+        if ok:
+            item = path_item_map.get(os.path.abspath(src), {})
+            old_rel = str(item.get("workspace_rel_path") or "").replace("\\", "/").strip("/")
+            record = {
+                "old_workspace_rel_path": old_rel,
+                "source_path": src,
+                "final_path": dest,
+                "file_hash": item.get("file_hash") or "",
+                "prompt_hash": item.get("prompt_hash") or ""
+            }
+            try:
+                import workspace_logic
+                current_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(sys.argv[0]))
+                classified_root = os.path.join(current_dir, "TOTAL_CLASSIFIED")
+                record["final_rel_path"] = workspace_logic.classified_workspace_rel_from_path(dest, classified_root)
+            except Exception:
+                record["final_rel_path"] = ""
+            move_records.append(record)
+        return ok
+
+    globals()["file_io_worker"] = workspace_file_io_worker
+    try:
+        stats = process_file_list(
+            file_paths=[item["path"] for item in valid_items],
+            method=method,
+            use_ai=use_ai,
+            use_gpu=use_gpu,
+            normal_workers=normal_workers,
+            ai_workers=ai_workers,
+            ai_threshold=ai_threshold,
+            log_func=log_func,
+            stop_check=stop_check,
+            progress_update=progress_update,
+            skip_nsfw=skip_nsfw,
+            skip_char_id=skip_char_id,
+            override_custom_rules=override_custom_rules,
+            is_fast=is_fast,
+            update_workspace_index=False
+        )
+    finally:
+        globals()["file_io_worker"] = original_file_io_worker
+
+    stats["move_records"] = move_records
+    stats["workspace_finalize_stats"] = None
+
+    if update_workspace_index and move_records:
+        try:
+            import workspace_logic
+            current_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(sys.argv[0]))
+            classified_root = os.path.join(current_dir, "TOTAL_CLASSIFIED")
+            finalize_stats = workspace_logic.finalize_classified_workspace_moves(
+                move_records,
+                classified_root,
+                session_name=workspace_logic.get_active_workspace_session_name(),
+                log_func=log_func
+            )
+            stats["workspace_finalize_stats"] = finalize_stats
+            if log_func:
+                log_func(
+                    "workspace row 이전 완료: "
+                    f"이전 {finalize_stats.get('moved', 0)} / "
+                    f"fallback {finalize_stats.get('fallback_indexed', 0)} / "
+                    f"중복정리 {finalize_stats.get('duplicates_removed', 0)} / "
+                    f"오류 {finalize_stats.get('errors', 0)}"
+                )
+        except Exception as finalize_error:
+            stats["workspace_finalize_error"] = str(finalize_error)
+            if log_func:
+                log_func(f"workspace row 이전 실패: {finalize_error}")
+
+    return stats
 
 
 def handle_integrated_tasks(fixed_root, data, log_func=print):

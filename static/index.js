@@ -1298,11 +1298,12 @@ function bindGalleryNavTabsScroller() {
         galleryNavTabsDragState = {
             pointerId: event.pointerId,
             startX: event.clientX,
+            startY: event.clientY,
             startScrollLeft: navTabs.scrollLeft,
-            moved: false
+            dragging: false,
+            suppressNextClick: false
         };
 
-        navTabs.classList.add('dragging-nav-tabs');
         navTabs.setPointerCapture(event.pointerId);
     });
 
@@ -1311,14 +1312,16 @@ function bindGalleryNavTabsScroller() {
         if (galleryNavTabsDragState.pointerId !== event.pointerId) return;
 
         const dx = event.clientX - galleryNavTabsDragState.startX;
+        const dy = event.clientY - galleryNavTabsDragState.startY;
+        const distance = Math.max(Math.abs(dx), Math.abs(dy));
 
-        if (Math.abs(dx) > GALLERY_NAV_TABS_DRAG_THRESHOLD) {
-            galleryNavTabsDragState.moved = true;
+        if (!galleryNavTabsDragState.dragging && distance >= GALLERY_NAV_TABS_DRAG_THRESHOLD) {
+            galleryNavTabsDragState.dragging = true;
+            navTabs.classList.add('dragging-nav-tabs');
         }
 
-        navTabs.scrollLeft = galleryNavTabsDragState.startScrollLeft - dx;
-
-        if (galleryNavTabsDragState.moved) {
+        if (galleryNavTabsDragState.dragging) {
+            navTabs.scrollLeft = galleryNavTabsDragState.startScrollLeft - dx;
             event.preventDefault();
         }
     });
@@ -1327,7 +1330,7 @@ function bindGalleryNavTabsScroller() {
         if (!galleryNavTabsDragState) return;
         if (galleryNavTabsDragState.pointerId !== event.pointerId) return;
 
-        const wasMoved = galleryNavTabsDragState.moved;
+        const wasDragging = galleryNavTabsDragState.dragging;
 
         galleryNavTabsDragState = null;
         navTabs.classList.remove('dragging-nav-tabs');
@@ -1338,13 +1341,8 @@ function bindGalleryNavTabsScroller() {
             // Already released.
         }
 
-        if (wasMoved) {
+        if (wasDragging) {
             navTabs.dataset.suppressNextClick = '1';
-            setTimeout(() => {
-                if (navTabs.dataset.suppressNextClick === '1') {
-                    delete navTabs.dataset.suppressNextClick;
-                }
-            }, 0);
         }
     };
 

@@ -1,0 +1,134 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>NAI ImageManager - &#49892;&#49884;&#44036; &#48516;&#47448;</title>
+    <link rel="stylesheet" href="/static/index.css">
+    <link rel="stylesheet" href="/static/live_classifier.css">
+</head>
+<body>
+    <header class="live-header">
+        <div class="live-title">&#9889; &#49892;&#49884;&#44036; &#48516;&#47448;</div>
+        <div class="live-header-actions">
+            <span id="workspaceStatusBadge" class="workspace-status-badge">&#54788;&#51116; &#50892;&#53356;&#49828;&#54168;&#51060;&#49828; &#54869;&#51064; &#51473;...</span>
+            <label class="live-char-toggle" title="&#52572;&#51333; &#48516;&#47448;&#50640; &#52880;&#47533;&#53552; &#54260;&#45908; &#54032;&#48324;&#51012; &#48120;&#47532;&#48372;&#44592;&#50640;&#46020; &#51201;&#50857;&#54633;&#45768;&#45796;.">
+                <input id="useCharIdToggle" type="checkbox">
+                <span>&#52880;&#47533;&#53552; &#54032;&#48324; &#49324;&#50857;</span>
+            </label>
+            <button onclick="loadRandomImage()">&#127922; &#47004;&#45924; &#51060;&#48120;&#51648;</button>
+            <button onclick="runReclassify()">&#128257; &#51116;&#48516;&#47448;</button>
+            <button onclick="location.href='/'">&#44068;&#47084;&#47532;</button>
+        </div>
+    </header>
+
+    <main class="live-layout">
+        <aside class="live-left">
+            <h3>&#44508;&#52825; &#49345;&#53468;</h3>
+            <div id="modeBadge" class="mode-badge">-</div>
+            <div class="hint">
+                &#54532;&#47212;&#54532;&#53944; &#53468;&#44536;&#47484; &#53364;&#47533;&#54644; &#51076;&#49884; &#44508;&#52825;&#51012; &#47564;&#46308;&#44256; &#51116;&#48516;&#47448;&#47196; &#44208;&#44284;&#47484; &#54869;&#51064;&#54633;&#45768;&#45796;.<br>
+                &#50500;&#51649; &#49892;&#51228; custom_rules&#50640;&#45716; &#51200;&#51109;&#46104;&#51648; &#50506;&#49845;&#45768;&#45796;.
+            </div>
+            <div class="live-control-block">
+                <label>&#48516;&#47448; &#47784;&#46300;</label>
+                <div class="live-mode-buttons">
+                    <button id="modeExistingBtn" onclick="setLiveMode('existing')">&#44592;&#51316; &#44508;&#52825; &#49324;&#50857;</button>
+                    <button id="modeNewBtn" onclick="setLiveMode('new')">&#52376;&#51020;&#48512;&#53552; &#47564;&#46308;&#44592;</button>
+                </div>
+            </div>
+            <div class="live-control-block">
+                <label>&#52572;&#45824; &#44228;&#49328; &#54943;&#49688;</label>
+                <div class="live-input-toggle-row">
+                    <input id="maxScanInput" type="number" value="50000" min="1" step="1000">
+                    <button id="maxScanMaxToggle" type="button" onclick="toggleLiveMaxScan()">&#52572;&#45824;</button>
+                </div>
+            </div>
+            <div class="live-control-block">
+                <label>&#54260;&#45908;&#48324; &#54364;&#49884; &#54943;&#49688;</label>
+                <div class="live-input-toggle-row">
+                    <input id="perFolderLimitInput" type="number" value="300" min="1" step="50">
+                    <button id="perFolderLimitMaxToggle" type="button" onclick="toggleLivePerFolderLimitMax()">&#52572;&#45824;</button>
+                </div>
+            </div>
+            <div class="live-control-block"><button onclick="buildCharacterIndexFromLive()">&#129516; &#52880;&#47533;&#53552; &#51064;&#45937;&#49828; &#49373;&#49457;</button></div>
+            <div id="characterIndexBox" class="character-index-box">&#52880;&#47533;&#53552; &#51064;&#45937;&#49828; &#49345;&#53468; &#54869;&#51064; &#51473;...</div>
+            <div id="summaryBox" class="summary-box"></div>
+            <div class="live-rule-panel">
+                <div class="live-rule-panel-header">
+                    <h3>&#51076;&#49884; &#51221;&#48128; &#46972;&#50864;&#54021; &#44508;&#52825;</h3>
+                    <div class="live-rule-panel-header-actions">
+                        <button id="liveSaveRulesJsonBtn" type="button" onclick="saveLiveTempRulesJsonToServer()">💾 JSON &#51200;&#51109;</button>
+                        <button id="liveLoadRulesJsonBtn" type="button" onclick="openLiveRuleExportModal()">📂 JSON &#48520;&#47084;&#50724;&#44592;</button>
+                        <button id="liveWorkspaceDiagnoseBtn" type="button" onclick="openWorkspaceDiagnoseModal()">🧪 DB &#51652;&#45800;</button>
+                        <button id="liveApplyRulesBtn" type="button" onclick="openLiveApplyOptionsModal()">✅ &#48516;&#47448; &#48152;&#50689;</button>
+                        <button id="liveReloadRulesBtn" type="button" onclick="reloadLiveRules()">↻ &#52488;&#44592;&#54868;</button>
+                    </div>
+                </div>
+                <div class="live-rule-help">&#51060; &#44508;&#52825;&#51008; &#49892;&#49884;&#44036; &#48516;&#47448; &#54868;&#47732;&#50640;&#49436;&#47564; &#49324;&#50857;&#46121;&#45768;&#45796;. &#50500;&#51649; custom_rules&#50640;&#45716; &#51200;&#51109;&#46104;&#51648; &#50506;&#49845;&#45768;&#45796;.</div>
+                <div class="live-rule-actions live-route-toolbar"><button onclick="addCandidateAsChildRule()">+ &#49440;&#53469; &#44508;&#52825;&#50640; &#54616;&#50948; &#52628;&#44032;</button><button onclick="editSelectedLiveRouteRule()">&#49440;&#53469; &#44508;&#52825; &#49688;&#51221;</button><button onclick="deleteSelectedLiveRouteRules()" class="danger">&#49440;&#53469; &#49325;&#51228;</button></div>
+                <div class="live-route-card-view" id="liveRouteCardView"><div class="live-route-card-hint">&#53364;&#47533;: &#45800;&#51068; &#49440;&#53469; &middot; Ctrl/Command &#53364;&#47533;: &#45796;&#51473; &#49440;&#53469; &middot; Shift &#53364;&#47533;: &#48276;&#50948; &#49440;&#53469; &middot; &#46300;&#47000;&#44536; &#44032;&#51109;&#51088;&#47532;: &#50948;&#52824; &#51060;&#46041; &middot; &#46300;&#47000;&#44536; &#51473;&#50521;: &#54616;&#50948; &#44508;&#52825;&#51004;&#47196; &#45347;&#44592; &middot; &#45908;&#48660;&#53364;&#47533;: &#49688;&#51221;</div><div id="liveInlineGroupBox" class="live-inline-group-box" style="display:none;"></div><div id="liveRuleTree" class="live-route-tree-root" data-live-parent-path="[]"></div></div>
+            </div>
+        </aside>
+        <section class="live-center"><div id="liveNavTabs" class="nav-tabs"></div><div id="liveBreadcrumb" class="breadcrumb"><span id="liveBreadcrumbPath">&#8962; HOME</span></div><div id="galleryState" class="gallery-state">&#54788;&#51116; &#50892;&#53356;&#49828;&#54168;&#51060;&#49828;&#47484; &#48520;&#47084;&#50728; &#46244; &#51116;&#48516;&#47448;&#47484; &#45572;&#47476;&#49464;&#50836;.</div><div id="previewGallery" class="preview-gallery"></div></section>
+        <aside class="live-right">
+            <h3>&#49440;&#53469; &#51060;&#48120;&#51648;</h3><div id="selectedImageBox" class="selected-image-box"><div class="empty">&#51060;&#48120;&#51648;&#47484; &#49440;&#53469;&#54616;&#44144;&#45208; &#47004;&#45924; &#51060;&#48120;&#51648;&#47484; &#48520;&#47084;&#50724;&#49464;&#50836;.</div></div>
+            <div class="prompt-section"><h4>Base Prompt</h4><pre id="basePromptBox"></pre></div><div class="prompt-section"><h4>Character Prompts</h4><div id="charPromptBox"></div></div>
+            <div class="rule-candidate-panel"><h3>&#44508;&#52825; &#54980;&#48372;</h3><div class="rule-candidate-help">&#54532;&#47212;&#54532;&#53944; &#53468;&#44536;&#47484; &#53364;&#47533;&#54616;&#47732; &#50500;&#47000; &#54980;&#48372; &#47785;&#47197;&#50640; &#52628;&#44032;&#46121;&#45768;&#45796;.</div>
+                <div class="rule-field"><label>&#45824;&#49345; &#54260;&#45908;&#47749;</label><input id="candidateFolderInput" type="text" placeholder="&#50696;: FGO / Saber / Katsuragi_Lilja"></div>
+                <div class="rule-field-row"><div class="rule-field"><label>&#44160;&#49353; &#48276;&#50948;</label><select id="candidateScopeSelect"><option value="all">&#51204;&#52404;</option><option value="base">Base Prompt</option><option value="char">Character Prompt</option></select></div><div class="rule-field"><label>&#51312;&#44148;</label><select id="candidateConditionSelect"><option value="any">&#54616;&#45208;&#46972;&#46020;</option><option value="all">&#47784;&#46160;</option><option value="count">N&#44060; &#51060;&#49345;</option></select></div></div>
+                <div class="rule-field"><label>N&#44060; &#51060;&#49345;</label><input id="candidateMatchCountInput" type="number" value="2" min="1"></div>
+                <div class="rule-field"><div class="rule-tag-editor-header"><label>&#49440;&#53469; &#53468;&#44536;</label><button id="candidateTagTextToggleBtn" type="button" onclick="toggleCandidateTagTextEdit()">&#51649;&#51217; &#51077;&#47141;</button></div><div id="candidateTagList" class="candidate-tag-list"></div></div>
+                <div class="rule-candidate-actions"><button onclick="clearCandidateTags()">&#53468;&#44536; &#48708;&#50864;&#44592;</button><button onclick="addCandidateAsTopRule()">&#49345;&#50948; &#44508;&#52825; &#52628;&#44032;</button><button onclick="addCandidateAsChildRule()">&#54616;&#50948; &#44508;&#52825; &#52628;&#44032;</button><button id="applyCandidateEditBtn" class="candidate-edit-apply" onclick="applyCandidateEdit()" style="display:none;">&#49688;&#51221; &#51201;&#50857;</button><button id="cancelCandidateEditBtn" onclick="cancelCandidateEdit()" style="display:none;">&#49688;&#51221; &#52712;&#49548;</button></div>
+            </div>
+        </aside>
+    </main>
+    <div id="zoomLayer" onclick="closeLiveZoom()"><img id="zoomImg" src=""></div>
+    <div id="liveRuleExportModal" class="live-apply-modal" style="display:none;">
+        <div class="live-apply-modal-card">
+            <h3>&#44508;&#52825; JSON &#48520;&#47084;&#50724;&#44592;</h3>
+            <div class="live-apply-modal-help">&#51200;&#51109;&#46108; JSON&#51032; rules&#47564; &#54788;&#51116; &#51076;&#49884; &#44508;&#52825;&#51004;&#47196; &#48520;&#47084;&#50741;&#45768;&#45796;. config custom_rules&#45716; &#48320;&#44221;&#54616;&#51648; &#50506;&#49845;&#45768;&#45796;.</div>
+            <div id="liveRuleExportList" class="live-apply-progress-box">&#47785;&#47197;&#51012; &#48520;&#47084;&#50724;&#45716; &#51473;...</div>
+            <div class="live-apply-modal-actions">
+                <button type="button" onclick="loadLiveRuleExportList()">&#49352;&#47196;&#44256;&#52840;</button>
+                <button type="button" onclick="closeLiveRuleExportModal()">&#45803;&#44592;</button>
+            </div>
+        </div>
+    </div>
+    <div id="workspaceDiagnoseModal" class="live-apply-modal" style="display:none;">
+        <div class="live-apply-modal-card">
+            <h3>workspace DB &#51652;&#45800;</h3>
+            <div id="workspaceDiagnoseResult" class="live-apply-progress-box">&#51652;&#45800; &#45824;&#44592; &#51473;...</div>
+            <div class="live-apply-modal-actions">
+                <button type="button" onclick="runWorkspaceDiagnose()">&#45796;&#49884; &#51652;&#45800;</button>
+                <button type="button" onclick="closeWorkspaceDiagnoseModal()">&#45803;&#44592;</button>
+            </div>
+        </div>
+    </div>
+    <div id="liveApplyOptionsModal" class="live-apply-modal" style="display:none;">
+        <div class="live-apply-modal-card">
+            <h3>&#48516;&#47448; &#48152;&#50689; &#50741;&#49496;</h3>
+            <div class="live-apply-modal-help">
+                &#54788;&#51116; &#51076;&#49884; &#51221;&#48128; &#46972;&#50864;&#54021; &#44508;&#52825;&#51012; JSON&#51004;&#47196; &#51200;&#51109;&#54620; &#46244;, &#48120;&#47532;&#48372;&#44592; &#44208;&#44284;&#45824;&#47196; &#49892;&#51228; &#54028;&#51068;&#51012; TOTAL_CLASSIFIED &#50504;&#51004;&#47196; &#51060;&#46041;&#54633;&#45768;&#45796;.
+            </div>
+            <label class="live-apply-check">
+                <input id="liveApplyUseNsfw" type="checkbox" checked>
+                <span>&#49688;&#50948; &#54032;&#48324; &#51201;&#50857; (_R-18 / _R-15)</span>
+            </label>
+            <label class="live-apply-check">
+                <input id="liveApplyUseAiNsfw" type="checkbox">
+                <span>AI &#49688;&#50948; &#54032;&#48324; &#49324;&#50857; (&#45712;&#47548;)</span>
+            </label>
+            <label class="live-apply-check">
+                <input id="liveApplyUseGpu" type="checkbox" checked>
+                <span>GPU &#49324;&#50857; &#44032;&#45733;&#54616;&#47732; &#49324;&#50857;</span>
+            </label>
+            <div id="liveApplyProgressBox" class="live-apply-progress-box" style="display:none;"></div>
+            <div class="live-apply-modal-actions">
+                <button type="button" onclick="startLiveApplyToGallery()">&#48516;&#47448; &#48152;&#50689; &#49884;&#51089;</button>
+                <button type="button" onclick="closeLiveApplyOptionsModal()">&#52712;&#49548;</button>
+            </div>
+        </div>
+    </div>
+    <script src="/static/live_classifier.js"></script>
+</body>
+</html>

@@ -56,6 +56,7 @@ import ctypes
 try:
     import utils
     import image_logic
+    import workspace_logic
 
     try:
         import danbooru_sync
@@ -98,6 +99,7 @@ class NaiaHyperExecutor:
         self.show_alert_var = tk.BooleanVar(value=bool(classify_settings.get("show_alert", True)))
         self.is_fast_mode = tk.BooleanVar(value=bool(classify_settings.get("is_fast_mode", True)))
         self.classify_method_var = tk.StringVar(value=str(classify_settings.get("method", "copy")))
+        self.auto_workspace_index_var = tk.BooleanVar(value=bool(classify_settings.get("auto_workspace_index", True)))
 
         self.stop_requested = False
         self.log_visible = False
@@ -107,6 +109,7 @@ class NaiaHyperExecutor:
         self.server_transitioning = False
         self.server_ready = False
         self.server_monitor_token = 0
+        self.pending_open_url = ""
 
         self.server_status_var = tk.StringVar(value="🔴 서버 중지됨")
         self.is_syncing = False
@@ -422,6 +425,16 @@ class NaiaHyperExecutor:
             selectcolor="#222"
         ).pack(side="left", padx=5)
 
+        tk.Checkbutton(
+            opt_frame,
+            text="📚 새 분류/재정렬 후 워크스페이스 인덱스 자동 갱신",
+            variable=self.auto_workspace_index_var,
+            bg="#1e1e2e",
+            fg="#74b9ff",
+            selectcolor="#222",
+            font=("Malgun Gothic", 9, "bold")
+        ).pack(anchor="w", pady=(4, 0))
+
         tk.Button(
             option_top_row,
             text="분류 설정 저장",
@@ -584,6 +597,30 @@ class NaiaHyperExecutor:
                                       fg="#000000", font=("Malgun Gothic", 10, "bold"), relief="flat", width=14)
         self.btn_scan_art.pack(side="left", ipady=5, padx=5)
 
+        self.btn_workspace_import = tk.Button(
+            action_frame,
+            text="📥 폴더 읽기",
+            command=self.start_workspace_import,
+            bg="#00b894",
+            fg="#ffffff",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            width=11
+        )
+        self.btn_workspace_import.pack(side="left", ipady=5, padx=5)
+
+        self.btn_live_classifier = tk.Button(
+            action_frame,
+            text="🧭 실시간 분류",
+            command=self.open_live_classifier,
+            bg="#7c3aed",
+            fg="#ffffff",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            width=12
+        )
+        self.btn_live_classifier.pack(side="left", ipady=5, padx=5)
+
         self.btn_stop = tk.Button(action_frame, text="⏹ 정지", command=self.stop_process, bg="#d63031", fg="#ffffff",
                                   font=("Malgun Gothic", 10, "bold"), relief="flat")
         self.btn_stop.pack(side="right", fill="x", expand=True, ipady=5, padx=(5, 0))
@@ -658,6 +695,7 @@ class NaiaHyperExecutor:
         self.btn_reset_brand.config(state="disabled")
         self.btn_run.config(state="disabled")
         self.btn_reorg.config(state="disabled")
+        self.btn_workspace_import.config(state="disabled")
 
         self.log("🌐 브랜드 동기화 작업을 시작합니다...")
 
@@ -703,6 +741,7 @@ class NaiaHyperExecutor:
         self.btn_reset_brand.config(state="normal")
         self.btn_run.config(state="normal")
         self.btn_reorg.config(state="normal")
+        self.btn_workspace_import.config(state="normal")
         self.log("🏁 브랜드 동기화 완료.")
         if self.show_alert_var.get(): messagebox.showinfo("완료", "브랜드 동기화가 완료되었습니다.")
 
@@ -854,6 +893,7 @@ class NaiaHyperExecutor:
         self.btn_scan_art.config(state="disabled", text="⏳ 스캔 중...", bg="#444", fg="#fff")
         self.btn_run.config(state="disabled")
         self.btn_reorg.config(state="disabled")
+        self.btn_workspace_import.config(state="disabled")
         self.btn_sync.config(state="disabled")
         self.btn_stop.config(state="normal", text="⏹ 정지", bg="#d63031")
 
@@ -872,6 +912,7 @@ class NaiaHyperExecutor:
             self.root.after(0, lambda: self.btn_run.config(state="normal"))
             self.root.after(0, lambda: self.btn_reorg.config(state="normal"))
             self.root.after(0, lambda: self.btn_sync.config(state="normal"))
+            self.root.after(0, lambda: self.btn_workspace_import.config(state="normal"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
 
     def _read_normal_thread_count_for_settings(self):
@@ -909,6 +950,7 @@ class NaiaHyperExecutor:
                 "use_gpu": bool(self.use_gpu_var.get()),
                 "skip_nsfw": bool(self.skip_nsfw_var.get()),
                 "skip_char": bool(self.skip_char_var.get()),
+                "auto_workspace_index": bool(self.auto_workspace_index_var.get()),
                 "thread_count": self._read_normal_thread_count_for_settings(),
                 "normal_thread_count": self._read_normal_thread_count_for_settings(),
                 "ai_thread_count": self._read_ai_thread_count_for_settings(),
@@ -1311,6 +1353,832 @@ class NaiaHyperExecutor:
 
         return result["choice"]
 
+    def show_workspace_import_dialog(self):
+        result = {"ok": False, "source": "", "method": "copy"}
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("폴더 읽기")
+        dialog.configure(bg="#151522")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        outer = tk.Frame(dialog, bg="#151522", padx=18, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(
+            outer,
+            text="📥 폴더 읽기",
+            bg="#151522",
+            fg="#00b894",
+            font=("Malgun Gothic", 16, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            outer,
+            text="외부 폴더를 TOTAL_WORKSPACE로 가져오고, base/character prompt 메타를 인덱싱합니다.",
+            bg="#151522",
+            fg="#cfd3dc",
+            font=("Malgun Gothic", 9),
+            justify="left",
+            wraplength=600
+        ).pack(anchor="w", pady=(4, 14))
+
+        source_var = tk.StringVar(value=self.full_path if os.path.isdir(self.full_path) else "")
+
+        source_card = tk.Frame(
+            outer,
+            bg="#202033",
+            highlightthickness=1,
+            highlightbackground="#00b894",
+            padx=12,
+            pady=10
+        )
+        source_card.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            source_card,
+            text="원본 폴더",
+            bg="#202033",
+            fg="#55efc4",
+            font=("Malgun Gothic", 10, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+
+        row = tk.Frame(source_card, bg="#202033")
+        row.pack(fill="x")
+
+        entry = tk.Entry(
+            row,
+            textvariable=source_var,
+            bg="#2a2a35",
+            fg="#ffffff",
+            font=("Consolas", 9),
+            border=0
+        )
+        entry.pack(side="left", fill="x", expand=True, ipady=6)
+
+        def choose_source():
+            selected = filedialog.askdirectory(
+                title="읽어올 원본 폴더 선택",
+                initialdir=source_var.get() or self.full_path
+            )
+            if selected:
+                source_var.set(os.path.normpath(selected))
+
+        browse_button = tk.Button(
+            row,
+            text="선택",
+            command=choose_source,
+            bg="#4b4b6b",
+            fg="#ffffff",
+            font=("Malgun Gothic", 9, "bold"),
+            relief="flat",
+            padx=10
+        )
+        browse_button.pack(side="right", padx=(8, 0))
+
+        method_var = tk.StringVar(value="copy")
+
+        method_card = tk.Frame(
+            outer,
+            bg="#202033",
+            highlightthickness=1,
+            highlightbackground="#33334a",
+            padx=12,
+            pady=10
+        )
+        method_card.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            method_card,
+            text="파일 처리 방식",
+            bg="#202033",
+            fg="#a29bfe",
+            font=("Malgun Gothic", 10, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+
+        copy_radio = tk.Radiobutton(
+            method_card,
+            text="📄 복사: 원본 유지",
+            variable=method_var,
+            value="copy",
+            bg="#202033",
+            fg="#39ff14",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#39ff14",
+            font=("Malgun Gothic", 9, "bold")
+        )
+        copy_radio.pack(anchor="w")
+
+        move_radio = tk.Radiobutton(
+            method_card,
+            text="📦 이동: 원본을 TOTAL_WORKSPACE로 이동",
+            variable=method_var,
+            value="move",
+            bg="#202033",
+            fg="#ffb300",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#ffb300",
+            font=("Malgun Gothic", 9, "bold")
+        )
+        move_radio.pack(anchor="w", pady=(4, 0))
+
+        method_disabled_hint = tk.Label(
+            method_card,
+            text="캐릭터 인덱스만 생성할 때는 파일을 복사/이동하지 않습니다. 현재 워크스페이스의 prompt 인덱스만 사용합니다.",
+            bg="#202033",
+            fg="#ffdd57",
+            font=("Malgun Gothic", 8),
+            justify="left",
+            wraplength=500
+        )
+
+        mode_var = tk.StringVar(value="replace_workspace")
+        build_character_index_var = tk.BooleanVar(value=False)
+        existing_index_mode_var = tk.StringVar(value="incremental")
+
+        mode_card = tk.Frame(
+            outer,
+            bg="#202033",
+            highlightthickness=1,
+            highlightbackground="#4b3b7a",
+            padx=12,
+            pady=10
+        )
+        mode_card.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            mode_card,
+            text="작업 모드",
+            bg="#202033",
+            fg="#a78bfa",
+            font=("Malgun Gothic", 10, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+
+        tk.Radiobutton(
+            mode_card,
+            text="📥 새 워크스페이스로 폴더 읽기",
+            variable=mode_var,
+            value="replace_workspace",
+            bg="#202033",
+            fg="#dfe6e9",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#ffffff",
+            font=("Malgun Gothic", 9, "bold")
+        ).pack(anchor="w")
+
+        tk.Radiobutton(
+            mode_card,
+            text="➕ 현재 워크스페이스에 추가",
+            variable=mode_var,
+            value="append_workspace",
+            bg="#202033",
+            fg="#55efc4",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#55efc4",
+            font=("Malgun Gothic", 9, "bold")
+        ).pack(anchor="w", pady=(4, 0))
+
+        tk.Radiobutton(
+            mode_card,
+            text="🧬 현재 워크스페이스 캐릭터 인덱스만 생성",
+            variable=mode_var,
+            value="character_only",
+            bg="#202033",
+            fg="#ffdd57",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#ffdd57",
+            font=("Malgun Gothic", 9, "bold")
+        ).pack(anchor="w", pady=(4, 0))
+
+        tk.Radiobutton(
+            mode_card,
+            text="📚 기존 분류 결과 폴더 인덱스 생성",
+            variable=mode_var,
+            value="existing_classified_index",
+            bg="#202033",
+            fg="#74b9ff",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#74b9ff",
+            font=("Malgun Gothic", 9, "bold")
+        ).pack(anchor="w", pady=(4, 0))
+
+        existing_index_mode_card = tk.Frame(
+            outer,
+            bg="#202033",
+            highlightthickness=1,
+            highlightbackground="#355f8a",
+            padx=12,
+            pady=10
+        )
+        existing_index_mode_card.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            existing_index_mode_card,
+            text="기존 분류 결과 인덱스 방식",
+            bg="#202033",
+            fg="#74b9ff",
+            font=("Malgun Gothic", 10, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+
+        existing_incremental_radio = tk.Radiobutton(
+            existing_index_mode_card,
+            text="빠른 증분 갱신",
+            variable=existing_index_mode_var,
+            value="incremental",
+            bg="#202033",
+            fg="#dfe6e9",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#ffffff",
+            font=("Malgun Gothic", 9, "bold")
+        )
+        existing_incremental_radio.pack(anchor="w")
+
+        existing_full_radio = tk.Radiobutton(
+            existing_index_mode_card,
+            text="전체 재생성",
+            variable=existing_index_mode_var,
+            value="full",
+            bg="#202033",
+            fg="#ffdd57",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#ffdd57",
+            font=("Malgun Gothic", 9, "bold")
+        )
+        existing_full_radio.pack(anchor="w", pady=(4, 0))
+
+        char_index_card = tk.Frame(
+            outer,
+            bg="#202033",
+            highlightthickness=1,
+            highlightbackground="#4b3b7a",
+            padx=12,
+            pady=10
+        )
+        char_index_card.pack(fill="x", pady=(0, 10))
+
+        build_character_index_check = tk.Checkbutton(
+            char_index_card,
+            text="🧬 폴더 읽기 후 캐릭터 인덱스 누락분 생성/갱신",
+            variable=build_character_index_var,
+            bg="#202033",
+            fg="#ffffff",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#ffffff",
+            font=("Malgun Gothic", 10, "bold")
+        )
+        build_character_index_check.pack(anchor="w")
+
+        char_index_hint = tk.Label(
+            char_index_card,
+            text="캐릭터 인덱스는 실시간 분류에서 ‘캐릭터 판별 사용’을 켤 때만 필요합니다. 캐릭터 판별을 쓰지 않을 경우 만들지 않아도 됩니다.",
+            bg="#202033",
+            fg="#a0a0b0",
+            font=("Malgun Gothic", 8),
+            justify="left",
+            wraplength=500
+        )
+        char_index_hint.pack(anchor="w", pady=(4, 0))
+
+        warning = tk.Frame(
+            outer,
+            bg="#332a12",
+            highlightthickness=1,
+            highlightbackground="#ffb300",
+            padx=12,
+            pady=8
+        )
+        warning.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            warning,
+            text="※ 이 작업은 TOTAL_CLASSIFIED에 넣지 않습니다. TOTAL_WORKSPACE에 작업 세션을 만들고 빠른 구분용 DB만 생성합니다.",
+            bg="#332a12",
+            fg="#ffdd57",
+            font=("Malgun Gothic", 9, "bold"),
+            justify="left",
+            wraplength=600
+        ).pack(anchor="w")
+
+        button_row = tk.Frame(outer, bg="#151522")
+        button_row.pack(fill="x")
+
+        def on_cancel():
+            result["ok"] = False
+            dialog.destroy()
+
+        def on_ok():
+            work_mode = mode_var.get()
+            if work_mode not in ("character_only", "existing_classified_index"):
+                source = source_var.get().strip()
+                if not source or not os.path.isdir(source):
+                    messagebox.showwarning("경고", "올바른 원본 폴더를 선택해주세요.", parent=dialog)
+                    return
+            else:
+                source = ""
+
+            result["ok"] = True
+            result["source"] = source
+            result["method"] = method_var.get()
+            result["work_mode"] = work_mode
+            result["build_character_index"] = bool(build_character_index_var.get())
+            result["existing_index_mode"] = existing_index_mode_var.get()
+            dialog.destroy()
+
+        def update_workspace_import_mode_ui(*_):
+            mode = mode_var.get()
+            is_character_only = mode == "character_only"
+            is_existing_classified_index = mode == "existing_classified_index"
+            disable_source_and_method = is_character_only or is_existing_classified_index
+
+            try:
+                entry.configure(state="disabled" if disable_source_and_method else "normal")
+            except Exception:
+                pass
+
+            try:
+                browse_button.configure(state="disabled" if disable_source_and_method else "normal")
+            except Exception:
+                pass
+
+            for widget in (copy_radio, move_radio):
+                try:
+                    widget.configure(state="disabled" if disable_source_and_method else "normal")
+                except Exception:
+                    pass
+
+            for widget in (existing_incremental_radio, existing_full_radio):
+                try:
+                    widget.configure(state="normal" if is_existing_classified_index else "disabled")
+                except Exception:
+                    pass
+
+            if is_character_only:
+                build_character_index_var.set(False)
+                try:
+                    build_character_index_check.configure(state="disabled")
+                except Exception:
+                    pass
+                try:
+                    method_disabled_hint.configure(
+                        text="캐릭터 인덱스만 생성할 때는 파일을 복사/이동하지 않습니다. 현재 워크스페이스의 prompt 인덱스만 사용합니다."
+                    )
+                    method_disabled_hint.pack(anchor="w", pady=(6, 0))
+                except Exception:
+                    pass
+                return
+
+            if is_existing_classified_index:
+                try:
+                    build_character_index_check.configure(state="normal")
+                except Exception:
+                    pass
+                try:
+                    method_disabled_hint.configure(
+                        text="기존 분류 결과 폴더 인덱스 생성은 TOTAL_CLASSIFIED를 직접 읽습니다. 파일은 복사/이동하지 않고 DB 인덱스만 생성합니다."
+                    )
+                    method_disabled_hint.pack(anchor="w", pady=(6, 0))
+                except Exception:
+                    pass
+                return
+
+            try:
+                build_character_index_check.configure(state="normal")
+            except Exception:
+                pass
+
+            try:
+                method_disabled_hint.pack_forget()
+            except Exception:
+                pass
+
+        tk.Button(
+            button_row,
+            text="취소",
+            command=on_cancel,
+            bg="#2d3436",
+            fg="#dfe6e9",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            width=14,
+            pady=6
+        ).pack(side="right", padx=(8, 0))
+
+        tk.Button(
+            button_row,
+            text="폴더 읽기 시작",
+            command=on_ok,
+            bg="#00b894",
+            fg="#ffffff",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            width=16,
+            pady=6
+        ).pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        dialog.bind("<Escape>", lambda event: on_cancel())
+        dialog.bind("<Return>", lambda event: on_ok())
+        mode_var.trace_add("write", update_workspace_import_mode_ui)
+        update_workspace_import_mode_ui()
+
+        dialog.update_idletasks()
+
+        try:
+            parent_x = self.root.winfo_rootx()
+            parent_y = self.root.winfo_rooty()
+            parent_w = self.root.winfo_width()
+            parent_h = self.root.winfo_height()
+            dialog_w = dialog.winfo_width()
+            dialog_h = dialog.winfo_height()
+
+            x = parent_x + max(0, (parent_w - dialog_w) // 2)
+            y = parent_y + max(0, (parent_h - dialog_h) // 2)
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        dialog.focus_force()
+        dialog.wait_window()
+
+        return result
+
+    def open_live_classifier(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("실시간 분류")
+        dialog.configure(bg="#151522")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        result = {"mode": "", "use_char_id": False}
+
+        outer = tk.Frame(dialog, bg="#151522", padx=18, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(
+            outer,
+            text="🧭 실시간 분류",
+            bg="#151522",
+            fg="#a78bfa",
+            font=("Malgun Gothic", 16, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            outer,
+            text="정밀 라우팅 규칙을 그림/프롬프트/갤러리 결과를 보면서 만드는 화면입니다.",
+            bg="#151522",
+            fg="#cfd3dc",
+            font=("Malgun Gothic", 9),
+            justify="left",
+            wraplength=520
+        ).pack(anchor="w", pady=(4, 14))
+
+        use_char_id_var = tk.BooleanVar(value=False)
+
+        def choose(mode):
+            result["mode"] = mode
+            result["use_char_id"] = bool(use_char_id_var.get())
+            dialog.destroy()
+
+        tk.Button(
+            outer,
+            text="기존걸 활용하기",
+            command=lambda: choose("existing"),
+            bg="#7c3aed",
+            fg="#ffffff",
+            font=("Malgun Gothic", 11, "bold"),
+            relief="flat",
+            width=28,
+            pady=8
+        ).pack(fill="x", pady=(0, 8))
+
+        tk.Label(
+            outer,
+            text="현재 custom_rules를 기준으로 workspace 이미지를 재분류 미리보기합니다.",
+            bg="#151522",
+            fg="#a0a0b0",
+            font=("Malgun Gothic", 8),
+            justify="left"
+        ).pack(anchor="w", pady=(0, 10))
+
+        tk.Button(
+            outer,
+            text="처음부터 만들기",
+            command=lambda: choose("new"),
+            bg="#2d3436",
+            fg="#ffffff",
+            font=("Malgun Gothic", 11, "bold"),
+            relief="flat",
+            width=28,
+            pady=8
+        ).pack(fill="x", pady=(0, 8))
+
+        tk.Label(
+            outer,
+            text="빈 규칙 상태로 시작합니다. 1단계에서는 갤러리를 자동 생성하지 않고 랜덤 이미지/프롬프트 확인부터 시작합니다.",
+            bg="#151522",
+            fg="#a0a0b0",
+            font=("Malgun Gothic", 8),
+            justify="left",
+            wraplength=520
+        ).pack(anchor="w", pady=(0, 14))
+
+        char_card = tk.Frame(
+            outer,
+            bg="#202033",
+            highlightthickness=1,
+            highlightbackground="#4b3b7a",
+            padx=12,
+            pady=10
+        )
+        char_card.pack(fill="x", pady=(0, 12))
+
+        tk.Checkbutton(
+            char_card,
+            text="캐릭터 판별 사용",
+            variable=use_char_id_var,
+            bg="#202033",
+            fg="#ffffff",
+            selectcolor="#222",
+            activebackground="#202033",
+            activeforeground="#ffffff",
+            font=("Malgun Gothic", 10, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            char_card,
+            text="체크하면 최종 분류처럼 캐릭터명을 판별해서 default 폴더 아래에 캐릭터 폴더를 붙입니다. 수위/AI 야짤 판별은 이 화면에서 사용하지 않습니다.",
+            bg="#202033",
+            fg="#a0a0b0",
+            font=("Malgun Gothic", 8),
+            justify="left",
+            wraplength=500
+        ).pack(anchor="w", pady=(4, 0))
+
+        tk.Button(
+            outer,
+            text="취소",
+            command=dialog.destroy,
+            bg="#3a3a4f",
+            fg="#ffffff",
+            font=("Malgun Gothic", 10, "bold"),
+            relief="flat",
+            width=14,
+            pady=6
+        ).pack(anchor="e")
+
+        dialog.update_idletasks()
+
+        try:
+            parent_x = self.root.winfo_rootx()
+            parent_y = self.root.winfo_rooty()
+            parent_w = self.root.winfo_width()
+            parent_h = self.root.winfo_height()
+            dialog_w = dialog.winfo_width()
+            dialog_h = dialog.winfo_height()
+            x = parent_x + max(0, (parent_w - dialog_w) // 2)
+            y = parent_y + max(0, (parent_h - dialog_h) // 2)
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        dialog.focus_force()
+        dialog.wait_window()
+
+        mode = result.get("mode")
+        if not mode:
+            return
+
+        char_flag = "1" if result.get("use_char_id") else "0"
+        url = f"http://127.0.0.1:5000/live-classifier?mode={mode}&char_id={char_flag}"
+
+        if utils.is_port_active(5000):
+            webbrowser.open(url)
+            self.log("🌐 실시간 분류 화면을 열었습니다.")
+            return
+
+        self.pending_open_url = url
+        self.log("🚀 서버가 꺼져 있어 먼저 로컬 웹 서버를 시작합니다. 준비되면 실시간 분류 화면을 엽니다.")
+        self.start_server()
+
+    def start_workspace_import(self):
+        dialog_result = self.show_workspace_import_dialog()
+
+        if not dialog_result.get("ok"):
+            return
+
+        source = dialog_result.get("source")
+        method = dialog_result.get("method") or "copy"
+        work_mode = dialog_result.get("work_mode") or "replace_workspace"
+        build_character_index = bool(dialog_result.get("build_character_index"))
+        existing_index_mode = dialog_result.get("existing_index_mode") or "incremental"
+
+        is_character_only = work_mode == "character_only"
+        is_existing_classified_index = work_mode == "existing_classified_index"
+
+        if is_character_only:
+            method_label = "사용 안 함"
+            target_title = "현재 워크스페이스"
+            target_value = "TOTAL_WORKSPACE/current"
+            action_title = "캐릭터 인덱스 누락분 생성/갱신 확인"
+            confirm_text = "캐릭터 인덱스 갱신 시작"
+        elif is_existing_classified_index:
+            method_label = "사용 안 함"
+            target_title = "기존 분류 결과 폴더"
+            target_value = "TOTAL_CLASSIFIED"
+            action_title = "기존 분류 결과 폴더 인덱스 생성 확인"
+            confirm_text = "기존 폴더 인덱스 생성"
+        else:
+            method_label = "복사: 원본 유지" if method == "copy" else "이동: 원본 이동"
+            target_title = "원본 폴더"
+            target_value = source
+            action_title = "폴더 읽기 실행 확인"
+            confirm_text = "폴더 읽기 시작"
+        mode_label_map = {
+            "replace_workspace": "새 워크스페이스로 폴더 읽기",
+            "append_workspace": "현재 워크스페이스에 추가",
+            "character_only": "현재 워크스페이스 캐릭터 인덱스만 생성",
+            "existing_classified_index": "기존 분류 결과 폴더 인덱스 생성",
+        }
+        if is_character_only:
+            method_desc = "캐릭터 인덱스만 생성할 때는 파일을 복사/이동하지 않고 현재 워크스페이스의 prompt 인덱스만 사용합니다."
+        elif is_existing_classified_index:
+            method_desc = "TOTAL_CLASSIFIED의 기존 이미지를 복사/이동하지 않고 실시간 분류용 워크스페이스 인덱스로 등록합니다."
+        else:
+            method_desc = (
+                "원본 이미지는 그대로 두고 TOTAL_WORKSPACE 작업 세션으로 복사합니다."
+                if method == "copy"
+                else "원본 이미지를 TOTAL_WORKSPACE 작업 세션으로 이동합니다. 원래 위치에서는 사라질 수 있습니다."
+            )
+
+        if not self.show_action_confirm_dialog(
+            title=action_title,
+            icon="📥",
+            target_title=target_title,
+            target_value=target_value,
+            method_title="파일 처리 방식",
+            method_value=method_label,
+            method_desc=method_desc,
+            options=[
+                {"label": "작업 모드", "value": mode_label_map.get(work_mode, work_mode), "state": None},
+                {"label": "기존 폴더 인덱스 방식", "value": ("전체 재생성" if existing_index_mode == "full" else "빠른 증분 갱신") if is_existing_classified_index else "해당 없음", "state": None},
+                {"label": "캐릭터 인덱스", "value": "생성" if (work_mode == "character_only" or build_character_index) else "생성 안 함", "state": None},
+                {"label": "작업 위치", "value": "TOTAL_WORKSPACE/current", "state": None},
+                {"label": "인덱스 DB", "value": "TOTAL_WORKSPACE/.naia_index/workspace_index.db", "state": None},
+                {"label": "스레드 수", "value": f"일반 {self._read_normal_thread_count_for_settings()}개", "state": None},
+                {"label": "저장 프롬프트", "value": "base + character prompts", "state": None},
+                {"label": "negative prompt", "value": "저장 안 함", "state": False},
+            ],
+            confirm_text=confirm_text,
+            accent_color="#00b894",
+            warning_text=(
+                "이 작업은 TOTAL_CLASSIFIED를 읽기만 합니다. 파일 복사/이동/삭제는 하지 않습니다."
+                if is_existing_classified_index
+                else "이 작업은 최종 분류가 아닙니다. TOTAL_CLASSIFIED는 변경하지 않습니다."
+            ),
+        ):
+            return
+
+        self.stop_requested = False
+
+        self.btn_workspace_import.config(state="disabled", text="⏳ 읽는 중...", bg="#444")
+        self.btn_run.config(state="disabled")
+        self.btn_reorg.config(state="disabled")
+        self.btn_scan_art.config(state="disabled")
+        self.btn_sync.config(state="disabled")
+        self.btn_stop.config(state="normal", text="⏹ 정지", bg="#d63031")
+
+        Thread(
+            target=self._workspace_import_thread,
+            args=(source, method, work_mode, build_character_index, existing_index_mode),
+            daemon=True
+        ).start()
+
+    def _workspace_import_thread(self, source, method, work_mode="replace_workspace", build_character_index=False, existing_index_mode="incremental"):
+        try:
+            if work_mode == "character_only":
+                result = workspace_logic.build_workspace_character_index(
+                    workspace_logic.get_active_workspace_session_name(),
+                    normal_workers=self._read_normal_thread_count_for_settings(),
+                    log_func=self.log,
+                    progress_update=self.update_progress,
+                    stop_check=lambda: self.stop_requested,
+                    incremental=True
+                )
+
+                self.log(
+                    f"✅ [캐릭터 인덱스 완료] 생성 {result.get('indexed')}개 / 실패 {result.get('errors')}개"
+                )
+            elif work_mode == "existing_classified_index":
+                is_full_rebuild = existing_index_mode == "full"
+                result = workspace_logic.index_existing_classified_folder_as_workspace(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "TOTAL_CLASSIFIED"),
+                    normal_workers=self._read_normal_thread_count_for_settings(),
+                    build_character_index=bool(build_character_index),
+                    clear_workspace=is_full_rebuild,
+                    incremental=not is_full_rebuild,
+                    prune_missing=True,
+                    log_func=self.log,
+                    progress_update=self.update_progress,
+                    stop_check=lambda: self.stop_requested
+                )
+
+                if is_full_rebuild:
+                    self.log("📚 [기존 폴더 인덱스] 전체 재생성 완료")
+                else:
+                    self.log(
+                        f"📚 [기존 폴더 인덱스] 증분 갱신 완료 / "
+                        f"갱신 {result.get('indexed')} / "
+                        f"스킵 {result.get('skipped_unchanged')} / "
+                        f"삭제 {result.get('removed_missing')} / "
+                        f"오류 {result.get('errors')}"
+                    )
+                self.log(f"🗄️ 인덱스 DB: {workspace_logic.get_workspace_db_path()}")
+
+                if result.get("character_index"):
+                    ci = result.get("character_index") or {}
+                    self.log(
+                        f"✅ [캐릭터 인덱스 완료] 생성 {ci.get('indexed')}개 / 실패 {ci.get('errors')}개"
+                    )
+            else:
+                clear_workspace = work_mode == "replace_workspace"
+                result = workspace_logic.import_folder_to_workspace(
+                    source,
+                    method=method,
+                    normal_workers=self._read_normal_thread_count_for_settings(),
+                    build_character_index=bool(build_character_index),
+                    clear_workspace=clear_workspace,
+                    log_func=self.log,
+                    progress_update=self.update_progress,
+                    stop_check=lambda: self.stop_requested
+                )
+
+                self.log(
+                    f"✅ [폴더 읽기 완료] 세션 현재 워크스페이스 / "
+                    f"성공 {result.get('imported')}개 / 실패 {result.get('errors')}개"
+                )
+                self.log(f"🗄️ 인덱스 DB: {result.get('db_path')}")
+
+                if result.get("character_index"):
+                    ci = result.get("character_index") or {}
+                    self.log(
+                        f"✅ [캐릭터 인덱스 완료] 생성 {ci.get('indexed')}개 / 실패 {ci.get('errors')}개"
+                    )
+
+            if self.show_alert_var.get():
+                if work_mode == "character_only":
+                    messagebox.showinfo(
+                        "캐릭터 인덱스 완료",
+                        "현재 워크스페이스의 캐릭터 인덱스 생성이 완료되었습니다."
+                    )
+                elif work_mode == "existing_classified_index":
+                    message = (
+                        "기존 분류 결과 폴더 인덱스와 캐릭터 인덱스 생성이 완료되었습니다."
+                        if build_character_index
+                        else "기존 분류 결과 폴더 인덱스 생성이 완료되었습니다. 캐릭터 인덱스는 생성하지 않았습니다."
+                    )
+                    messagebox.showinfo(
+                        "기존 폴더 인덱스 완료",
+                        message
+                    )
+                else:
+                    message = (
+                        "폴더 읽기와 캐릭터 인덱스 생성이 완료되었습니다."
+                        if build_character_index
+                        else "폴더 읽기가 완료되었습니다. 캐릭터 인덱스는 생성하지 않았습니다."
+                    )
+                    messagebox.showinfo(
+                        "폴더 읽기 완료",
+                        message
+                    )
+
+        except Exception as e:
+            self.log(f"❌ 폴더 읽기 실패: {e}")
+            if self.show_alert_var.get():
+                messagebox.showerror("폴더 읽기 실패", str(e))
+
+        finally:
+            self.root.after(0, lambda: self.btn_workspace_import.config(
+                state="normal",
+                text="📥 폴더 읽기",
+                bg="#00b894"
+            ))
+            self.root.after(0, lambda: self.btn_run.config(state="normal"))
+            self.root.after(0, lambda: self.btn_reorg.config(state="normal"))
+            self.root.after(0, lambda: self.btn_scan_art.config(state="normal"))
+            self.root.after(0, lambda: self.btn_sync.config(state="normal"))
+            self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
+
     def start_process(self):
         if self.full_path == self.placeholder or not os.path.exists(self.full_path):
             messagebox.showwarning("경고", "올바른 대상 폴더 경로를 선택해주세요.")
@@ -1352,6 +2220,7 @@ class NaiaHyperExecutor:
                 {"label": "GPU 가속", "value": g_txt, "state": self.use_gpu_var.get()},
                 {"label": "수위 감지", "value": s_txt, "state": not skip_nsfw},
                 {"label": "캐릭터 판별", "value": c_txt, "state": not skip_char},
+                {"label": "워크스페이스 인덱스 갱신", "value": "분류 완료 후 자동 등록" if self.auto_workspace_index_var.get() else "사용 안 함", "state": self.auto_workspace_index_var.get()},
                 {"label": "스레드 수", "value": str(t_txt), "state": None},
             ],
             confirm_text="분류 시작",
@@ -1364,12 +2233,14 @@ class NaiaHyperExecutor:
         self.stop_requested = False
         self.btn_run.config(state="disabled", text="⏳ 분류 작업 중...", bg="#444")
         self.btn_reorg.config(state="disabled")
+        self.btn_scan_art.config(state="disabled")
+        self.btn_workspace_import.config(state="disabled")
         self.btn_sync.config(state="disabled")
         self.btn_stop.config(state="normal", text="⏹ 정지", bg="#d63031")
-        Thread(target=self._logic_thread, args=(self.full_path, method, is_fast, use_ai, skip_nsfw, skip_char),
+        Thread(target=self._logic_thread, args=(self.full_path, method, is_fast, use_ai, skip_nsfw, skip_char, self.auto_workspace_index_var.get()),
                daemon=True).start()
 
-    def _logic_thread(self, source, method, is_fast, use_ai, skip_nsfw, skip_char):
+    def _logic_thread(self, source, method, is_fast, use_ai, skip_nsfw, skip_char, update_workspace_index):
         use_gpu = self.use_gpu_var.get()
         threshold_val = self.threshold_var.get() / 100.0
         try:
@@ -1378,13 +2249,18 @@ class NaiaHyperExecutor:
                                 ai_workers=self.ai_thread_count_var.get(),
                                 ai_threshold=threshold_val,
                                 log_func=self.log, stop_check=lambda: self.stop_requested,
-                                progress_update=self.update_progress, skip_nsfw=skip_nsfw, skip_char_id=skip_char)
+                                progress_update=self.update_progress, skip_nsfw=skip_nsfw, skip_char_id=skip_char,
+                                update_workspace_index=bool(update_workspace_index))
+            if update_workspace_index:
+                self.log("📚 [워크스페이스 인덱스] 새 분류 결과를 인덱스에 자동 등록했습니다.")
             self.log("✅ [작업 완료] 새 이미지 처리가 끝났습니다.")
         except Exception as e:
             self.log(f"❌ 오류: {e}")
         finally:
             self.root.after(0, lambda: self.btn_run.config(state="normal", text="▶ 새 분류", bg="#0984e3"))
             self.root.after(0, lambda: self.btn_reorg.config(state="normal", text="🔄 재정렬", bg="#e17055"))
+            self.root.after(0, lambda: self.btn_scan_art.config(state="normal"))
+            self.root.after(0, lambda: self.btn_workspace_import.config(state="normal"))
             self.root.after(0, lambda: self.btn_sync.config(state="normal"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
 
@@ -1433,6 +2309,7 @@ class NaiaHyperExecutor:
                 {"label": "GPU 가속", "value": g_txt, "state": self.use_gpu_var.get()},
                 {"label": "수위 감지", "value": s_txt, "state": not skip_nsfw},
                 {"label": "캐릭터 판별", "value": c_txt, "state": not skip_char},
+                {"label": "워크스페이스 인덱스 갱신", "value": "재정렬 완료 후 자동 갱신" if self.auto_workspace_index_var.get() else "사용 안 함", "state": self.auto_workspace_index_var.get()},
                 {"label": "스레드 수", "value": str(t_txt), "state": None},
             ],
             confirm_text="재정렬 시작",
@@ -1446,11 +2323,13 @@ class NaiaHyperExecutor:
         self.stop_requested = False
         self.btn_reorg.config(state="disabled", text="⏳ 재정렬 중...", bg="#444")
         self.btn_run.config(state="disabled")
+        self.btn_scan_art.config(state="disabled")
+        self.btn_workspace_import.config(state="disabled")
         self.btn_sync.config(state="disabled")
         self.btn_stop.config(state="normal", text="⏹ 정지", bg="#d63031")
-        Thread(target=self._reorg_thread, args=(use_ai, skip_nsfw, skip_char, reorg_target), daemon=True).start()
+        Thread(target=self._reorg_thread, args=(use_ai, skip_nsfw, skip_char, reorg_target, self.auto_workspace_index_var.get()), daemon=True).start()
 
-    def _reorg_thread(self, use_ai, skip_nsfw, skip_char, reorg_target):
+    def _reorg_thread(self, use_ai, skip_nsfw, skip_char, reorg_target, update_workspace_index):
         use_gpu = self.use_gpu_var.get()
         threshold_val = self.threshold_var.get() / 100.0
         try:
@@ -1461,13 +2340,18 @@ class NaiaHyperExecutor:
                                 ai_threshold=threshold_val,
                                 log_func=self.log, stop_check=lambda: self.stop_requested,
                                 progress_update=self.update_progress, skip_nsfw=skip_nsfw, skip_char_id=skip_char,
-                                reorg_target=reorg_target)
+                                reorg_target=reorg_target,
+                                update_workspace_index=bool(update_workspace_index))
+            if update_workspace_index:
+                self.log("📚 [워크스페이스 인덱스] 재정렬 결과를 인덱스에 자동 갱신했습니다.")
             self.log("✅ [재정렬 완료] 폴더가 완벽히 재배치되었습니다.")
         except Exception as e:
             self.log(f"❌ 오류: {e}")
         finally:
             self.root.after(0, lambda: self.btn_reorg.config(state="normal", text="🔄 재정렬", bg="#e17055"))
             self.root.after(0, lambda: self.btn_run.config(state="normal", text="▶ 새 분류", bg="#0984e3"))
+            self.root.after(0, lambda: self.btn_scan_art.config(state="normal"))
+            self.root.after(0, lambda: self.btn_workspace_import.config(state="normal"))
             self.root.after(0, lambda: self.btn_sync.config(state="normal"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
 
@@ -1522,7 +2406,14 @@ class NaiaHyperExecutor:
         self.server_ready = True
         self.server_transitioning = False
         self._set_server_online_ui()
-        self.open_gallery()
+
+        if self.pending_open_url:
+            url = self.pending_open_url
+            self.pending_open_url = ""
+            webbrowser.open(url)
+            self.log(f"🌐 페이지를 열었습니다: {url}")
+        else:
+            self.open_gallery()
 
     def monitor_server(self, process, monitor_token):
         exit_code = None

@@ -1,12 +1,14 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import shutil
 import re
 import json
+import copy
 import queue
 import threading
 from flask import Flask, jsonify, send_file, request
 import image_logic
 import upscale_logic
+import workspace_logic
 import subprocess
 import sys
 import utils
@@ -27,6 +29,38 @@ from urllib.parse import urlsplit, unquote, quote
 
 app = Flask(__name__)
 
+LIVE_CHARACTER_INDEX_JOB_LOCK = threading.Lock()
+LIVE_CHARACTER_INDEX_JOB = {
+    "running": False,
+    "done": False,
+    "processed": 0,
+    "total": 0,
+    "errors": 0,
+    "message": "대기 중",
+    "started_at": 0,
+    "finished_at": 0,
+    "error": ""
+}
+
+LIVE_APPLY_JOB_LOCK = threading.Lock()
+LIVE_APPLY_JOB = {
+    "running": False,
+    "done": False,
+    "processed": 0,
+    "total": 0,
+    "moved": 0,
+    "skipped": 0,
+    "errors": 0,
+    "message": "대기 중",
+    "started_at": 0,
+    "finished_at": 0,
+    "error": "",
+    "export_filename": "",
+    "export_path": "",
+    "index_rebuild_started": False,
+    "index_rebuild_running": False
+}
+
 GALLERY_INDEX_REBUILD_LOCK = threading.Lock()
 GALLERY_INDEX_DB_LOCK = threading.Lock()
 GALLERY_INDEX_REBUILD_JOB = {
@@ -40,7 +74,7 @@ GALLERY_INDEX_REBUILD_JOB = {
     "finished_at": 0
 }
 
-# 경로 설정
+# 寃쎈줈 ?ㅼ젙
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 CLASSIFIED_DIR = os.path.join(CURRENT_DIR, "TOTAL_CLASSIFIED")
 TRASH_DIR = os.path.join(CLASSIFIED_DIR, "_TRASH")
@@ -50,12 +84,12 @@ TAG_CATEGORY_FILE = os.path.join(TAG_DATA_DIR, "tag_categories_ko.generated.json
 TAG_CATEGORY_OVERRIDE_FILE = os.path.join(TAG_DATA_DIR, "tag_categories_ko.json")
 TAG_DB_FILE = os.path.join(TAG_DATA_DIR, "danbooru_tags.sqlite3")
 TAG_GROUP_LABELS = {
-    "expression": "표정",
-    "top": "상의",
-    "bottom": "하의",
-    "outfit": "의상",
-    "body": "신체",
-    "nsfw": "성인",
+    "expression": "?쒖젙",
+    "top": "?곸쓽",
+    "bottom": "?섏쓽",
+    "outfit": "?섏긽",
+    "body": "?좎껜",
+    "nsfw": "?깆씤",
 }
 TAG_GROUP_COLORS = {
     "expression": "#f59e0b",
@@ -66,9 +100,9 @@ TAG_GROUP_COLORS = {
     "nsfw": "#ef4444",
 }
 DANBOORU_CATEGORY_LABELS = {
-    0: "일반",
-    1: "작가",
-    3: "저작권",
+    0: "?쇰컲",
+    1: "?묎?",
+    3: "??묎텒",
     4: "캐릭터",
     5: "메타",
 }
@@ -77,7 +111,7 @@ DANBOORU_CATEGORY_COLORS = {
     1: "#f97316",
     3: "#eab308",
     4: "#ec4899",
-    5: "#14b8a6",
+    5: "메타",
 }
 
 TAG_DICTIONARY_USER_OVERRIDES = os.path.join(CURRENT_DIR, 'tag_dictionary_user_overrides.json')
@@ -125,6 +159,7 @@ def get_gallery_data_status_snapshot():
 UPSCALE_OUTPUT_FOLDER_NAME = "_upscaled"
 UPSCALE_IGNORE_FILE_NAME = ".ignore"
 CANVAS_SETUPS_FILE = os.path.join(CURRENT_DIR, "canvas_saved_setups.json")
+LIVE_RULE_EXPORT_DIR = os.path.join(CURRENT_DIR, "live_rule_exports")
 
 
 def normalize_canvas_saved_setup_item(item):
@@ -212,7 +247,7 @@ def load_canvas_saved_setups():
             data = json.load(f) or []
         return normalize_canvas_saved_setups(data)
     except Exception as e:
-        print(f"⚠️ 캔버스 저장본 로드 실패: {e}")
+        print(f"?좑툘 罹붾쾭????λ낯 濡쒕뱶 ?ㅽ뙣: {e}")
         return []
 
 
@@ -225,6 +260,387 @@ def save_canvas_saved_setups(setups):
 
     os.replace(tmp_path, CANVAS_SETUPS_FILE)
     return setups
+
+
+def sanitize_live_rule_export_name(value):
+    text = str(value or "live_rules").strip()
+    text = re.sub(r'[<>:"/\\\\|?*]+', "_", text)
+    text = re.sub(r"\s+", "_", text)
+    text = text.strip("._")
+    return text[:80] or "live_rules"
+
+
+def make_live_rule_export_filename(name):
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = sanitize_live_rule_export_name(name)
+    return f"naia_live_rules_{timestamp}_{safe_name}.json"
+
+
+def save_live_rule_export_file(payload, name="live_rules"):
+    os.makedirs(LIVE_RULE_EXPORT_DIR, exist_ok=True)
+
+    filename = make_live_rule_export_filename(name)
+    path = os.path.join(LIVE_RULE_EXPORT_DIR, filename)
+
+    base, ext = os.path.splitext(filename)
+    for index in range(2, 10000):
+        if not os.path.exists(path):
+            break
+        filename = f"{base}_{index}{ext}"
+        path = os.path.join(LIVE_RULE_EXPORT_DIR, filename)
+
+    tmp_path = path + ".tmp"
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    os.replace(tmp_path, path)
+
+    return {
+        "filename": filename,
+        "path": path,
+        "folder": LIVE_RULE_EXPORT_DIR
+    }
+
+
+def resolve_live_rule_export_path(filename, subdir=""):
+    safe_name = os.path.basename(str(filename or "")).strip()
+    if not safe_name or safe_name != str(filename or "").strip() or not safe_name.lower().endswith(".json"):
+        raise ValueError("JSON \ud30c\uc77c\uba85\uc774 \uc62c\ubc14\ub974\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.")
+
+    base_dir = LIVE_RULE_EXPORT_DIR
+    if subdir:
+        base_dir = os.path.join(base_dir, subdir)
+
+    base_dir = os.path.abspath(base_dir)
+    path = os.path.abspath(os.path.join(base_dir, safe_name))
+    if os.path.dirname(path) != base_dir:
+        raise ValueError("JSON \ud30c\uc77c \uacbd\ub85c\uac00 \uc62c\ubc14\ub974\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.")
+    return path
+
+
+def save_live_apply_debug_file(payload, filename=None):
+    debug_dir = os.path.join(LIVE_RULE_EXPORT_DIR, "debug")
+    os.makedirs(debug_dir, exist_ok=True)
+    if not filename:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        mode = sanitize_live_rule_export_name(payload.get("mode") or payload.get("live_mode") or "unknown")
+        rules_count = int(payload.get("runtime_rules_count") or 0)
+        filename = f"apply_debug_{timestamp}_mode_{mode}_rules_{rules_count}.json"
+    path = os.path.join(debug_dir, filename)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+    return {"filename": filename, "path": path}
+
+
+def get_live_apply_job_snapshot():
+    with LIVE_APPLY_JOB_LOCK:
+        return dict(LIVE_APPLY_JOB)
+
+
+def update_live_apply_job(**patch):
+    with LIVE_APPLY_JOB_LOCK:
+        LIVE_APPLY_JOB.update(patch)
+
+
+def reset_live_apply_job(**patch):
+    base = {
+        "running": False,
+        "done": False,
+        "processed": 0,
+        "total": 0,
+        "moved": 0,
+        "skipped": 0,
+        "errors": 0,
+        "message": "대기 중",
+        "started_at": 0,
+        "finished_at": 0,
+        "error": "",
+        "export_filename": "",
+        "export_path": "",
+        "index_rebuild_started": False,
+        "index_rebuild_running": False
+    }
+    base.update(patch)
+    with LIVE_APPLY_JOB_LOCK:
+        LIVE_APPLY_JOB.clear()
+        LIVE_APPLY_JOB.update(base)
+
+
+def sanitize_live_apply_rel_folder(value):
+    text = str(value or "").replace("\\", "/").strip().strip("/")
+    if not text:
+        return "No_Metadata"
+
+    parts = []
+    for part in text.split("/"):
+        part = part.strip()
+        if not part or part in (".", ".."):
+            continue
+        parts.append(safe_folder_name(part))
+
+    return "/".join(parts) or "No_Metadata"
+
+
+def live_apply_unique_path(path):
+    if not os.path.exists(path):
+        return path
+
+    folder = os.path.dirname(path)
+    base, ext = os.path.splitext(os.path.basename(path))
+
+    for index in range(2, 10000):
+        candidate = os.path.join(folder, f"{base}_{index}{ext}")
+        if not os.path.exists(candidate):
+            return candidate
+
+    raise RuntimeError("중복 파일명을 처리할 수 없습니다.")
+
+
+def live_apply_prompt_text_from_item(item):
+    parts = []
+
+    for key in ("base_prompt", "basePrompt", "prompt"):
+        value = item.get(key)
+        if value:
+            parts.append(str(value))
+
+    char_prompts = item.get("char_prompts") or item.get("charPrompts") or []
+    if isinstance(char_prompts, list):
+        parts.extend(str(value) for value in char_prompts if str(value or "").strip())
+
+    prompt_blob = item.get("prompt_blob") or ""
+    if prompt_blob and not parts:
+        try:
+            base_prompt, decoded_chars = workspace_logic.decode_prompt_blob(prompt_blob)
+            if base_prompt:
+                parts.append(base_prompt)
+            if isinstance(decoded_chars, list):
+                parts.extend(str(value) for value in decoded_chars if str(value or "").strip())
+        except Exception:
+            pass
+
+    text = "\n".join(parts)
+    strip_func = getattr(image_logic, "strip_negative_weighted_prompt_blocks", None)
+    if callable(strip_func):
+        try:
+            text = strip_func(text)
+        except Exception:
+            pass
+
+    return str(text or "").lower()
+
+
+def live_apply_detect_prompt_nsfw(item):
+    text = live_apply_prompt_text_from_item(item)
+    if not text:
+        return ""
+
+    r18_keywords = [
+        "nsfw", "nude", "naked", "nipples", "areola", "pussy", "penis",
+        "sex", "cum", "fellatio", "paizuri", "masturbation", "vaginal",
+        "anal", "spread legs", "cameltoe", "explicit", "uncensored"
+    ]
+
+    r15_keywords = [
+        "underwear", "panties", "bra", "bikini", "cleavage", "sideboob",
+        "underboob", "see-through", "lingerie", "suggestive"
+    ]
+
+    if any(keyword in text for keyword in r18_keywords):
+        return "_R-18"
+
+    if any(keyword in text for keyword in r15_keywords):
+        return "_R-15"
+
+    return ""
+
+
+def live_apply_detect_ai_nsfw(image_path, use_gpu=True):
+    try:
+        image_logic.USE_GPU_MODE = bool(use_gpu)
+    except Exception:
+        pass
+
+    model = image_logic.get_nsfw_model()
+    if not model:
+        return ""
+
+    try:
+        with Image.open(image_path) as img:
+            result = model(img.convert("RGB"))
+    except Exception:
+        return ""
+
+    if not isinstance(result, list):
+        return ""
+
+    best_label = ""
+    best_score = 0.0
+
+    for row in result:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("label") or "").lower()
+        try:
+            score = float(row.get("score") or 0)
+        except Exception:
+            score = 0.0
+
+        if score > best_score:
+            best_score = score
+            best_label = label
+
+    nsfw_labels = ("nsfw", "porn", "hentai", "sexy", "explicit", "unsafe")
+    if any(key in best_label for key in nsfw_labels) and best_score >= 0.70:
+        return "_R-18"
+
+    return ""
+
+
+def live_apply_nsfw_prefix(image_path, item, use_nsfw=True, use_ai_nsfw=False, use_gpu=True):
+    if not use_nsfw:
+        return ""
+
+    ai_prefix = ""
+    if use_ai_nsfw:
+        ai_prefix = live_apply_detect_ai_nsfw(image_path, use_gpu=use_gpu)
+
+    if ai_prefix:
+        return ai_prefix
+
+    return live_apply_detect_prompt_nsfw(item)
+
+
+def live_apply_final_folder(predicted_folder, nsfw_prefix=""):
+    folder = sanitize_live_apply_rel_folder(predicted_folder)
+
+    if nsfw_prefix in ("_R-18", "_R-15"):
+        if folder.startswith("_R-18/") or folder.startswith("_R-15/"):
+            return folder
+        return sanitize_live_apply_rel_folder(nsfw_prefix + "/" + folder)
+
+    return folder
+
+
+def live_apply_move_sidecar(src_image_path, dst_image_path, ext):
+    src = os.path.splitext(src_image_path)[0] + ext
+    if not os.path.exists(src):
+        return False
+
+    dst = os.path.splitext(dst_image_path)[0] + ext
+    dst = live_apply_unique_path(dst)
+
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.move(src, dst)
+    return True
+
+
+def live_apply_update_workspace_record(workspace_rel_path, new_path):
+    workspace_rel_path = workspace_logic.normalize_rel_path(workspace_rel_path)
+    new_path = os.path.abspath(new_path)
+    new_workspace_rel = workspace_logic.normalize_rel_path(
+        os.path.relpath(new_path, workspace_logic.get_workspace_root())
+        if utils.is_subpath(new_path, workspace_logic.get_workspace_root())
+        else workspace_rel_path
+    )
+
+    conn = workspace_logic.ensure_workspace_db()
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE workspace_images
+                   SET source_path = ?,
+                       workspace_path = ?,
+                       file_name = ?,
+                       folder_path = ?,
+                       exported_at = ?
+                 WHERE workspace_rel_path = ?
+            """, (
+                new_path,
+                new_path,
+                os.path.basename(new_path),
+                os.path.dirname(new_workspace_rel).replace("\\", "/"),
+                time.time(),
+                workspace_rel_path
+            ))
+    finally:
+        conn.close()
+
+
+def live_apply_fetch_preview_rows(session_name, rules_hash, use_char_id):
+    conn = workspace_logic.ensure_workspace_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                p.workspace_rel_path,
+                p.predicted_folder,
+                p.route_status,
+                i.workspace_path,
+                i.source_path,
+                i.file_name,
+                i.width,
+                i.height,
+                i.prompt_blob,
+                i.status
+            FROM workspace_route_preview p
+            JOIN workspace_images i
+              ON i.workspace_rel_path = p.workspace_rel_path
+            WHERE p.session_name = ?
+              AND p.rules_hash = ?
+              AND p.use_char_id = ?
+              AND i.status = 'indexed'
+            ORDER BY p.predicted_folder, i.file_name
+        """, (session_name, rules_hash, 1 if use_char_id else 0))
+
+        rows = []
+        for row in cursor.fetchall():
+            base_prompt, char_prompts = workspace_logic.decode_prompt_blob(row[8] or "")
+            rows.append({
+                "workspace_rel_path": row[0],
+                "predicted_folder": row[1] or "No_Metadata",
+                "route_status": row[2] or "",
+                "workspace_path": row[3] or "",
+                "source_path": row[4] or "",
+                "file_name": row[5] or "",
+                "width": int(row[6] or 0),
+                "height": int(row[7] or 0),
+                "prompt_blob": row[8] or "",
+                "base_prompt": base_prompt,
+                "char_prompts": char_prompts,
+                "status": row[9] or ""
+            })
+        return rows
+    finally:
+        conn.close()
+
+
+def live_apply_update_gallery_index_for_path(db, full_path, rel_path, item):
+    gallery_tag_config = load_gallery_image_tags_config()
+
+    width = int(item.get("width") or 0)
+    height = int(item.get("height") or 0)
+
+    if not width or not height:
+        try:
+            with Image.open(full_path) as img:
+                width, height = img.size
+        except Exception:
+            width, height = 0, 0
+
+    db.upsert_gallery_image_file(
+        full_path,
+        classified_root=CLASSIFIED_DIR,
+        rel_path=rel_path,
+        mode=infer_gallery_mode_from_rel_path(rel_path),
+        width=width,
+        height=height,
+        reason="",
+        gallery_tag=get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
+    )
 
 
 @app.route("/api/canvas/setups", methods=["GET"])
@@ -245,7 +661,7 @@ def set_canvas_saved_setups():
     if not isinstance(setups, list):
         return jsonify({
             "status": "error",
-            "message": "캔버스 저장본 목록 형식이 올바르지 않습니다."
+            "message": "罹붾쾭????λ낯 紐⑸줉 ?뺤떇???щ컮瑜댁? ?딆뒿?덈떎."
         }), 400
 
     saved = save_canvas_saved_setups(setups)
@@ -315,7 +731,7 @@ def normalize_gallery_image_tag_config(data):
     tags = []
     seen = set()
     default_icon_values = default_gallery_tag_icon_values()
-    legacy_emoji_values = {"⭐", "🌙", "☀️", "❤️", "🍀", "✨", "✅"}
+    legacy_emoji_values = set()
 
     if isinstance(raw_tags, list):
         for item in raw_tags:
@@ -416,7 +832,7 @@ def load_gallery_image_tags_config():
             data = json.load(f) or {}
         return normalize_gallery_image_tag_config(data)
     except Exception as e:
-        print(f"⚠️ 폴더 매핑 로드 실패: {e}")
+        print(f"?좑툘 ?대뜑 留ㅽ븨 濡쒕뱶 ?ㅽ뙣: {e}")
         return default_gallery_image_tags_config()
 
 
@@ -473,7 +889,7 @@ def build_character_brand_lookup_aliases(tag, clean_name=""):
         if key:
             aliases.add(key)
 
-        # 괄호 안/밖 표기가 있는 캐릭터명 대응
+        # 愿꾪샇 ??諛??쒓린媛 ?덈뒗 罹먮┃?곕챸 ???
         text = str(value or "").strip()
         for inside in re.findall(r"\(([^)]+)\)", text):
             inside_key = normalize_brand_lookup_key(inside)
@@ -527,7 +943,7 @@ def load_folder_display_names(db, verbose=False):
             folder_names_map[row[0]] = row[1]
     except Exception as e:
         if verbose:
-            print(f"⚠️ 폴더 매핑 로드 실패: {e}")
+            print(f"?좑툘 ?대뜑 留ㅽ븨 濡쒕뱶 ?ㅽ뙣: {e}")
     return folder_names_map
 
 
@@ -698,7 +1114,7 @@ def load_prompt_sidecar(image_path):
         with open(sidecar_path, "r", encoding="utf-8") as f:
             data = json.load(f) or {}
 
-        # 기존 다키 저장 json 호환
+        # 湲곗〈 ?ㅽ궎 ???json ?명솚
         if "base_prompt" in data or "char_prompt" in data or "negative_prompt" in data:
             data = {
                 "basePrompt": data.get("base_prompt", ""),
@@ -712,7 +1128,7 @@ def load_prompt_sidecar(image_path):
         return info if has_prompt_info_text(info) else None
 
     except Exception as e:
-        print(f"⚠️ 프롬프트 사이드카 로드 실패: {sidecar_path} | {e}")
+        print(f"?좑툘 ?꾨＼?꾪듃 ?ъ씠?쒖뭅 濡쒕뱶 ?ㅽ뙣: {sidecar_path} | {e}")
         return None
 
 def build_fast_upscale_badge_info_from_rel_path(rel_path):
@@ -762,7 +1178,7 @@ def load_upscale_badge_info(image_path):
     except Exception:
         pass
 
-    # sidecar가 없거나 예전 업스케일 파일이면 파일명으로 최소 표시
+    # sidecar媛 ?녾굅???덉쟾 ?낆뒪耳???뚯씪?대㈃ ?뚯씪紐낆쑝濡?理쒖냼 ?쒖떆
     filename = os.path.basename(str(image_path or "")).lower()
     match = re.search(r"_upscale_(\d+)x(\d+)_([^.]*)", filename)
 
@@ -850,8 +1266,8 @@ def build_embedded_prompt_payload(prompt_info):
 
 def save_png_with_prompt_metadata(image_obj, save_path, prompt_info, source_label="NAI Image Manager"):
     """
-    PNG 내부에 Comment / parameters 메타데이터를 저장한다.
-    main_executor -> image_logic 기존 분류 로직이 이 메타를 읽을 수 있게 하기 위한 함수.
+    PNG ?대???Comment / parameters 硫뷀??곗씠?곕? ??ν븳??
+    main_executor -> image_logic 湲곗〈 遺꾨쪟 濡쒖쭅????硫뷀?瑜??쎌쓣 ???덇쾶 ?섍린 ?꾪븳 ?⑥닔.
     """
     info = normalize_prompt_info_for_sidecar(prompt_info or {})
 
@@ -886,10 +1302,10 @@ def index():
     return send_file('index.html')
 
 
-# 🌟 [새로 추가] 재시도 및 한국어 에러 처리 도우미 함수
+# ?뙚 [?덈줈 異붽?] ?ъ떆??諛??쒓뎅???먮윭 泥섎━ ?꾩슦誘??⑥닔
 def safe_file_operation(target_path, dest_path=None, is_delete=False, retries=5, delay=0.2):
     if not os.path.exists(target_path):
-        return False, "파일을 찾을 수 없습니다. (이미 이동되었거나 새로고침이 필요합니다)."
+        return False, "?뚯씪??李얠쓣 ???놁뒿?덈떎. (?대? ?대룞?섏뿀嫄곕굹 ?덈줈怨좎묠???꾩슂?⑸땲??."
 
     for attempt in range(retries):
         try:
@@ -897,33 +1313,33 @@ def safe_file_operation(target_path, dest_path=None, is_delete=False, retries=5,
                 os.remove(target_path)
             else:
                 os.rename(target_path, dest_path)
-            return True, "성공"
+            return True, "?깃났"
         except OSError as e:
             if attempt < retries - 1:
-                time.sleep(delay)  # 파일이 잠겨있다면 잠깐 대기 후 재시도
+                time.sleep(delay)  # ?뚯씪???좉꺼?덈떎硫??좉퉸 ?湲????ъ떆??
                 continue
 
-            # 에러 종류별 한국어 친화적 메시지 매핑
+            # ?먮윭 醫낅쪟蹂??쒓뎅??移쒗솕??硫붿떆吏 留ㅽ븨
             err_msg = str(e)
             if "Errno 22" in err_msg or "WinError 32" in err_msg or "Errno 13" in err_msg:
-                return False, "파일이 다른 프로그램 또는 AI 분석 작업에 의해 잠겨 있습니다. 1~2초 후 다시 시도해 주세요."
+                return False, "?뚯씪???ㅻⅨ ?꾨줈洹몃옩 ?먮뒗 AI 遺꾩꽍 ?묒뾽???섑빐 ?좉꺼 ?덉뒿?덈떎. 1~2珥????ㅼ떆 ?쒕룄??二쇱꽭??"
             elif "Errno 2" in err_msg:
-                return False, "파일 경로가 올바르지 않습니다."
+                return False, "?뚯씪 寃쎈줈媛 ?щ컮瑜댁? ?딆뒿?덈떎."
             else:
-                return False, f"서버 오류: {err_msg}"
+                return False, f"?쒕쾭 ?ㅻ쪟: {err_msg}"
 
-    return False, "최대 재시도 횟수를 초과했습니다."
+    return False, "理쒕? ?ъ떆???잛닔瑜?珥덇낵?덉뒿?덈떎."
 
 
 @app.route('/api/install_ai', methods=['POST'])
 def install_ai():
     try:
-        # 시스템의 파이썬을 이용해 백그라운드에서 torch와 transformers 설치
-        # 설치가 오래 걸릴 수 있으므로 즉시 응답합니다.
-        print("AI 분석 패키지 설치를 백그라운드에서 시작합니다. (완료까지 시간이 걸릴 수 있습니다...)")
+        # ?쒖뒪?쒖쓽 ?뚯씠?ъ쓣 ?댁슜??諛깃렇?쇱슫?쒖뿉??torch? transformers ?ㅼ튂
+        # ?ㅼ튂媛 ?ㅻ옒 嫄몃┫ ???덉쑝誘濡?利됱떆 ?묐떟?⑸땲??
+        print("AI 遺꾩꽍 ?⑦궎吏 ?ㅼ튂瑜?諛깃렇?쇱슫?쒖뿉???쒖옉?⑸땲?? (?꾨즺源뚯? ?쒓컙??嫄몃┫ ???덉뒿?덈떎...)")
         subprocess.Popen([sys.executable, "-m", "pip", "install", "torch", "torchvision", "transformers"])
 
-        return jsonify({"status": "success", "message": "설치를 백그라운드에서 시작했습니다. 완료 후 새로고침하거나 앱을 다시 실행해 주세요."})
+        return jsonify({"status": "success", "message": "?ㅼ튂瑜?諛깃렇?쇱슫?쒖뿉???쒖옉?덉뒿?덈떎. ?꾨즺 ???덈줈怨좎묠?섍굅???깆쓣 ?ㅼ떆 ?ㅽ뻾??二쇱꽭??"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -933,7 +1349,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
         update_gallery_data_status(
             running=False,
             phase="done",
-            message="분류 폴더가 아직 없습니다.",
+            message="遺꾨쪟 ?대뜑媛 ?꾩쭅 ?놁뒿?덈떎.",
             finished_at=time.time(),
             folders=0,
             images=0,
@@ -951,20 +1367,20 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
     tree_dict = {"name": "ROOT", "path": "", "folders": {}, "images": [], "thumb": None, "total_images": 0}
     update_gallery_data_status(
         phase="prepare",
-        message="갤러리 태그와 폴더명 정보를 준비 중입니다."
+        message="媛ㅻ윭由??쒓렇? ?대뜑紐??뺣낫瑜?以鍮?以묒엯?덈떎."
     )
     gallery_tag_config = load_gallery_image_tags_config()
 
-    # 1. 갤러리 표시용 DB 폴더명 매핑을 먼저 로드
+    # 1. 媛ㅻ윭由??쒖떆??DB ?대뜑紐?留ㅽ븨??癒쇱? 濡쒕뱶
     db = utils.HistoryDB()
 
-    # 2. 🌟 [들여쓰기 수정] 모든 모드에서 폴더명 매핑을 사용할 수 있게 밖으로 꺼냅니다.
+    # 2. ?뙚 [?ㅼ뿬?곌린 ?섏젙] 紐⑤뱺 紐⑤뱶?먯꽌 ?대뜑紐?留ㅽ븨???ъ슜?????덇쾶 諛뽰쑝濡?爰쇰깄?덈떎.
     folder_names_map = load_folder_display_names(db, verbose=True)
 
-    # 3. 모드 설정에 따른 스캔 경로 구성 (이제 매핑 로직은 여기서 빠집니다)
+    # 3. 紐⑤뱶 ?ㅼ젙???곕Ⅸ ?ㅼ틪 寃쎈줈 援ъ꽦 (?댁젣 留ㅽ븨 濡쒖쭅? ?ш린??鍮좎쭛?덈떎)
     update_gallery_data_status(
         phase="scan_config",
-        message="갤러리 스캔 범위를 계산 중입니다."
+        message="媛ㅻ윭由??ㅼ틪 踰붿쐞瑜?怨꾩궛 以묒엯?덈떎."
     )
 
     scan_configs = []
@@ -980,7 +1396,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
     elif mode == 'trash':
         scan_configs.append({"path": os.path.join(CLASSIFIED_DIR, "_TRASH"), "ignore": []})
 
-    # 정렬 기준에 따라 폴더를 정렬
+    # ?뺣젹 湲곗????곕씪 ?대뜑瑜??뺣젹
     scan_progress = {
         "folders": 0,
         "images": 0,
@@ -996,7 +1412,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
         scan_progress["last_status_at"] = now
         update_gallery_data_status(
             phase="scan",
-            message=f"폴더 스캔 중... 폴더 {scan_progress['folders']}개 / 이미지 {scan_progress['images']}장",
+            message=f"Folder scan in progress... folders {scan_progress['folders']} / images {scan_progress['images']}",
             folders=scan_progress["folders"],
             images=scan_progress["images"],
             index_mode="scan_fallback"
@@ -1040,7 +1456,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                                                     img_w, img_h = img.size
                                                 db.save_file_metadata(rel_img, img_w, img_h, mtime)
                                             except Exception as img_err:
-                                                print(f"⚠️ 업스케일 이미지 크기 확인 실패: {up_entry.path} | {img_err}")
+                                                print(f"?좑툘 ?낆뒪耳???대?吏 ?ш린 ?뺤씤 ?ㅽ뙣: {up_entry.path} | {img_err}")
 
                                         txt_path = os.path.splitext(up_entry.path)[0] + ".txt"
                                         reason_text = ""
@@ -1049,7 +1465,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                                                 with open(txt_path, "r", encoding="utf-8") as f:
                                                     reason_text = f.read()
                                             except Exception as txt_err:
-                                                print(f"⚠️ 업스케일 이미지 사유 파일 읽기 실패: {txt_path} | {txt_err}")
+                                                print(f"?좑툘 ?낆뒪耳???대?吏 ?ъ쑀 ?뚯씪 ?쎄린 ?ㅽ뙣: {txt_path} | {txt_err}")
 
                                         virtual_node["images"].append({
                                             "name": up_entry.name,
@@ -1063,20 +1479,20 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                                         })
                                         virtual_node["total_images"] += 1
                             except Exception as upscaled_err:
-                                print(f"⚠️ 업스케일 폴더 스캔 실패: {entry.path} | {upscaled_err}")
+                                print(f"?좑툘 ?낆뒪耳???대뜑 ?ㅼ틪 ?ㅽ뙣: {entry.path} | {upscaled_err}")
 
                             continue
-                        # DB에 저장된 원본 폴더명을 우선 사용해서 잘린 폴더명을 복원
+                        # DB????λ맂 ?먮낯 ?대뜑紐낆쓣 ?곗꽑 ?ъ슜?댁꽌 ?섎┛ ?대뜑紐낆쓣 蹂듭썝
                         display_name = folder_names_map.get(entry.name, entry.name)
 
-                        # _and_ 또는 and 기준으로 다중 캐릭터명을 분리
+                        # _and_ ?먮뒗 and 湲곗??쇰줈 ?ㅼ쨷 罹먮┃?곕챸??遺꾨━
                         clean_n = re.sub(r'_(dakimakura|\d+pcs)$', '', display_name, flags=re.IGNORECASE)
                         split_chars = re.split(r'_and_|\s+and\s+', clean_n, flags=re.IGNORECASE)
                         char_names_list = [c.replace('_', ' ').strip() for c in split_chars if c.strip()]
 
                         if entry.name not in virtual_node["folders"]:
                             virtual_node["folders"][entry.name] = {
-                                "name": display_name,  # 🌟 화면(UI)에는 380자짜리 풀네임이 렌더링됨
+                                "name": display_name,  # ?뙚 ?붾㈃(UI)?먮뒗 380?먯쭨由???ㅼ엫???뚮뜑留곷맖
                                 "char_names": char_names_list,
                                 "path": os.path.relpath(entry.path, CLASSIFIED_DIR).replace('\\', '/'),
                                 "folders": {}, "images": [], "thumb": None, "total_images": 0
@@ -1099,9 +1515,9 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                                     img_w, img_h = img.size
                                 db.save_file_metadata(rel_img, img_w, img_h, mtime)
                             except Exception as img_err:
-                                print(f"⚠️ 이미지 메타데이터 읽기 실패: {entry.path} | {img_err}")
+                                print(f"?좑툘 ?대?吏 硫뷀??곗씠???쎄린 ?ㅽ뙣: {entry.path} | {img_err}")
 
-                        # 이미지 옆의 사유(txt) 파일도 함께 노출
+                        # ?대?吏 ?놁쓽 ?ъ쑀(txt) ?뚯씪???④퍡 ?몄텧
                         txt_path = os.path.splitext(entry.path)[0] + ".txt"
                         reason_text = ""
                         if os.path.exists(txt_path):
@@ -1109,7 +1525,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                                 with open(txt_path, "r", encoding="utf-8") as f:
                                     reason_text = f.read()
                             except Exception as txt_err:
-                                print(f"⚠️ 사유 텍스트 읽기 실패: {txt_path} | {txt_err}")
+                                print(f"?좑툘 ?ъ쑀 ?띿뒪???쎄린 ?ㅽ뙣: {txt_path} | {txt_err}")
 
                         virtual_node["images"].append({
                             "name": entry.name, "path": rel_img, "w": img_w, "h": img_h,
@@ -1119,12 +1535,12 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                         })
                         virtual_node["total_images"] += 1
         except Exception as scan_err:
-            print(f"⚠️ 폴더 스캔 실패: {physical_path} | {scan_err}")
+            print(f"?좑툘 ?대뜑 ?ㅼ틪 ?ㅽ뙣: {physical_path} | {scan_err}")
 
-    # 2. 하위 폴더 정리
+    # 2. ?섏쐞 ?대뜑 ?뺣━
     update_gallery_data_status(
         phase="scan",
-        message="분류 폴더를 스캔 중입니다.",
+        message="遺꾨쪟 ?대뜑瑜??ㅼ틪 以묒엯?덈떎.",
         folders=0,
         images=0,
         index_mode="scan_fallback"
@@ -1135,11 +1551,11 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
 
     maybe_update_scan_status(force=True)
 
-    # 3. 폴더 리스트 정렬 및 빈 폴더 제거
+    # 3. ?대뜑 由ъ뒪???뺣젹 諛?鍮??대뜑 ?쒓굅
     def finalize_tree(node, depth=0):
         folder_list = list(node["folders"].values())
 
-        # 🌟 [수술 1] 상위 폴더가 엉뚱한 이미지를 가져가지 않도록 하위 폴더를 먼저 이름순으로 정렬!
+        # ?뙚 [?섏닠 1] ?곸쐞 ?대뜑媛 ?됰슧???대?吏瑜?媛?멸?吏 ?딅룄濡??섏쐞 ?대뜑瑜?癒쇱? ?대쫫?쒖쑝濡??뺣젹!
         if depth == 0:
             order_map = {"1_Solo": 1, "2_Duo": 2, "3_Group": 3, "No_Metadata": 99}
             folder_list.sort(key=lambda x: (order_map.get(x["name"], 50), x["name"]))
@@ -1149,13 +1565,13 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
         for child in folder_list:
             finalize_tree(child, depth + 1)
             node["total_images"] += child["total_images"]
-            # 상위 폴더가 대표 이미지를 가져가지 않도록 정렬 우선순위를 적용
+            # ?곸쐞 ?대뜑媛 ????대?吏瑜?媛?멸?吏 ?딅룄濡??뺣젹 ?곗꽑?쒖쐞瑜??곸슜
             if not node["thumb"] and child["thumb"]: node["thumb"] = child["thumb"]
 
-        # 기본 정렬
+        # 湲곕낯 ?뺣젹
         folder_list = [f for f in folder_list if f["total_images"] > 0]
 
-        # 모드에 따른 최종 폴더 정렬
+        # 紐⑤뱶???곕Ⅸ 理쒖쥌 ?대뜑 ?뺣젹
         if mode == 'trash':
             folder_list.sort(key=lambda x: x["name"], reverse=True)
         elif sort_by == 'count':
@@ -1164,14 +1580,14 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
         node["folders"] = folder_list
         node["images"].sort(key=lambda x: (-float(x.get("mtime") or 0), x["name"]))
 
-        # 메타데이터 없는 폴더명 패턴은 뒤쪽으로 정렬
+        # 硫뷀??곗씠???녿뒗 ?대뜑紐??⑦꽩? ?ㅼそ?쇰줈 ?뺣젹
         main_img = next((img["path"] for img in node["images"] if img["name"].startswith("000_MAIN_")), None)
         if not node["thumb"] and node["images"]:
             node["thumb"] = main_img if main_img else node["images"][0]["path"]
 
     update_gallery_data_status(
         phase="finalize",
-        message="폴더 개수와 대표 이미지를 정리 중입니다.",
+        message="?대뜑 媛쒖닔? ????대?吏瑜??뺣━ 以묒엯?덈떎.",
         folders=scan_progress["folders"],
         images=scan_progress["images"]
     )
@@ -1180,15 +1596,15 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
 
     update_gallery_data_status(
         phase="brand_map",
-        message="브랜드/캐릭터 표시 정보를 구성 중입니다.",
+        message="釉뚮옖??罹먮┃???쒖떆 ?뺣낫瑜?援ъ꽦 以묒엯?덈떎.",
         folders=scan_progress["folders"],
         images=scan_progress["images"]
     )
 
-    # 브랜드 매핑 및 표시 설정 구성
-    # app.py 내 brand_map 생성 부분 보강
-    # 브랜드별 캐릭터 매핑 데이터 생성
-    # 브랜드 노출 설정 데이터 생성
+    # 釉뚮옖??留ㅽ븨 諛??쒖떆 ?ㅼ젙 援ъ꽦
+    # app.py ??brand_map ?앹꽦 遺遺?蹂닿컯
+    # 釉뚮옖?쒕퀎 罹먮┃??留ㅽ븨 ?곗씠???앹꽦
+    # 釉뚮옖???몄텧 ?ㅼ젙 ?곗씠???앹꽦
     brand_map = {}
     brand_visibility = {}
 
@@ -1218,7 +1634,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
             brand_visibility[display_brand] = is_visible
 
     except Exception as e:
-        print(f"⚠️ 매핑 오류: {e}")
+        print(f"?좑툘 留ㅽ븨 ?ㅻ쪟: {e}")
 
     db.close()
 
@@ -1226,7 +1642,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
         "tree": tree_dict,
         "baseDir": "TOTAL_CLASSIFIED",
         "brand_map": brand_map,
-        "brand_visibility": brand_visibility,  # 브랜드별 노출 스위치
+        "brand_visibility": brand_visibility,  # 釉뚮옖?쒕퀎 ?몄텧 ?ㅼ쐞移?
         "server_session_id": GALLERY_SERVER_SESSION_ID,
         "gallery_tags": {
             "tags": gallery_tag_config.get("tags", []),
@@ -1257,7 +1673,7 @@ def build_gallery_brand_payload(db, tree_dict):
                 brand_map[alias] = display_brand
             brand_visibility[display_brand] = is_visible
     except Exception as e:
-        print(f"?좑툘 留ㅽ븨 ?ㅻ쪟: {e}")
+        print(f"brand map error: {e}")
     return brand_map, brand_visibility
 
 
@@ -1388,7 +1804,7 @@ def get_data():
     update_gallery_data_status(
         running=True,
         phase="start",
-        message="갤러리 데이터 요청을 시작했습니다.",
+        message="媛ㅻ윭由??곗씠???붿껌???쒖옉?덉뒿?덈떎.",
         mode=mode,
         sort=sort_by,
         started_at=data_started_wall,
@@ -1399,7 +1815,7 @@ def get_data():
         index_mode="scan_fallback",
         error=""
     )
-    print(f"[갤러리] /api/data 시작: mode={mode}, sort={sort_by}")
+    print(f"[媛ㅻ윭由? /api/data ?쒖옉: mode={mode}, sort={sort_by}")
 
     try:
         db = utils.HistoryDB()
@@ -1412,7 +1828,7 @@ def get_data():
         try:
             update_gallery_data_status(
                 phase="index",
-                message="갤러리 인덱스에서 데이터를 불러오는 중입니다.",
+                message="媛ㅻ윭由??몃뜳?ㅼ뿉???곗씠?곕? 遺덈윭?ㅻ뒗 以묒엯?덈떎.",
                 index_mode="full_index"
             )
             payload = build_gallery_data_payload_from_index(mode, sort_by)
@@ -1426,7 +1842,7 @@ def get_data():
                 update_gallery_data_status(
                     running=False,
                     phase="needs_index",
-                    message="갤러리 인덱스 로딩에 실패해 자동 복구 중입니다.",
+                    message="媛ㅻ윭由??몃뜳??濡쒕뵫???ㅽ뙣???먮룞 蹂듦뎄 以묒엯?덈떎.",
                     finished_at=time.time(),
                     elapsed=elapsed,
                     index_mode="needs_index",
@@ -1434,7 +1850,7 @@ def get_data():
                 )
 
                 print(
-                    f"[갤러리] full index 로딩 실패: 자동 인덱스 복구 "
+                    f"[媛ㅻ윭由? full index 濡쒕뵫 ?ㅽ뙣: ?먮룞 ?몃뜳??蹂듦뎄 "
                     f"auto_started={auto_started}, rebuild_running={rebuild_running}, error={e}"
                 )
 
@@ -1444,7 +1860,7 @@ def get_data():
                     "auto_rebuild_started": bool(auto_started),
                     "rebuild_running": bool(rebuild_running),
                     "index_mode": "needs_index",
-                    "message": "갤러리 인덱스 로딩에 실패해 자동으로 복구 중입니다. 완료되면 갤러리를 다시 불러옵니다.",
+                    "message": "媛ㅻ윭由??몃뜳??濡쒕뵫???ㅽ뙣???먮룞?쇰줈 蹂듦뎄 以묒엯?덈떎. ?꾨즺?섎㈃ 媛ㅻ윭由щ? ?ㅼ떆 遺덈윭?듬땲??",
                     "error": str(e),
                     "tree": {"name": "ROOT", "folders": [], "images": [], "total_images": 0},
                     "baseDir": "TOTAL_CLASSIFIED",
@@ -1462,7 +1878,7 @@ def get_data():
             update_gallery_data_status(
                 running=False,
                 phase="needs_index",
-                message="빠른 갤러리 인덱스가 없어 자동 생성 중입니다.",
+                message="鍮좊Ⅸ 媛ㅻ윭由??몃뜳?ㅺ? ?놁뼱 ?먮룞 ?앹꽦 以묒엯?덈떎.",
                 finished_at=time.time(),
                 elapsed=elapsed,
                 folders=0,
@@ -1472,7 +1888,7 @@ def get_data():
             )
 
             print(
-                f"[갤러리] full index 없음: 자동 인덱스 생성 "
+                f"[媛ㅻ윭由? full index ?놁쓬: ?먮룞 ?몃뜳???앹꽦 "
                 f"auto_started={auto_started}, rebuild_running={rebuild_running}, mode={mode}, sort={sort_by}"
             )
 
@@ -1482,7 +1898,7 @@ def get_data():
                 "auto_rebuild_started": bool(auto_started),
                 "rebuild_running": bool(rebuild_running),
                 "index_mode": "needs_index",
-                "message": "빠른 갤러리 인덱스가 없어 자동으로 생성 중입니다. 완료되면 갤러리를 다시 불러옵니다.",
+                "message": "鍮좊Ⅸ 媛ㅻ윭由??몃뜳?ㅺ? ?놁뼱 ?먮룞?쇰줈 ?앹꽦 以묒엯?덈떎. ?꾨즺?섎㈃ 媛ㅻ윭由щ? ?ㅼ떆 遺덈윭?듬땲??",
                 "tree": {"name": "ROOT", "folders": [], "images": [], "total_images": 0},
                 "baseDir": "TOTAL_CLASSIFIED",
                 "brand_map": {},
@@ -1493,7 +1909,7 @@ def get_data():
 
         update_gallery_data_status(
             phase="scan",
-            message="사용자 요청으로 기존 전체 스캔 방식으로 불러오는 중입니다.",
+            message="?ъ슜???붿껌?쇰줈 湲곗〈 ?꾩껜 ?ㅼ틪 諛⑹떇?쇰줈 遺덈윭?ㅻ뒗 以묒엯?덈떎.",
             index_mode="scan_fallback"
         )
         payload = build_gallery_data_payload_from_scan(mode, sort_by)
@@ -1503,7 +1919,7 @@ def get_data():
     update_gallery_data_status(
         running=False,
         phase="done",
-        message=f"갤러리 데이터 준비 완료 ({elapsed:.1f}초)",
+        message=f"媛ㅻ윭由??곗씠??以鍮??꾨즺 ({elapsed:.1f}珥?",
         finished_at=time.time(),
         elapsed=elapsed,
         folders=status_snapshot.get("folders", 0),
@@ -1513,7 +1929,7 @@ def get_data():
     )
 
     print(
-        f"[갤러리] /api/data 완료: mode={mode}, sort={sort_by}, index_mode={index_mode}, "
+        f"[媛ㅻ윭由? /api/data ?꾨즺: mode={mode}, sort={sort_by}, index_mode={index_mode}, "
         f"folders={status_snapshot.get('folders', 0)}, images={status_snapshot.get('images', 0)}, elapsed={elapsed:.1f}s"
     )
 
@@ -1554,7 +1970,7 @@ def gallery_index_rebuild_worker():
                 "running": True,
                 "processed": 0,
                 "total": 0,
-                "message": "이미지 목록 수집 중...",
+                "message": "?대?吏 紐⑸줉 ?섏쭛 以?..",
                 "error": "",
                 "done": False,
                 "started_at": time.time(),
@@ -1621,7 +2037,7 @@ def gallery_index_rebuild_worker():
                 db.upsert_gallery_image_records(batch)
 
             with GALLERY_INDEX_REBUILD_LOCK:
-                GALLERY_INDEX_REBUILD_JOB["message"] = "폴더 요약 생성 중..."
+                GALLERY_INDEX_REBUILD_JOB["message"] = "?대뜑 ?붿빟 ?앹꽦 以?.."
                 GALLERY_INDEX_REBUILD_JOB["processed"] = len(image_paths)
 
             db.rebuild_gallery_folder_summaries()
@@ -1631,7 +2047,7 @@ def gallery_index_rebuild_worker():
             GALLERY_INDEX_REBUILD_JOB.update({
                 "running": False,
                 "done": True,
-                "message": "인덱스 생성 완료",
+                "message": "?몃뜳???앹꽦 ?꾨즺",
                 "finished_at": time.time()
             })
     except Exception as e:
@@ -1645,7 +2061,7 @@ def gallery_index_rebuild_worker():
                 "running": False,
                 "done": True,
                 "error": str(e),
-                "message": "인덱스 생성 실패",
+                "message": "?몃뜳???앹꽦 ?ㅽ뙣",
                 "finished_at": time.time()
             })
     finally:
@@ -1655,12 +2071,12 @@ def gallery_index_rebuild_worker():
 
 def start_gallery_index_rebuild_background(auto=False):
     """
-    갤러리 인덱스를 백그라운드에서 생성한다.
-    이미 실행 중이면 새로 시작하지 않는다.
-    반환값:
+    媛ㅻ윭由??몃뜳?ㅻ? 諛깃렇?쇱슫?쒖뿉???앹꽦?쒕떎.
+    ?대? ?ㅽ뻾 以묒씠硫??덈줈 ?쒖옉?섏? ?딅뒗??
+    諛섑솚媛?
       (started, running)
-      started=True  : 이번 호출에서 새 작업 시작
-      running=True  : 이미 실행 중이거나 방금 시작됨
+      started=True  : ?대쾲 ?몄텧?먯꽌 ???묒뾽 ?쒖옉
+      running=True  : ?대? ?ㅽ뻾 以묒씠嫄곕굹 諛⑷툑 ?쒖옉??
     """
     with GALLERY_INDEX_REBUILD_LOCK:
         if GALLERY_INDEX_REBUILD_JOB.get("running"):
@@ -1670,7 +2086,7 @@ def start_gallery_index_rebuild_background(auto=False):
             "running": True,
             "processed": 0,
             "total": 0,
-            "message": "갤러리 인덱스 자동 생성 준비 중..." if auto else "갤러리 인덱스 생성 준비 중...",
+            "message": "媛ㅻ윭由??몃뜳???먮룞 ?앹꽦 以鍮?以?.." if auto else "媛ㅻ윭由??몃뜳???앹꽦 以鍮?以?..",
             "error": "",
             "done": False,
             "started_at": time.time(),
@@ -1745,7 +2161,7 @@ def set_gallery_image_tag():
     tag_id = str(data.get("tag_id") or "").strip()
 
     if not rel_path:
-        return jsonify({"status": "error", "message": "이미지 경로가 없습니다."}), 400
+        return jsonify({"status": "error", "message": "?대?吏 寃쎈줈媛 ?놁뒿?덈떎."}), 400
 
     config = load_gallery_image_tags_config()
     valid_ids = {tag.get("id") for tag in config.get("tags", [])}
@@ -1753,7 +2169,7 @@ def set_gallery_image_tag():
 
     if tag_id:
         if tag_id not in valid_ids:
-            return jsonify({"status": "error", "message": "존재하지 않는 태그입니다."}), 400
+            return jsonify({"status": "error", "message": "議댁옱?섏? ?딅뒗 ?쒓렇?낅땲??"}), 400
         image_tags[rel_path] = tag_id
     else:
         image_tags.pop(rel_path, None)
@@ -1789,7 +2205,7 @@ _last_reveal_request = {
 def clean_gallery_rel_path(raw_path):
     path = str(raw_path or "").strip()
 
-    # /image/... 형태로 들어와도 처리
+    # /image/... ?뺥깭濡??ㅼ뼱???泥섎━
     parsed = urlsplit(path)
     if parsed.path:
         path = parsed.path
@@ -1816,7 +2232,7 @@ def resolve_gallery_image_path(raw_path):
     rel_path = clean_gallery_rel_path(raw_path)
 
     if not rel_path:
-        raise FileNotFoundError("이미지 경로가 비어 있습니다.")
+        raise FileNotFoundError("?대?吏 寃쎈줈媛 鍮꾩뼱 ?덉뒿?덈떎.")
 
     candidates = [rel_path]
 
@@ -1853,7 +2269,7 @@ def resolve_gallery_image_path(raw_path):
             real_rel = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
             return full_path, real_rel
 
-    # 정확한 파일은 못 찾았지만 폴더는 있는 경우
+    # ?뺥솗???뚯씪? 紐?李얠븯吏留??대뜑???덈뒗 寃쎌슦
     try:
         expected_path = utils.resolve_safe_path(
             CLASSIFIED_DIR,
@@ -1864,14 +2280,14 @@ def resolve_gallery_image_path(raw_path):
 
         if os.path.exists(expected_dir):
             raise FileNotFoundError(
-                f"파일을 찾을 수 없습니다. 필요한 파일명: {os.path.basename(expected_path)}"
+                f"?뚯씪??李얠쓣 ???놁뒿?덈떎. ?꾩슂???뚯씪紐? {os.path.basename(expected_path)}"
             )
     except FileNotFoundError:
         raise
     except Exception:
         pass
 
-    raise FileNotFoundError("파일을 찾을 수 없습니다. 이미 이동되었거나 새로고침이 필요합니다.")
+    raise FileNotFoundError("?뚯씪??李얠쓣 ???놁뒿?덈떎. ?대? ?대룞?섏뿀嫄곕굹 ?덈줈怨좎묠???꾩슂?⑸땲??")
 
 def build_gallery_prompt_filter_text(prompt_info):
     prompt_info = prompt_info or {}
@@ -1933,13 +2349,13 @@ def fetch_gallery_weighted_art_styles_for_paths(db, paths):
         if not rows:
             continue
 
-        # main 갤러리 그림체 후보 우선순위:
-        # 1. [가중치] 또는 [조합형] 접두어가 있는 항목
-        # 2. artist 태그가 2개 이상인 순서 보존 가중치 프롬프트
-        # 3. 일반 artist 조합, 4. 기타 항목
+        # main 媛ㅻ윭由?洹몃┝泥??꾨낫 ?곗꽑?쒖쐞:
+        # 1. [媛以묒튂] ?먮뒗 [議고빀?? ?묐몢?닿? ?덈뒗 ??ぉ
+        # 2. artist ?쒓렇媛 2媛??댁긽???쒖꽌 蹂댁〈 媛以묒튂 ?꾨＼?꾪듃
+        # 3. ?쇰컲 artist 議고빀, 4. 湲고? ??ぉ
         def priority(row):
             artist_name = str(row[0] or "")
-            if artist_name.startswith("[가중치]") or artist_name.startswith("[조합형]"):
+            if artist_name.startswith("[媛以묒튂]") or artist_name.startswith("[議고빀??"):
                 return 0
             if len(re.findall(r'[-+]?\d+(?:\.\d+)?::\s*artist:', artist_name, flags=re.IGNORECASE)) >= 2:
                 return 1
@@ -1968,10 +2384,10 @@ def is_gallery_weighted_art_style_prompt(text):
     if not text:
         return False
 
-    if text.startswith("[가중치]") or text.startswith("[조합형]"):
+    if text.startswith("[媛以묒튂]") or text.startswith("[議고빀??"):
         return True
 
-    # 가중치/조합형 표기 또는 artist 태그가 있으면 그림체 프롬프트로 판단한다.
+    # 媛以묒튂/議고빀???쒓린 ?먮뒗 artist ?쒓렇媛 ?덉쑝硫?洹몃┝泥??꾨＼?꾪듃濡??먮떒?쒕떎.
     if "artist:" in text:
         return True
 
@@ -1982,8 +2398,8 @@ def is_gallery_weighted_art_style_prompt(text):
 
 def cleanup_gallery_weighted_art_style_prompt(text):
     text = str(text or "").strip()
-    text = re.sub(r'^\[가중치]\s*', '', text).strip()
-    text = re.sub(r'^\[조합형]\s*', '', text).strip()
+    text = re.sub(r'^\[媛以묒튂]\s*', '', text).strip()
+    text = re.sub(r'^\[議고빀??\s*', '', text).strip()
     return cleanup_weighted_order_style_prompt(text)
 
 
@@ -1996,13 +2412,13 @@ def extract_gallery_weighted_art_style_prompts_from_text(text):
 
     target_text = text.replace('\\\\n', '\n').replace('\\n', '\n')
 
-    # image_logic.py의 scan_and_extract_artists와 맞춘 추출 규칙:
-    # 1) [가중치] 또는 [조합형] 접두어가 붙은 한 줄 프롬프트를 우선 사용
+    # image_logic.py??scan_and_extract_artists? 留욎텣 異붿텧 洹쒖튃:
+    # 1) [媛以묒튂] ?먮뒗 [議고빀?? ?묐몢?닿? 遺숈? ??以??꾨＼?꾪듃瑜??곗꽑 ?ъ슜
     weighted_blocks = []
 
     for pattern in (
-        r'\[가중치]\s*([^\r\n]+)',
-        r'\[조합형]\s*([^\r\n]+)'
+        r'\[媛以묒튂]\s*([^\r\n]+)',
+        r'\[議고빀??\s*([^\r\n]+)'
     ):
         for match in re.finditer(pattern, target_text, flags=re.IGNORECASE):
             block = match.group(1).strip().strip(',')
@@ -2013,8 +2429,8 @@ def extract_gallery_weighted_art_style_prompts_from_text(text):
         first = weighted_blocks[0]
         return [cleanup_gallery_weighted_art_style_prompt(first)]
 
-    # 2) 0.7::artist:a::, 0.3::artist:b:: 같은 순서 보존 가중치 토큰 수집
-    # 여러 가중치 토큰이 있으면 원본 순서를 보존해 하나의 프롬프트로 저장한다.
+    # 2) 0.7::artist:a::, 0.3::artist:b:: 媛숈? ?쒖꽌 蹂댁〈 媛以묒튂 ?좏겙 ?섏쭛
+    # ?щ윭 媛以묒튂 ?좏겙???덉쑝硫??먮낯 ?쒖꽌瑜?蹂댁〈???섎굹???꾨＼?꾪듃濡???ν븳??
     weighted_tokens = []
     for match in re.finditer(
         r'[-+]?\d+(?:\.\d+)?::\s*artist:[^:,\]\}\|\n\r\t\\]+::',
@@ -2028,7 +2444,7 @@ def extract_gallery_weighted_art_style_prompts_from_text(text):
     if weighted_tokens:
         return [", ".join(weighted_tokens)]
 
-    # 3) 일반 artist 태그는 알파벳순으로 정리해 조합형 프롬프트로 저장
+    # 3) ?쇰컲 artist ?쒓렇???뚰뙆踰녹닚?쇰줈 ?뺣━??議고빀???꾨＼?꾪듃濡????
     p_std = re.compile(r'(?:[\d\.]*::)?artist:\s*([^,\]\}\|\n\r\t\\]+)', re.IGNORECASE)
     artists = set()
     safe_text = target_text.replace('\\n', ' ').replace('\n', ' ')
@@ -2086,7 +2502,7 @@ def build_gallery_art_style_items_from_prompt_info(prompt_info):
     if not prompts:
         return []
 
-    # 그림체 프롬프트는 선택 영역당 1개만 저장한다.
+    # 洹몃┝泥??꾨＼?꾪듃???좏깮 ?곸뿭??1媛쒕쭔 ??ν븳??
     prompt = prompts[0]
 
     return [{
@@ -2108,7 +2524,7 @@ def upsert_gallery_prompt_art_styles(db, rel_path, prompt_info):
     if not prompts:
         return
 
-    # 한 선택 영역에는 대표 그림체 프롬프트 하나만 DB에 기록한다.
+    # ???좏깮 ?곸뿭?먮뒗 ???洹몃┝泥??꾨＼?꾪듃 ?섎굹留?DB??湲곕줉?쒕떎.
     prompts = prompts[:1]
     records = [(clean_path, prompt) for prompt in prompts]
     db.conn.executemany(
@@ -2145,7 +2561,7 @@ def build_gallery_filter_lookup_path_variants(rel_path):
     return list(dict.fromkeys(path for path in variants if path))
 
 # ==========================================================
-# 갤러리 업스케일 백그라운드 작업 큐
+# 媛ㅻ윭由??낆뒪耳??諛깃렇?쇱슫???묒뾽 ??
 # ==========================================================
 
 UPSCALE_JOBS = {}
@@ -2251,7 +2667,7 @@ def run_upscale_worker_loop():
                     job_id,
                     status="cancelled",
                     progress=100,
-                    message="취소됨"
+                    message="Canceled"
                 )
                 continue
 
@@ -2259,7 +2675,7 @@ def run_upscale_worker_loop():
                 job_id,
                 status="running",
                 progress=2,
-                message="업스케일 준비 중..."
+                message="?낆뒪耳??以鍮?以?.."
             )
 
             source_path = job.get("source_path", "")
@@ -2312,7 +2728,7 @@ def run_upscale_worker_loop():
                     job_id,
                     status="cancelled",
                     progress=100,
-                    message="취소됨"
+                    message="Canceled"
                 )
                 continue
 
@@ -2341,7 +2757,7 @@ def run_upscale_worker_loop():
                         source_label="NAI Image Manager Gallery Upscale"
                     )
             except Exception as meta_err:
-                print(f"⚠️ 업스케일 결과 PNG 메타데이터 저장 실패: {target_full_path} | {meta_err}")
+                print(f"?좑툘 ?낆뒪耳??寃곌낵 PNG 硫뷀??곗씠??????ㅽ뙣: {target_full_path} | {meta_err}")
 
             add_upscale_sidecar_info(target_full_path, original_prompt_info, upscale_info)
             sync_gallery_prompt_art_styles_for_path(result_rel_path, original_prompt_info)
@@ -2350,7 +2766,7 @@ def run_upscale_worker_loop():
                 job_id,
                 status="done",
                 progress=100,
-                message="업스케일 완료",
+                message="?낆뒪耳???꾨즺",
                 result_path=result_rel_path,
                 result_src=result_src,
                 embedded_metadata_saved=embedded_metadata_saved
@@ -2361,7 +2777,7 @@ def run_upscale_worker_loop():
                 job_id,
                 status="cancelled",
                 progress=100,
-                message="취소됨"
+                message="Canceled"
             )
 
         except Exception as e:
@@ -2369,7 +2785,7 @@ def run_upscale_worker_loop():
                 job_id,
                 status="error",
                 progress=100,
-                message="업스케일 실패",
+                message="?낆뒪耳???ㅽ뙣",
                 error=str(e)
             )
 
@@ -2397,9 +2813,9 @@ def start_gallery_upscale():
 
         source_path = clean_gallery_rel_path(data.get("source_path", ""))
         if not source_path:
-            return jsonify({"status": "error", "message": "업스케일할 이미지 경로가 없습니다."}), 400
+            return jsonify({"status": "error", "message": "?낆뒪耳?쇳븷 ?대?吏 寃쎈줈媛 ?놁뒿?덈떎."}), 400
 
-        # 존재 확인과 실제 경로 보정
+        # 議댁옱 ?뺤씤怨??ㅼ젣 寃쎈줈 蹂댁젙
         source_full_path, real_source_rel = resolve_gallery_image_path(source_path)
 
         target_width, target_height = upscale_logic.validate_target_size(
@@ -2422,7 +2838,7 @@ def start_gallery_upscale():
             "id": job_id,
             "status": "queued",
             "progress": 0,
-            "message": "대기 중...",
+            "message": "?湲?以?..",
             "source_path": real_source_rel,
             "source_name": os.path.basename(source_full_path),
             "target_width": target_width,
@@ -2465,7 +2881,7 @@ def get_gallery_upscale_status(job_id):
         job = UPSCALE_JOBS.get(job_id)
 
     if not job:
-        return jsonify({"status": "error", "message": "작업을 찾을 수 없습니다."}), 404
+        return jsonify({"status": "error", "message": "?묒뾽??李얠쓣 ???놁뒿?덈떎."}), 404
 
     return jsonify({
         "status": "success",
@@ -2492,7 +2908,7 @@ def cancel_gallery_upscale(job_id):
         job = UPSCALE_JOBS.get(job_id)
 
         if not job:
-            return jsonify({"status": "error", "message": "작업을 찾을 수 없습니다."}), 404
+            return jsonify({"status": "error", "message": "?묒뾽??李얠쓣 ???놁뒿?덈떎."}), 404
 
         if job.get("status") in ("done", "error", "cancelled"):
             return jsonify({
@@ -2505,7 +2921,7 @@ def cancel_gallery_upscale(job_id):
             cancel_event.set()
 
         job["status"] = "cancelled" if job.get("status") == "queued" else job.get("status", "running")
-        job["message"] = "취소 요청됨"
+        job["message"] = "Cancel requested"
         job["updated_at"] = now_iso()
 
     return jsonify({
@@ -2520,7 +2936,7 @@ def gallery_image_filter_meta():
     include_prompt = bool(data.get("include_prompt"))
 
     if not isinstance(paths, list):
-        return jsonify({"status": "error", "message": "paths는 배열이어야 합니다."}), 400
+        return jsonify({"status": "error", "message": "paths??諛곗뿴?댁뼱???⑸땲??"}), 400
 
     clean_paths = []
     for path in paths:
@@ -2562,8 +2978,8 @@ def gallery_image_filter_meta():
             if db_art_styles:
                 items[rel_path]["fallback_art_styles"] = db_art_styles[:1]
 
-        # 빠른 모드:
-        # 그림체 필터용 DB 정보만 반환하고, PNG/sidecar 파일은 열지 않는다.
+        # 鍮좊Ⅸ 紐⑤뱶:
+        # 洹몃┝泥??꾪꽣??DB ?뺣낫留?諛섑솚?섍퀬, PNG/sidecar ?뚯씪? ?댁? ?딅뒗??
         if not include_prompt:
             result_items = {}
 
@@ -2582,8 +2998,8 @@ def gallery_image_filter_meta():
                 "fast": True
             })
 
-        # 프롬프트 필터 모드:
-        # 사용자가 실제로 프롬프트 검색을 할 때만 파일을 열어 prompt_text를 채운다.
+        # ?꾨＼?꾪듃 ?꾪꽣 紐⑤뱶:
+        # ?ъ슜?먭? ?ㅼ젣濡??꾨＼?꾪듃 寃?됱쓣 ???뚮쭔 ?뚯씪???댁뼱 prompt_text瑜?梨꾩슫??
         resolved_paths = {}
 
         for rel_path in clean_paths:
@@ -2601,13 +3017,13 @@ def gallery_image_filter_meta():
                 prompt_text = build_gallery_prompt_filter_text(prompt_info)
                 upscale_badge = load_upscale_badge_info(full_path)
 
-                # DB에 없는 신규 이미지도 프롬프트에서 그림체를 즉시 fallback 추출
+                # DB???녿뒗 ?좉퇋 ?대?吏???꾨＼?꾪듃?먯꽌 洹몃┝泥대? 利됱떆 fallback 異붿텧
                 fallback_styles = build_gallery_art_style_items_from_prompt_info(prompt_info)
                 if fallback_styles and not items[rel_path].get("fallback_art_styles"):
                     items[rel_path]["fallback_art_styles"] = fallback_styles
 
             except Exception as prompt_err:
-                print(f"⚠️ 갤러리 프롬프트 필터 메타 로드 실패: {rel_path} | {prompt_err}")
+                print(f"?좑툘 媛ㅻ윭由??꾨＼?꾪듃 ?꾪꽣 硫뷀? 濡쒕뱶 ?ㅽ뙣: {rel_path} | {prompt_err}")
 
             items[rel_path]["prompt_text"] = prompt_text
             items[rel_path]["prompt_text_loaded"] = True
@@ -2657,7 +3073,7 @@ def reveal_path_in_explorer(full_path, mode="select"):
             _last_reveal_request["path"] == norm and
             now - _last_reveal_request["time"] < 1.2
         ):
-            return "폴더를 열었습니다."
+            return "?대뜑瑜??댁뿀?듬땲??"
 
         _last_reveal_request["path"] = norm
         _last_reveal_request["time"] = now
@@ -2665,21 +3081,21 @@ def reveal_path_in_explorer(full_path, mode="select"):
         if mode == "folder":
             subprocess.Popen(["explorer.exe", os.path.normpath(folder_path)])
         else:
-            # 파일 선택 상태로 열기
+            # ?뚯씪 ?좏깮 ?곹깭濡??닿린
             select_cmd = f'explorer.exe /select,"{os.path.normpath(full_path)}"'
             subprocess.Popen(select_cmd)
 
-        return "상위 폴더를 열었습니다."
+        return "?곸쐞 ?대뜑瑜??댁뿀?듬땲??"
 
     if sys.platform == "darwin":
         if mode == "folder":
             subprocess.Popen(["open", folder_path])
         else:
             subprocess.Popen(["open", "-R", full_path])
-        return "Finder에서 파일을 표시했습니다."
+        return "Finder?먯꽌 ?뚯씪???쒖떆?덉뒿?덈떎."
 
     subprocess.Popen(["xdg-open", folder_path])
-    return "파일이 있는 폴더를 열었습니다."
+    return "?뚯씪???덈뒗 ?대뜑瑜??댁뿀?듬땲??"
 
 @app.route('/api/reveal_in_explorer', methods=['POST'])
 def reveal_in_explorer():
@@ -2727,7 +3143,7 @@ def get_prompt_info():
         full_path, real_rel = resolve_gallery_image_path(rel_path)
 
         if not os.path.exists(full_path):
-            return jsonify({"status": "error", "message": "이미지 파일을 찾을 수 없습니다."})
+            return jsonify({"status": "error", "message": "?대?吏 ?뚯씪??李얠쓣 ???놁뒿?덈떎."})
 
         prompt_info = load_prompt_sidecar(full_path)
 
@@ -2754,43 +3170,43 @@ def toggle_nsfw():
         full_path = utils.resolve_safe_path(CLASSIFIED_DIR, rel_path)
 
         if not os.path.exists(full_path):
-            return jsonify({"status": "error", "message": "파일을 찾을 수 없습니다."})
+            return jsonify({"status": "error", "message": "?뚯씪??李얠쓣 ???놁뒿?덈떎."})
 
-        # 1. 원본 이미지 이동
+        # 1. ?먮낯 ?대?吏 ?대룞
         new_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, target_rel_path)
         os.makedirs(os.path.dirname(new_full_path), exist_ok=True)
         os.replace(full_path, new_full_path)
 
-        # 2. 이동한 이미지 옆의 사유 텍스트 파일도 함께 이동
+        # 2. ?대룞???대?吏 ?놁쓽 ?ъ쑀 ?띿뒪???뚯씪???④퍡 ?대룞
         try:
             old_txt = os.path.splitext(full_path)[0] + ".txt"
             new_txt = os.path.splitext(new_full_path)[0] + ".txt"
 
-            # 수동 NSFW 전환 사유를 텍스트 파일에 기록
-            label = "일반 폴더로 이동" if is_currently_nsfw else "R-19로 이동"
+            # ?섎룞 NSFW ?꾪솚 ?ъ쑀瑜??띿뒪???뚯씪??湲곕줉
+            label = "?쇰컲 ?대뜑濡??대룞" if is_currently_nsfw else "R-19濡??대룞"
             with open(new_txt, "w", encoding="utf-8") as f:
-                f.write(f"✅ [수동] 사용자 분류 ({label})")
+                f.write(f"??[?섎룞] ?ъ슜??遺꾨쪟 ({label})")
 
-            # 과거 경로의 텍스트 파일이 남아있다면 깔끔하게 삭제
+            # 怨쇨굅 寃쎈줈???띿뒪???뚯씪???⑥븘?덈떎硫?源붾걫?섍쾶 ??젣
             if os.path.exists(old_txt):
                 os.remove(old_txt)
         except Exception as txt_e:
-            print(f"사유 텍스트 파일 생성/이동 실패: {txt_e}")  # 실패해도 메인 이동은 계속 진행
-            # 과거 경로에 텍스트 파일이 남아있다면 깔끔하게 삭제
+            print(f"?ъ쑀 ?띿뒪???뚯씪 ?앹꽦/?대룞 ?ㅽ뙣: {txt_e}")  # ?ㅽ뙣?대룄 硫붿씤 ?대룞? 怨꾩냽 吏꾪뻾
+            # 怨쇨굅 寃쎈줈???띿뒪???뚯씪???⑥븘?덈떎硫?源붾걫?섍쾶 ??젣
             if os.path.exists(old_txt):
                 os.remove(old_txt)
         except Exception as txt_e:
-            print(f"사유 텍스트 파일 생성/이동 실패: {txt_e}")  # 실패해도 메인 이동은 계속 진행
+            print(f"?ъ쑀 ?띿뒪???뚯씪 ?앹꽦/?대룞 ?ㅽ뙣: {txt_e}")  # ?ㅽ뙣?대룄 硫붿씤 ?대룞? 怨꾩냽 吏꾪뻾
 
-        # DB 기록 갱신
+        # DB 湲곕줉 媛깆떊
         try:
-            db = utils.HistoryDB()  # 기존 DB 경로 기록을 새 위치로 갱신
+            db = utils.HistoryDB()  # 湲곗〈 DB 寃쎈줈 湲곕줉?????꾩튂濡?媛깆떊
 
-            if file_hash:  # 해시가 있으면 파일 경로를 새 위치로 갱신
+            if file_hash:  # ?댁떆媛 ?덉쑝硫??뚯씪 寃쎈줈瑜????꾩튂濡?媛깆떊
                     db.conn.execute("INSERT OR REPLACE INTO manual_overrides (file_hash, is_nsfw) VALUES (?, ?)",
                                     (file_hash, 0 if is_currently_nsfw else 2))
         except Exception as db_e:
-            print(f"DB 저장 에러: {db_e}")
+            print(f"DB ????먮윭: {db_e}")
         finally:
             try:
                 db.close()
@@ -2811,16 +3227,16 @@ def apply_changes():
     data = request.json
     try:
         image_logic.handle_integrated_tasks(CLASSIFIED_DIR, data)
-        return jsonify({"status": "success", "message": "적용 완료"})
+        return jsonify({"status": "success", "message": "?곸슜 ?꾨즺"})
     except Exception as e:
         err_msg = str(e)
-        # 에러 종류를 파악해서 한국어 메시지로 변환
+        # ?먮윭 醫낅쪟瑜??뚯븙?댁꽌 ?쒓뎅??硫붿떆吏濡?蹂??
         if "Errno 22" in err_msg or "WinError 32" in err_msg or "Errno 13" in err_msg:
-            ko_msg = "파일이 AI 분석 등으로 잠겨 있습니다. 잠시 후 다시 시도해 주세요."
+            ko_msg = "?뚯씪??AI 遺꾩꽍 ?깆쑝濡??좉꺼 ?덉뒿?덈떎. ?좎떆 ???ㅼ떆 ?쒕룄??二쇱꽭??"
         elif "Errno 2" in err_msg:
-            ko_msg = "파일을 찾을 수 없습니다. (이미 이동되었거나 새로고침이 필요합니다)"
+            ko_msg = "?뚯씪??李얠쓣 ???놁뒿?덈떎. (?대? ?대룞?섏뿀嫄곕굹 ?덈줈怨좎묠???꾩슂?⑸땲??"
         else:
-            ko_msg = f"서버 오류: {err_msg}"
+            ko_msg = f"?쒕쾭 ?ㅻ쪟: {err_msg}"
 
         return jsonify({"status": "error", "message": ko_msg})
 
@@ -2834,35 +3250,35 @@ def restore_file():
         return jsonify({"status": "error", "message": str(e)})
 
     if not utils.is_subpath(trash_full_path, TRASH_DIR):
-        return jsonify({"status": "error", "message": "휴지통 경로만 복구할 수 있습니다."})
+        return jsonify({"status": "error", "message": "?댁???寃쎈줈留?蹂듦뎄?????덉뒿?덈떎."})
 
     db = utils.HistoryDB()
     try:
         original_path = db.get_original_path(trash_full_path)
 
-        # DB에 기록이 없으면 이름의 타임스탬프를 떼고 루트 복구 폴더로 보냄
+        # DB??湲곕줉???놁쑝硫??대쫫????꾩뒪?ы봽瑜??쇨퀬 猷⑦듃 蹂듦뎄 ?대뜑濡?蹂대깂
         if not original_path:
             fallback_name = os.path.basename(trash_full_path).split('_', 1)[-1]
             original_path = os.path.join(CLASSIFIED_DIR, "_RECOVERED", fallback_name)
 
         original_path = os.path.normpath(original_path)
         if not utils.is_subpath(original_path, CLASSIFIED_DIR):
-            return jsonify({"status": "error", "message": "복구 대상 경로가 올바르지 않습니다."})
+            return jsonify({"status": "error", "message": "蹂듦뎄 ???寃쎈줈媛 ?щ컮瑜댁? ?딆뒿?덈떎."})
 
         os.makedirs(os.path.dirname(original_path), exist_ok=True)
 
-        # 이미지 이동
+        # ?대?吏 ?대룞
         if os.path.exists(trash_full_path):
             os.replace(trash_full_path, original_path)
 
-        # 텍스트 파일(사유) 이동
+        # ?띿뒪???뚯씪(?ъ쑀) ?대룞
         trash_txt = os.path.splitext(trash_full_path)[0] + ".txt"
         orig_txt = os.path.splitext(original_path)[0] + ".txt"
         if os.path.exists(trash_txt):
             os.replace(trash_txt, orig_txt)
 
         db.remove_trash_path(trash_full_path)
-        return jsonify({"status": "success", "message": "원래 폴더로 복구되었습니다."})
+        return jsonify({"status": "success", "message": "?먮옒 ?대뜑濡?蹂듦뎄?섏뿀?듬땲??"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
     finally:
@@ -2879,21 +3295,21 @@ def empty_trash_folder():
         return jsonify({"status": "error", "message": str(e)})
 
     if not os.path.isdir(target_dir):
-        return jsonify({"status": "error", "message": "잘못된 경로이거나 이미 삭제되었습니다."})
+        return jsonify({"status": "error", "message": "?섎せ??寃쎈줈?닿굅???대? ??젣?섏뿀?듬땲??"})
 
     db = utils.HistoryDB()
     try:
-        shutil.rmtree(target_dir) # 폴더 내의 모든 파일 통째로 삭제
-        db.remove_trash_folder(target_dir) # 관련된 휴지통 맵핑 기록 일괄 삭제
+        shutil.rmtree(target_dir) # ?대뜑 ?댁쓽 紐⑤뱺 ?뚯씪 ?듭㎏濡???젣
+        db.remove_trash_folder(target_dir) # 愿?⑤맂 ?댁???留듯븨 湲곕줉 ?쇨큵 ??젣
         
-        # 🌟 [추가] 휴지통 폴더 내에 남아있던 그림체 스캔 등 모든 하위 찌꺼기 기록 완벽 정리
+        # ?뙚 [異붽?] ?댁????대뜑 ?댁뿉 ?⑥븘?덈뜕 洹몃┝泥??ㅼ틪 ??紐⑤뱺 ?섏쐞 李뚭볼湲?湲곕줉 ?꾨꼍 ?뺣━
         folder_rel_path = f"_TRASH/{folder_name}"
         db.remove_folder_records(folder_rel_path)
         with GALLERY_INDEX_DB_LOCK:
             db.remove_gallery_folder_records(folder_rel_path)
             db.rebuild_gallery_folder_summaries()
         
-        return jsonify({"status": "success", "message": f"[{folder_name}] 폴더가 완전히 비워졌습니다."})
+        return jsonify({"status": "success", "message": f"[{folder_name}] ?대뜑媛 ?꾩쟾??鍮꾩썙議뚯뒿?덈떎."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
     finally:
@@ -2912,7 +3328,7 @@ def get_stats():
     if not os.path.exists(CLASSIFIED_DIR):
         return jsonify({"summary": {}, "list": []})
 
-    # 🌟 [수술 2-1] 일반 통계에서도 긴 폴더명을 복원하기 위해 DB 연결
+    # ?뙚 [?섏닠 2-1] ?쇰컲 ?듦퀎?먯꽌??湲??대뜑紐낆쓣 蹂듭썝?섍린 ?꾪빐 DB ?곌껐
     db = utils.HistoryDB()
     folder_names_map = load_folder_display_names(db)
     db.close()
@@ -2930,14 +3346,14 @@ def get_stats():
         is_nsfw = "_R-18" in root or "_R-15" in root
         folder_name = os.path.basename(root)
 
-        # 원본 폴더명 복원
+        # ?먮낯 ?대뜑紐?蹂듭썝
         display_name = folder_names_map.get(folder_name, folder_name)
 
         clean_name = re.sub(r'_\d+pcs$', '', display_name, flags=re.IGNORECASE).replace('_Dakimakura', '').replace('_dakimakura', '')
         char_list = [n.replace('_', ' ').strip() for n in re.split(r'_and_|\s+and\s+', clean_name, flags=re.IGNORECASE) if n.strip()]
 
         for char in char_list:
-            char_key = f"{char} (다키)" if is_daki else char
+            char_key = f"{char} (?ㅽ궎)" if is_daki else char
 
             if char_key not in stats:
                 stats[char_key] = {"name": char_key, "total": 0, "safe": 0, "nsfw": 0}
@@ -2969,7 +3385,7 @@ def get_brand_stats():
     db = utils.HistoryDB()
     cursor = db.conn.cursor()
 
-    # 🌟 [수술 1-1] 긴 폴더명을 원래 이름으로 복원하기 위한 매핑 데이터 준비
+    # ?뙚 [?섏닠 1-1] 湲??대뜑紐낆쓣 ?먮옒 ?대쫫?쇰줈 蹂듭썝?섍린 ?꾪븳 留ㅽ븨 ?곗씠??以鍮?
     folder_names_map = load_folder_display_names(db)
 
     cursor.execute(
@@ -3004,7 +3420,7 @@ def get_brand_stats():
         is_nsfw = "_R-18" in root or "_R-15" in root
         folder_name = os.path.basename(root)
 
-        # 잘린 폴더명(_and_Others)을 원래 캐릭터명으로 복원
+        # ?섎┛ ?대뜑紐?_and_Others)???먮옒 罹먮┃?곕챸?쇰줈 蹂듭썝
         display_name = folder_names_map.get(folder_name, folder_name)
 
         clean_name = re.sub(r'_\d+pcs$', '', display_name, flags=re.IGNORECASE)
@@ -3041,7 +3457,7 @@ def get_brand_stats():
     stats_list.sort(key=lambda x: (x["name"] == "Unknown", -x["total"]))
     return jsonify(stats_list)
 
-# 🌟 [추가] 스위치 껐다 켤 때 작동하는 API
+# ?뙚 [異붽?] ?ㅼ쐞移?猿먮떎 耳????묐룞?섎뒗 API
 @app.route('/api/update_brand_visibility', methods=['POST'])
 def update_brand_visibility():
     data = request.json
@@ -3059,7 +3475,7 @@ def update_brand_visibility():
 @app.route('/api/update_brand_kr', methods=['POST'])
 def update_brand_kr():
     data = request.json
-    brand_raw = data.get('raw_name')  # 영어 원본 브랜드 키
+    brand_raw = data.get('raw_name')  # ?곸뼱 ?먮낯 釉뚮옖????
     brand_kr = data.get('brand_kr')
     db = utils.HistoryDB()
     try:
@@ -3069,10 +3485,10 @@ def update_brand_kr():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-# app.py에 추가 (기존 개별 업데이트 API를 대체하거나 밑에 추가)
+# app.py??異붽? (湲곗〈 媛쒕퀎 ?낅뜲?댄듃 API瑜??泥댄븯嫄곕굹 諛묒뿉 異붽?)
 @app.route('/api/bulk_update_brands', methods=['POST'])
 def bulk_update_brands():
-    data = request.json  # [{raw_name, brand_kr, is_visible}, ...] ?類ㅻ뻼
+    data = request.json  # [{raw_name, brand_kr, is_visible}, ...] ?筌먦끇六?
     db = utils.HistoryDB()
     try:
         with db.conn:
@@ -3175,6 +3591,41 @@ def route_prompt_text_from_rule(rule, tags=None, tag_groups=None, prompt_mode="s
     return ""
 
 
+def _route_rule_list_field(value):
+    return parse_route_tags_single(value)
+
+
+def _route_rule_string_field(rule, key):
+    if key not in rule:
+        return None
+    return str(rule.get(key) or "").strip()
+
+
+def _route_rule_int_field(rule, key, fallback=1):
+    try:
+        value = int(rule.get(key) or fallback)
+    except Exception:
+        value = fallback
+    return max(1, value)
+
+
+def _normalize_route_prompt_mode(value, fallback="single"):
+    mode = str(value or fallback).strip().lower()
+    aliases = {
+        "base_prompt": "base",
+        "character": "char",
+        "character_prompt": "char",
+        "char_prompt": "char"
+    }
+    mode = aliases.get(mode, mode)
+    return mode if mode in ("group", "single", "all", "base", "char") else fallback
+
+
+def _normalize_route_condition(value, fallback="any"):
+    condition = str(value or fallback).strip().lower()
+    return condition if condition in ("any", "all", "count") else fallback
+
+
 def normalize_custom_route_rules(rules, depth=0):
     if not isinstance(rules, list) or depth > 5:
         return []
@@ -3186,45 +3637,25 @@ def normalize_custom_route_rules(rules, depth=0):
             continue
 
         rule_type = str(rule.get("type") or "custom").strip()
-
-        if rule_type == "default":
-            normalized.append({
-                "type": "default",
-                "folder": "Solo / Duo / Group"
-            })
-            continue
+        if not rule_type:
+            rule_type = "custom"
 
         folder = str(rule.get("folder") or "").strip()
-        tags = parse_route_tags_single(rule.get("tags") or [])
-        prompt_mode = "group" if rule.get("prompt_mode") == "group" else "single"
+        prompt_text = str(rule.get("prompt_text") or "").strip()
+        tags = _route_rule_list_field(rule.get("tags") or [])
+        raw_prompt_mode = rule.get("prompt_mode") if "prompt_mode" in rule else rule.get("scope")
+        prompt_mode = _normalize_route_prompt_mode(raw_prompt_mode, "single")
         tag_groups = parse_route_tag_groups(rule.get("tag_groups") or [])
-        prompt_text = route_prompt_text_from_rule(rule, tags, tag_groups, prompt_mode)
+        condition = _normalize_route_condition(rule.get("condition"), "any")
+        match_count = _route_rule_int_field(rule, "match_count", 1)
 
-        if prompt_text:
-            tags_from_text = parse_route_tags_single(prompt_text)
-            groups_from_text = parse_route_tag_groups(prompt_text)
+        if not prompt_text:
+            prompt_text = route_prompt_text_from_rule(rule, tags, tag_groups, prompt_mode)
 
-            if tags_from_text:
-                tags = tags_from_text
-            if groups_from_text:
-                tag_groups = groups_from_text
-
-        if prompt_mode == "group" and not tag_groups and tags:
-            tag_groups = [[tag] for tag in tags]
-
-        if not folder or (not prompt_text and not tags and not tag_groups):
-            continue
-
-        condition = str(rule.get("condition") or "any").strip().lower()
-        if condition not in ("any", "all"):
-            condition = "any"
-
-        try:
-            match_count = int(rule.get("match_count") or 1)
-        except Exception:
-            match_count = 1
-
-        match_count = max(1, match_count)
+        if prompt_text and not tags:
+            tags = parse_route_tags_single(prompt_text)
+        if prompt_mode == "group" and not tag_groups:
+            tag_groups = parse_route_tag_groups(prompt_text) or ([[tag] for tag in tags] if tags else [])
 
         children = (
             rule.get("children")
@@ -3233,8 +3664,8 @@ def normalize_custom_route_rules(rules, depth=0):
             or []
         )
 
-        normalized.append({
-            "type": "custom",
+        normalized_rule = {
+            "type": rule_type,
             "folder": folder,
             "prompt_text": prompt_text,
             "tags": tags,
@@ -3243,9 +3674,75 @@ def normalize_custom_route_rules(rules, depth=0):
             "condition": condition,
             "match_count": match_count,
             "children": normalize_custom_route_rules(children, depth + 1)
-        })
+        }
+
+        if "condition_mode" in rule:
+            normalized_rule["condition_mode"] = str(rule.get("condition_mode") or "").strip()
+        if "live_direct_tags" in rule:
+            normalized_rule["live_direct_tags"] = _route_rule_list_field(rule.get("live_direct_tags") or [])
+        for key in ("live_direct_prompt_mode", "live_direct_condition", "live_direct_condition_mode"):
+            value = _route_rule_string_field(rule, key)
+            if value is not None:
+                normalized_rule[key] = value
+        if "live_direct_match_count" in rule:
+            normalized_rule["live_direct_match_count"] = _route_rule_int_field(rule, "live_direct_match_count", 1)
+
+        if rule_type == "default":
+            normalized_rule["folder"] = folder or "Solo / Duo / Group"
+            normalized.append(normalized_rule)
+            continue
+
+        if not folder or (not prompt_text and not tags and not tag_groups and not normalized_rule.get("live_direct_tags")):
+            continue
+
+        normalized_rule["type"] = rule_type or "custom"
+        normalized.append(normalized_rule)
 
     return normalized
+
+
+def normalize_custom_route_rules_for_runtime(rules, depth=0):
+    if not isinstance(rules, list) or depth > 5:
+        return []
+
+    runtime_rules = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+
+        runtime_rule = copy.deepcopy(rule)
+        runtime_rule["type"] = str(runtime_rule.get("type") or "custom").strip() or "custom"
+        runtime_rule["folder"] = str(runtime_rule.get("folder") or "").strip()
+        runtime_rule["prompt_text"] = str(runtime_rule.get("prompt_text") or "").strip()
+        runtime_rule["tags"] = _route_rule_list_field(runtime_rule.get("tags") or [])
+        if not runtime_rule["tags"] and runtime_rule.get("live_direct_tags"):
+            runtime_rule["tags"] = _route_rule_list_field(runtime_rule.get("live_direct_tags") or [])
+        runtime_rule["prompt_mode"] = _normalize_route_prompt_mode(
+            runtime_rule.get("prompt_mode") or runtime_rule.get("live_direct_prompt_mode"),
+            "single"
+        )
+        runtime_rule["tag_groups"] = parse_route_tag_groups(runtime_rule.get("tag_groups") or [])
+        runtime_rule["condition"] = _normalize_route_condition(
+            runtime_rule.get("condition") or runtime_rule.get("live_direct_condition"),
+            "any"
+        )
+        condition_mode = str(
+            runtime_rule.get("condition_mode")
+            or runtime_rule.get("live_direct_condition_mode")
+            or ""
+        ).strip().lower()
+        if condition_mode == "count":
+            runtime_rule["condition_mode"] = "count"
+            if runtime_rule["condition"] not in ("count", "any"):
+                runtime_rule["condition"] = "count"
+        runtime_rule["match_count"] = _route_rule_int_field(runtime_rule, "match_count", 1)
+        runtime_rule["children"] = normalize_custom_route_rules_for_runtime(
+            runtime_rule.get("children") or runtime_rule.get("sub_rules") or runtime_rule.get("rules") or [],
+            depth + 1
+        )
+        runtime_rules.append(runtime_rule)
+
+    return runtime_rules
 
 
 def route_test_clean_prompt_text(value):
@@ -3332,7 +3829,7 @@ def route_test_unique_prompts(items):
 
 def route_test_rule_matches(rule, key_set):
     if not isinstance(rule, dict) or rule.get("type") == "default":
-        return {"matched": False, "mode": "default", "matched_tags": [], "missing_tags": [], "message": "기본 분류 규칙은 직접 매칭하지 않습니다."}
+        return {"matched": False, "mode": "default", "matched_tags": [], "missing_tags": [], "message": "湲곕낯 遺꾨쪟 洹쒖튃? 吏곸젒 留ㅼ묶?섏? ?딆뒿?덈떎."}
 
     prompt_mode = "group" if rule.get("prompt_mode") == "group" else "single"
 
@@ -3363,7 +3860,7 @@ def route_test_rule_matches(rule, key_set):
                     "missing_tags": [],
                     "passed_group_index": index + 1,
                     "groups": group_details,
-                    "message": f"묶음 조건 {index + 1}번이 통과했습니다."
+                    "message": f"臾띠쓬 議곌굔 {index + 1}踰덉씠 ?듦낵?덉뒿?덈떎."
                 }
 
         missing_all = []
@@ -3376,7 +3873,7 @@ def route_test_rule_matches(rule, key_set):
             "missing_tags": route_test_unique_prompts(missing_all),
             "passed_group_index": None,
             "groups": group_details,
-            "message": "통과한 묶음 조건이 없습니다."
+            "message": "?듦낵??臾띠쓬 議곌굔???놁뒿?덈떎."
         }
 
     tags = route_test_unique_prompts(rule.get("tags") or [])
@@ -3400,7 +3897,7 @@ def route_test_rule_matches(rule, key_set):
         "required_count": required_count,
         "matched_tags": matched_tags,
         "missing_tags": missing_tags,
-        "message": "개별 조건이 통과했습니다." if matched else f"필요한 {required_count}개 중 {len(matched_tags)}개만 찾았습니다."
+        "message": "媛쒕퀎 議곌굔???듦낵?덉뒿?덈떎." if matched else f"?꾩슂??{required_count}媛?以?{len(matched_tags)}媛쒕쭔 李얠븯?듬땲??"
     }
 
 
@@ -3497,14 +3994,14 @@ def route_test_rule_label_by_path(rules, path):
         for raw_index in path or []:
             index = int(raw_index)
             if not isinstance(current, list) or index < 0 or index >= len(current):
-                return "알 수 없는 규칙"
+                return "?????녿뒗 洹쒖튃"
             rule = current[index]
-            labels.append(str(rule.get("folder") or "(폴더명 없음)").strip() or "(폴더명 없음)")
+            labels.append(str(rule.get("folder") or "(?대뜑紐??놁쓬)").strip() or "(?대뜑紐??놁쓬)")
             current = rule.get("children") or []
     except Exception:
-        return "알 수 없는 규칙"
+        return "?????녿뒗 洹쒖튃"
 
-    return " > ".join(labels) if labels else "알 수 없는 규칙"
+    return " > ".join(labels) if labels else "?????녿뒗 洹쒖튃"
 
 
 def route_test_match_rule_chain(rules, key_set, paths):
@@ -3519,7 +4016,7 @@ def route_test_match_rule_chain(rules, key_set, paths):
             details.append({
                 "matched": False,
                 "rule_path": path,
-                "message": "선택한 규칙을 찾을 수 없습니다."
+                "message": "?좏깮??洹쒖튃??李얠쓣 ???놁뒿?덈떎."
             })
             continue
 
@@ -3537,7 +4034,7 @@ def route_test_match_rule_chain(rules, key_set, paths):
         "type": "chain",
         "rule_label": " > ".join([label.split(" > ")[-1] for label in labels if label]),
         "details": details,
-        "message": "선택한 상위/하위 규칙 조합을 순서대로 검사했습니다."
+        "message": "?좏깮???곸쐞/?섏쐞 洹쒖튃 議고빀???쒖꽌?濡?寃?ы뻽?듬땲??"
     }
 
 
@@ -3560,8 +4057,8 @@ def route_test_match_selected_rules(rules, key_set, rule_paths):
                 "matched": False,
                 "type": "single",
                 "rule_path": path,
-                "rule_label": "알 수 없는 규칙",
-                "message": "선택한 규칙을 찾을 수 없습니다."
+                "rule_label": "?????녿뒗 洹쒖튃",
+                "message": "?좏깮??洹쒖튃??李얠쓣 ???놁뒿?덈떎."
             })
             continue
 
@@ -3577,7 +4074,7 @@ def route_test_match_selected_rules(rules, key_set, rule_paths):
         "selected_rule_count": len([path for path in rule_paths if isinstance(path, list)]),
         "job_count": len(selected_results),
         "selected_results": selected_results,
-        "message": "선택한 규칙을 검사했습니다."
+        "message": "?좏깮??洹쒖튃??寃?ы뻽?듬땲??"
     }
 
 
@@ -3588,7 +4085,7 @@ def route_test_flatten_rules(rules, parent_label="", parent_path=None):
     for index, rule in enumerate(rules or []):
         if not isinstance(rule, dict) or rule.get("type") == "default":
             continue
-        folder = str(rule.get("folder") or "").strip() or "(폴더명 없음)"
+        folder = str(rule.get("folder") or "").strip() or "(?대뜑紐??놁쓬)"
         label = f"{parent_label} > {folder}" if parent_label else folder
         path = parent_path + [index]
         flat.append({"path": path, "label": label, "folder": folder, "rule": rule})
@@ -3627,7 +4124,7 @@ def route_test_find_matching_route(rules, key_set):
 
 def route_test_match_single_rule(rule, key_set):
     if not rule or rule.get("type") == "default":
-        return {"matched": False, "final_folder": "", "rule_chain": [], "details": [], "message": "선택한 규칙을 찾을 수 없습니다."}
+        return {"matched": False, "final_folder": "", "rule_chain": [], "details": [], "message": "?좏깮??洹쒖튃??李얠쓣 ???놁뒿?덈떎."}
 
     detail = route_test_rule_matches(rule, key_set)
     folder = str(rule.get("folder") or "").strip()
@@ -3650,7 +4147,7 @@ def route_test_build_prompt_rule(data):
 
     return {
         "type": "custom",
-        "folder": "임시 프롬프트 규칙",
+        "folder": "?꾩떆 ?꾨＼?꾪듃 洹쒖튃",
         "prompt_text": text,
         "tags": parse_route_tags_single(text),
         "prompt_mode": mode,
@@ -3673,15 +4170,15 @@ def route_test_run_payload(data, tokens):
             return {
                 "matched": False,
                 "scope": "prompt",
-                "rule_label": "임시 프롬프트 규칙",
-                "message": "임시 감지 규칙이 비어 있습니다.",
+                "rule_label": "?꾩떆 ?꾨＼?꾪듃 洹쒖튃",
+                "message": "?꾩떆 媛먯? 洹쒖튃??鍮꾩뼱 ?덉뒿?덈떎.",
                 "details": []
             }
 
         result = route_test_match_single_rule(temp_rule, key_set)
         result["scope"] = "prompt"
         result["type"] = "single"
-        result["rule_label"] = "임시 프롬프트 규칙"
+        result["rule_label"] = "?꾩떆 ?꾨＼?꾪듃 洹쒖튃"
         return result
 
     if target_mode == "single" or data.get("scope") == "single":
@@ -4065,15 +4562,15 @@ def route_test_pick_folder():
         root.attributes('-topmost', True)
 
         try:
-            folder_path = filedialog.askdirectory(title="라우팅 테스트할 폴더 선택") or ""
+            folder_path = filedialog.askdirectory(title="?쇱슦???뚯뒪?명븷 ?대뜑 ?좏깮") or ""
         finally:
             root.destroy()
 
         if not folder_path:
-            return jsonify({"status": "cancelled", "message": "폴더 선택이 취소되었습니다."}), 400
+            return jsonify({"status": "cancelled", "message": "?대뜑 ?좏깮??痍⑥냼?섏뿀?듬땲??"}), 400
 
         if not os.path.isdir(folder_path):
-            return jsonify({"status": "error", "message": "선택한 경로가 폴더가 아닙니다."}), 400
+            return jsonify({"status": "error", "message": "?좏깮??寃쎈줈媛 ?대뜑媛 ?꾨떃?덈떎."}), 400
 
         folder_path = os.path.abspath(folder_path)
         return jsonify({
@@ -4091,7 +4588,7 @@ def route_test_folder_start():
         data = request.json or {}
         raw_folder_path = str(data.get("folder_path") or "").strip()
         if not raw_folder_path:
-            return jsonify({"status": "error", "message": "폴더 경로를 입력하세요."}), 400
+            return jsonify({"status": "error", "message": "?대뜑 寃쎈줈瑜??낅젰?섏꽭??"}), 400
 
         if os.path.isabs(raw_folder_path):
             folder_full_path = os.path.abspath(raw_folder_path)
@@ -4100,12 +4597,12 @@ def route_test_folder_start():
             folder_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, folder_rel, strip_prefix="TOTAL_CLASSIFIED/")
 
         if not os.path.isdir(folder_full_path):
-            return jsonify({"status": "error", "message": "폴더를 찾을 수 없습니다."}), 404
+            return jsonify({"status": "error", "message": "?대뜑瑜?李얠쓣 ???놁뒿?덈떎."}), 404
 
         all_images = route_test_collect_folder_images(folder_full_path, bool(data.get("include_subfolders")))
         sample_mode = data.get("sample_mode") if data.get("sample_mode") in ("random100", "first20", "first100", "all") else "random100"
         files = route_test_sample_images(all_images, sample_mode)
-        warning = "전체 검사는 이미지가 많아 오래 걸릴 수 있습니다." if sample_mode == "all" and len(all_images) >= 500 else ""
+        warning = "?꾩껜 寃?щ뒗 ?대?吏媛 留롮븘 ?ㅻ옒 嫄몃┫ ???덉뒿?덈떎." if sample_mode == "all" and len(all_images) >= 500 else ""
         max_display = max(1, min(500, int(data.get("max_display") or 500)))
         job_id = f"route_test_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
         job = {
@@ -4145,7 +4642,7 @@ def route_test_folder_status(job_id):
     with ROUTE_TEST_LOCK:
         job = ROUTE_TEST_JOBS.get(job_id)
     if not job:
-        return jsonify({"status": "error", "message": "테스트 작업을 찾을 수 없습니다."}), 404
+        return jsonify({"status": "error", "message": "?뚯뒪???묒뾽??李얠쓣 ???놁뒿?덈떎."}), 404
     return jsonify({"status": "success", "job": public_route_test_job(job)})
 
 
@@ -4173,7 +4670,7 @@ def route_test_folder_cancel(job_id):
     with ROUTE_TEST_LOCK:
         job = ROUTE_TEST_JOBS.get(job_id)
         if not job:
-            return jsonify({"status": "error", "message": "테스트 작업을 찾을 수 없습니다."}), 404
+            return jsonify({"status": "error", "message": "?뚯뒪???묒뾽??李얠쓣 ???놁뒿?덈떎."}), 404
         cancel_event = job.get("_cancel_event")
         if cancel_event:
             cancel_event.set()
@@ -4182,8 +4679,8 @@ def route_test_folder_cancel(job_id):
             job["message"] = "Folder test cancelled."
     return jsonify({"status": "success", "job": public_route_test_job(job)})
 
-# 🌟 [추가] 그림체 통계 및 랜덤 썸네일 제공
-# [수정] 그림체 통계 API - 유효한 파일만 샘플로 사용
+# ?뙚 [異붽?] 洹몃┝泥??듦퀎 諛??쒕뜡 ?몃꽕???쒓났
+# [?섏젙] 洹몃┝泥??듦퀎 API - ?좏슚???뚯씪留??섑뵆濡??ъ슜
 @app.route('/api/art_style_stats', methods=['GET'])
 def art_style_stats():
     db = utils.HistoryDB()
@@ -4209,7 +4706,7 @@ def art_style_stats():
 
         for row in rows:
             artist = row[0]
-            # [핵심] 휴지통에 없고 실제 디스크에 존재하는 파일만 필터링
+            # [?듭떖] ?댁??듭뿉 ?녾퀬 ?ㅼ젣 ?붿뒪?ъ뿉 議댁옱?섎뒗 ?뚯씪留??꾪꽣留?
             all_paths = artist_images.get(artist, [])
             valid_paths = [p for p in all_paths if "_TRASH" not in p and os.path.exists(os.path.join(CLASSIFIED_DIR, p))]
             
@@ -4220,7 +4717,7 @@ def art_style_stats():
             stats.append({
                 "artist_name": artist,
                 "name_kr": row[1] or "",
-                "count": len(valid_paths), # 실제 존재하는 파일 수로 표시
+                "count": len(valid_paths), # ?ㅼ젣 議댁옱?섎뒗 ?뚯씪 ?섎줈 ?쒖떆
                 "samples": samples
             })
         return jsonify(stats)
@@ -4236,7 +4733,7 @@ def daki_art_style_sources():
         "weighted_artists": []
     }
 
-    # 1. 저장된 스타일 프리셋(styles.json)
+    # 1. ??λ맂 ?ㅽ????꾨━??styles.json)
     try:
         if os.path.exists(STYLES_FILE):
             with open(STYLES_FILE, 'r', encoding='utf-8') as f:
@@ -4259,9 +4756,9 @@ def daki_art_style_sources():
                         "samples": []
                     })
     except Exception as e:
-        print(f"⚠️ 그림체 보관함 로드 실패: {e}")
+        print(f"?좑툘 洹몃┝泥?蹂닿???濡쒕뱶 ?ㅽ뙣: {e}")
 
-    # 2. ART STYLE MANAGER: art_styles / image_artists 기반
+    # 2. ART STYLE MANAGER: art_styles / image_artists 湲곕컲
     db = None
     try:
         db = utils.HistoryDB()
@@ -4295,7 +4792,7 @@ def daki_art_style_sources():
 
             samples = random.sample(valid_paths, min(3, len(valid_paths))) if valid_paths else []
 
-            # 순서 보존 가중치 또는 artist 조합 프롬프트만 다키 소스로 사용
+            # ?쒖꽌 蹂댁〈 媛以묒튂 ?먮뒗 artist 議고빀 ?꾨＼?꾪듃留??ㅽ궎 ?뚯뒪濡??ъ슜
             if not is_weighted_order_style_prompt(artist_name):
                 continue
 
@@ -4312,7 +4809,7 @@ def daki_art_style_sources():
             })
 
     except Exception as e:
-        print(f"⚠️ 다키 그림체 목록 로드 실패: {e}")
+        print(f"?좑툘 ?ㅽ궎 洹몃┝泥?紐⑸줉 濡쒕뱶 ?ㅽ뙣: {e}")
     finally:
         if db:
             db.close()
@@ -4326,15 +4823,15 @@ def format_artist_style_prompt_for_daki(artist_name):
     if not text:
         return ""
 
-    # 이미 가중치 문법이면 그대로 사용
+    # ?대? 媛以묒튂 臾몃쾿?대㈃ 洹몃?濡??ъ슜
     if "::" in text:
         return text
 
-    # 이미 artist: 형식이면 그대로 가중치 문법으로 감싼다.
+    # ?대? artist: ?뺤떇?대㈃ 洹몃?濡?媛以묒튂 臾몃쾿?쇰줈 媛먯떬??
     if text.startswith("artist:"):
         return f"1.0::{text}::"
 
-    # DB의 artist 원본 키를 NovelAI 가중치 문법으로 변환
+    # DB??artist ?먮낯 ?ㅻ? NovelAI 媛以묒튂 臾몃쾿?쇰줈 蹂??
     return f"1.0::artist:{text}::"
 
 def is_weighted_order_style_prompt(text):
@@ -4342,11 +4839,11 @@ def is_weighted_order_style_prompt(text):
     if not text:
         return False
 
-    # ART STYLE MANAGER의 그림체 값을 다키 프롬프트에 맞게 변환
-    if text.startswith("[가중치]"):
+    # ART STYLE MANAGER??洹몃┝泥?媛믪쓣 ?ㅽ궎 ?꾨＼?꾪듃??留욊쾶 蹂??
+    if text.startswith("[媛以묒튂]"):
         return True
 
-    # 0.30::artist:xxx:: 같은 NovelAI 가중치 문법 포함
+    # 0.30::artist:xxx:: 媛숈? NovelAI 媛以묒튂 臾몃쾿 ?ы븿
     if "::artist:" in text or re.search(r'\d+(?:\.\d+)?::\s*artist:', text):
         return True
 
@@ -4356,15 +4853,15 @@ def is_weighted_order_style_prompt(text):
 def cleanup_weighted_order_style_prompt(text):
     text = str(text or "").strip()
 
-    # 표시용 접두어 제거
-    text = re.sub(r'^\[가중치]\s*', '', text).strip()
+    # ?쒖떆???묐몢???쒓굅
+    text = re.sub(r'^\[媛以묒튂]\s*', '', text).strip()
 
     return text
 
 def normalize_style_lab_artist_name_from_manager(value):
     text = str(value or "").strip()
     text = text.replace("\\\\n", " ").replace("\\n", " ").replace("\n", " ")
-    text = re.sub(r'^\[(?:가중치|조합형)\]\s*', '', text).strip()
+    text = re.sub(r'^\[(?:媛以묒튂|議고빀??\]\s*', '', text).strip()
     text = re.sub(r'^[-+]?\d+(?:\.\d+)?::\s*', '', text).strip()
 
     if text.lower().startswith("artist:"):
@@ -4396,7 +4893,7 @@ def normalize_style_lab_artist_name_from_manager(value):
 def parse_art_style_manager_prompt_to_style_tags(raw_text):
     text = str(raw_text or "").strip()
     text = text.replace("\\\\n", "\n").replace("\\n", "\n")
-    text = re.sub(r'^\[(?:가중치|조합형)\]\s*', '', text).strip()
+    text = re.sub(r'^\[(?:媛以묒튂|議고빀??\]\s*', '', text).strip()
 
     result = []
     seen = set()
@@ -4416,8 +4913,8 @@ def parse_art_style_manager_prompt_to_style_tags(raw_text):
             "name": name
         })
 
-    # 1. 가중치 artist 토큰 먼저 수집
-    # 예: 1.25::artist:foo::, -0.2::artist:bar::
+    # 1. 媛以묒튂 artist ?좏겙 癒쇱? ?섏쭛
+    # ?? 1.25::artist:foo::, -0.2::artist:bar::
     weighted_pattern = re.compile(
         r'([-+]?\d+(?:\.\d+)?)::\s*artist:\s*(.*?)(?=::)',
         re.IGNORECASE | re.DOTALL
@@ -4434,8 +4931,8 @@ def parse_art_style_manager_prompt_to_style_tags(raw_text):
         add_artist(match.group(2), weight)
         weighted_spans.append(match.span())
 
-    # 2. 가중치 토큰을 공백으로 지운 뒤, 남은 일반 artist 태그도 수집
-    # 예: artist:foo, artist:bar
+    # 2. 媛以묒튂 ?좏겙??怨듬갚?쇰줈 吏???? ?⑥? ?쇰컲 artist ?쒓렇???섏쭛
+    # ?? artist:foo, artist:bar
     remainder_parts = []
     last = 0
 
@@ -4455,7 +4952,7 @@ def parse_art_style_manager_prompt_to_style_tags(raw_text):
     for match in plain_artist_pattern.finditer(remainder):
         add_artist(match.group(1), 1.0)
 
-    # 3. artist: 없이 단일 작가명만 저장된 오래된 항목 폴백
+    # 3. artist: ?놁씠 ?⑥씪 ?묎?紐낅쭔 ??λ맂 ?ㅻ옒????ぉ ?대갚
     if not result and "artist:" not in text.lower() and "," not in text:
         add_artist(text, 1.0)
 
@@ -4464,7 +4961,7 @@ def parse_art_style_manager_prompt_to_style_tags(raw_text):
 def make_unique_style_lab_style_name(base_name, styles_data, artists_data):
     base_name = str(base_name or "").strip()
     base_name = base_name.replace("\\\\n", " ").replace("\\n", " ").replace("\n", " ")
-    base_name = re.sub(r'^\[(?:가중치|조합형)\]\s*', '', base_name).strip()
+    base_name = re.sub(r'^\[(?:媛以묒튂|議고빀??\]\s*', '', base_name).strip()
     base_name = re.sub(r'\s+', ' ', base_name).strip()
 
     if len(base_name) > 80:
@@ -4497,7 +4994,7 @@ def art_style_to_lab():
     if not raw_artist:
         return jsonify({
             "status": "error",
-            "message": "추가할 그림체 이름이 없습니다."
+            "message": "異붽???洹몃┝泥??대쫫???놁뒿?덈떎."
         }), 400
 
     style_tags = parse_art_style_manager_prompt_to_style_tags(raw_artist)
@@ -4505,7 +5002,7 @@ def art_style_to_lab():
     if not style_tags:
         return jsonify({
             "status": "error",
-            "message": "artist 태그를 추출하지 못했습니다."
+            "message": "artist ?쒓렇瑜?異붿텧?섏? 紐삵뻽?듬땲??"
         }), 400
 
     styles_data = {}
@@ -4550,7 +5047,7 @@ def art_style_to_lab():
         "artist_count": len(style_tags)
     })
 
-# [수정] 랜덤 이미지 갱신 API - 유효성 검사 추가
+# [?섏젙] ?쒕뜡 ?대?吏 媛깆떊 API - ?좏슚??寃??異붽?
 @app.route('/api/random_artist_images', methods=['GET'])
 def random_artist_images():
     artist = request.args.get('artist')
@@ -4560,7 +5057,7 @@ def random_artist_images():
         cursor.execute("SELECT path FROM image_artists WHERE artist_name = ?", (artist,))
         paths = [r[0] for r in cursor.fetchall()]
         
-        # [핵심] 실제 디스크에 존재하고 휴지통이 아닌 파일만 추출
+        # [?듭떖] ?ㅼ젣 ?붿뒪?ъ뿉 議댁옱?섍퀬 ?댁??듭씠 ?꾨땶 ?뚯씪留?異붿텧
         valid_paths = [p for p in paths if "_TRASH" not in p and os.path.exists(os.path.join(CLASSIFIED_DIR, p))]
         
         samples = []
@@ -4573,7 +5070,7 @@ def random_artist_images():
     finally:
         db.close()
 
-# 🌟 [추가] 그림체 한국어 이름 일괄 업데이트
+# ?뙚 [異붽?] 洹몃┝泥??쒓뎅???대쫫 ?쇨큵 ?낅뜲?댄듃
 @app.route('/api/bulk_update_art_styles', methods=['POST'])
 def bulk_update_art_styles():
     data = request.json
@@ -4589,7 +5086,7 @@ def bulk_update_art_styles():
         db.close()
 
 # =====================================================================
-# 🌟 그림체 연구소 & NovelAI 생성 전용 API 통합 🌟
+# ?뙚 洹몃┝泥??곌뎄??& NovelAI ?앹꽦 ?꾩슜 API ?듯빀 ?뙚
 # =====================================================================
 import urllib.request
 import urllib.error
@@ -4801,7 +5298,7 @@ def canvas_import_base64():
     image_data = str(data.get("image", "") or "")
 
     if not image_data:
-        return jsonify({"status": "error", "message": "이미지 데이터가 없습니다."}), 400
+        return jsonify({"status": "error", "message": "?대?吏 ?곗씠?곌? ?놁뒿?덈떎."}), 400
 
     try:
         if "," in image_data:
@@ -4840,7 +5337,7 @@ def canvas_import_base64():
 def read_canvas_image_bytes(image_ref):
     image_ref = str(image_ref or "").strip()
     if not image_ref:
-        raise ValueError("이미지 데이터가 없습니다.")
+        raise ValueError("?대?吏 ?곗씠?곌? ?놁뒿?덈떎.")
 
     if "," in image_ref and image_ref.startswith("data:"):
         return base64.b64decode(image_ref.split(",", 1)[1])
@@ -4865,7 +5362,7 @@ def read_canvas_image_bytes(image_ref):
         with open(file_path, "rb") as f:
             return f.read()
 
-    raise ValueError("캔버스 이미지 경로를 읽을 수 없습니다.")
+    raise ValueError("罹붾쾭???대?吏 寃쎈줈瑜??쎌쓣 ???놁뒿?덈떎.")
 
 
 def prepare_inpaint_mask_bytes(mask_bytes):
@@ -5007,7 +5504,7 @@ def canvas_inpaint():
         except Exception:
             api_key = ""
     if not api_key:
-        return jsonify({"status": "error", "message": "NAI API Key가 없습니다."}), 400
+        return jsonify({"status": "error", "message": "NAI API Key媛 ?놁뒿?덈떎."}), 400
 
     try:
         image_bytes = read_canvas_image_bytes(data.get("image"))
@@ -5022,7 +5519,7 @@ def canvas_inpaint():
             with Image.open(io.BytesIO(image_bytes)) as img:
                 width, height = img.size
         except Exception:
-            return jsonify({"status": "error", "message": "이미지 크기를 확인할 수 없습니다."}), 400
+            return jsonify({"status": "error", "message": "?대?吏 ?ш린瑜??뺤씤?????놁뒿?덈떎."}), 400
 
     base_prompt = str(prompt_info.get("basePrompt") or data.get("base_prompt") or "").strip()
     char_prompt = str(prompt_info.get("charPrompt") or data.get("char_prompt") or "").strip()
@@ -5127,10 +5624,10 @@ def canvas_inpaint():
                             "name": saved_name,
                             "image": image_data_url
                         })
-            return jsonify({"status": "error", "message": "압축 파일에서 이미지를 찾을 수 없습니다."}), 500
+            return jsonify({"status": "error", "message": "?뺤텞 ?뚯씪?먯꽌 ?대?吏瑜?李얠쓣 ???놁뒿?덈떎."}), 500
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8', errors='ignore')
-        return jsonify({"status": "error", "message": f"NovelAI 서버 에러(HTTP {e.code}): {error_body}"}), 500
+        return jsonify({"status": "error", "message": f"NovelAI ?쒕쾭 ?먮윭(HTTP {e.code}): {error_body}"}), 500
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -5144,7 +5641,7 @@ def cleanup_daki_generated_temp_dir():
             shutil.rmtree(DAKI_GENERATED_TEMP_DIR, ignore_errors=True)
         os.makedirs(DAKI_GENERATED_TEMP_DIR, exist_ok=True)
     except Exception as e:
-        print(f"⚠️ 다키 임시 목록 로드 실패: {e}")
+        print(f"?좑툘 ?ㅽ궎 ?꾩떆 紐⑸줉 濡쒕뱶 ?ㅽ뙣: {e}")
 
 
 cleanup_daki_generated_temp_dir()
@@ -5329,7 +5826,7 @@ def daki_save_generated_to_gallery():
     options = data.get("options") or {}
 
     if not isinstance(ids, list) or not ids:
-        return jsonify({"status": "error", "message": "저장할 임시 파일이 없습니다."}), 400
+        return jsonify({"status": "error", "message": "??ν븷 ?꾩떆 ?뚯씪???놁뒿?덈떎."}), 400
 
     clean_ids = []
     for item in ids:
@@ -5338,7 +5835,7 @@ def daki_save_generated_to_gallery():
             clean_ids.append(temp_id)
 
     if not clean_ids:
-        return jsonify({"status": "error", "message": "저장할 임시 파일이 없습니다."}), 400
+        return jsonify({"status": "error", "message": "??ν븷 ?꾩떆 ?뚯씪???놁뒿?덈떎."}), 400
 
     staging_id = safe_daki_generated_id(f"save_{int(time.time() * 1000)}_{random.randint(1000, 9999)}")
     staging_dir = utils.resolve_safe_path(DAKI_GENERATED_TEMP_DIR, f"_gallery_save_{staging_id}")
@@ -5365,7 +5862,7 @@ def daki_save_generated_to_gallery():
             copied += 1
 
         if copied <= 0:
-            return jsonify({"status": "error", "message": "선택한 임시 파일이 없습니다."}), 400
+            return jsonify({"status": "error", "message": "?좏깮???꾩떆 ?뚯씪???놁뒿?덈떎."}), 400
 
         use_classifier = bool(options.get("useClassifier", True))
 
@@ -5382,15 +5879,15 @@ def daki_save_generated_to_gallery():
                     use_gpu=bool(options.get("useGpu", True)),
                     skip_nsfw=bool(options.get("ignoreNsfw", False)),
                     skip_char_id=bool(options.get("ignoreCharacter", False)),
-                    log_func=lambda msg: print(f"[다키 갤러리 저장] {msg}")
+                    log_func=lambda msg: print(f"[?ㅽ궎 媛ㅻ윭由???? {msg}")
                 )
             except Exception as process_err:
                 remaining_staged_images = count_image_files_in_dir(staging_dir)
 
-                # image_logic.process는 파일 이동/DB 갱신을 처리하므로 staging 경로를 그대로 넘긴다.
+                # image_logic.process???뚯씪 ?대룞/DB 媛깆떊??泥섎━?섎?濡?staging 寃쎈줈瑜?洹몃?濡??섍릿??
                 if remaining_staged_images < copied:
-                    process_warning = f"갤러리 재분류 중 경고: {process_err}"
-                    print(f"⚠️ [다키 갤러리 저장] {process_warning}")
+                    process_warning = f"媛ㅻ윭由??щ텇瑜?以?寃쎄퀬: {process_err}"
+                    print(f"?좑툘 [?ㅽ궎 媛ㅻ윭由???? {process_warning}")
                 else:
                     raise
         else:
@@ -5482,7 +5979,7 @@ def overwrite_gallery_image():
         prompt_info = data.get("promptInfo") or {}
 
         if not source_image or not target_path:
-            return jsonify({"status": "error", "message": "필수 값이 없습니다."}), 400
+            return jsonify({"status": "error", "message": "?꾩닔 媛믪씠 ?놁뒿?덈떎."}), 400
 
         target_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, target_path, strip_prefix="TOTAL_CLASSIFIED/")
         os.makedirs(os.path.dirname(target_full_path), exist_ok=True)
@@ -5536,7 +6033,7 @@ def save_gallery_inpaint_as_new():
         prompt_info = data.get("promptInfo") or {}
 
         if not source_image:
-            return jsonify({"status": "error", "message": "이미지 데이터가 없습니다."}), 400
+            return jsonify({"status": "error", "message": "?대?吏 ?곗씠?곌? ?놁뒿?덈떎."}), 400
 
         source_bytes = read_canvas_image_bytes(source_image)
 
@@ -5628,7 +6125,7 @@ def get_known_character_tags():
                 "brand_kr": brand_kr
             })
     except Exception as e:
-        print(f"⚠️ 캐릭터 태그 로드 실패: {e}")
+        print(f"?좑툘 罹먮┃???쒓렇 濡쒕뱶 ?ㅽ뙣: {e}")
     finally:
         if db:
             db.close()
@@ -5648,7 +6145,7 @@ def normalize_canvas_export_character_token(value):
 
     lowered = text.lower().strip()
 
-    # artist/style/quality 계열은 캐릭터 판정에서 제외
+    # artist/style/quality 怨꾩뿴? 罹먮┃???먯젙?먯꽌 ?쒖쇅
     if lowered.startswith("artist:"):
         return ""
 
@@ -5704,7 +6201,7 @@ def iter_canvas_export_character_tokens(prompt_info):
     if char_prompt:
         raw_parts.append(char_prompt)
 
-    # charPrompt가 없는 예전 메타데이터만 basePrompt를 fallback으로 사용
+    # charPrompt媛 ?녿뒗 ?덉쟾 硫뷀??곗씠?곕쭔 basePrompt瑜?fallback?쇰줈 ?ъ슜
     if not raw_parts:
         for key in ("basePrompt", "baseCaption", "prompt"):
             value = str(prompt_info.get(key) or "").strip()
@@ -5804,9 +6301,9 @@ def export_merged_canvas():
         is_dakimakura = bool(data.get("isDakimakura"))
 
         if not image_data:
-            return jsonify({"status": "error", "message": "이미지 데이터가 없습니다."}), 400
+            return jsonify({"status": "error", "message": "?대?吏 ?곗씠?곌? ?놁뒿?덈떎."}), 400
 
-        # 서버에서도 다키마쿠라 비율 한 번 더 확인
+        # ?쒕쾭?먯꽌???ㅽ궎留덉퓼??鍮꾩쑉 ??踰????뺤씤
         if width > 0 and height > 0:
             ratio = width / height
             if abs(ratio - (5 / 16)) < 0.035:
@@ -5892,7 +6389,7 @@ def export_merged_canvas():
             try:
                 index_rebuild_started, index_rebuild_running = start_gallery_index_rebuild_background(auto=True)
             except Exception as rebuild_error:
-                print(f"⚠️ 캔버스 내보내기 후 갤러리 인덱스 자동 갱신 시작 실패: {rebuild_error}")
+                print(f"?좑툘 罹붾쾭???대낫?닿린 ??媛ㅻ윭由??몃뜳???먮룞 媛깆떊 ?쒖옉 ?ㅽ뙣: {rebuild_error}")
 
         return jsonify({
             "status": "success",
@@ -5920,6 +6417,825 @@ def style_lab():
 def daki_workshop():
     return send_file('daki_workshop.html')
 
+@app.route('/live-classifier')
+def live_classifier_page():
+    return send_file(os.path.join(CURRENT_DIR, 'static', 'live_classifier.html'))
+
+@app.route('/workspace-image/<path:rel_path>')
+def workspace_image(rel_path):
+    rel_path = workspace_logic.normalize_rel_path(rel_path)
+
+    workspace_candidate = os.path.normpath(os.path.join(workspace_logic.get_workspace_root(), rel_path))
+    if (
+        utils.is_subpath(workspace_candidate, workspace_logic.get_workspace_root())
+        and os.path.exists(workspace_candidate)
+        and os.path.isfile(workspace_candidate)
+    ):
+        return send_file(workspace_candidate)
+
+    item = workspace_logic.get_workspace_image_record(rel_path)
+    if item:
+        stored_path = os.path.abspath(str(item.get("workspace_path") or ""))
+
+        allowed_roots = [
+            os.path.abspath(workspace_logic.get_workspace_root()),
+            os.path.abspath(CLASSIFIED_DIR)
+        ]
+
+        if (
+            stored_path
+            and os.path.exists(stored_path)
+            and os.path.isfile(stored_path)
+            and any(utils.is_subpath(stored_path, root) for root in allowed_roots)
+        ):
+            return send_file(stored_path)
+
+    return "Not found", 404
+
+@app.route('/api/live_classifier/sessions', methods=['GET'])
+def live_classifier_sessions():
+    return jsonify({
+        "status": "success",
+        "sessions": workspace_logic.list_workspace_sessions()
+    })
+
+
+@app.route('/api/live_classifier/workspace', methods=['GET'])
+def live_classifier_workspace_status():
+    return jsonify({
+        "status": "success",
+        "workspace": workspace_logic.get_active_workspace_status()
+    })
+
+
+@app.route('/api/live_classifier/rules', methods=['GET'])
+def live_classifier_rules():
+    mode = request.args.get("mode", "existing").strip()
+
+    if mode == "new":
+        rules = []
+    else:
+        config = utils.load_config()
+        rules = config.get("custom_rules", [])
+
+    rules = normalize_custom_route_rules(rules)
+
+    return jsonify({
+        "status": "success",
+        "mode": mode,
+        "rules": rules
+    })
+
+
+@app.route('/api/live_classifier/export_rules', methods=['POST'])
+def live_classifier_export_rules():
+    try:
+        data = request.json or {}
+        rules = data.get("rules")
+
+        if not isinstance(rules, list):
+            return jsonify({
+                "status": "error",
+                "message": "??ν븷 洹쒖튃 紐⑸줉???щ컮瑜댁? ?딆뒿?덈떎."
+            }), 400
+
+        name = data.get("name") or data.get("export_name") or "live_rules"
+
+        payload = {
+            "schema": "naia_live_classifier_rules",
+            "schema_version": 1,
+            "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "live_mode": str(data.get("live_mode") or data.get("mode") or ""),
+            "use_char_id": bool(data.get("use_char_id")),
+            "workspace_session_name": str(data.get("workspace_session_name") or ""),
+            "rule_count": len(rules),
+            "rules": rules
+        }
+
+        saved = save_live_rule_export_file(payload, name=name)
+
+        return jsonify({
+            "status": "success",
+            "message": "임시 규칙 JSON을 서버에 저장했습니다.",
+            "filename": saved["filename"],
+            "path": saved["path"],
+            "folder": saved["folder"],
+            "rule_count": len(rules)
+        })
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/live_classifier/rule_exports', methods=['GET'])
+def live_classifier_rule_exports():
+    try:
+        os.makedirs(LIVE_RULE_EXPORT_DIR, exist_ok=True)
+        items = []
+        for filename in os.listdir(LIVE_RULE_EXPORT_DIR):
+            if not filename.lower().endswith(".json"):
+                continue
+            try:
+                path = resolve_live_rule_export_path(filename)
+                stat = os.stat(path)
+                payload = {}
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        payload = json.load(f) or {}
+                except Exception:
+                    payload = {}
+                rules = payload.get("rules") if isinstance(payload.get("rules"), list) else []
+                items.append({
+                    "filename": filename,
+                    "path": path,
+                    "created_at": stat.st_ctime,
+                    "modified_at": stat.st_mtime,
+                    "mode": payload.get("mode") or payload.get("live_mode"),
+                    "use_char_id": payload.get("use_char_id"),
+                    "rules_count": len(rules),
+                    "workspace_session_name": payload.get("workspace_session_name"),
+                    "action": payload.get("action", "rules")
+                })
+            except Exception:
+                continue
+        items.sort(key=lambda item: float(item.get("modified_at") or 0), reverse=True)
+        return jsonify({"status": "success", "items": items})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/live_classifier/rule_exports/<filename>', methods=['GET'])
+def live_classifier_rule_export_file(filename):
+    try:
+        path = resolve_live_rule_export_path(filename)
+        if not os.path.exists(path):
+            return jsonify({"status": "error", "message": "JSON \ud30c\uc77c\uc744 \ucc3e\uc744 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4."}), 404
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f) or {}
+        if not isinstance(payload.get("rules"), list):
+            return jsonify({"status": "error", "message": "rules\uac00 \uc5c6\ub294 JSON \ud30c\uc77c\uc785\ub2c8\ub2e4."}), 400
+        return jsonify({"status": "success", "payload": payload})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
+@app.route('/api/live_classifier/rule_exports/load', methods=['POST'])
+def live_classifier_rule_exports_load():
+    try:
+        data = request.json or {}
+        filename = data.get("filename") or ""
+        path = resolve_live_rule_export_path(filename)
+        if not os.path.exists(path):
+            return jsonify({"status": "error", "message": "JSON \ud30c\uc77c\uc744 \ucc3e\uc744 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4."}), 404
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f) or {}
+        rules = payload.get("rules")
+        if not isinstance(rules, list):
+            return jsonify({"status": "error", "message": "rules\uac00 \uc5c6\ub294 JSON \ud30c\uc77c\uc785\ub2c8\ub2e4."}), 400
+        normalized_rules = normalize_custom_route_rules(rules)
+        return jsonify({
+            "status": "success",
+            "payload": payload,
+            "rules": normalized_rules
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
+@app.route('/api/live_classifier/workspace/diagnose', methods=['GET'])
+def live_classifier_workspace_diagnose():
+    try:
+        result = workspace_logic.diagnose_workspace_duplicates()
+        return jsonify({"status": "success", "result": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/live_classifier/workspace/cleanup_duplicates', methods=['POST'])
+def live_classifier_workspace_cleanup_duplicates():
+    try:
+        data = request.json or {}
+        raw_dry_run = data.get("dry_run", True)
+        if isinstance(raw_dry_run, str):
+            dry_run = raw_dry_run.strip().lower() not in ("0", "false", "no", "off")
+        else:
+            dry_run = bool(raw_dry_run)
+        result = workspace_logic.cleanup_workspace_duplicate_records(dry_run=dry_run)
+        return jsonify({"status": "success", "dry_run": dry_run, "result": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def run_live_apply_to_gallery_worker(job_options):
+    session_name = workspace_logic.get_active_workspace_session_name()
+    started_at = time.time()
+
+    raw_rules = job_options.get("rules")
+    if not isinstance(raw_rules, list):
+        raw_rules = []
+
+    export_rules = normalize_custom_route_rules(raw_rules)
+    runtime_rules = normalize_custom_route_rules_for_runtime(export_rules)
+
+    use_char_id = bool(job_options.get("use_char_id"))
+    use_nsfw = bool(job_options.get("use_nsfw"))
+    use_ai_nsfw = bool(job_options.get("use_ai_nsfw"))
+    use_gpu = bool(job_options.get("use_gpu", True))
+
+    try:
+        max_scan = int(job_options.get("max_scan") or 0)
+    except Exception:
+        max_scan = 0
+
+    update_live_apply_job(
+        running=True,
+        done=False,
+        processed=0,
+        total=0,
+        moved=0,
+        skipped=0,
+        errors=0,
+        message="분류 반영 준비 중...",
+        started_at=started_at,
+        finished_at=0,
+        error=""
+    )
+
+    db = None
+
+    try:
+        payload = {
+            "schema": "naia_live_classifier_rules",
+            "schema_version": 1,
+            "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "live_mode": str(job_options.get("live_mode") or job_options.get("mode") or ""),
+            "use_char_id": use_char_id,
+            "workspace_session_name": session_name,
+            "rule_count": len(export_rules),
+            "rules": export_rules,
+            "applied_to_gallery": True,
+            "apply_options": {
+                "use_nsfw": use_nsfw,
+                "use_ai_nsfw": use_ai_nsfw,
+                "use_gpu": use_gpu,
+                "max_scan": max_scan
+            }
+        }
+
+        saved = save_live_rule_export_file(payload, name=job_options.get("name") or "live_apply_rules")
+        update_live_apply_job(
+            export_filename=saved.get("filename", ""),
+            export_path=saved.get("path", ""),
+            message=f"규칙 JSON 저장 완료: {saved.get('filename', '')}"
+        )
+
+        if use_char_id:
+            char_status = workspace_logic.get_workspace_character_index_status(session_name)
+            if not char_status.get("complete"):
+                raise RuntimeError("캐릭터 인덱스가 없습니다. 캐릭터 판별 사용 전 캐릭터 인덱스를 먼저 생성하세요.")
+
+        update_live_apply_job(message="현재 규칙으로 재분류 결과를 계산 중...")
+
+        conn = workspace_logic.ensure_workspace_db()
+        try:
+            cursor = conn.cursor()
+            limit_sql = "LIMIT ?" if max_scan > 0 else ""
+            params = [session_name]
+            if max_scan > 0:
+                params.append(max_scan)
+            cursor.execute(f"""
+                SELECT
+                    workspace_rel_path,
+                    workspace_path,
+                    source_path,
+                    file_hash,
+                    prompt_hash,
+                    prompt_blob
+                  FROM workspace_images
+                 WHERE session_name = ?
+                   AND status = 'indexed'
+                 ORDER BY workspace_rel_path
+                 {limit_sql}
+            """, params)
+            file_items = []
+            for row in cursor.fetchall():
+                workspace_rel_path = row[0]
+                workspace_path = row[1]
+                source_path = row[2]
+                file_hash = row[3]
+                prompt_hash = row[4]
+                candidate = os.path.abspath(workspace_path or source_path or "")
+                if candidate and os.path.isfile(candidate):
+                    file_items.append({
+                        "workspace_rel_path": workspace_rel_path,
+                        "path": candidate,
+                        "workspace_path": workspace_path,
+                        "source_path": source_path,
+                        "file_hash": file_hash,
+                        "prompt_hash": prompt_hash
+                    })
+        finally:
+            conn.close()
+
+        total = len(file_items)
+
+        debug_payload = {
+            "schema_version": 2,
+            "action": "apply_to_gallery_debug",
+            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "mode": job_options.get("mode"),
+            "live_mode": job_options.get("live_mode"),
+            "use_char_id": use_char_id,
+            "use_nsfw": use_nsfw,
+            "use_ai_nsfw": use_ai_nsfw,
+            "use_gpu": use_gpu,
+            "workspace_session_name": session_name,
+            "raw_rules_count": len(raw_rules),
+            "export_rules_count": len(export_rules),
+            "runtime_rules_count": len(runtime_rules),
+            "raw_rules": raw_rules,
+            "export_rules": export_rules,
+            "runtime_rules": runtime_rules,
+            "target_count": total,
+            "target_samples": [
+                {
+                    "workspace_rel_path": item.get("workspace_rel_path"),
+                    "path": item.get("path")
+                }
+                for item in file_items[:20]
+            ]
+        }
+        debug_saved = save_live_apply_debug_file(debug_payload)
+        update_live_apply_job(
+            debug_filename=debug_saved.get("filename", ""),
+            debug_path=debug_saved.get("path", "")
+        )
+
+        update_live_apply_job(
+            total=total,
+            processed=0,
+            message=f"파일 이동 준비 완료: {total}장"
+        )
+
+        def live_apply_log(message):
+            print(message)
+            update_live_apply_job(message=str(message))
+
+        def live_apply_progress(current, progress_total, phase=""):
+            skipped = int(LIVE_APPLY_JOB.get("skipped") or 0)
+            errors = int(LIVE_APPLY_JOB.get("errors") or 0)
+            update_live_apply_job(
+                processed=int(current or 0),
+                total=int(progress_total or total or 0),
+                skipped=skipped,
+                errors=errors,
+                message=f"{phase}... {int(current or 0)}/{int(progress_total or total or 0)}"
+            )
+
+        stats = image_logic.process_workspace_file_items(
+            file_items=file_items,
+            method="move",
+            use_ai=use_ai_nsfw,
+            use_gpu=use_gpu,
+            normal_workers=None,
+            ai_workers=None,
+            skip_nsfw=not use_nsfw,
+            skip_char_id=not use_char_id,
+            override_custom_rules=runtime_rules,
+            update_workspace_index=True,
+            log_func=live_apply_log,
+            progress_update=live_apply_progress,
+            stop_check=lambda: False,
+            is_fast=False
+        )
+        finalize_stats = stats.get("workspace_finalize_stats") or {}
+        debug_stats = dict(stats)
+        debug_stats.pop("move_records", None)
+        debug_payload["result"] = {
+            "stats": debug_stats,
+            "workspace_finalize_stats": finalize_stats,
+            "errors": stats.get("workspace_finalize_error", "")
+        }
+        save_live_apply_debug_file(debug_payload, filename=debug_saved.get("filename"))
+
+        moved = int(stats.get("success") or 0)
+        skipped = int(stats.get("skipped_db") or 0) + int(stats.get("skipped_duplicate") or 0)
+        errors = int(stats.get("error") or 0) + int(stats.get("unreadable") or 0)
+
+        index_rebuild_started = False
+        index_rebuild_running = False
+
+        try:
+            index_rebuild_started, index_rebuild_running = start_gallery_index_rebuild_background(auto=True)
+        except Exception as rebuild_error:
+            print(f"⚠️ 실시간 분류 반영 후 갤러리 인덱스 자동 갱신 시작 실패: {rebuild_error}")
+
+        update_live_apply_job(
+            running=False,
+            done=True,
+            processed=total,
+            total=total,
+            moved=moved,
+            skipped=skipped,
+            errors=errors,
+            message="분류 반영 완료. 갤러리 인덱스 갱신을 시작했습니다.",
+            finished_at=time.time(),
+            error="",
+            index_rebuild_started=bool(index_rebuild_started),
+            index_rebuild_running=bool(index_rebuild_running)
+        )
+
+    except Exception as e:
+        update_live_apply_job(
+            running=False,
+            done=True,
+            message="분류 반영 실패",
+            finished_at=time.time(),
+            error=str(e)
+        )
+
+
+@app.route('/api/live_classifier/apply_to_gallery', methods=['POST'])
+def live_classifier_apply_to_gallery():
+    data = request.json or {}
+
+    rules = data.get("rules")
+    if not isinstance(rules, list):
+        return jsonify({
+            "status": "error",
+            "message": "반영할 규칙 목록이 올바르지 않습니다."
+        }), 400
+
+    with LIVE_APPLY_JOB_LOCK:
+        if LIVE_APPLY_JOB.get("running"):
+            return jsonify({
+                "status": "success",
+                "already_running": True,
+                "job": dict(LIVE_APPLY_JOB)
+            })
+
+        LIVE_APPLY_JOB.clear()
+        LIVE_APPLY_JOB.update({
+            "running": True,
+            "done": False,
+            "processed": 0,
+            "total": 0,
+            "moved": 0,
+            "skipped": 0,
+            "errors": 0,
+            "message": "분류 반영 대기 중...",
+            "started_at": time.time(),
+            "finished_at": 0,
+            "error": "",
+            "export_filename": "",
+            "export_path": "",
+            "index_rebuild_started": False,
+            "index_rebuild_running": False
+        })
+
+    thread = threading.Thread(
+        target=run_live_apply_to_gallery_worker,
+        args=(dict(data),),
+        daemon=True
+    )
+    thread.start()
+
+    return jsonify({
+        "status": "started",
+        "job": get_live_apply_job_snapshot()
+    })
+
+
+@app.route('/api/live_classifier/apply_to_gallery/status', methods=['GET'])
+def live_classifier_apply_to_gallery_status():
+    return jsonify({
+        "status": "success",
+        "job": get_live_apply_job_snapshot()
+    })
+
+
+@app.route('/api/live_classifier/random_image', methods=['GET', 'POST'])
+def live_classifier_random_image():
+    session_name = workspace_logic.get_active_workspace_session_name()
+
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+    else:
+        data = {}
+
+    mode = str(data.get("mode") or "existing").strip()
+    raw_use_char_id = data.get("use_char_id", True)
+
+    if isinstance(raw_use_char_id, str):
+        use_char_id = raw_use_char_id.strip().lower() not in ("0", "false", "no", "off")
+    else:
+        use_char_id = bool(raw_use_char_id)
+
+    unclassified_only = bool(data.get("unclassified_only"))
+    item = None
+    fallback_all = False
+
+    if request.method == "POST" and unclassified_only:
+        config = utils.load_config()
+        rules = data.get("rules")
+
+        if not isinstance(rules, list):
+            if mode == "new":
+                rules = []
+            else:
+                rules = config.get("custom_rules", [])
+
+        rules = normalize_custom_route_rules(rules)
+        item = workspace_logic.get_random_workspace_unclassified_image(
+            session_name,
+            rules,
+            use_char_id=use_char_id
+        )
+
+        if not item:
+            fallback_all = True
+            item = workspace_logic.get_random_workspace_image(session_name)
+    else:
+        item = workspace_logic.get_random_workspace_image(session_name)
+
+    if not item:
+        return jsonify({
+            "status": "error",
+            "message": "\ud45c\uc2dc\ud560 \uc774\ubbf8\uc9c0\uac00 \uc5c6\uc2b5\ub2c8\ub2e4."
+        }), 404
+
+    return jsonify({
+        "status": "success",
+        "fallback_all": fallback_all,
+        "item": item
+    })
+
+@app.route('/api/live_classifier/prompt', methods=['GET'])
+def live_classifier_prompt():
+    rel_path = request.args.get("path", "").strip()
+    item = workspace_logic.get_workspace_image_record(rel_path)
+
+    if not item:
+        return jsonify({
+            "status": "error",
+            "message": "?대?吏瑜?李얠쓣 ???놁뒿?덈떎."
+        }), 404
+
+    return jsonify({
+        "status": "success",
+        "item": item
+    })
+
+@app.route('/api/live_classifier/reclassify', methods=['POST'])
+def live_classifier_reclassify():
+    data = request.json or {}
+    session_name = workspace_logic.get_active_workspace_session_name()
+    mode = str(data.get("mode") or "existing").strip()
+
+    config = utils.load_config()
+    rules = data.get("rules")
+
+    if not isinstance(rules, list):
+        if mode == "new":
+            rules = []
+        else:
+            rules = config.get("custom_rules", [])
+    rules = normalize_custom_route_rules(rules)
+
+    try:
+        per_group_limit = int(data.get("per_group_limit") or 300)
+    except Exception:
+        per_group_limit = 300
+
+    try:
+        max_scan = int(data.get("max_scan", 50000))
+    except Exception:
+        max_scan = 50000
+
+    if max_scan < 0:
+        max_scan = 0
+
+    raw_use_char_id = data.get("use_char_id", True)
+    if isinstance(raw_use_char_id, str):
+        use_char_id = raw_use_char_id.strip().lower() not in ("0", "false", "no", "off")
+    else:
+        use_char_id = bool(raw_use_char_id)
+
+    if use_char_id:
+        char_status = workspace_logic.get_workspace_character_index_status(session_name)
+        if not char_status.get("complete"):
+            return jsonify({
+                "status": "error",
+                "message": "罹먮┃???몃뜳?ㅺ? ?놁뒿?덈떎. 罹먮┃???먮퀎 ?ъ슜 ??罹먮┃???몃뜳?ㅻ? 癒쇱? ?앹꽦?섏꽭??",
+                "character_index": char_status
+            }), 400
+
+    result = workspace_logic.reclassify_workspace_preview(
+        session_name,
+        rules,
+        per_group_limit=per_group_limit,
+        max_scan=max_scan,
+        use_char_id=use_char_id
+    )
+
+    return jsonify({
+        "status": "success",
+        "mode": mode,
+        "rules_hash": result.get("rules_hash"),
+        "use_char_id": use_char_id,
+        "result": result
+    })
+
+
+@app.route('/api/live_classifier/character_index/status', methods=['GET'])
+def live_classifier_character_index_status():
+    session_name = workspace_logic.get_active_workspace_session_name()
+
+    return jsonify({
+        "status": "success",
+        "character_index": workspace_logic.get_workspace_character_index_status(session_name)
+    })
+
+
+def get_live_character_index_job_snapshot():
+    with LIVE_CHARACTER_INDEX_JOB_LOCK:
+        return dict(LIVE_CHARACTER_INDEX_JOB)
+
+
+def update_live_character_index_job(**patch):
+    with LIVE_CHARACTER_INDEX_JOB_LOCK:
+        LIVE_CHARACTER_INDEX_JOB.update(patch)
+
+
+def run_live_character_index_worker(max_scan=0, normal_workers=4):
+    session_name = workspace_logic.get_active_workspace_session_name()
+
+    update_live_character_index_job(
+        running=True,
+        done=False,
+        processed=0,
+        total=0,
+        errors=0,
+        message="罹먮┃???몃뜳???앹꽦 以鍮?以?..",
+        started_at=time.time(),
+        finished_at=0,
+        error=""
+    )
+
+    try:
+        def job_progress(done, total, label):
+            update_live_character_index_job(
+                processed=int(done or 0),
+                total=int(total or 0),
+                message=f"{label} ?앹꽦 以?.. {done}/{total}"
+            )
+
+        result = workspace_logic.build_workspace_character_index(
+            session_name,
+            normal_workers=normal_workers,
+            max_scan=max_scan,
+            progress_update=job_progress,
+            job_state=LIVE_CHARACTER_INDEX_JOB
+        )
+
+        update_live_character_index_job(
+            running=False,
+            done=True,
+            processed=int(result.get("indexed") or 0),
+            total=int(result.get("total") or 0),
+            errors=int(result.get("errors") or 0),
+            message="罹먮┃???몃뜳???꾨즺",
+            finished_at=time.time(),
+            error=""
+        )
+
+    except Exception as e:
+        update_live_character_index_job(
+            running=False,
+            done=True,
+            message="罹먮┃???몃뜳???ㅽ뙣",
+            finished_at=time.time(),
+            error=str(e)
+        )
+
+
+@app.route('/api/live_classifier/character_index/build', methods=['POST'])
+def live_classifier_character_index_build():
+    data = request.json or {}
+
+    try:
+        normal_workers = int(data.get("normal_workers") or 4)
+    except Exception:
+        normal_workers = 4
+
+    try:
+        max_scan = int(data.get("max_scan") or 0)
+    except Exception:
+        max_scan = 0
+
+    with LIVE_CHARACTER_INDEX_JOB_LOCK:
+        if LIVE_CHARACTER_INDEX_JOB.get("running"):
+            return jsonify({
+                "status": "success",
+                "already_running": True,
+                "job": dict(LIVE_CHARACTER_INDEX_JOB)
+            })
+
+        LIVE_CHARACTER_INDEX_JOB.update({
+            "running": True,
+            "done": False,
+            "processed": 0,
+            "total": 0,
+            "errors": 0,
+            "message": "罹먮┃???몃뜳???앹꽦 ?湲?以?..",
+            "started_at": time.time(),
+            "finished_at": 0,
+            "error": ""
+        })
+
+    thread = threading.Thread(
+        target=run_live_character_index_worker,
+        kwargs={
+            "max_scan": max_scan,
+            "normal_workers": normal_workers
+        },
+        daemon=True
+    )
+    thread.start()
+
+    return jsonify({
+        "status": "success",
+        "started": True,
+        "job": get_live_character_index_job_snapshot()
+    })
+
+
+@app.route('/api/live_classifier/character_index/job_status', methods=['GET'])
+def live_classifier_character_index_job_status():
+    return jsonify({
+        "status": "success",
+        "job": get_live_character_index_job_snapshot(),
+        "character_index": workspace_logic.get_workspace_character_index_status(
+            workspace_logic.get_active_workspace_session_name()
+        )
+    })
+
+
+@app.route('/api/live_classifier/preview_tree', methods=['POST'])
+def live_classifier_preview_tree():
+    data = request.json or {}
+    session_name = workspace_logic.get_active_workspace_session_name()
+    mode = str(data.get("mode") or "existing").strip()
+
+    config = utils.load_config()
+    rules = data.get("rules")
+
+    if not isinstance(rules, list):
+        if mode == "new":
+            rules = []
+        else:
+            rules = config.get("custom_rules", [])
+
+    rules = normalize_custom_route_rules(rules)
+
+    raw_use_char_id = data.get("use_char_id", True)
+    if isinstance(raw_use_char_id, str):
+        use_char_id = raw_use_char_id.strip().lower() not in ("0", "false", "no", "off")
+    else:
+        use_char_id = bool(raw_use_char_id)
+
+    try:
+        per_folder_limit = int(data.get("per_folder_limit") or 300)
+    except Exception:
+        per_folder_limit = 300
+
+    try:
+        no_metadata_limit = int(data.get("no_metadata_limit") or 500)
+    except Exception:
+        no_metadata_limit = 500
+
+    no_metadata_limit = max(1, no_metadata_limit)
+
+    preview = workspace_logic.load_live_preview_tree(
+        session_name,
+        rules,
+        use_char_id=use_char_id,
+        per_folder_limit=per_folder_limit,
+        no_metadata_limit=no_metadata_limit
+    )
+
+    return jsonify({
+        "status": "success",
+        "mode": mode,
+        "use_char_id": use_char_id,
+        "rules": rules,
+        "preview": preview
+    })
+
+
 @app.route('/canvas')
 def canvas_page():
     return send_file('canvas.html')
@@ -5931,7 +7247,7 @@ def _load_tag_category_file(path, dictionary):
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
-        print(f"⚠️ 태그 분류 파일 로드 실패: {path} | {e}")
+        print(f"tag category file load failed: {path} | {e}")
         return
 
     for group, entries in (data or {}).items():
@@ -5999,12 +7315,12 @@ def build_tag_dictionary():
                     "group": group,
                     "group_ko": TAG_GROUP_LABELS.get(group, group),
                     "category": category,
-                    "category_ko": DANBOORU_CATEGORY_LABELS.get(category, "기타"),
+                    "category_ko": DANBOORU_CATEGORY_LABELS.get(category, "湲고?"),
                     "color": current.get("color") if has_group_color else DANBOORU_CATEGORY_COLORS.get(category, "#64748b"),
                 })
                 dictionary[key] = current
         except Exception as e:
-            print(f"⚠️ 태그 DB 로드 실패: {e}")
+            print(f"?좑툘 ?쒓렇 DB 濡쒕뱶 ?ㅽ뙣: {e}")
         finally:
             try:
                 conn.close()
@@ -6026,7 +7342,7 @@ def _tag_response_item(tag, ko="", group="", category=0, post_count=0):
         "group": group,
         "group_ko": TAG_GROUP_LABELS.get(group, group),
         "category": category,
-        "category_ko": DANBOORU_CATEGORY_LABELS.get(category, "기타"),
+        "category_ko": DANBOORU_CATEGORY_LABELS.get(category, "湲고?"),
         "post_count": int(post_count or 0),
         "color": TAG_GROUP_COLORS.get(group, DANBOORU_CATEGORY_COLORS.get(category, "#64748b")),
     }
@@ -6048,7 +7364,7 @@ def save_tag_dictionary_override(tag, ko, group):
     ko = str(ko or "").strip()
     group = str(group or "").strip() or "custom"
     if not tag:
-        raise ValueError("태그 이름이 없습니다.")
+        raise ValueError("?쒓렇 ?대쫫???놁뒿?덈떎.")
 
     data = load_tag_dictionary_override()
     for group_name, entries in list(data.items()):
@@ -6120,8 +7436,8 @@ def search_tag_dictionary():
 
 def load_app_tag_category_tree():
     """
-    tag_categories_ko.generated.json + tag_categories_ko.json을
-    DB의 app_group 트리를 우선 사용하고, 없으면 JSON 번역 사전으로 보강한다.
+    tag_categories_ko.generated.json + tag_categories_ko.json??
+    DB??app_group ?몃━瑜??곗꽑 ?ъ슜?섍퀬, ?놁쑝硫?JSON 踰덉뿭 ?ъ쟾?쇰줈 蹂닿컯?쒕떎.
     """
     tree = {}
     by_key = {}
@@ -6137,7 +7453,7 @@ def load_app_tag_category_tree():
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            print(f"⚠️ 태그 분류 파일 로드 실패: {path} | {e}")
+            print(f"?좑툘 ?쒓렇 遺꾨쪟 ?뚯씪 濡쒕뱶 ?ㅽ뙣: {path} | {e}")
             return
 
         if not isinstance(data, dict):
@@ -6187,7 +7503,7 @@ def load_app_tag_category_tree():
                     "category": int(item.get("category", merged.get("category", 0)) or 0),
                     "category_ko": DANBOORU_CATEGORY_LABELS.get(
                         int(item.get("category", merged.get("category", 0)) or 0),
-                        "기타"
+                        "湲고?"
                     ),
                     "post_count": int(item.get("post_count", merged.get("post_count", 0)) or 0),
                     "review": item.get("review", merged.get("review", False)),
@@ -6219,7 +7535,7 @@ def build_app_group_cards(app_tree):
     groups = []
     seen = set()
 
-    # 기존 고정 앱 분류는 항상 먼저 표시
+    # 湲곗〈 怨좎젙 ??遺꾨쪟????긽 癒쇱? ?쒖떆
     for key, label in TAG_GROUP_LABELS.items():
         seen.add(key)
         groups.append({
@@ -6230,7 +7546,7 @@ def build_app_group_cards(app_tree):
             "color": get_app_group_color(key),
         })
 
-    # 사용자가 새로 만든 앱 분류 추가
+    # ?ъ슜?먭? ?덈줈 留뚮뱺 ??遺꾨쪟 異붽?
     extra_keys = sorted(
         key for key, items in app_tree.items()
         if key not in seen and len(items) > 0
@@ -6263,11 +7579,11 @@ def db_has_table(cursor, table_name):
 
 def get_danbooru_category_count(category):
     """
-    Danbooru 카테고리별 전체 태그 수를 계산한다.
+    Danbooru 移댄뀒怨좊━蹂??꾩껜 ?쒓렇 ?섎? 怨꾩궛?쒕떎.
     """
     category = int(category)
 
-    # 일반 태그는 앱 분류 JSON 기준으로 계산
+    # ?쇰컲 ?쒓렇????遺꾨쪟 JSON 湲곗??쇰줈 怨꾩궛
     if category == 0:
         app_tree = load_app_tag_category_tree()
         seen = set()
@@ -6286,7 +7602,7 @@ def get_danbooru_category_count(category):
         conn = sqlite3.connect(TAG_DB_FILE)
         cursor = conn.cursor()
 
-        # 정규화된 data/danbooru_tags.sqlite3 구조
+        # ?뺢퇋?붾맂 data/danbooru_tags.sqlite3 援ъ“
         if db_has_table(cursor, "danbooru_tags"):
             cursor.execute(
                 "SELECT COUNT(*) FROM danbooru_tags WHERE category = ?",
@@ -6294,7 +7610,7 @@ def get_danbooru_category_count(category):
             )
             return int(cursor.fetchone()[0] or 0)
 
-        # 루트 danbooru_tags.db 구조 대응
+        # 猷⑦듃 danbooru_tags.db 援ъ“ ???
         if category == 4 and db_has_table(cursor, "characters"):
             cursor.execute("SELECT COUNT(*) FROM characters")
             return int(cursor.fetchone()[0] or 0)
@@ -6306,7 +7622,7 @@ def get_danbooru_category_count(category):
         return 0
 
     except Exception as e:
-        print(f"⚠️ Danbooru 카테고리 카운트 실패: {e}")
+        print(f"?좑툘 Danbooru 移댄뀒怨좊━ 移댁슫???ㅽ뙣: {e}")
         return 0
     finally:
         if conn:
@@ -6315,8 +7631,8 @@ def get_danbooru_category_count(category):
 
 def get_danbooru_bucket_count(category, bucket):
     """
-    Danbooru 상세 분류 카드의 태그 수를 계산한다.
-    예: A-C, D-F, 기타 범위
+    Danbooru ?곸꽭 遺꾨쪟 移대뱶???쒓렇 ?섎? 怨꾩궛?쒕떎.
+    ?? A-C, D-F, 湲고? 踰붿쐞
     """
     category = int(category)
     bucket = bucket or "all"
@@ -6361,7 +7677,7 @@ def get_danbooru_bucket_count(category, bucket):
         return 0
 
     except Exception as e:
-        print(f"⚠️ Danbooru 버킷 카운트 실패: {e}")
+        print(f"?좑툘 Danbooru 踰꾪궥 移댁슫???ㅽ뙣: {e}")
         return 0
     finally:
         if conn:
@@ -6370,10 +7686,10 @@ def get_danbooru_bucket_count(category, bucket):
 
 def category_detail_groups(category):
     category = int(category)
-    label = DANBOORU_CATEGORY_LABELS.get(category, "기타")
+    label = DANBOORU_CATEGORY_LABELS.get(category, "湲고?")
     color = DANBOORU_CATEGORY_COLORS.get(category, "#64748b")
 
-    # 앱 태그 사전을 JSON 번역 데이터와 병합해 브라우징용 트리로 만든다.
+    # ???쒓렇 ?ъ쟾??JSON 踰덉뿭 ?곗씠?곗? 蹂묓빀??釉뚮씪?곗쭠???몃━濡?留뚮뱺??
     if category == 0:
         app_tree = load_app_tag_category_tree()
         groups = build_app_group_cards(app_tree)
@@ -6381,17 +7697,17 @@ def category_detail_groups(category):
         groups.append({
             "type": "category_all",
             "value": "0",
-            "label": "일반 전체",
+            "label": "?쇰컲 ?꾩껜",
             "count": 0,
             "color": color,
         })
 
         return groups
 
-    # 일반/작가/저작권/캐릭터/메타 카테고리를 Danbooru DB 기준으로 집계한다.
+    # ?쇰컲/?묎?/??묎텒/罹먮┃??硫뷀? 移댄뀒怨좊━瑜?Danbooru DB 湲곗??쇰줈 吏묎퀎?쒕떎.
     buckets = [
-        ("all", f"{label} 인기순 전체"),
-        ("num", "숫자/기호"),
+        ("all", f"{label} ?멸린???꾩껜"),
+        ("num", "?レ옄/湲고샇"),
         ("a-c", "A-C"),
         ("d-f", "D-F"),
         ("g-i", "G-I"),
@@ -6478,11 +7794,11 @@ def browse_tag_dictionary():
     except ValueError:
         offset = 0
 
-    # 1) 앱 번역 JSON 기반 태그 조회
+    # 1) ??踰덉뿭 JSON 湲곕컲 ?쒓렇 議고쉶
     if browse_type == "app_group":
         app_tree = load_app_tag_category_tree()
         items = [app_tag_to_response(item) for item in app_tree.get(value, [])]
-    # 2) Danbooru DB에서 카테고리별 인기 태그를 조회
+    # 2) Danbooru DB?먯꽌 移댄뀒怨좊━蹂??멸린 ?쒓렇瑜?議고쉶
     if browse_type == "category":
         try:
             category = int(value)
@@ -6491,11 +7807,11 @@ def browse_tag_dictionary():
 
         return jsonify({
             "mode": "groups",
-            "label": DANBOORU_CATEGORY_LABELS.get(category, "기타"),
+            "label": DANBOORU_CATEGORY_LABELS.get(category, "湲고?"),
             "groups": category_detail_groups(category),
         })
 
-    # 3) Danbooru 브라우징 결과를 응답 형식으로 변환
+    # 3) Danbooru 釉뚮씪?곗쭠 寃곌낵瑜??묐떟 ?뺤떇?쇰줈 蹂??
     if browse_type in {"category_all", "category_bucket"}:
         if not os.path.exists(TAG_DB_FILE):
             return jsonify({
@@ -6521,7 +7837,7 @@ def browse_tag_dictionary():
             conn = sqlite3.connect(TAG_DB_FILE)
             cursor = conn.cursor()
 
-            # 현재 프로젝트의 정규화된 태그 DB 구조
+            # ?꾩옱 ?꾨줈?앺듃???뺢퇋?붾맂 ?쒓렇 DB 援ъ“
             if db_has_table(cursor, "danbooru_tags"):
                 cursor.execute(f"""
                     SELECT name, ko, app_group, category, post_count
@@ -6543,7 +7859,7 @@ def browse_tag_dictionary():
                         post_count
                     ))
 
-            # 기존 danbooru_tags.db에 characters/copyrights 테이블이 있으면 함께 검색
+            # 湲곗〈 danbooru_tags.db??characters/copyrights ?뚯씠釉붿씠 ?덉쑝硫??④퍡 寃??
             elif category == 4 and db_has_table(cursor, "characters"):
                 cursor.execute(f"""
                     SELECT name, post_count
@@ -6604,7 +7920,7 @@ def browse_tag_dictionary():
             "has_more": len(items) == limit,
         })
 
-    return jsonify({"error": "분류 타입이 올바르지 않습니다."}), 400
+    return jsonify({"error": "遺꾨쪟 ??낆씠 ?щ컮瑜댁? ?딆뒿?덈떎."}), 400
 
 @app.route('/api/tag_dictionary/override', methods=['POST'])
 def update_tag_dictionary_override():
@@ -6726,7 +8042,7 @@ def normalize_shared_prompt_groups(groups):
             if tag and tag not in clean_tags:
                 clean_tags.append(tag)
 
-        # 프롬프트 그룹 정규화: 잘못된 collapsed 값은 기본값으로 보정
+        # ?꾨＼?꾪듃 洹몃９ ?뺢퇋?? ?섎せ??collapsed 媛믪? 湲곕낯媛믪쑝濡?蹂댁젙
         collapsed_raw = group.get("collapsed", True)
         if isinstance(collapsed_raw, str):
             collapsed = collapsed_raw.lower() in ("1", "true", "yes", "on")
@@ -6790,10 +8106,10 @@ def shared_prompt_groups():
 
     config["shared_prompt_groups"] = groups
 
-    # 프롬프트 그룹 설정을 저장
+    # ?꾨＼?꾪듃 洹몃９ ?ㅼ젙?????
     config["daki_prompt_groups"] = groups
 
-    # 다키 프롬프트 그룹 설정을 저장
+    # ?ㅽ궎 ?꾨＼?꾪듃 洹몃９ ?ㅼ젙?????
     config["clip_prompt_groups"] = groups
 
     save_lab_config_data(config)
@@ -6849,7 +8165,7 @@ def handle_styles():
         data = request.json
         style_name = data.get("name")
         
-        # 1. styles.json에서 삭제
+        # 1. styles.json?먯꽌 ??젣
         styles_data = {}
         if os.path.exists(STYLES_FILE):
             with open(STYLES_FILE, 'r', encoding='utf-8') as f: styles_data = json.load(f)
@@ -6859,7 +8175,7 @@ def handle_styles():
             with open(STYLES_FILE, 'w', encoding='utf-8') as f:
                 json.dump(styles_data, f, ensure_ascii=False, indent=4)
         
-        # 2. artists.json에서 동일한 이름의 그룹 함께 삭제
+        # 2. artists.json?먯꽌 ?숈씪???대쫫??洹몃９ ?④퍡 ??젣
         artists_data = {}
         if os.path.exists(ARTISTS_FILE):
             with open(ARTISTS_FILE, 'r', encoding='utf-8') as f: artists_data = json.load(f)
@@ -6873,13 +8189,13 @@ def handle_styles():
 
 
 
-# 🚀 [핵심] NovelAI 이미지 생성 API
+# ?? [?듭떖] NovelAI ?대?吏 ?앹꽦 API
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
     data = request.json
     api_key = data.get('key')
     if not api_key:
-        return jsonify({"error": "API Key가 없습니다."}), 400
+        return jsonify({"error": "API Key媛 ?놁뒿?덈떎."}), 400
 
     req = urllib.request.Request("https://image.novelai.net/ai/generate-image", method="POST")
     req.add_header("Authorization", f"Bearer {api_key}")
@@ -6898,7 +8214,7 @@ def api_generate():
             "centers": [{"x": 0.5, "y": 0.5}]
         })
 
-    # NovelAI V4.5 Full 모델 규격에 맞춘 페이로드
+    # NovelAI V4.5 Full 紐⑤뜽 洹쒓꺽??留욎텣 ?섏씠濡쒕뱶
     payload = {
         "input": base_prompt,
         "model": "nai-diffusion-4-5-full",
@@ -6960,14 +8276,14 @@ def api_generate():
                             })
 
                         return jsonify(response_data)
-            return jsonify({"error": "압축 파일에서 이미지를 찾을 수 없습니다."}), 500
+            return jsonify({"error": "?뺤텞 ?뚯씪?먯꽌 ?대?吏瑜?李얠쓣 ???놁뒿?덈떎."}), 500
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
-        return jsonify({"error": f"NovelAI 서버 에러(HTTP {e.code}): {error_body}"}), 500
+        return jsonify({"error": f"NovelAI ?쒕쾭 ?먮윭(HTTP {e.code}): {error_body}"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 💎 Anlas 잔액 조회 API
+# ?뭿 Anlas ?붿븸 議고쉶 API
 @app.route('/api/anlas', methods=['GET'])
 def api_anlas():
     api_key = request.args.get('key', '').strip()
@@ -6983,7 +8299,7 @@ def api_anlas():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 💾 로컬 저장 API
+# ?뮶 濡쒖뺄 ???API
 @app.route('/api/save', methods=['POST'])
 def api_save():
     data = request.json
@@ -7019,9 +8335,9 @@ def handle_quality_presets():
         if os.path.exists(QUALITY_PRESETS_FILE):
             with open(QUALITY_PRESETS_FILE, 'r', encoding='utf-8') as f:
                 return jsonify(json.load(f))
-        return jsonify({}) # 파일 없으면 빈 객체 반환
+        return jsonify({}) # ?뚯씪 ?놁쑝硫?鍮?媛앹껜 諛섑솚
     else:
-        # POST: 앱 번역 사전 저장
+        # POST: ??踰덉뿭 ?ъ쟾 ???
         with open(QUALITY_PRESETS_FILE, 'w', encoding='utf-8') as f:
             json.dump(request.json, f, ensure_ascii=False, indent=4)
         return jsonify({"status": "success"})
@@ -7039,7 +8355,7 @@ def load_tag_dictionary_user_overrides():
                 data["app"] = {}
             return data
     except Exception as e:
-        print(f"⚠️ 사용자 태그 번역 로드 실패: {e}")
+        print(f"?좑툘 ?ъ슜???쒓렇 踰덉뿭 濡쒕뱶 ?ㅽ뙣: {e}")
         return {"app": {}}
 
 def normalize_tag_key(tag):
@@ -7060,7 +8376,7 @@ def normalize_app_group_key(category_name):
     if name in ko_to_key:
         return ko_to_key[name]
 
-    if name in ("기타", "커스텀", "사용자 정의"):
+    if name in ("湲고?", "而ㅼ뒪?", "?ъ슜???뺤쓽"):
         return "custom"
 
     return name
@@ -7075,7 +8391,7 @@ def merge_user_app_tag_overrides_into_dictionary(dictionary):
 
         key = normalize_tag_key(tag)
         ko = str(info.get("ko", "") or "").strip()
-        group = normalize_app_group_key(info.get("category") or "기타")
+        group = normalize_app_group_key(info.get("category") or "湲고?")
 
         current = dictionary.get(key, {"tag": tag})
         current.update({
@@ -7100,7 +8416,7 @@ def merge_user_app_tag_overrides_into_tree(tree, by_key):
 
         key = normalize_tag_key(tag)
         ko = str(info.get("ko", "") or "").strip()
-        group = normalize_app_group_key(info.get("category") or "기타")
+        group = normalize_app_group_key(info.get("category") or "湲고?")
 
         old = by_key.get(key, {})
         old_group = old.get("group")
@@ -7121,7 +8437,7 @@ def merge_user_app_tag_overrides_into_tree(tree, by_key):
             "category": int(merged.get("category", 0) or 0),
             "category_ko": DANBOORU_CATEGORY_LABELS.get(
                 int(merged.get("category", 0) or 0),
-                "기타"
+                "湲고?"
             ),
             "post_count": int(merged.get("post_count", 0) or 0),
             "review": merged.get("review", False),
@@ -7145,7 +8461,7 @@ def parse_tag_translation_input(raw_text):
 
     if '/' in text:
         left, right = text.split('/', 1)
-        category = left.strip() or '기타'
+        category = left.strip() or '湲고?'
         ko = right.strip()
         if not ko:
             return None
@@ -7155,7 +8471,7 @@ def parse_tag_translation_input(raw_text):
         }
 
     return {
-        "category": "기타",
+        "category": "湲고?",
         "ko": text
     }
 
@@ -7168,11 +8484,11 @@ def save_app_translation():
         raw_input = str(data.get('input') or '').strip()
 
         if not tag:
-            return jsonify({"status": "error", "message": "태그가 없습니다."}), 400
+            return jsonify({"status": "error", "message": "?쒓렇媛 ?놁뒿?덈떎."}), 400
 
         parsed = parse_tag_translation_input(raw_input)
         if not parsed:
-            return jsonify({"status": "error", "message": "입력값이 올바르지 않습니다."}), 400
+            return jsonify({"status": "error", "message": "?낅젰媛믪씠 ?щ컮瑜댁? ?딆뒿?덈떎."}), 400
 
         overrides = load_tag_dictionary_user_overrides()
         overrides.setdefault("app", {})

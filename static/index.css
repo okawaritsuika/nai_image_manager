@@ -1575,7 +1575,12 @@
 .gallery-header-tools.collapsed {
     max-width: 0;
     opacity: 0;
+    overflow: hidden;
     pointer-events: none;
+}
+
+.gallery-header-tools:not(.collapsed) {
+    pointer-events: auto;
 }
 
 /* Gallery header compact layout */
@@ -1590,12 +1595,14 @@
 #nav-tabs {
     flex: 1 1 auto;
     min-width: 0;
-    max-width: min(620px, 42vw);
+    max-width: none;
     flex-wrap: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
     padding-bottom: 4px;
     scrollbar-width: thin;
+    position: relative;
+    z-index: 1;
 }
 
 #nav-tabs .nav-btn {
@@ -1607,6 +1614,8 @@
     flex: 0 0 auto;
     flex-wrap: nowrap;
     min-width: 0;
+    position: relative;
+    z-index: 2;
 }
 
 .header-row-right > button,
