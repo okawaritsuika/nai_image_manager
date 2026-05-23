@@ -2233,6 +2233,20 @@ async function requestGalleryInpaint() {
     const safePromptInfo = getEffectiveGalleryInpaintPromptInfo();
     galleryInpaintSession.promptInfo = safePromptInfo;
 
+    const requestWidth = galleryInpaintSession.imageWidth;
+    const requestHeight = galleryInpaintSession.imageHeight;
+    const requestSteps = parseInt(safePromptInfo.steps || 28, 10) || 28;
+
+    const canUseAnlas = await showAnlasWarningModal({
+        width: requestWidth,
+        height: requestHeight,
+        steps: requestSteps,
+        title: '갤러리 인페인팅 Anlas 사용 경고',
+        detail: '현재 인페인팅 요청은 무료 범위를 벗어나 Anlas가 소모될 수 있습니다.'
+    });
+
+    if (!canUseAnlas) return;
+
     setGalleryInpaintProcessing(true, '인페인팅 처리 중...');
 
     try {
@@ -2242,8 +2256,8 @@ async function requestGalleryInpaint() {
             body: JSON.stringify({
                 image: galleryInpaintSession.currentSrc,
                 mask,
-                width: galleryInpaintSession.imageWidth,
-                height: galleryInpaintSession.imageHeight,
+                width: requestWidth,
+                height: requestHeight,
                 promptInfo: safePromptInfo,
                 tempCategory: GALLERY_INPAINT_TEMP_CATEGORY,
                 tempSessionId: galleryInpaintSession.tempSessionId

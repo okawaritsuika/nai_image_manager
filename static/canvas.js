@@ -5017,6 +5017,19 @@ async function requestClipInpainting(clipId) {
     }
 
     const requestPromptInfo = buildEffectiveClipPromptInfo(clip);
+    const requestWidth = clip.imageWidth || clip.layerWidth;
+    const requestHeight = clip.imageHeight || clip.layerHeight;
+    const requestSteps = parseInt(requestPromptInfo.steps || 28, 10) || 28;
+
+    const canUseAnlas = await showAnlasWarningModal({
+        width: requestWidth,
+        height: requestHeight,
+        steps: requestSteps,
+        title: '캔버스 인페인팅 Anlas 사용 경고',
+        detail: '현재 캔버스 인페인팅 요청은 무료 범위를 벗어나 Anlas가 소모될 수 있습니다.'
+    });
+
+    if (!canUseAnlas) return;
 
     setClipInpaintProcessing(
         clipId,
@@ -5027,9 +5040,6 @@ async function requestClipInpainting(clipId) {
     );
 
     try {
-        const requestWidth = clip.imageWidth || clip.layerWidth;
-        const requestHeight = clip.imageHeight || clip.layerHeight;
-
         const requestImage = isClipInpaintMergedSourceMode
             ? await renderMergedClipSourceToDataUrl(selection, clip)
             : clip.src;
@@ -10928,6 +10938,18 @@ async function requestReferenceGenInpaint() {
 
     referenceGenSession.promptInfo = normalizeReferenceGenPromptInfo(referenceGenSession.promptInfo);
     updateReferenceGenMaskDataUrl();
+
+    const requestSteps = parseInt(referenceGenSession.promptInfo.steps || 28, 10) || 28;
+
+    const canUseAnlas = await showAnlasWarningModal({
+        width: referenceGenSession.width,
+        height: referenceGenSession.height,
+        steps: requestSteps,
+        title: '참조 이미지 인페인팅 Anlas 사용 경고',
+        detail: '현재 참조 이미지 인페인팅 요청은 무료 범위를 벗어나 Anlas가 소모될 수 있습니다.'
+    });
+
+    if (!canUseAnlas) return;
 
     setReferenceGenProcessing(true, '인페인팅 처리 중...');
 

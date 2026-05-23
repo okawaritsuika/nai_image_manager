@@ -1502,7 +1502,18 @@ async function generateImage() {
         alert('가로/세로 사이즈는 64의 배수여야 합니다.');
         return;
     }
-    if (width * height > 1048576 && !confirm('Anlas가 소모될 수 있습니다. 계속하시겠습니까?')) return;
+
+    const steps = parseInt(el('steps').value, 10) || 28;
+
+    const canUseAnlas = await showAnlasWarningModal({
+        width,
+        height,
+        steps,
+        title: '다키 생성 Anlas 사용 경고',
+        detail: '현재 해상도 또는 Steps가 무료 범위를 벗어나 Anlas가 소모될 수 있습니다.'
+    });
+
+    if (!canUseAnlas) return;
 
     el('loadingIndicator').style.display = 'block';
     el('saveBtn').style.display = 'none';
@@ -1522,7 +1533,7 @@ async function generateImage() {
                 height,
                 scale: parseFloat(el('scale').value),
                 cfg_rescale: parseFloat(el('cfgRescale').value),
-                steps: parseInt(el('steps').value),
+                steps,
                 sampler: el('sampler').value,
                 persist_temp: true
             })
