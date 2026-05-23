@@ -1299,11 +1299,9 @@ function bindGalleryNavTabsScroller() {
             pointerId: event.pointerId,
             startX: event.clientX,
             startScrollLeft: navTabs.scrollLeft,
-            moved: false
+            moved: false,
+            captured: false
         };
-
-        navTabs.classList.add('dragging-nav-tabs');
-        navTabs.setPointerCapture(event.pointerId);
     });
 
     navTabs.addEventListener('pointermove', (event) => {
@@ -1314,13 +1312,23 @@ function bindGalleryNavTabsScroller() {
 
         if (Math.abs(dx) > GALLERY_NAV_TABS_DRAG_THRESHOLD) {
             galleryNavTabsDragState.moved = true;
+
+            if (!galleryNavTabsDragState.captured) {
+                galleryNavTabsDragState.captured = true;
+                navTabs.classList.add('dragging-nav-tabs');
+
+                try {
+                    navTabs.setPointerCapture(event.pointerId);
+                } catch (error) {
+                    // Pointer capture may fail if pointer is already released.
+                }
+            }
         }
+
+        if (!galleryNavTabsDragState.moved) return;
 
         navTabs.scrollLeft = galleryNavTabsDragState.startScrollLeft - dx;
-
-        if (galleryNavTabsDragState.moved) {
-            event.preventDefault();
-        }
+        event.preventDefault();
     });
 
     const finishDrag = (event) => {
@@ -1328,14 +1336,17 @@ function bindGalleryNavTabsScroller() {
         if (galleryNavTabsDragState.pointerId !== event.pointerId) return;
 
         const wasMoved = galleryNavTabsDragState.moved;
+        const wasCaptured = galleryNavTabsDragState.captured;
 
         galleryNavTabsDragState = null;
         navTabs.classList.remove('dragging-nav-tabs');
 
-        try {
-            navTabs.releasePointerCapture(event.pointerId);
-        } catch (error) {
-            // Already released.
+        if (wasCaptured) {
+            try {
+                navTabs.releasePointerCapture(event.pointerId);
+            } catch (error) {
+                // Already released.
+            }
         }
 
         if (wasMoved) {
@@ -1360,6 +1371,7 @@ function bindGalleryNavTabsScroller() {
             delete navTabs.dataset.suppressNextClick;
             event.preventDefault();
             event.stopPropagation();
+            event.stopImmediatePropagation();
         }
     }, true);
 }
@@ -5126,10 +5138,15 @@ function renderRouteRuleCardView() {
                 버튼 클릭은 선택, 더블클릭은 상세 편집, 드래그는 선택 그룹 이동입니다.
             </div>
 
-            <div class="route-card-top-list">
-                ${normalRules.map(item => renderRouteTopRuleCard(item.rule, [item.index])).join('')}
+            <div class="route-card-top-list route-card-top-chip-list">
+                <div class="route-card-child-zone"
+                    data-route-parent=""
+                    data-route-depth="0">
+                    <div class="route-card-child-grid">
+                        ${normalRules.map(item => renderRouteChildButton(item.rule, [item.index], 0)).join('')}
+                    </div>
+                </div>
             </div>
-
             ${defaultRule ? `<div class="route-card-default-note">기본 분류: ${escapeRouteHtml(defaultRule.folder || 'Solo / Duo / Group')}</div>` : ''}
         </div>
     `;
