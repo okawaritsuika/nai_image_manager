@@ -3972,39 +3972,61 @@ async function applyChanges() {
 
 async function instantToggleNsfw(currentPath, btnElement, boxId) {
     const box = document.getElementById(boxId);
-    const mode = document.querySelector('input[name="viewMode"]:checked').value;
+    const mode = document.querySelector('input[name="viewMode"]:checked')?.value || 'general';
+    const originalHtml = btnElement.innerHTML;
+
     btnElement.innerHTML = "<span>⏳</span>";
     btnElement.disabled = true;
+
     try {
         const res = await fetch('/api/toggle_nsfw', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path: currentPath })
         });
+
         const data = await res.json();
-        if (data.status === 'success') {
-            if (mode !== 'all') {
+
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.message || 'R-18 전환 실패');
+        }
+
+        if (box) {
+            box.setAttribute('data-path', data.new_path);
+        }
+
+        if (mode !== 'all') {
+            if (box) {
                 box.style.opacity = "0";
                 box.style.transform = "scale(0.9)";
-                setTimeout(() => box.style.display = 'none', 200);
-            } else {
-                const isNowR19 = data.new_path.includes('_R-18');
-                const tLbl = isNowR19 ? '일반' : 'R-19';
-                const tIcon = isNowR19 ? '🟢' : '🔞';
-                const tCol = isNowR19 ? '#39ff14' : '#ff007c';
-                const tBg  = isNowR19 ? '#122a15' : '#2a1215';
-                btnElement.innerHTML = `<span>${tIcon}</span> <span style="font-size:11px;">${tLbl}</span>`;
-                btnElement.style.background = tBg;
-                btnElement.style.color = tCol;
-                btnElement.style.borderColor = tCol;
-                btnElement.disabled = false;
-                btnElement.setAttribute('onclick', `instantToggleNsfw('${data.new_path}', this, '${boxId}')`);
+                setTimeout(() => {
+                    box.style.display = 'none';
+                }, 200);
             }
+            return;
         }
+
+        const isNowR18 = String(data.new_path || '').startsWith('_R-18/');
+        const tLbl = isNowR18 ? '일반' : 'R-18';
+        const tIcon = isNowR18 ? '🟢' : '🔞';
+        const tCol = isNowR18 ? '#39ff14' : '#ff007c';
+        const tBg  = isNowR18 ? '#122a15' : '#2a1215';
+
+        btnElement.innerHTML = `<span>${tIcon}</span> <span style="font-size:11px;">${tLbl}</span>`;
+        btnElement.style.background = tBg;
+        btnElement.style.color = tCol;
+        btnElement.style.borderColor = tCol;
+        btnElement.disabled = false;
+        btnElement.setAttribute(
+            'onclick',
+            `instantToggleNsfw(${JSON.stringify(data.new_path)}, this, ${JSON.stringify(boxId)})`
+        );
+
     } catch(e) {
         console.error(e);
+        alert(e.message || 'R-18 전환 실패');
         btnElement.disabled = false;
-        btnElement.innerHTML = "<span>❌</span>";
+        btnElement.innerHTML = originalHtml;
     }
 }
 

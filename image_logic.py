@@ -1891,6 +1891,17 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
 
     db = utils.HistoryDB()  # 🌟 DB 인스턴스 생성
 
+    def refresh_gallery_index_for_renamed_file(old_full_path, new_full_path):
+        old_rel = os.path.relpath(old_full_path, fixed_root).replace("\\", "/")
+
+        db.remove_gallery_image_record(old_rel)
+
+        if os.path.exists(new_full_path):
+            db.upsert_gallery_image_file(
+                new_full_path,
+                classified_root=fixed_root
+            )
+
     # 1. 삭제 작업 (휴지통 이동 OR 영구 삭제)
     trash_root = os.path.join(fixed_root, "_TRASH", datetime.datetime.now().strftime("%Y-%m-%d"))
     trash_base = os.path.join(fixed_root, "_TRASH")
@@ -1987,15 +1998,19 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
                 if f.startswith("000_MAIN_"):
                     old_p = os.path.join(dirname, f)
                     new_p = os.path.join(dirname, f.replace("000_MAIN_", "", 1))
-                    if os.path.exists(old_p): os.replace(old_p, new_p)
+                    if os.path.exists(old_p):
+                        os.replace(old_p, new_p)
+                        refresh_gallery_index_for_renamed_file(old_p, new_p)
 
                     old_txt = os.path.splitext(old_p)[0] + ".txt"
                     new_txt = os.path.splitext(new_p)[0] + ".txt"
                     if os.path.exists(old_txt): os.replace(old_txt, new_txt)
 
             # 새 대표 이미지 지정 (.txt 포함)
+            old_full_path = full_path
             new_full_path = os.path.join(dirname, "000_MAIN_" + basename)
-            os.replace(full_path, new_full_path)
+            os.replace(old_full_path, new_full_path)
+            refresh_gallery_index_for_renamed_file(old_full_path, new_full_path)
 
             full_txt = os.path.splitext(full_path)[0] + ".txt"
             new_full_txt = os.path.splitext(new_full_path)[0] + ".txt"
@@ -2005,5 +2020,10 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
         except Exception as e:
             log_func(f"❌ 대표 변경 중 에러 ({basename}): {e}")
 
+    if thumbs:
+        try:
+            db.rebuild_gallery_folder_summaries()
+        except Exception as e:
+            log_func(f"⚠️ 대표 이미지 갤러리 인덱스 갱신 실패: {e}")
 
     db.close()

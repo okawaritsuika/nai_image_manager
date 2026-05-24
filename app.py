@@ -2762,63 +2762,97 @@ def get_prompt_info():
 
 @app.route('/api/toggle_nsfw', methods=['POST'])
 def toggle_nsfw():
+    db = None
+
     try:
-        data = request.json
-        rel_path = str(data.get('path', '')).replace('\\', '/')
-        full_path = utils.resolve_safe_path(CLASSIFIED_DIR, rel_path)
+        data = request.json or {}
+        input_path = data.get('path', '')
+
+        full_path, rel_path = resolve_gallery_image_path(input_path)
 
         if not os.path.exists(full_path):
             return jsonify({"status": "error", "message": "파일을 찾을 수 없습니다."})
 
-        # 1. 원본 이미지 이동
+        is_currently_nsfw = rel_path.startswith("_R-18/") or rel_path.startswith("_R-15/")
+
+        if is_currently_nsfw:
+            target_rel_path = re.sub(r"^_R-(18|15)/", "", rel_path)
+            target_mode = "general"
+            label = "일반 폴더로 이동"
+            override_value = 0
+        else:
+            target_rel_path = "_R-18/" + rel_path
+            target_mode = "r18"
+            label = "R-18로 이동"
+            override_value = 2
+
         new_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, target_rel_path)
         os.makedirs(os.path.dirname(new_full_path), exist_ok=True)
+
         os.replace(full_path, new_full_path)
 
-        # 2. 이동한 이미지 옆의 사유 텍스트 파일도 함께 이동
-        try:
-            old_txt = os.path.splitext(full_path)[0] + ".txt"
-            new_txt = os.path.splitext(new_full_path)[0] + ".txt"
+        old_txt = os.path.splitext(full_path)[0] + ".txt"
+        new_txt = os.path.splitext(new_full_path)[0] + ".txt"
+        reason_text = f"✅ [수동] 사용자 분류 ({label})"
 
-            # 수동 NSFW 전환 사유를 텍스트 파일에 기록
-            label = "일반 폴더로 이동" if is_currently_nsfw else "R-19로 이동"
+        try:
             with open(new_txt, "w", encoding="utf-8") as f:
-                f.write(f"✅ [수동] 사용자 분류 ({label})")
+                f.write(reason_text)
 
-            # 과거 경로의 텍스트 파일이 남아있다면 깔끔하게 삭제
-            if os.path.exists(old_txt):
+            if os.path.exists(old_txt) and os.path.abspath(old_txt) != os.path.abspath(new_txt):
                 os.remove(old_txt)
         except Exception as txt_e:
-            print(f"사유 텍스트 파일 생성/이동 실패: {txt_e}")  # 실패해도 메인 이동은 계속 진행
-            # 과거 경로에 텍스트 파일이 남아있다면 깔끔하게 삭제
-            if os.path.exists(old_txt):
-                os.remove(old_txt)
-        except Exception as txt_e:
-            print(f"사유 텍스트 파일 생성/이동 실패: {txt_e}")  # 실패해도 메인 이동은 계속 진행
+            print(f"사유 텍스트 파일 생성/이동 실패: {txt_e}")
 
-        # DB 기록 갱신
-        try:
-            db = utils.HistoryDB()  # 기존 DB 경로 기록을 새 위치로 갱신
+        move_gallery_image_tag_path(rel_path, target_rel_path)
 
-            if file_hash:  # 해시가 있으면 파일 경로를 새 위치로 갱신
-                    db.conn.execute("INSERT OR REPLACE INTO manual_overrides (file_hash, is_nsfw) VALUES (?, ?)",
-                                    (file_hash, 0 if is_currently_nsfw else 2))
-        except Exception as db_e:
-            print(f"DB 저장 에러: {db_e}")
-        finally:
+        db = utils.HistoryDB()
+
+        db.remove_gallery_image_record(rel_path)
+
+        tag_config = load_gallery_image_tags_config()
+        gallery_tag = get_gallery_image_tag_for_path(tag_config, target_rel_path)
+
+        db.upsert_gallery_image_file(
+            new_full_path,
+            classified_root=CLASSIFIED_DIR,
+            mode=target_mode,
+            reason=reason_text,
+            gallery_tag=gallery_tag
+        )
+
+        file_hash = db.get_hash(new_full_path)
+
+        if file_hash:
+            with db.conn:
+                db.conn.execute(
+                    "CREATE TABLE IF NOT EXISTS manual_overrides (file_hash TEXT PRIMARY KEY, is_nsfw INTEGER)"
+                )
+                db.conn.execute(
+                    "INSERT OR REPLACE INTO manual_overrides (file_hash, is_nsfw) VALUES (?, ?)",
+                    (file_hash, override_value)
+                )
+
+        db.rebuild_gallery_folder_summaries()
+
+        return jsonify({
+            "status": "success",
+            "new_path": target_rel_path,
+            "is_nsfw": not is_currently_nsfw
+        })
+
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)})
+    except FileNotFoundError as e:
+        return jsonify({"status": "error", "message": str(e)})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+    finally:
+        if db:
             try:
                 db.close()
             except Exception:
                 pass
-
-        move_gallery_image_tag_path(rel_path, target_rel_path)
-
-        return jsonify({"status": "success", "new_path": target_rel_path, "is_nsfw": not is_currently_nsfw})
-    except ValueError as e:
-        return jsonify({"status": "error", "message": str(e)})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
 
 @app.route('/api/apply', methods=['POST'])
 def apply_changes():
