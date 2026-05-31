@@ -27,6 +27,7 @@
                         <button onclick="toggleBrandManager()" title="브랜드 관리" style="background: #ff007c; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(255, 0, 124, 0.3);">👑 브랜드</button>
                         <button onclick="toggleArtStyleManager()" title="그림체 관리" style="background: #f1c40f; color: #000; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(241, 196, 15, 0.3);">🎨 그림체</button>
                         <button onclick="openGalleryTagManager()" title="태그 관리" style="background: #2dd4bf; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(45, 212, 191, 0.3);">🏷️ 태그</button>
+                        <button onclick="openGalleryCharacterNameManager()" title="캐릭터 이름 한글 표기 관리" style="background: #14b8a6; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);">🔤 이름</button>
                         <button onclick="startGalleryIndexRebuild()"
                                 title="갤러리 인덱스 수동 갱신"
                                 style="background: #22c55e; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(34, 197, 94, 0.3);">
@@ -689,6 +690,37 @@
     </div>
 
     <div id="galleryInpaintBrushCursor"></div>
+    <div id="galleryCharacterNameManagerLayer" class="gallery-character-name-layer">
+        <div class="gallery-character-name-card">
+            <div class="gallery-character-name-header">
+                <span>🔤 캐릭터 이름 한글 표기 관리</span>
+                <button onclick="closeGalleryCharacterNameManager()">×</button>
+            </div>
+            <div class="gallery-character-name-body">
+                <div class="gallery-character-name-toolbar">
+                    <input type="text"
+                           id="galleryCharacterNameSearch"
+                           placeholder="영어 이름, 브랜드, 한글 자동 번역, 수정명 검색"
+                           oninput="renderGalleryCharacterNameManager()">
+                    <select id="galleryCharacterNameSort" onchange="renderGalleryCharacterNameManager()">
+                        <option value="count">갯수순</option>
+                        <option value="name">이름순</option>
+                    </select>
+                    <label class="gallery-character-name-filter">
+                        <input type="checkbox" id="galleryCharacterNameHideSaved" onchange="renderGalleryCharacterNameManager()">
+                        <span>설정됨 숨김</span>
+                    </label>
+                    <button type="button" class="success" onclick="saveGalleryCharacterNameManager()">저장</button>
+                    <button type="button" class="secondary" onclick="closeGalleryCharacterNameManager()">닫기</button>
+                </div>
+                <div id="galleryCharacterNameSaveFlash" class="gallery-character-name-flash" aria-live="polite"></div>
+                <div class="gallery-character-name-help">
+                    비워두면 자동 표기를 사용합니다. 수정값은 이 브라우저에만 저장되고, 폴더명과 원본 데이터는 변경하지 않습니다.
+                </div>
+                <div id="galleryCharacterNameManagerTable" class="gallery-character-name-table-wrap"></div>
+            </div>
+        </div>
+    </div>
     <div id="galleryDesignSettingsLayer" class="gallery-design-settings-layer">
         <div class="gallery-design-settings-card">
             <div class="gallery-design-settings-header">
@@ -726,6 +758,14 @@
                     <span>
                         <b>고정 크기 모드</b>
                         <small>이미지 비율에 따라 카드 높이가 달라지지 않게 고정된 썸네일 박스로 표시합니다.</small>
+                    </span>
+                </label>
+
+                <label class="gallery-design-check-row">
+                    <input type="checkbox" id="galleryCharacterKoreanNamesInput" onchange="setGalleryCharacterKoreanNames(this.checked)">
+                    <span>
+                        <b>캐릭터 이름 한글 표기</b>
+                        <small>영어 캐릭터 이름은 그대로 두고, 갤러리 화면에서만 로컬 규칙으로 한글 표기합니다.</small>
                     </span>
                 </label>
 

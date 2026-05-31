@@ -531,6 +531,27 @@ def load_folder_display_names(db, verbose=False):
     return folder_names_map
 
 
+def decode_exif_user_comment(user_comment):
+    if isinstance(user_comment, bytes):
+        if user_comment.startswith(b"UNICODE\x00"):
+            payload = user_comment[8:]
+            for encoding in ("utf-16-be", "utf-16-le", "utf-16"):
+                try:
+                    return payload.decode(encoding, errors="strict").replace("\x00", "").strip()
+                except UnicodeDecodeError:
+                    continue
+
+        if user_comment.startswith(b"ASCII\x00\x00\x00"):
+            return user_comment[8:].decode("utf-8", errors="ignore").replace("\x00", "").strip()
+
+        return user_comment.decode("utf-8", errors="ignore").replace("\x00", "").strip()
+
+    text = str(user_comment or "")
+    if text.startswith("UNICODE") or text.startswith("ASCII"):
+        text = text[8:]
+    return text.replace("\x00", "").strip()
+
+
 def extract_prompt_info_from_image(file_path):
     with Image.open(file_path) as img:
         raw_meta = ""
@@ -547,13 +568,7 @@ def extract_prompt_info_from_image(file_path):
             elif hasattr(img, 'getexif'):
                 exif = img.getexif()
                 if exif and 37510 in exif:
-                    user_comment = exif[37510]
-                    if isinstance(user_comment, bytes):
-                        raw_meta = user_comment.decode('utf-8', errors='ignore').replace('\x00', '')
-                        if raw_meta.startswith('UNICODE') or raw_meta.startswith('ASCII'):
-                            raw_meta = raw_meta[8:]
-                    else:
-                        raw_meta = str(user_comment)
+                    raw_meta = decode_exif_user_comment(exif[37510])
 
         raw_meta = str(raw_meta or "").strip()
         meta = {}
@@ -1556,6 +1571,47 @@ def normalize_gallery_display_folder_path(folder_path):
     return text
 
 
+def get_existing_gallery_rel_path(file_path):
+    try:
+        rel_path = os.path.relpath(file_path, CLASSIFIED_DIR).replace("\\", "/")
+    except Exception:
+        return clean_gallery_rel_path(file_path)
+
+    if rel_path.startswith(".."):
+        return clean_gallery_rel_path(rel_path)
+
+    parts = [part for part in rel_path.split("/") if part]
+    parent = CLASSIFIED_DIR
+    actual_parts = []
+
+    for part in parts:
+        actual_part = part
+        try:
+            for entry in os.listdir(parent):
+                if entry.casefold() == part.casefold():
+                    actual_part = entry
+                    break
+        except Exception:
+            pass
+
+        actual_parts.append(actual_part)
+        parent = os.path.join(parent, actual_part)
+
+    return "/".join(actual_parts)
+
+
+def should_skip_gallery_index_directory(folder_path):
+    if os.path.basename(str(folder_path or "").rstrip("\\/")) == UPSCALE_OUTPUT_FOLDER_NAME:
+        return False
+    return os.path.exists(os.path.join(folder_path, ".ignore"))
+
+
+def should_skip_gallery_index_child_directory(root, dirname):
+    if dirname == UPSCALE_OUTPUT_FOLDER_NAME:
+        return False
+    return os.path.exists(os.path.join(root, dirname, ".ignore"))
+
+
 def gallery_index_rebuild_worker():
     batch = []
     batch_size = 2000
@@ -1580,8 +1636,11 @@ def gallery_index_rebuild_worker():
 
             image_paths = []
             for root, dirs, files in os.walk(CLASSIFIED_DIR):
-                dirs[:] = [d for d in dirs if not os.path.exists(os.path.join(root, d, ".ignore"))]
-                if os.path.exists(os.path.join(root, ".ignore")):
+                dirs[:] = [
+                    d for d in dirs
+                    if not should_skip_gallery_index_child_directory(root, d)
+                ]
+                if should_skip_gallery_index_directory(root):
                     dirs[:] = []
                     continue
                 for file_name in files:
@@ -1694,6 +1753,79 @@ def start_gallery_index_rebuild_background(auto=False):
     thread = threading.Thread(target=gallery_index_rebuild_worker, daemon=True)
     thread.start()
     return True, True
+
+
+def refresh_gallery_index_for_file_change(file_path, rel_path=None, old_rel_path=None, allow_rebuild=True, **overrides):
+    result = {
+        "index_updated": False,
+        "index_full_built": False,
+        "index_verified": False,
+        "index_rebuild_started": False,
+        "index_rebuild_running": False,
+        "index_error": ""
+    }
+    db = None
+
+    try:
+        clean_rel_path = clean_gallery_rel_path(rel_path)
+        if not clean_rel_path:
+            clean_rel_path = os.path.relpath(file_path, CLASSIFIED_DIR).replace("\\", "/")
+        actual_rel_path = get_existing_gallery_rel_path(file_path)
+        stale_rel_paths = []
+        if clean_rel_path and clean_rel_path != actual_rel_path:
+            stale_rel_paths.append(clean_rel_path)
+        clean_rel_path = actual_rel_path
+
+        db = utils.HistoryDB()
+
+        with GALLERY_INDEX_DB_LOCK:
+            index_full_built = db.has_full_gallery_index()
+            result["index_full_built"] = bool(index_full_built)
+
+            if index_full_built:
+                if old_rel_path:
+                    db.remove_gallery_image_record(old_rel_path)
+                for stale_rel_path in stale_rel_paths:
+                    db.remove_gallery_image_record(stale_rel_path)
+
+                tag_config = load_gallery_image_tags_config()
+                next_overrides = dict(overrides)
+                next_overrides["rel_path"] = clean_rel_path
+                if "gallery_tag" not in next_overrides:
+                    next_overrides["gallery_tag"] = get_gallery_image_tag_for_path(tag_config, clean_rel_path)
+
+                gallery_record = db.upsert_gallery_image_file(
+                    file_path,
+                    classified_root=CLASSIFIED_DIR,
+                    **next_overrides
+                )
+                db.rebuild_gallery_folder_summaries()
+
+                index_verified = db.gallery_image_record_exists(gallery_record["rel_path"])
+                result["index_verified"] = bool(index_verified)
+                result["index_updated"] = bool(index_verified)
+
+    except Exception as e:
+        result["index_error"] = str(e)
+        print(f"[WARN] gallery index refresh failed: {e}")
+
+    finally:
+        if db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    if allow_rebuild and not result["index_updated"]:
+        try:
+            index_rebuild_started, index_rebuild_running = start_gallery_index_rebuild_background(auto=True)
+            result["index_rebuild_started"] = bool(index_rebuild_started)
+            result["index_rebuild_running"] = bool(index_rebuild_running)
+        except Exception as rebuild_error:
+            result["index_error"] = result["index_error"] or str(rebuild_error)
+            print(f"[WARN] gallery index rebuild start failed: {rebuild_error}")
+
+    return result
 
 
 @app.route('/api/gallery/index/rebuild', methods=['POST'])
@@ -2359,6 +2491,11 @@ def run_upscale_worker_loop():
 
             add_upscale_sidecar_info(target_full_path, original_prompt_info, upscale_info)
             sync_gallery_prompt_art_styles_for_path(result_rel_path, original_prompt_info)
+            refresh_gallery_index_for_file_change(
+                target_full_path,
+                rel_path=result_rel_path,
+                mode=infer_gallery_mode_from_rel_path(result_rel_path)
+            )
 
             update_upscale_job(
                 job_id,
@@ -2910,6 +3047,13 @@ def restore_file():
             os.replace(trash_txt, orig_txt)
 
         db.remove_trash_path(trash_full_path)
+        restored_rel_path = os.path.relpath(original_path, CLASSIFIED_DIR).replace("\\", "/")
+        refresh_gallery_index_for_file_change(
+            original_path,
+            rel_path=restored_rel_path,
+            old_rel_path=rel_path,
+            mode=infer_gallery_mode_from_rel_path(restored_rel_path)
+        )
         return jsonify({"status": "success", "message": "원래 폴더로 복구되었습니다."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
@@ -3864,6 +4008,10 @@ def extract_prompt_info_from_image_filelike(file_storage):
             raw_meta = img.info["Comment"]
             if isinstance(raw_meta, bytes):
                 raw_meta = raw_meta.decode("utf-8", "ignore")
+        elif hasattr(img, "getexif"):
+            exif = img.getexif()
+            if exif and 37510 in exif:
+                raw_meta = decode_exif_user_comment(exif[37510])
 
         raw_meta = str(raw_meta or "").strip()
         meta = {}
@@ -4713,6 +4861,31 @@ def canvas_import_public_src(filename):
     return f"/canvas-imports/{canvas_import_relative_path(filename)}"
 
 
+def canvas_upload_original_name(filename):
+    name = os.path.basename(str(filename or "").replace("\\", "/")).strip()
+    return name or "외부 이미지"
+
+
+def canvas_upload_extension(filename, content_type=""):
+    ext = os.path.splitext(str(filename or ""))[1].lower().lstrip(".")
+
+    if ext == "jpeg":
+        ext = "jpg"
+
+    if ext in {"png", "jpg", "webp"}:
+        return ext
+
+    content_type = str(content_type or "").lower()
+    if "png" in content_type:
+        return "png"
+    if "jpeg" in content_type or "jpg" in content_type:
+        return "jpg"
+    if "webp" in content_type:
+        return "webp"
+
+    return ""
+
+
 def get_canvas_import_save_dir(category=None, session_id=None):
     category = safe_canvas_import_token(category, "") if category else ""
 
@@ -4869,6 +5042,74 @@ def cleanup_canvas_import_refs(refs, retained_refs):
     return deleted
 
 
+def is_canvas_import_image_file(filename):
+    return os.path.splitext(str(filename or ""))[1].lower() in {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def canvas_import_category_label(category):
+    labels = {
+        "canvas": "외부 이미지",
+        "canvas_inpaint": "인페인팅",
+        "gallery_inpaint": "갤러리 인페인팅"
+    }
+    return labels.get(category or "", "기타")
+
+
+def list_canvas_import_items():
+    items = []
+
+    for root, _, files in os.walk(CANVAS_IMPORT_DIR):
+        for filename in files:
+            if not is_canvas_import_image_file(filename):
+                continue
+
+            full_path = os.path.join(root, filename)
+            rel_path = os.path.relpath(full_path, CANVAS_IMPORT_DIR).replace("\\", "/")
+            parts = rel_path.split("/")
+            category = parts[0] if len(parts) >= 3 else ""
+            session_id = parts[1] if len(parts) >= 3 else ""
+
+            try:
+                stat = os.stat(full_path)
+            except OSError:
+                continue
+
+            width = 0
+            height = 0
+            prompt_info = None
+
+            try:
+                with Image.open(full_path) as img:
+                    width, height = img.size
+            except Exception:
+                pass
+
+            try:
+                extracted = extract_prompt_info_from_image(full_path)
+                if has_prompt_info_text(extracted):
+                    prompt_info = extracted
+            except Exception as e:
+                print(f"캔버스 외부 이미지 프롬프트 읽기 실패: {rel_path} | {e}")
+
+            items.append({
+                "ref": rel_path,
+                "src": canvas_import_public_src(rel_path),
+                "name": filename,
+                "category": category,
+                "categoryLabel": canvas_import_category_label(category),
+                "sessionId": session_id,
+                "size": stat.st_size,
+                "mtime": int(stat.st_mtime * 1000),
+                "width": width,
+                "height": height,
+                "promptInfo": prompt_info,
+                "hasPromptInfo": has_prompt_info_text(prompt_info)
+            })
+
+    items.sort(key=lambda item: item.get("mtime") or 0, reverse=True)
+    return items
+
+
 @app.route('/canvas-imports/<path:filename>')
 def serve_canvas_import(filename):
     try:
@@ -4880,6 +5121,14 @@ def serve_canvas_import(filename):
         return send_file(file_path)
 
     return "Not found", 404
+
+
+@app.route('/api/canvas/imports/list')
+def list_canvas_imports_route():
+    return jsonify({
+        "status": "success",
+        "items": list_canvas_import_items()
+    })
 
 
 @app.route('/api/canvas/import_base64', methods=['POST'])
@@ -4918,6 +5167,67 @@ def canvas_import_base64():
             "status": "success",
             "src": canvas_import_public_src(rel_name),
             "name": rel_name
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/canvas/upload_image', methods=['POST'])
+def canvas_upload_image():
+    file_storage = request.files.get("file")
+
+    if not file_storage:
+        return jsonify({"status": "error", "message": "이미지 파일이 없습니다."}), 400
+
+    original_name = canvas_upload_original_name(file_storage.filename)
+    ext = canvas_upload_extension(original_name, file_storage.content_type)
+
+    if not ext:
+        return jsonify({"status": "error", "message": "PNG, JPG, WebP 이미지만 가져올 수 있습니다."}), 400
+
+    raw = file_storage.read()
+    if not raw:
+        return jsonify({"status": "error", "message": "이미지 파일이 비어 있습니다."}), 400
+
+    try:
+        with Image.open(io.BytesIO(raw)) as img:
+            img.verify()
+    except Exception:
+        return jsonify({"status": "error", "message": "이미지 파일을 읽을 수 없습니다."}), 400
+
+    prompt_info = None
+    try:
+        temp_file = type("CanvasUploadFile", (), {"stream": io.BytesIO(raw)})()
+        extracted = extract_prompt_info_from_image_filelike(temp_file)
+        if has_prompt_info_text(extracted):
+            prompt_info = extracted
+    except Exception as e:
+        print(f"⚠️ 외부 캔버스 이미지 프롬프트 읽기 실패: {original_name} | {e}")
+
+    try:
+        save_dir, rel_dir = get_canvas_import_save_dir(
+            "canvas",
+            request.form.get("sessionId") or request.form.get("session_id")
+        )
+        os.makedirs(save_dir, exist_ok=True)
+
+        filename = f"canvas_upload_{int(time.time() * 1000)}_{random.randint(1000, 9999)}.{ext}"
+        file_path = os.path.join(save_dir, filename)
+        rel_name = f"{rel_dir}/{filename}" if rel_dir else filename
+
+        with open(file_path, "wb") as f:
+            f.write(raw)
+
+        src = canvas_import_public_src(rel_name)
+
+        return jsonify({
+            "status": "success",
+            "src": src,
+            "path": src,
+            "name": original_name,
+            "promptInfo": prompt_info,
+            "hasPromptInfo": has_prompt_info_text(prompt_info)
         })
 
     except Exception as e:
@@ -5503,6 +5813,17 @@ def daki_save_generated_to_gallery():
                 target_path = os.path.join(target_dir, filename)
                 shutil.copy2(src_image, target_path)
                 save_prompt_sidecar(target_path, prompt_info)
+                target_rel_path = os.path.relpath(target_path, CLASSIFIED_DIR).replace("\\", "/")
+                refresh_gallery_index_for_file_change(
+                    target_path,
+                    rel_path=target_rel_path,
+                    mode=infer_gallery_mode_from_rel_path(target_rel_path),
+                    character_names=json.dumps(
+                        [c["clean"] for c in detect_canvas_export_characters(prompt_info)],
+                        ensure_ascii=False
+                    ),
+                    is_dakimakura=1
+                )
 
         cleanup_errors = []
 
@@ -5601,6 +5922,11 @@ def overwrite_gallery_image():
         sidecar_saved = save_prompt_sidecar(target_full_path, final_prompt_info)
         target_rel_path = os.path.relpath(target_full_path, CLASSIFIED_DIR).replace("\\", "/")
         sync_gallery_prompt_art_styles_for_path(target_rel_path, final_prompt_info)
+        refresh_gallery_index_for_file_change(
+            target_full_path,
+            rel_path=target_rel_path,
+            mode=infer_gallery_mode_from_rel_path(target_rel_path)
+        )
 
         return jsonify({
             "status": "success",
@@ -5667,6 +5993,11 @@ def save_gallery_inpaint_as_new():
         )
         if utils.is_subpath(target_full_path, CLASSIFIED_DIR):
             sync_gallery_prompt_art_styles_for_path(target_rel_path, final_prompt_info)
+            refresh_gallery_index_for_file_change(
+                target_full_path,
+                rel_path=target_rel_path,
+                mode=infer_gallery_mode_from_rel_path(target_rel_path)
+            )
 
         return jsonify({
             "status": "success",
@@ -5851,20 +6182,20 @@ def build_canvas_export_folder(chars, is_dakimakura):
     if len(chars) == 1:
         folder = safe_folder_name(chars[0]["clean"])
         if is_dakimakura:
-            folder = f"{folder}_dakimakura"
+            folder = f"{folder}_Dakimakura"
         return os.path.join(CLASSIFIED_DIR, "1_Solo", folder)
 
     if len(chars) == 2:
         names = [safe_folder_name(c["clean"]) for c in chars[:2]]
         folder = "_and_".join(names)
         if is_dakimakura:
-            folder = f"{folder}_dakimakura"
+            folder = f"{folder}_Dakimakura"
         return os.path.join(CLASSIFIED_DIR, "2_Duo", folder)
 
     names = [safe_folder_name(c["clean"]) for c in chars[:4]]
     folder = "_and_".join(names)
     if is_dakimakura:
-        folder = f"{folder}_dakimakura"
+        folder = f"{folder}_Dakimakura"
     return os.path.join(CLASSIFIED_DIR, "3_Group", folder)
 
 

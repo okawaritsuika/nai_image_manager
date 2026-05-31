@@ -58,14 +58,19 @@ const GALLERY_SESSION_STATE_KEY = 'naia_gallery_session_state_v1';
 const GALLERY_HEADER_TOOLS_COLLAPSED_KEY = 'naia_gallery_header_tools_collapsed_v1';
 
 const GALLERY_DESIGN_SETTINGS_KEY = 'naia_gallery_design_settings_v1';
+const GALLERY_CHARACTER_NAME_OVERRIDES_KEY = 'naia_gallery_character_name_overrides_v1';
 
 let galleryDesignSettings = {
     imageScalePercent: 100,
     fixedSizeMode: false,
     fixedWidth: 260,
     fixedHeight: 360,
-    navTabRows: 1
+    navTabRows: 1,
+    characterKoreanNames: true
 };
+let galleryCharacterNameOverrides = {};
+let galleryCharacterNameManagerSort = 'count';
+let galleryCharacterNameManagerHideSaved = false;
 
 let galleryServerSessionId = '';
 let galleryPendingScrollY = null;
@@ -126,7 +131,8 @@ function normalizeGalleryDesignSettings(raw) {
         fixedSizeMode: Boolean(data.fixedSizeMode),
         fixedWidth: clampGalleryNumber(data.fixedWidth, 260, 120, 800),
         fixedHeight: clampGalleryNumber(data.fixedHeight, 360, 120, 1000),
-        navTabRows: clampGalleryNumber(data.navTabRows, 1, 1, 3)
+        navTabRows: clampGalleryNumber(data.navTabRows, 1, 1, 3),
+        characterKoreanNames: data.characterKoreanNames !== false
     };
 }
 
@@ -201,12 +207,14 @@ function syncGalleryDesignSettingsInputs() {
     const fixedModeInput = document.getElementById('galleryFixedSizeModeInput');
     const fixedWidthInput = document.getElementById('galleryFixedWidthInput');
     const fixedHeightInput = document.getElementById('galleryFixedHeightInput');
+    const characterKoreanNamesInput = document.getElementById('galleryCharacterKoreanNamesInput');
 
     if (scaleRange) scaleRange.value = galleryDesignSettings.imageScalePercent;
     if (scaleInput) scaleInput.value = galleryDesignSettings.imageScalePercent;
     if (fixedModeInput) fixedModeInput.checked = galleryDesignSettings.fixedSizeMode;
     if (fixedWidthInput) fixedWidthInput.value = galleryDesignSettings.fixedWidth;
     if (fixedHeightInput) fixedHeightInput.value = galleryDesignSettings.fixedHeight;
+    if (characterKoreanNamesInput) characterKoreanNamesInput.checked = galleryDesignSettings.characterKoreanNames;
     document.querySelectorAll('.gallery-design-nav-row-control button, .gallery-design-header-row-control button').forEach((button) => {
         button.classList.remove('active');
     });
@@ -249,6 +257,14 @@ function setGalleryFixedSizeMode(enabled) {
     galleryDesignSettings.fixedSizeMode = Boolean(enabled);
     saveGalleryDesignSettings();
     applyGalleryDesignSettingsToDocument();
+    renderView();
+}
+
+function setGalleryCharacterKoreanNames(enabled) {
+    galleryDesignSettings.characterKoreanNames = Boolean(enabled);
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+    buildFilterDropdowns(currentPath[currentPath.length - 1]);
     renderView();
 }
 
@@ -1485,6 +1501,7 @@ window.onload = () => {
     applyGalleryHeaderToolsCollapsedState();
     loadGalleryPersistentUi();
     loadGalleryDesignSettings();
+    loadGalleryCharacterNameOverrides();
     syncReasonVisibility();
     bindGalleryNavTabsScroller();
     loadData();
@@ -2828,6 +2845,562 @@ function normalizeGalleryCharacterName(value) {
         .trim();
 }
 
+const GALLERY_CHARACTER_KR_NAME_OVERRIDES = {
+    'katsuragi lilja': '카츠라기 릴리야',
+    'sakuragi mano': '사쿠라기 마노',
+    'kuramoto china': '쿠라모토 치나',
+    'rice shower': '라이스 샤워'
+};
+
+const GALLERY_CHARACTER_TITLE_SUFFIXES = [
+    'blue archive',
+    'umamusume'
+];
+
+const GALLERY_ROMAJI_KR_CHUNKS = [
+    ['kya', '캬'], ['kyu', '큐'], ['kyo', '쿄'],
+    ['gya', '갸'], ['gyu', '규'], ['gyo', '교'],
+    ['sha', '샤'], ['shu', '슈'], ['sho', '쇼'],
+    ['ja', '자'], ['ju', '주'], ['jo', '조'],
+    ['cha', '차'], ['chu', '추'], ['cho', '초'],
+    ['nya', '냐'], ['nyu', '뉴'], ['nyo', '뇨'],
+    ['hya', '햐'], ['hyu', '휴'], ['hyo', '효'],
+    ['bya', '뱌'], ['byu', '뷰'], ['byo', '뵤'],
+    ['pya', '퍄'], ['pyu', '퓨'], ['pyo', '표'],
+    ['mya', '먀'], ['myu', '뮤'], ['myo', '묘'],
+    ['rya', '랴'], ['ryu', '류'], ['ryo', '료'],
+    ['lya', '랴'], ['lyu', '류'], ['lyo', '료'],
+    ['shi', '시'], ['chi', '치'], ['tsu', '츠'],
+    ['ka', '카'], ['ki', '키'], ['ku', '쿠'], ['ke', '케'], ['ko', '코'],
+    ['ga', '가'], ['gi', '기'], ['gu', '구'], ['ge', '게'], ['go', '고'],
+    ['sa', '사'], ['su', '스'], ['se', '세'], ['so', '소'],
+    ['za', '자'], ['ji', '지'], ['zu', '즈'], ['ze', '제'], ['zo', '조'],
+    ['ta', '타'], ['te', '테'], ['to', '토'],
+    ['da', '다'], ['de', '데'], ['do', '도'],
+    ['na', '나'], ['ni', '니'], ['nu', '누'], ['ne', '네'], ['no', '노'],
+    ['ha', '하'], ['hi', '히'], ['fu', '후'], ['he', '헤'], ['ho', '호'],
+    ['ba', '바'], ['bi', '비'], ['bu', '부'], ['be', '베'], ['bo', '보'],
+    ['pa', '파'], ['pi', '피'], ['pu', '푸'], ['pe', '페'], ['po', '포'],
+    ['ma', '마'], ['mi', '미'], ['mu', '무'], ['me', '메'], ['mo', '모'],
+    ['ya', '야'], ['yu', '유'], ['yo', '요'],
+    ['ra', '라'], ['ri', '리'], ['ru', '루'], ['re', '레'], ['ro', '로'],
+    ['la', '라'], ['li', '리'], ['lu', '루'], ['le', '레'], ['lo', '로'],
+    ['wa', '와'], ['wo', '오'],
+    ['a', '아'], ['i', '이'], ['u', '우'], ['e', '에'], ['o', '오'],
+    ['n', 'ン']
+];
+
+function appendGalleryHangulFinalConsonant(text, jongIndex) {
+    const S_BASE = 0xAC00;
+    const L_COUNT = 19;
+    const V_COUNT = 21;
+    const T_COUNT = 28;
+    const N_COUNT = V_COUNT * T_COUNT;
+    const S_COUNT = L_COUNT * N_COUNT;
+
+    if (!text) return text;
+
+    const last = text.charCodeAt(text.length - 1);
+    const offset = last - S_BASE;
+
+    if (offset < 0 || offset >= S_COUNT || offset % T_COUNT !== 0) {
+        return text;
+    }
+
+    return `${text.slice(0, -1)}${String.fromCharCode(last + jongIndex)}`;
+}
+
+function transliterateGalleryRomajiWordToKorean(word) {
+    let text = String(word || '').toLowerCase().replace(/[^a-z]/g, '');
+    if (!text) return '';
+
+    let output = '';
+
+    while (text) {
+        if (/^([bcdfghjklmnpqrstvwxyz])\1/.test(text)) {
+            text = text.slice(1);
+            continue;
+        }
+
+        if (text.startsWith('n') && !/^[aeiouy]/.test(text.slice(1, 2))) {
+            const combined = appendGalleryHangulFinalConsonant(output, 4);
+            output = combined === output ? `${output}ㄴ` : combined;
+            text = text.slice(1);
+            continue;
+        }
+
+        const chunk = GALLERY_ROMAJI_KR_CHUNKS.find(([roman]) => text.startsWith(roman));
+        if (chunk) {
+            output += chunk[1] === 'ン' ? 'ㄴ' : chunk[1];
+            text = text.slice(chunk[0].length);
+        } else {
+            text = text.slice(1);
+        }
+    }
+
+    return output;
+}
+
+function getGalleryCharacterKoreanDisplayName(value) {
+    const raw = String(value || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+    const suffixMatches = [...raw.matchAll(/\s*(\([^)]*\))\s*/g)]
+        .map(match => match[1])
+        .filter(Boolean);
+
+    let baseText = raw.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+    const lowerBaseText = baseText.toLowerCase();
+    const titleSuffix = GALLERY_CHARACTER_TITLE_SUFFIXES.find((suffix) => (
+        lowerBaseText === suffix || lowerBaseText.endsWith(` ${suffix}`)
+    ));
+
+    if (titleSuffix && lowerBaseText !== titleSuffix) {
+        const suffixStart = lowerBaseText.lastIndexOf(titleSuffix);
+        const originalTitle = baseText.slice(suffixStart).trim();
+        baseText = baseText.slice(0, suffixStart).trim();
+        if (originalTitle) suffixMatches.push(`(${originalTitle})`);
+    }
+
+    const normalized = normalizeGalleryCharacterName(baseText);
+    if (!normalized) return suffixMatches.join(' ').trim();
+
+    if (!galleryDesignSettings.characterKoreanNames) {
+        return `${normalized}${suffixMatches.length ? ` ${suffixMatches.join(' ')}` : ''}`.trim();
+    }
+
+    const key = normalized.toLowerCase();
+    if (galleryCharacterNameOverrides[key]) {
+        return `${galleryCharacterNameOverrides[key]}${suffixMatches.length ? ` ${suffixMatches.join(' ')}` : ''}`;
+    }
+
+    if (GALLERY_CHARACTER_KR_NAME_OVERRIDES[key]) {
+        return `${GALLERY_CHARACTER_KR_NAME_OVERRIDES[key]}${suffixMatches.length ? ` ${suffixMatches.join(' ')}` : ''}`;
+    }
+
+    const words = normalized
+        .split(/\s+/)
+        .map(word => word.trim())
+        .filter(Boolean);
+
+    if (!words.length || words.some(word => !/^[a-zA-Z'-]+$/.test(word))) {
+        return `${normalized}${suffixMatches.length ? ` ${suffixMatches.join(' ')}` : ''}`.trim();
+    }
+
+    const translated = words
+        .map(transliterateGalleryRomajiWordToKorean)
+        .filter(Boolean)
+        .join(' ');
+
+    return `${translated || normalized}${suffixMatches.length ? ` ${suffixMatches.join(' ')}` : ''}`.trim();
+}
+
+function getGalleryCharacterBaseKey(value) {
+    const raw = String(value || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+    let baseText = raw.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+    const lowerBaseText = baseText.toLowerCase();
+    const titleSuffix = GALLERY_CHARACTER_TITLE_SUFFIXES.find((suffix) => (
+        lowerBaseText === suffix || lowerBaseText.endsWith(` ${suffix}`)
+    ));
+
+    if (titleSuffix && lowerBaseText !== titleSuffix) {
+        const suffixStart = lowerBaseText.lastIndexOf(titleSuffix);
+        baseText = baseText.slice(0, suffixStart).trim();
+    }
+
+    return normalizeGalleryCharacterName(baseText).toLowerCase();
+}
+
+function getGalleryCharacterAutoKoreanDisplayName(value) {
+    const key = getGalleryCharacterBaseKey(value);
+    const previous = galleryCharacterNameOverrides[key];
+    delete galleryCharacterNameOverrides[key];
+
+    const result = getGalleryCharacterKoreanDisplayName(value);
+
+    if (previous) {
+        galleryCharacterNameOverrides[key] = previous;
+    }
+
+    return result;
+}
+
+function splitGalleryCharacterNameParts(value) {
+    return String(value || '')
+        .split(/_and_|\s+and\s+/i)
+        .map(normalizeGalleryCharacterName)
+        .filter(Boolean);
+}
+
+function loadGalleryCharacterNameOverrides() {
+    try {
+        const raw = localStorage.getItem(GALLERY_CHARACTER_NAME_OVERRIDES_KEY);
+        const data = raw ? JSON.parse(raw) : {};
+        galleryCharacterNameOverrides = data && typeof data === 'object' && !Array.isArray(data)
+            ? Object.fromEntries(
+                Object.entries(data)
+                    .map(([key, value]) => [String(key).toLowerCase().trim(), String(value || '').trim()])
+                    .filter(([key, value]) => key && value)
+            )
+            : {};
+    } catch (error) {
+        console.warn('Gallery character name overrides restore failed:', error);
+        galleryCharacterNameOverrides = {};
+    }
+}
+
+function saveGalleryCharacterNameOverrides() {
+    try {
+        localStorage.setItem(
+            GALLERY_CHARACTER_NAME_OVERRIDES_KEY,
+            JSON.stringify(galleryCharacterNameOverrides)
+        );
+    } catch (error) {
+        console.warn('Gallery character name overrides save failed:', error);
+    }
+}
+
+function addGalleryCharacterManagerEntry(names, name, fileCount) {
+    const normalized = normalizeGalleryCharacterName(name);
+    const key = getGalleryCharacterBaseKey(normalized);
+    if (!key || !normalized) return;
+
+    if (!names.has(key)) {
+        names.set(key, {
+            rawName: normalized,
+            totalImages: 0,
+            brand: getGalleryBrandForCharacterName(normalized)
+        });
+    }
+
+    const entry = names.get(key);
+    const count = Math.max(0, Number(fileCount) || 0);
+
+    entry.totalImages += count;
+    entry.brand = entry.brand || getGalleryBrandForCharacterName(normalized);
+}
+
+function collectGalleryCharacterNamesForManager(node, names = new Map()) {
+    if (!node || typeof node !== 'object') return names;
+
+    const namesFromNode = Array.isArray(node.char_names)
+        ? node.char_names
+        : (node.path && !/^(1_Solo|2_Duo|3_Group|No_Metadata)$/i.test(String(node.name || '')))
+            ? getGalleryFolderCharacterNames(node)
+            : [];
+
+    const fileCount = Number(node.total_images || 0);
+    namesFromNode.forEach((name) => {
+        addGalleryCharacterManagerEntry(names, name, fileCount);
+    });
+
+    (Array.isArray(node.folders) ? node.folders : []).forEach((child) => {
+        collectGalleryCharacterNamesForManager(child, names);
+    });
+
+    return names;
+}
+
+function getGalleryCharacterNameManagerRows() {
+    if (!rootTree) return [];
+
+    const rows = [...collectGalleryCharacterNamesForManager(rootTree).entries()]
+        .map(([key, entry]) => ({
+            key,
+            rawName: entry.rawName,
+            autoName: getGalleryCharacterAutoKoreanDisplayName(entry.rawName),
+            customName: galleryCharacterNameOverrides[key] || '',
+            totalImages: entry.totalImages,
+            brandLabel: entry.brand || '기타 (미분류)'
+        }));
+
+    if (galleryCharacterNameManagerSort === 'name') {
+        return rows.sort((a, b) => a.rawName.localeCompare(b.rawName));
+    }
+
+    return rows.sort((a, b) => b.totalImages - a.totalImages || a.rawName.localeCompare(b.rawName));
+}
+
+function openGalleryCharacterNameManager() {
+    renderGalleryCharacterNameManager();
+    const layer = document.getElementById('galleryCharacterNameManagerLayer');
+    if (layer) layer.style.display = 'flex';
+}
+
+function closeGalleryCharacterNameManager() {
+    const layer = document.getElementById('galleryCharacterNameManagerLayer');
+    if (layer) layer.style.display = 'none';
+}
+
+function renderGalleryCharacterNameManager() {
+    const container = document.getElementById('galleryCharacterNameManagerTable');
+    if (!container) return;
+
+    const query = String(document.getElementById('galleryCharacterNameSearch')?.value || '').toLowerCase().trim();
+    const sortSelect = document.getElementById('galleryCharacterNameSort');
+    const hideSavedInput = document.getElementById('galleryCharacterNameHideSaved');
+
+    if (sortSelect) galleryCharacterNameManagerSort = sortSelect.value || 'count';
+    if (hideSavedInput) galleryCharacterNameManagerHideSaved = Boolean(hideSavedInput.checked);
+
+    const rows = getGalleryCharacterNameManagerRows()
+        .filter((row) => {
+            if (galleryCharacterNameManagerHideSaved && row.customName) return false;
+            if (!query) return true;
+            return [row.rawName, row.autoName, row.customName, row.brandLabel]
+                .join(' ')
+                .toLowerCase()
+                .includes(query);
+        });
+
+    if (!rows.length) {
+        container.innerHTML = '<div class="gallery-character-name-empty">조건에 맞는 캐릭터 이름이 없습니다.</div>';
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="gallery-character-name-table">
+            <thead>
+                <tr>
+                    <th>영어 이름</th>
+                    <th>파일 수</th>
+                    <th>브랜드</th>
+                    <th>한글 자동 번역</th>
+                    <th>사용자 수정명</th>
+                    <th>관리</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${rows.map((row) => `
+                    <tr data-character-key="${escapeHtml(row.key)}">
+                        <td>
+                            <strong>${escapeHtml(row.rawName)}</strong>
+                        </td>
+                        <td>${escapeHtml(String(row.totalImages || 0))}</td>
+                        <td>${escapeHtml(row.brandLabel || '기타 (미분류)')}</td>
+                        <td>${escapeHtml(row.autoName)}</td>
+                        <td>
+                            <input type="text"
+                                   class="gallery-character-name-input"
+                                   value="${escapeHtml(row.customName)}"
+                                   placeholder="${escapeHtml(row.autoName)}"
+                                   onkeydown="handleGalleryCharacterNameInputKey(event)">
+                        </td>
+                        <td>
+                            <button type="button" class="secondary" onclick="resetGalleryCharacterNameRow(${JSON.stringify(row.key).replace(/"/g, '&quot;')})">초기화</button>
+                        </td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+}
+
+function saveGalleryCharacterNameManager() {
+    const next = {...galleryCharacterNameOverrides};
+
+    document.querySelectorAll('#galleryCharacterNameManagerTable tr[data-character-key]').forEach((row) => {
+        const key = row.dataset.characterKey || '';
+        const value = row.querySelector('.gallery-character-name-input')?.value.trim() || '';
+        if (!key) return;
+        if (value) {
+            next[key] = value;
+        } else {
+            delete next[key];
+        }
+    });
+
+    galleryCharacterNameOverrides = next;
+    saveGalleryCharacterNameOverrides();
+    buildFilterDropdowns(currentPath[currentPath.length - 1]);
+    renderView();
+    renderGalleryCharacterNameManager();
+    flashGalleryCharacterNameManagerMessage('저장했습니다.');
+    showToast('캐릭터 이름 수정값을 저장했습니다.');
+}
+
+function resetGalleryCharacterNameRow(key) {
+    const row = document.querySelector(`#galleryCharacterNameManagerTable tr[data-character-key="${CSS.escape(key)}"]`);
+    const input = row?.querySelector('.gallery-character-name-input');
+    if (input) input.value = '';
+}
+
+function closeGalleryCharacterNameQuickEditor() {
+    const popup = document.getElementById('galleryCharacterNameQuickEditor');
+    if (popup) popup.remove();
+}
+
+function openGalleryCharacterNameQuickEditor(event, names) {
+    const normalizedNames = [...new Set((Array.isArray(names) ? names : [names])
+        .flatMap(splitGalleryCharacterNameParts)
+        .filter(Boolean))];
+
+    if (!normalizedNames.length) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    closeGalleryCharacterNameQuickEditor();
+
+    const popup = document.createElement('div');
+    popup.id = 'galleryCharacterNameQuickEditor';
+    popup.className = 'gallery-character-quick-editor';
+    popup.innerHTML = `
+        <div class="gallery-character-quick-title">캐릭터 이름 수정</div>
+        <div class="gallery-character-quick-list">
+            ${normalizedNames.map((name) => {
+                const key = getGalleryCharacterBaseKey(name);
+                const autoName = getGalleryCharacterAutoKoreanDisplayName(name);
+                const customName = galleryCharacterNameOverrides[key] || '';
+                return `
+                    <label class="gallery-character-quick-row" data-character-key="${escapeHtml(key)}">
+                        <span>
+                            <b>${escapeHtml(name)}</b>
+                            <small>${escapeHtml(autoName)}</small>
+                        </span>
+                        <input type="text"
+                               value="${escapeHtml(customName)}"
+                               placeholder="${escapeHtml(autoName)}"
+                               onkeydown="handleGalleryCharacterQuickInputKey(event)">
+                    </label>
+                `;
+            }).join('')}
+        </div>
+        <div class="gallery-character-quick-actions">
+            <button type="button" class="secondary" onclick="closeGalleryCharacterNameQuickEditor()">닫기</button>
+            <button type="button" onclick="saveGalleryCharacterNameQuickEditor()">저장</button>
+        </div>
+    `;
+
+    document.body.appendChild(popup);
+
+    const margin = 12;
+    const rect = popup.getBoundingClientRect();
+    const left = Math.min(event.clientX, window.innerWidth - rect.width - margin);
+    const top = Math.min(event.clientY, window.innerHeight - rect.height - margin);
+
+    popup.style.left = `${Math.max(margin, left)}px`;
+    popup.style.top = `${Math.max(margin, top)}px`;
+
+    const firstInput = popup.querySelector('input');
+    if (firstInput) {
+        firstInput.focus();
+        firstInput.select();
+    }
+
+    setTimeout(() => {
+        document.addEventListener('mousedown', closeGalleryCharacterQuickEditorOnOutside, {once: true});
+    }, 0);
+}
+
+function closeGalleryCharacterQuickEditorOnOutside(event) {
+    const popup = document.getElementById('galleryCharacterNameQuickEditor');
+    if (!popup) return;
+
+    if (popup.contains(event.target)) {
+        document.addEventListener('mousedown', closeGalleryCharacterQuickEditorOnOutside, {once: true});
+        return;
+    }
+
+    closeGalleryCharacterNameQuickEditor();
+}
+
+function saveGalleryCharacterNameQuickEditor() {
+    const popup = document.getElementById('galleryCharacterNameQuickEditor');
+    if (!popup) return;
+
+    popup.querySelectorAll('.gallery-character-quick-row[data-character-key]').forEach((row) => {
+        const key = row.dataset.characterKey || '';
+        const value = row.querySelector('input')?.value.trim() || '';
+        if (!key) return;
+
+        if (value) {
+            galleryCharacterNameOverrides[key] = value;
+        } else {
+            delete galleryCharacterNameOverrides[key];
+        }
+    });
+
+    saveGalleryCharacterNameOverrides();
+    closeGalleryCharacterNameQuickEditor();
+    buildFilterDropdowns(currentPath[currentPath.length - 1]);
+    renderView();
+    showToast('캐릭터 이름 수정값을 저장했습니다.');
+}
+
+function handleGalleryCharacterQuickInputKey(event) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        saveGalleryCharacterNameQuickEditor();
+        return;
+    }
+
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeGalleryCharacterNameQuickEditor();
+        return;
+    }
+
+    if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+
+    const inputs = [...document.querySelectorAll('#galleryCharacterNameQuickEditor input')];
+    const index = inputs.indexOf(event.target);
+    if (index < 0) return;
+
+    const nextIndex = event.key === 'ArrowUp'
+        ? Math.max(0, index - 1)
+        : Math.min(inputs.length - 1, index + 1);
+
+    if (nextIndex === index) return;
+
+    event.preventDefault();
+    inputs[nextIndex].focus();
+    inputs[nextIndex].select();
+}
+
+function handleGalleryCharacterNameInputKey(event) {
+    if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+
+    const inputs = [...document.querySelectorAll('#galleryCharacterNameManagerTable .gallery-character-name-input')];
+    const index = inputs.indexOf(event.target);
+    if (index < 0) return;
+
+    const nextIndex = event.key === 'ArrowUp'
+        ? Math.max(0, index - 1)
+        : Math.min(inputs.length - 1, index + 1);
+
+    if (nextIndex === index) return;
+
+    event.preventDefault();
+    inputs[nextIndex].focus();
+    inputs[nextIndex].select();
+}
+
+function flashGalleryCharacterNameManagerMessage(message) {
+    const box = document.getElementById('galleryCharacterNameSaveFlash');
+    if (!box) return;
+
+    box.innerText = message;
+    box.classList.add('show');
+
+    clearTimeout(box._hideTimer);
+    box._hideTimer = setTimeout(() => {
+        box.classList.remove('show');
+    }, 1800);
+}
+
+function getGalleryFolderKoreanDisplayName(value) {
+    const normalized = normalizeGalleryCharacterName(value);
+    if (!normalized) return '';
+
+    const parts = normalized
+        ? splitGalleryCharacterNameParts(normalized)
+        : [];
+
+    if (parts.length <= 1) {
+        return getGalleryCharacterKoreanDisplayName(normalized);
+    }
+
+    return parts.map(getGalleryCharacterKoreanDisplayName).join(' & ');
+}
+
 function getGalleryCharacterLookupKeys(value) {
     const raw = String(value || '').trim();
     const keys = new Set();
@@ -3026,8 +3599,10 @@ function updateCharChips() {
     sortedChars.forEach((item) => {
         const btn = document.createElement('button');
         btn.className = `char-chip ${currentSelectedChar === item.name ? 'active' : ''}`;
-        btn.textContent = `${item.name} (${item.count})`;
+        btn.textContent = `${getGalleryCharacterKoreanDisplayName(item.name)} (${item.count})`;
+        btn.title = item.name;
         btn.onclick = () => selectChar(item.name);
+        btn.oncontextmenu = (event) => openGalleryCharacterNameQuickEditor(event, [item.name]);
         container.appendChild(btn);
     });
 }
@@ -3102,7 +3677,7 @@ function renderView() {
         const span = document.createElement('span');
         let displayName = (idx === 1)
             ? node.name.replace(/^\d+_/, '')
-            : node.name.replace(/_\d+pcs$/i, '').replace(/_/g, ' ');
+            : getGalleryFolderKoreanDisplayName(node.name);
 
         span.innerHTML = ` <span style="color:var(--accent)">❯</span> <span style="cursor:pointer; color:${idx === currentPath.length - 1 ? '#fff' : '#888'}">${displayName}</span>`;
         span.onclick = () => {
@@ -3145,10 +3720,15 @@ function renderView() {
         const charNameText = getGalleryFolderCharacterNames(f)
             .map(name => name.toLowerCase())
             .join(' ');
+        const charNameKrText = getGalleryFolderCharacterNames(f)
+            .map(getGalleryCharacterKoreanDisplayName)
+            .join(' ')
+            .toLowerCase();
 
         const matchesSearch = !searchText ||
             folderNameText.includes(searchText) ||
-            charNameText.includes(searchText);
+            charNameText.includes(searchText) ||
+            charNameKrText.includes(searchText);
 
         if (!matchesSearch) return false;
 
@@ -3255,6 +3835,10 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
         card.dataset.bulkDeleteType = 'folder';
         card.dataset.bulkDeletePath = bulkFolderKey;
         card.dataset.bulkDeleteName = child.name || bulkFolderKey;
+        card.oncontextmenu = (event) => {
+            if (isGalleryBulkDeleteMode) return;
+            openGalleryCharacterNameQuickEditor(event, getGalleryFolderCharacterNames(child));
+        };
 
         card.onclick = (event) => {
             if (isGalleryBulkDeleteMode) {
@@ -3294,8 +3878,13 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
         const imgSrc = child.thumb ? `/image/${encodeURIComponent(child.thumb)}` : '';
         // 🌟 사람 아이콘 원상 복구 및 정확한 줄바꿈 분리
         const nameRows = (child.char_names || [child.name])
-            .flatMap(n => n.split(/ and | _and_ /i))
-            .map(n => `<div class="char-row"><span class="user-icon">👤</span><span class="char-name">${n.trim().replace(/_/g, ' ')}</span></div>`)
+            .flatMap(splitGalleryCharacterNameParts)
+            .map(n => {
+                const rawName = normalizeGalleryCharacterName(n);
+                const displayName = getGalleryCharacterKoreanDisplayName(rawName);
+                const title = rawName && rawName !== displayName ? ` title="${escapeHtml(rawName)}"` : '';
+                return `<div class="char-row"${title}><span class="user-icon">👤</span><span class="char-name">${escapeHtml(displayName)}</span></div>`;
+            })
             .join('');
 
         card.innerHTML = `

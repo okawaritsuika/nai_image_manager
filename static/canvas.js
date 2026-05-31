@@ -7,8 +7,12 @@ let activePinnedReferenceUiDrag = null;
 
 let isImageResizeMode = false;
 let activeImageResizeDrag = null;
+let isCanvasResizeMode = false;
+let activeCanvasResizeDrag = null;
 const IMAGE_RESIZE_MIN_SIZE = 16;
 const IMAGE_RESIZE_FINE_FACTOR = 0.2;
+const CANVAS_RESIZE_STEP = 64;
+const CANVAS_RESIZE_MIN_SIZE = 64;
 
 let imageResizeLastEditedAxis = 'width';
 let isSyncingImageResizeInputs = false;
@@ -58,6 +62,10 @@ let activeClipPromptId = null;
 let clipPromptViewMode = 'buttons';
 let clipPromptGroups = [];
 let selectedClipPromptGroup = null;
+let temporaryClipPromptGroups = [];
+let temporaryClipPromptGroupSeq = 1;
+let activeClipAreaSelection = null;
+let suppressNextClipPromptSelectionClear = false;
 let clipTagDictionary = {};
 let clipPromptGroupSearchText = '';
 let clipPromptGroupActiveTag = 'ALL';
@@ -369,6 +377,7 @@ let clipPromptControlGroupSeq = 1;
 
 let canvasZoom = 1;
 let clipPreviewZoom = 1;
+let activeClipAutoMaskPickClipId = null;
 let activeCanvasSetupId = null;
 let lastCanvasSurfaceHoverEvent = null;
 let canvasImportCleanupTimer = null;
@@ -385,6 +394,10 @@ let savedCanvasSetupsLoadPromise = null;
 let savedCanvasSetupsSavePromise = Promise.resolve();
 let canvasLegacySetupMigrationMessage = '';
 let pendingCanvasImportPayload = null;
+let externalCanvasImageImportBusy = false;
+let canvasImportManagerItems = [];
+let selectedCanvasImportManagerRef = '';
+let canvasImportManagerFilter = 'all';
 
 window.addEventListener('load', async () => {
     await fetchClipTagDictionary();
@@ -404,6 +417,9 @@ window.addEventListener('load', async () => {
 
     document.addEventListener('mousemove', handleImageResizeMouseMove);
     document.addEventListener('mouseup', handleImageResizeMouseUp);
+
+    document.addEventListener('mousemove', handleCanvasResizeMouseMove);
+    document.addEventListener('mouseup', handleCanvasResizeMouseUp);
 
     document.addEventListener('mousemove', handlePinnedReferenceResizeMouseMove);
     document.addEventListener('mouseup', handlePinnedReferenceResizeMouseUp);
@@ -432,6 +448,22 @@ window.addEventListener('load', async () => {
         if (!event.target.closest('.clip-mask-tool-control')) {
             closeClipMaskSizePopover();
         }
+
+        if (
+            !event.target.closest('#temporaryClipPromptGroupMenu') &&
+            !event.target.closest('.prompt-token-btn.temporary-group')
+        ) {
+            closeTemporaryClipPromptGroupMenu();
+        }
+
+        if (suppressNextClipPromptSelectionClear) {
+            suppressNextClipPromptSelectionClear = false;
+        } else if (
+            !event.target.closest('#clipGroupSelectionPopover') &&
+            !event.target.closest('#temporaryClipPromptGroupMenu')
+        ) {
+            hideClipGroupSelectionPopover();
+        }
     });
 
     document.addEventListener('keydown', (event) => {
@@ -445,6 +477,8 @@ window.addEventListener('load', async () => {
         closeCanvasImageLayerContextMenu();
         closeCanvasSelectionContextMenu();
     }, true);
+
+    bindExternalCanvasImageDropAndPaste();
 
 });
 
@@ -673,19 +707,10 @@ function renderCanvas(width, height) {
     if (emptyState) emptyState.style.display = 'none';
     stage.style.display = 'flex';
 
-    const workspace = document.querySelector('.canvas-workspace');
-    const padding = 120;
-
-    const availableWidth = Math.max(200, (workspace?.clientWidth || window.innerWidth) - padding);
-    const availableHeight = Math.max(200, (workspace?.clientHeight || window.innerHeight) - padding);
-
-    const fitScale = Math.min(
-        availableWidth / width,
-        availableHeight / height,
-        1
-    );
-
-    const scale = fitScale * canvasZoom;
+    const fitScale = getCanvasFitScale(width, height);
+    const scale = activeCanvasResizeDrag
+        ? Math.max(activeCanvasResizeDrag.displayScale || fitScale, 0.01)
+        : fitScale * canvasZoom;
 
     const displayWidth = Math.max(1, Math.round(width * scale));
     const displayHeight = Math.max(1, Math.round(height * scale));
@@ -716,6 +741,32 @@ function updateCanvasReadout(width, height, scale) {
 
     if (sizeText) sizeText.innerText = `${width} × ${height}px`;
     if (scaleText) scaleText.innerText = `화면 표시 배율 ${(scale * 100).toFixed(1)}%`;
+}
+
+function snapCanvasSizeToStep(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return CANVAS_RESIZE_MIN_SIZE;
+    return Math.max(CANVAS_RESIZE_MIN_SIZE, Math.round(numeric / CANVAS_RESIZE_STEP) * CANVAS_RESIZE_STEP);
+}
+
+function resizeCurrentCanvasTo(width, height) {
+    const nextWidth = snapCanvasSizeToStep(width);
+    const nextHeight = snapCanvasSizeToStep(height);
+
+    currentCanvasWidth = nextWidth;
+    currentCanvasHeight = nextHeight;
+
+    const widthInput = el('canvasWidthInput');
+    const heightInput = el('canvasHeightInput');
+
+    if (widthInput) widthInput.value = nextWidth;
+    if (heightInput) heightInput.value = nextHeight;
+
+    updateCanvasBaseLayer(nextWidth, nextHeight);
+    renderCanvas(nextWidth, nextHeight);
+    updateCanvasRatioInfo();
+
+    return { width: nextWidth, height: nextHeight };
 }
 
 function initializeCanvasLayers() {
@@ -1398,7 +1449,7 @@ function collectCanvasImportRefsFromValue(value, refs, seen = new WeakSet()) {
     Object.values(value).forEach((item) => collectCanvasImportRefsFromValue(item, refs, seen));
 }
 
-function collectRetainedCanvasImportRefs() {
+function collectCurrentCanvasImportRefs() {
     const refs = new Set();
 
     try {
@@ -1406,21 +1457,101 @@ function collectRetainedCanvasImportRefs() {
             collectCanvasImportRefsFromValue(buildCanvasStateSnapshot(), refs);
         }
 
-        collectCanvasImportRefsFromValue(loadSavedCanvasSetups(), refs);
-
         if (typeof referenceGenSession !== 'undefined' && referenceGenSession) {
             collectCanvasImportRefsFromValue(referenceGenSession, refs);
         }
+    } catch (error) {
+        console.warn('Current canvas import ref collection failed:', error);
+    }
 
+    return [...refs];
+}
+
+function collectSavedCanvasImportRefs() {
+    const refs = new Set();
+
+    try {
+        collectCanvasImportRefsFromValue(loadSavedCanvasSetups(), refs);
+    } catch (error) {
+        console.warn('Saved canvas import ref collection failed:', error);
+    }
+
+    return [...refs];
+}
+
+function collectStoredCanvasImportRefs() {
+    const refs = new Set();
+
+    try {
         const rawState = localStorage.getItem(CANVAS_STATE_KEY);
         if (rawState) {
             collectCanvasImportRefsFromValue(JSON.parse(rawState), refs);
         }
     } catch (error) {
-        console.warn('Canvas import ref collection failed:', error);
+        console.warn('Stored canvas import ref collection failed:', error);
     }
 
     return [...refs];
+}
+
+function collectRetainedCanvasImportRefs() {
+    return [
+        ...new Set([
+            ...collectCurrentCanvasImportRefs(),
+            ...collectSavedCanvasImportRefs(),
+            ...collectStoredCanvasImportRefs()
+        ])
+    ];
+}
+
+function buildCanvasImportUsageIndex() {
+    return {
+        current: new Set(collectCurrentCanvasImportRefs()),
+        saved: new Set(collectSavedCanvasImportRefs()),
+        stored: new Set(collectStoredCanvasImportRefs())
+    };
+}
+
+function getCanvasImportUsageStatus(ref, usageIndex = buildCanvasImportUsageIndex()) {
+    const normalizedRef = normalizeCanvasImportRef(ref) || canvas_import_ref_fallback(ref);
+
+    if (usageIndex.current.has(normalizedRef)) {
+        return {
+            key: 'current',
+            label: '현재 캔버스 사용 중',
+            detail: '지금 열린 캔버스나 참조 이미지 생성에서 쓰고 있습니다.',
+            deletable: false
+        };
+    }
+
+    if (usageIndex.saved.has(normalizedRef)) {
+        return {
+            key: 'saved',
+            label: '저장 캔버스 사용 중',
+            detail: '저장한 캔버스를 불러올 때 필요한 파일입니다.',
+            deletable: false
+        };
+    }
+
+    if (usageIndex.stored.has(normalizedRef)) {
+        return {
+            key: 'stored',
+            label: '자동저장 사용 중',
+            detail: '브라우저 자동저장 상태에서 참조 중입니다.',
+            deletable: false
+        };
+    }
+
+    return {
+        key: 'unused',
+        label: '삭제 가능',
+        detail: '현재 캔버스와 저장 캔버스에서 사용하지 않습니다.',
+        deletable: true
+    };
+}
+
+function canvas_import_ref_fallback(ref) {
+    return String(ref || '').replace(/\\/g, '/').replace(/^\/+/, '');
 }
 
 function collectCanvasImportRefsFromLayer(layer) {
@@ -1570,7 +1701,20 @@ function showPendingCanvasImportModal(payload) {
     const existing = el('pendingCanvasImportModal');
     if (existing) existing.remove();
 
+    const hasCanvas = hasUsableCurrentCanvas();
     const alreadySaved = isCurrentCanvasAlreadySaved();
+    const hasPrompt = Boolean(payload.hasPromptInfo || hasAnyPromptText(payload.promptInfo));
+    const promptStatusHtml = hasPrompt
+        ? `
+            <div class="canvas-tool-hint" style="margin-bottom:14px;">
+                프롬프트를 읽었습니다. 갤러리에서 가져온 이미지처럼 프롬프트 정보가 레이어에 함께 들어갑니다.
+            </div>
+        `
+        : `
+            <div class="canvas-tool-hint" style="margin-bottom:14px;">
+                이 이미지에서 읽을 수 있는 프롬프트를 찾지 못했습니다. 이미지만 레이어로 가져옵니다.
+            </div>
+        `;
 
     const modal = document.createElement('div');
     modal.id = 'pendingCanvasImportModal';
@@ -1589,8 +1733,12 @@ function showPendingCanvasImportModal(payload) {
                 <strong style="color:var(--text-main);">${escapeHtml(payload.name || '이미지')}</strong>
             </div>
 
+            ${promptStatusHtml}
+
             ${
-                alreadySaved
+                !hasCanvas
+                    ? ''
+                    : alreadySaved
                     ? `
                         <div class="canvas-tool-hint" style="margin-bottom:14px;">
                             현재 캔버스와 같은 저장본이 있어 저장 확인은 생략합니다.
@@ -1608,13 +1756,23 @@ function showPendingCanvasImportModal(payload) {
             }
 
             <div class="canvas-modal-actions" style="display:flex; flex-direction:column; gap:8px;">
-                <button class="success" onclick="confirmPendingCanvasImport('append')" style="width:100%;">
-                    기존 캔버스에 그림 추가
-                </button>
+                ${
+                    hasCanvas
+                        ? `
+                            <button class="success" onclick="confirmPendingCanvasImport('append')" style="width:100%;">
+                                기존 캔버스에 그림 추가
+                            </button>
 
-                <button class="secondary" onclick="confirmPendingCanvasImport('reset')" style="width:100%;">
-                    기존 캔버스를 초기화하고 그림 추가
-                </button>
+                            <button class="secondary" onclick="confirmPendingCanvasImport('reset')" style="width:100%;">
+                                기존 캔버스를 초기화하고 그림 추가
+                            </button>
+                        `
+                        : `
+                            <button class="success" onclick="confirmPendingCanvasImport('append')" style="width:100%;">
+                                새 캔버스로 가져오기
+                            </button>
+                        `
+                }
 
                 <button class="secondary" onclick="cancelPendingCanvasImport()" style="width:100%;">
                     취소
@@ -1678,6 +1836,430 @@ async function confirmPendingCanvasImport(mode) {
 function cancelPendingCanvasImport() {
     localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
     closePendingCanvasImportModal();
+}
+
+function formatCanvasImportSize(bytes) {
+    const size = Number(bytes) || 0;
+    if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+    if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+    return `${size} B`;
+}
+
+function formatCanvasImportDate(timestamp) {
+    const date = new Date(Number(timestamp) || 0);
+    if (Number.isNaN(date.getTime())) return '날짜 없음';
+    return date.toLocaleString();
+}
+
+function getCanvasImportPromptSummary(item) {
+    if (!item?.hasPromptInfo && !hasAnyPromptText(item?.promptInfo)) {
+        return '프롬프트 없음';
+    }
+
+    const promptInfo = normalizePromptInfo(item.promptInfo);
+    const promptText = promptInfo?.prompt || promptInfo?.description || promptInfo?.uc || '';
+    const summary = String(promptText || '').trim().replace(/\s+/g, ' ');
+
+    return summary ? `프롬프트 있음 · ${summary.slice(0, 90)}` : '프롬프트 있음';
+}
+
+function closeCanvasImportManagerModal() {
+    const modal = el('canvasImportManagerModal');
+    if (modal) modal.remove();
+    selectedCanvasImportManagerRef = '';
+}
+
+function ensureCanvasImportManagerModal() {
+    const existing = el('canvasImportManagerModal');
+    if (existing) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = 'canvasImportManagerModal';
+    modal.className = 'modal-overlay';
+    modal.style.display = 'flex';
+    modal.innerHTML = `
+        <div class="modal-content canvas-import-manager-modal">
+            <div class="canvas-modal-header">
+                <h3>외부 이미지 목록</h3>
+                <button class="icon-btn danger" type="button" id="canvasImportManagerCloseBtn">×</button>
+            </div>
+            <div class="canvas-import-manager-filters" id="canvasImportManagerFilters">
+                <button type="button" data-filter="all" class="active">전체</button>
+                <button type="button" data-filter="unused">삭제 가능</button>
+                <button type="button" data-filter="protected">사용 중</button>
+            </div>
+            <div class="canvas-import-manager-layout">
+                <div class="canvas-import-manager-list" id="canvasImportManagerList">
+                    <div class="saved-canvas-empty">외부 이미지를 불러오는 중입니다.</div>
+                </div>
+                <div class="canvas-import-manager-preview" id="canvasImportManagerPreview">
+                    <div class="canvas-import-manager-empty">왼쪽 목록에서 이미지를 선택하세요.</div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    modal.querySelector('#canvasImportManagerCloseBtn')?.addEventListener('click', closeCanvasImportManagerModal);
+    modal.querySelectorAll('#canvasImportManagerFilters button[data-filter]').forEach((button) => {
+        button.addEventListener('click', () => {
+            canvasImportManagerFilter = button.dataset.filter || 'all';
+            selectedCanvasImportManagerRef = '';
+            renderCanvasImportManagerList();
+            renderCanvasImportManagerPreview();
+        });
+    });
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeCanvasImportManagerModal();
+    });
+
+    document.body.appendChild(modal);
+    return modal;
+}
+
+async function openCanvasImportManagerModal() {
+    ensureCanvasImportManagerModal();
+    await loadCanvasImportManagerItems();
+}
+
+async function loadCanvasImportManagerItems() {
+    const listEl = el('canvasImportManagerList');
+    const previewEl = el('canvasImportManagerPreview');
+
+    if (listEl) listEl.innerHTML = `<div class="saved-canvas-empty">외부 이미지를 불러오는 중입니다.</div>`;
+    if (previewEl) previewEl.innerHTML = `<div class="canvas-import-manager-empty">왼쪽 목록에서 이미지를 선택하세요.</div>`;
+
+    try {
+        const response = await fetch('/api/canvas/imports/list');
+        const data = await response.json();
+
+        if (!response.ok || data.status !== 'success') {
+            throw new Error(data.message || '외부 이미지 목록을 불러오지 못했습니다.');
+        }
+
+        canvasImportManagerItems = Array.isArray(data.items) ? data.items : [];
+        selectedCanvasImportManagerRef = canvasImportManagerItems[0]?.ref || '';
+        renderCanvasImportManagerList();
+        renderCanvasImportManagerPreview();
+
+    } catch (error) {
+        canvasImportManagerItems = [];
+        selectedCanvasImportManagerRef = '';
+        if (listEl) {
+            listEl.innerHTML = `<div class="saved-canvas-empty">목록 불러오기 실패: ${escapeHtml(error.message || error)}</div>`;
+        }
+    }
+}
+
+function renderCanvasImportManagerList() {
+    const listEl = el('canvasImportManagerList');
+    if (!listEl) return;
+
+    listEl.innerHTML = '';
+    const usageIndex = buildCanvasImportUsageIndex();
+    const visibleItems = canvasImportManagerItems.filter((item) => {
+        const status = getCanvasImportUsageStatus(item.ref, usageIndex);
+
+        if (canvasImportManagerFilter === 'unused') return status.deletable;
+        if (canvasImportManagerFilter === 'protected') return !status.deletable;
+        return true;
+    });
+
+    document.querySelectorAll('#canvasImportManagerFilters button[data-filter]').forEach((button) => {
+        button.classList.toggle('active', (button.dataset.filter || 'all') === canvasImportManagerFilter);
+    });
+
+    if (!canvasImportManagerItems.length) {
+        listEl.innerHTML = `<div class="saved-canvas-empty">남아있는 외부 이미지가 없습니다.</div>`;
+        return;
+    }
+
+    if (!visibleItems.length) {
+        selectedCanvasImportManagerRef = '';
+        listEl.innerHTML = `<div class="saved-canvas-empty">이 조건에 맞는 외부 이미지가 없습니다.</div>`;
+        return;
+    }
+
+    if (!visibleItems.some((item) => item.ref === selectedCanvasImportManagerRef)) {
+        selectedCanvasImportManagerRef = visibleItems[0]?.ref || '';
+    }
+
+    visibleItems.forEach((item) => {
+        const status = getCanvasImportUsageStatus(item.ref, usageIndex);
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = `canvas-import-manager-item${item.ref === selectedCanvasImportManagerRef ? ' active' : ''}`;
+        row.innerHTML = `
+            <img src="${escapeHtml(item.src)}" alt="">
+            <span class="canvas-import-manager-item-info">
+                <strong>${escapeHtml(item.name || '외부 이미지')}</strong>
+                <span class="canvas-import-manager-status ${status.key}">${escapeHtml(status.label)}</span>
+                <span>${escapeHtml(item.categoryLabel || '기타')} · ${escapeHtml(formatCanvasImportDate(item.mtime))}</span>
+                <span>${escapeHtml(item.width || '?')}×${escapeHtml(item.height || '?')} · ${escapeHtml(formatCanvasImportSize(item.size))}</span>
+                <span class="${item.hasPromptInfo ? 'has-prompt' : ''}">${escapeHtml(getCanvasImportPromptSummary(item))}</span>
+            </span>
+        `;
+        row.addEventListener('click', () => {
+            selectedCanvasImportManagerRef = item.ref;
+            renderCanvasImportManagerList();
+            renderCanvasImportManagerPreview();
+        });
+        listEl.appendChild(row);
+    });
+}
+
+function getSelectedCanvasImportManagerItem() {
+    return canvasImportManagerItems.find((item) => item.ref === selectedCanvasImportManagerRef) || null;
+}
+
+function renderCanvasImportManagerPreview() {
+    const previewEl = el('canvasImportManagerPreview');
+    if (!previewEl) return;
+
+    const item = getSelectedCanvasImportManagerItem();
+    if (!item) {
+        previewEl.innerHTML = `<div class="canvas-import-manager-empty">왼쪽 목록에서 이미지를 선택하세요.</div>`;
+        return;
+    }
+    const status = getCanvasImportUsageStatus(item.ref);
+
+    previewEl.innerHTML = '';
+
+    const imageWrap = document.createElement('div');
+    imageWrap.className = 'canvas-import-manager-image-wrap';
+    imageWrap.innerHTML = `<img src="${escapeHtml(item.src)}" alt="">`;
+
+    const details = document.createElement('div');
+    details.className = 'canvas-import-manager-details';
+    details.innerHTML = `
+        <div class="canvas-import-manager-name">${escapeHtml(item.name || '외부 이미지')}</div>
+        <div><span class="canvas-import-manager-status ${status.key}">${escapeHtml(status.label)}</span></div>
+        <div>${escapeHtml(status.detail)}</div>
+        <div>${escapeHtml(item.width || '?')}×${escapeHtml(item.height || '?')} · ${escapeHtml(formatCanvasImportSize(item.size))}</div>
+        <div>${escapeHtml(item.categoryLabel || '기타')} · ${escapeHtml(formatCanvasImportDate(item.mtime))}</div>
+        <div class="${item.hasPromptInfo ? 'has-prompt' : ''}">${escapeHtml(getCanvasImportPromptSummary(item))}</div>
+    `;
+
+    const actions = document.createElement('div');
+    actions.className = 'canvas-import-manager-actions';
+
+    const importBtn = document.createElement('button');
+    importBtn.type = 'button';
+    importBtn.className = 'success';
+    importBtn.innerText = '캔버스로 가져오기';
+    importBtn.addEventListener('click', () => importCanvasImportManagerItem(item.ref));
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'danger';
+    deleteBtn.innerText = '삭제';
+    deleteBtn.disabled = !status.deletable;
+    deleteBtn.title = status.deletable ? '이 파일은 삭제할 수 있습니다.' : status.detail;
+    deleteBtn.addEventListener('click', () => deleteCanvasImportManagerItem(item.ref));
+
+    actions.append(importBtn, deleteBtn);
+    previewEl.append(imageWrap, details, actions);
+}
+
+function importCanvasImportManagerItem(ref) {
+    const item = canvasImportManagerItems.find((entry) => entry.ref === ref);
+    if (!item) return;
+
+    closeCanvasImportManagerModal();
+    showPendingCanvasImportModal({
+        src: item.src,
+        path: item.src,
+        name: item.name || '외부 이미지',
+        promptInfo: item.promptInfo || null,
+        hasPromptInfo: Boolean(item.hasPromptInfo),
+        importedAt: Date.now()
+    });
+}
+
+async function deleteCanvasImportManagerItem(ref) {
+    const item = canvasImportManagerItems.find((entry) => entry.ref === ref);
+    if (!item) return;
+
+    const status = getCanvasImportUsageStatus(ref);
+    if (!status.deletable) {
+        alert(`${status.label}이라 삭제하지 않았습니다.\n${status.detail}`);
+        return;
+    }
+
+    const ok = confirm(`'${item.name || '외부 이미지'}' 파일을 삭제할까요?\n현재 캔버스나 저장된 캔버스에서 사용 중이면 삭제되지 않습니다.`);
+    if (!ok) return;
+
+    try {
+        const response = await fetch('/api/canvas/cleanup_import_refs', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                refs: [ref],
+                retainedRefs: collectRetainedCanvasImportRefs()
+            })
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.status !== 'success') {
+            throw new Error(data.message || '외부 이미지를 삭제하지 못했습니다.');
+        }
+
+        if (Number(data.deleted || 0) > 0) {
+            showToast('외부 이미지를 삭제했습니다.');
+        } else {
+            alert('삭제되지 않았습니다. 현재 캔버스나 저장된 캔버스에서 사용 중일 수 있습니다.');
+        }
+
+        await loadCanvasImportManagerItems();
+
+    } catch (error) {
+        alert(`외부 이미지 삭제 실패: ${error.message || error}`);
+    }
+}
+
+function openExternalCanvasImagePicker() {
+    const input = el('externalCanvasImageInput');
+    if (input) input.click();
+}
+
+function isSupportedExternalCanvasImage(file) {
+    if (!file) return false;
+
+    const type = String(file.type || '').toLowerCase();
+    if (['image/png', 'image/jpeg', 'image/webp'].includes(type)) {
+        return true;
+    }
+
+    return /\.(png|jpe?g|webp)$/i.test(String(file.name || ''));
+}
+
+async function handleExternalCanvasImageSelected(input) {
+    const file = input?.files?.[0] || null;
+    if (input) input.value = '';
+    if (!file) return;
+
+    await importExternalCanvasImageFile(file);
+}
+
+async function importExternalCanvasImageFile(file) {
+    if (!file) return;
+
+    if (!isSupportedExternalCanvasImage(file)) {
+        alert('PNG, JPG, WebP 이미지만 가져올 수 있습니다.');
+        return;
+    }
+
+    if (externalCanvasImageImportBusy) return;
+    externalCanvasImageImportBusy = true;
+
+    const button = el('externalCanvasImageBtn');
+    if (button) {
+        button.disabled = true;
+        button.dataset.originalText = button.innerText;
+        button.innerText = '가져오는 중...';
+    }
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('sessionId', CANVAS_IMPORT_SESSION_ID);
+
+        const response = await fetch('/api/canvas/upload_image', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || data.status !== 'success') {
+            throw new Error(data.message || '외부 이미지를 가져오지 못했습니다.');
+        }
+
+        const payload = {
+            src: data.src,
+            path: data.path || data.src || '',
+            name: data.name || file.name || '외부 이미지',
+            promptInfo: data.promptInfo || null,
+            hasPromptInfo: Boolean(data.hasPromptInfo),
+            importedAt: Date.now()
+        };
+
+        if (!payload.src) {
+            throw new Error('업로드된 이미지 경로가 없습니다.');
+        }
+
+        showPendingCanvasImportModal(payload);
+
+    } catch (error) {
+        alert(`외부 이미지 가져오기 실패: ${error.message || error}`);
+
+    } finally {
+        externalCanvasImageImportBusy = false;
+        if (button) {
+            button.disabled = false;
+            button.innerText = button.dataset.originalText || '📁 외부 이미지 가져오기';
+            delete button.dataset.originalText;
+        }
+    }
+}
+
+function getFirstSupportedImageFileFromList(files) {
+    return [...(files || [])].find((file) => isSupportedExternalCanvasImage(file)) || null;
+}
+
+function isEditablePasteTarget(target) {
+    if (!target) return false;
+    const tag = String(target.tagName || '').toLowerCase();
+    return target.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select';
+}
+
+function bindExternalCanvasImageDropAndPaste() {
+    const surface = el('canvasSurface');
+    const workspace = document.querySelector('.canvas-workspace');
+
+    const bindDropTarget = (target) => {
+        if (!target || target.dataset.externalImageDropBound === '1') return;
+
+        target.dataset.externalImageDropBound = '1';
+
+        target.addEventListener('dragover', (event) => {
+            if (![...(event.dataTransfer?.types || [])].includes('Files')) return;
+
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+            (workspace || target).classList.add('external-image-drag-over');
+        });
+
+        target.addEventListener('dragleave', (event) => {
+            if (target.contains(event.relatedTarget)) return;
+            (workspace || target).classList.remove('external-image-drag-over');
+        });
+
+        target.addEventListener('drop', async (event) => {
+            const file = getFirstSupportedImageFileFromList(event.dataTransfer?.files);
+            if (!file) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            (workspace || target).classList.remove('external-image-drag-over');
+            await importExternalCanvasImageFile(file);
+        });
+    };
+
+    bindDropTarget(workspace);
+    bindDropTarget(surface);
+
+    if (document.body?.dataset.externalImagePasteBound === '1') return;
+    if (document.body) document.body.dataset.externalImagePasteBound = '1';
+
+    document.addEventListener('paste', async (event) => {
+        if (isEditablePasteTarget(event.target)) return;
+
+        const file = getFirstSupportedImageFileFromList(event.clipboardData?.files);
+        if (!file) return;
+
+        event.preventDefault();
+        await importExternalCanvasImageFile(file);
+    });
 }
 
 async function consumePendingCanvasImport() {
@@ -1780,8 +2362,240 @@ function renderCanvasLayersOnSurface() {
 
     renderCanvasLayerStack(canvasLayers, surface, displayScale);
     renderMultiLayerTransformOverlay(surface, displayScale);
+    renderClampedImageResizeHandles(surface, displayScale);
     renderClipOutputPanel();
     renderPinnedReferencePanel();
+    renderCanvasResizeHandles(surface, displayScale);
+    renderCanvasResizeSpacingGuides(surface, displayScale);
+}
+
+function renderCanvasResizeHandles(surface, displayScale) {
+    if (!isCanvasResizeMode || !currentCanvasWidth || !currentCanvasHeight) return;
+
+    const right = currentCanvasWidth * displayScale;
+    const bottom = currentCanvasHeight * displayScale;
+    const centerX = right / 2;
+    const centerY = bottom / 2;
+
+    const positions = {
+        tl: { left: 0, top: 0 },
+        t: { left: centerX, top: 0 },
+        tr: { left: right, top: 0 },
+        r: { left: right, top: centerY },
+        br: { left: right, top: bottom },
+        b: { left: centerX, top: bottom },
+        bl: { left: 0, top: bottom },
+        l: { left: 0, top: centerY }
+    };
+
+    Object.entries(positions).forEach(([handle, point]) => {
+        const node = document.createElement('div');
+        node.className = `canvas-resize-handle ${handle}`;
+        node.dataset.handle = handle;
+        node.style.left = `${point.left}px`;
+        node.style.top = `${point.top}px`;
+        node.onmousedown = (event) => startCanvasResizeDrag(event, handle);
+        surface.appendChild(node);
+    });
+}
+
+function getCanvasResizeImageBounds() {
+    let bounds = null;
+
+    forEachCanvasLayerDeep(canvasLayers, (layer) => {
+        if (!layer || layer.type !== 'image' || !layer.src || layer.visible === false || layer.pinnedReference) return;
+
+        normalizeImageLayerGeometry(layer);
+
+        const x = Number(layer.x || 0);
+        const y = Number(layer.y || 0);
+        const width = Number(layer.layerWidth || layer.imageWidth || 0);
+        const height = Number(layer.layerHeight || layer.imageHeight || 0);
+        if (!width || !height) return;
+
+        const next = {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height
+        };
+
+        if (!bounds) {
+            bounds = next;
+            return;
+        }
+
+        bounds.left = Math.min(bounds.left, next.left);
+        bounds.top = Math.min(bounds.top, next.top);
+        bounds.right = Math.max(bounds.right, next.right);
+        bounds.bottom = Math.max(bounds.bottom, next.bottom);
+    });
+
+    return bounds;
+}
+
+function renderCanvasResizeSpacingGuides(surface, displayScale) {
+    if (!activeCanvasResizeDrag || !currentCanvasWidth || !currentCanvasHeight) return;
+
+    const bounds = getCanvasResizeImageBounds();
+    if (!bounds) return;
+
+    const spacing = {
+        left: Math.round(bounds.left),
+        right: Math.round(currentCanvasWidth - bounds.right),
+        top: Math.round(bounds.top),
+        bottom: Math.round(currentCanvasHeight - bounds.bottom)
+    };
+
+    const labels = [
+        {
+            key: 'left',
+            text: `좌 ${spacing.left}px`,
+            left: Math.max(6, (bounds.left * displayScale) / 2),
+            top: Math.max(18, ((bounds.top + bounds.bottom) / 2) * displayScale)
+        },
+        {
+            key: 'right',
+            text: `우 ${spacing.right}px`,
+            left: Math.min(currentCanvasWidth * displayScale - 6, ((bounds.right + currentCanvasWidth) / 2) * displayScale),
+            top: Math.max(18, ((bounds.top + bounds.bottom) / 2) * displayScale)
+        },
+        {
+            key: 'top',
+            text: `상 ${spacing.top}px`,
+            left: Math.max(6, ((bounds.left + bounds.right) / 2) * displayScale),
+            top: Math.max(18, (bounds.top * displayScale) / 2)
+        },
+        {
+            key: 'bottom',
+            text: `하 ${spacing.bottom}px`,
+            left: Math.max(6, ((bounds.left + bounds.right) / 2) * displayScale),
+            top: Math.min(currentCanvasHeight * displayScale - 6, ((bounds.bottom + currentCanvasHeight) / 2) * displayScale)
+        }
+    ];
+
+    labels.forEach((label) => {
+        const node = document.createElement('div');
+        node.className = `canvas-resize-spacing-label ${label.key}`;
+        node.innerText = label.text;
+        node.style.left = `${label.left}px`;
+        node.style.top = `${label.top}px`;
+        surface.appendChild(node);
+    });
+}
+
+function getResizeBoundsForLayer(layer) {
+    if (!layer || layer.type !== 'image') return null;
+
+    normalizeImageLayerGeometry(layer);
+
+    return {
+        x: Number(layer.x || 0),
+        y: Number(layer.y || 0),
+        width: Number(layer.layerWidth || layer.imageWidth || 1),
+        height: Number(layer.layerHeight || layer.imageHeight || 1)
+    };
+}
+
+function getResizeHandleCanvasPoint(bounds, handle) {
+    const left = bounds.x;
+    const top = bounds.y;
+    const right = bounds.x + bounds.width;
+    const bottom = bounds.y + bounds.height;
+    const centerX = bounds.x + bounds.width / 2;
+    const centerY = bounds.y + bounds.height / 2;
+
+    const positions = {
+        tl: { x: left, y: top },
+        t: { x: centerX, y: top },
+        tr: { x: right, y: top },
+        r: { x: right, y: centerY },
+        br: { x: right, y: bottom },
+        b: { x: centerX, y: bottom },
+        bl: { x: left, y: bottom },
+        l: { x: left, y: centerY }
+    };
+
+    return positions[handle] || null;
+}
+
+function isResizeHandleOutsideCanvas(point) {
+    if (!point) return false;
+
+    return (
+        point.x < 0 ||
+        point.y < 0 ||
+        point.x > currentCanvasWidth ||
+        point.y > currentCanvasHeight
+    );
+}
+
+function getClampedResizeHandlePoint(point, displayScale) {
+    const inset = 10 / Math.max(displayScale, 0.01);
+    const maxX = Math.max(inset, currentCanvasWidth - inset);
+    const maxY = Math.max(inset, currentCanvasHeight - inset);
+
+    return {
+        x: Math.min(maxX, Math.max(inset, point.x)),
+        y: Math.min(maxY, Math.max(inset, point.y))
+    };
+}
+
+function appendClampedResizeHandle(surface, displayScale, handle, point, onStart) {
+    if (!isResizeHandleOutsideCanvas(point)) return;
+
+    const clamped = getClampedResizeHandlePoint(point, displayScale);
+    const node = document.createElement('div');
+    node.className = `image-resize-clamped-handle ${handle}`;
+    node.dataset.handle = handle;
+    node.style.left = `${clamped.x * displayScale}px`;
+    node.style.top = `${clamped.y * displayScale}px`;
+
+    node.onmousedown = (event) => {
+        onStart(event, handle);
+    };
+
+    surface.appendChild(node);
+}
+
+function appendClampedResizeHandles(surface, displayScale, bounds, onStart) {
+    if (!bounds) return;
+
+    ['tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l'].forEach((handle) => {
+        appendClampedResizeHandle(
+            surface,
+            displayScale,
+            handle,
+            getResizeHandleCanvasPoint(bounds, handle),
+            onStart
+        );
+    });
+}
+
+function renderClampedImageResizeHandles(surface, displayScale) {
+    if (!isImageResizeMode) return;
+
+    const selectedTransformLayers = getSelectedTransformLayers();
+
+    if (selectedTransformLayers.length >= 2) {
+        appendClampedResizeHandles(
+            surface,
+            displayScale,
+            getTransformLayerBounds(selectedTransformLayers),
+            (event, handle) => startMultiImageResizeDrag(event, handle)
+        );
+        return;
+    }
+
+    const layer = getActiveTransformLayerOrNull();
+    if (!layer || layer.type !== 'image') return;
+
+    appendClampedResizeHandles(
+        surface,
+        displayScale,
+        getResizeBoundsForLayer(layer),
+        (event, handle) => startImageResizeDrag(event, layer.id, handle)
+    );
 }
 
 function renderMultiLayerTransformOverlay(surface, displayScale) {
@@ -2793,6 +3607,11 @@ function toggleLayerMoveMode() {
 function toggleImageResizeMode() {
     isImageResizeMode = !isImageResizeMode;
     activeImageResizeDrag = null;
+    hideImageResizeGuideOverlay();
+
+    if (isImageResizeMode && isCanvasResizeMode) {
+        setCanvasResizeMode(false);
+    }
 
     if (isImageResizeMode && isLayerMoveMode) {
         isLayerMoveMode = false;
@@ -2823,6 +3642,86 @@ function toggleImageResizeMode() {
     }
 
     renderCanvasLayersOnSurface();
+}
+
+function getCanvasFitScale(width, height) {
+    const workspace = document.querySelector('.canvas-workspace');
+    const padding = 120;
+
+    const availableWidth = Math.max(200, (workspace?.clientWidth || window.innerWidth) - padding);
+    const availableHeight = Math.max(200, (workspace?.clientHeight || window.innerHeight) - padding);
+
+    return Math.min(
+        availableWidth / Math.max(1, width),
+        availableHeight / Math.max(1, height),
+        1
+    );
+}
+
+function setCanvasResizeMode(enabled) {
+    isCanvasResizeMode = Boolean(enabled);
+    activeCanvasResizeDrag = null;
+
+    const btn = el('canvasResizeToolBtn');
+    const hint = el('canvasResizeToolHint');
+    const surface = el('canvasSurface');
+
+    if (btn) btn.classList.toggle('active', isCanvasResizeMode);
+    if (surface) surface.classList.toggle('canvas-resize-mode', isCanvasResizeMode);
+
+    if (hint) {
+        hint.innerText = isCanvasResizeMode
+            ? '캔버스 오른쪽/아래쪽/오른쪽 아래 핸들을 드래그하세요. 크기는 64 단위로 맞춰집니다.'
+            : '버튼을 켠 뒤 캔버스 오른쪽/아래쪽/오른쪽 아래 핸들을 드래그하세요.';
+    }
+
+    if (!isCanvasResizeMode) {
+        hideCanvasResizeTooltip();
+    }
+
+    renderCanvasLayersOnSurface();
+}
+
+function toggleCanvasResizeMode() {
+    if (!currentCanvasWidth || !currentCanvasHeight) {
+        alert('먼저 캔버스를 생성해 주세요.');
+        return;
+    }
+
+    const nextEnabled = !isCanvasResizeMode;
+
+    if (nextEnabled && isImageResizeMode) {
+        isImageResizeMode = false;
+        activeImageResizeDrag = null;
+        hideImageResizeGuideOverlay();
+
+        const imageBtn = el('imageResizeToolBtn');
+        const imageHint = el('imageResizeToolHint');
+        const surface = el('canvasSurface');
+
+        if (imageBtn) imageBtn.classList.remove('active');
+        if (surface) surface.classList.remove('image-resize-mode');
+        if (imageHint) {
+            imageHint.innerText = '버튼을 켠 뒤 이미지 레이어를 선택하고 가장자리/모서리를 드래그하세요.';
+        }
+    }
+
+    if (nextEnabled && isLayerMoveMode) {
+        isLayerMoveMode = false;
+        activeLayerDrag = null;
+
+        const moveBtn = el('layerMoveToolBtn');
+        const moveHint = el('layerMoveToolHint');
+        const surface = el('canvasSurface');
+
+        if (moveBtn) moveBtn.classList.remove('active');
+        if (surface) surface.classList.remove('move-mode');
+        if (moveHint) {
+            moveHint.innerText = '이동 버튼을 켠 뒤 캔버스 위 이미지 레이어를 드래그하세요.';
+        }
+    }
+
+    setCanvasResizeMode(nextEnabled);
 }
 
 function toggleSelectionOverlayVisibility() {
@@ -4360,6 +5259,295 @@ function hideSelectionSizeTooltip() {
     if (tooltip) tooltip.style.display = 'none';
 }
 
+function getCanvasResizeTooltip() {
+    let tooltip = el('canvasResizeTooltip');
+
+    if (!tooltip) {
+        tooltip = document.createElement('div');
+        tooltip.id = 'canvasResizeTooltip';
+        tooltip.className = 'canvas-resize-tooltip';
+        document.body.appendChild(tooltip);
+    }
+
+    return tooltip;
+}
+
+function updateCanvasResizeTooltip(clientX, clientY, width, height) {
+    const tooltip = getCanvasResizeTooltip();
+    tooltip.innerText = `적용 크기: ${width} × ${height}px`;
+    tooltip.style.display = 'block';
+    tooltip.style.left = `${clientX + 10}px`;
+    tooltip.style.top = `${clientY - 38}px`;
+}
+
+function hideCanvasResizeTooltip() {
+    const tooltip = el('canvasResizeTooltip');
+    if (tooltip) tooltip.style.display = 'none';
+}
+
+function startCanvasResizeDrag(event, handle) {
+    if (!isCanvasResizeMode || !currentCanvasWidth || !currentCanvasHeight) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const surface = el('canvasSurface');
+    if (!surface) return;
+
+    const rect = surface.getBoundingClientRect();
+    const displayScale = getCanvasDisplayScale();
+
+    activeCanvasResizeDrag = {
+        handle,
+        surfaceLeft: rect.left,
+        surfaceTop: rect.top,
+        startDisplayWidth: rect.width,
+        startDisplayHeight: rect.height,
+        startWidth: currentCanvasWidth,
+        startHeight: currentCanvasHeight,
+        currentLeftOffset: 0,
+        currentTopOffset: 0,
+        displayScale,
+        layerStarts: collectCanvasLayerPositionStarts()
+    };
+
+    if (surface) surface.classList.add('canvas-resize-dragging');
+
+    updateCanvasResizeTooltip(event.clientX, event.clientY, currentCanvasWidth, currentCanvasHeight);
+}
+
+function collectCanvasLayerPositionStarts() {
+    const starts = [];
+
+    forEachCanvasLayerDeep(canvasLayers, (layer) => {
+        if (!layer || layer.type === 'canvas') return;
+        if (!Number.isFinite(Number(layer.x)) || !Number.isFinite(Number(layer.y))) return;
+
+        starts.push({
+            id: layer.id,
+            x: Number(layer.x || 0),
+            y: Number(layer.y || 0)
+        });
+    });
+
+    return starts;
+}
+
+function resolveCanvasResizeDragSize(event) {
+    const drag = activeCanvasResizeDrag;
+    if (!drag) return null;
+
+    const leftEdge = drag.handle.includes('l')
+        ? event.clientX
+        : drag.surfaceLeft;
+    const rightEdge = drag.handle.includes('r')
+        ? event.clientX
+        : drag.surfaceLeft + drag.startDisplayWidth;
+    const topEdge = drag.handle.includes('t')
+        ? event.clientY
+        : drag.surfaceTop;
+    const bottomEdge = drag.handle.includes('b')
+        ? event.clientY
+        : drag.surfaceTop + drag.startDisplayHeight;
+
+    const width = (drag.handle.includes('l') || drag.handle.includes('r'))
+        ? snapCanvasSizeToStep((rightEdge - leftEdge) / Math.max(drag.displayScale || 1, 0.01))
+        : snapCanvasSizeToStep(drag.startWidth);
+    const height = (drag.handle.includes('t') || drag.handle.includes('b'))
+        ? snapCanvasSizeToStep((bottomEdge - topEdge) / Math.max(drag.displayScale || 1, 0.01))
+        : snapCanvasSizeToStep(drag.startHeight);
+
+    const leftOffset = drag.handle.includes('l')
+        ? width - drag.startWidth
+        : 0;
+    const topOffset = drag.handle.includes('t')
+        ? height - drag.startHeight
+        : 0;
+
+    return { width, height, leftOffset, topOffset };
+}
+
+function updateCanvasResizeStageShift(leftOffset, topOffset) {
+    const drag = activeCanvasResizeDrag;
+    if (!drag) return;
+
+    const stage = el('canvasStage');
+    const surface = el('canvasSurface');
+    if (!stage || !surface) return;
+
+    stage.style.transform = '';
+
+    const scale = Math.max(drag.displayScale || 1, 0.01);
+    const rect = surface.getBoundingClientRect();
+    const desiredLeft = drag.handle.includes('l')
+        ? drag.surfaceLeft - leftOffset * scale
+        : drag.surfaceLeft;
+    const desiredTop = drag.handle.includes('t')
+        ? drag.surfaceTop - topOffset * scale
+        : drag.surfaceTop;
+    const shiftX = desiredLeft - rect.left;
+    const shiftY = desiredTop - rect.top;
+
+    drag.viewShiftX = shiftX;
+    drag.viewShiftY = shiftY;
+    stage.style.transform = `translate(${shiftX}px, ${shiftY}px)`;
+}
+
+function settleCanvasResizeStageShift() {
+    const drag = activeCanvasResizeDrag;
+    if (!drag) return;
+
+    const stage = el('canvasStage');
+    const workspace = document.querySelector('.canvas-workspace');
+
+    if (workspace) {
+        workspace.scrollLeft -= Math.round(drag.viewShiftX || 0);
+        workspace.scrollTop -= Math.round(drag.viewShiftY || 0);
+    }
+
+    if (stage) {
+        stage.style.transform = '';
+    }
+}
+
+function preserveCanvasResizeDisplayScale(width, height) {
+    const drag = activeCanvasResizeDrag;
+    if (!drag) return;
+
+    const fitScale = getCanvasFitScale(width, height);
+    canvasZoom = Math.min(
+        CANVAS_ZOOM_MAX,
+        Math.max(CANVAS_ZOOM_MIN, (drag.displayScale || fitScale) / Math.max(fitScale, 0.01))
+    );
+}
+
+function applyCanvasResizeLayerOffsets(leftOffset, topOffset) {
+    const drag = activeCanvasResizeDrag;
+    if (!drag) return;
+
+    (drag.layerStarts || []).forEach((start) => {
+        const found = findCanvasLayer(start.id);
+        const layer = found?.layer;
+        if (!layer || layer.type === 'canvas') return;
+        if (!Number.isFinite(Number(layer.x)) || !Number.isFinite(Number(layer.y))) return;
+
+        layer.x = Math.round(start.x + leftOffset);
+        layer.y = Math.round(start.y + topOffset);
+    });
+}
+
+function handleCanvasResizeMouseMove(event) {
+    if (!activeCanvasResizeDrag) return;
+
+    const next = resolveCanvasResizeDragSize(event);
+    if (!next) return;
+
+    applyCanvasResizeLayerOffsets(next.leftOffset, next.topOffset);
+    activeCanvasResizeDrag.currentLeftOffset = next.leftOffset;
+    activeCanvasResizeDrag.currentTopOffset = next.topOffset;
+
+    if (next.width !== currentCanvasWidth || next.height !== currentCanvasHeight) {
+        resizeCurrentCanvasTo(next.width, next.height);
+    } else {
+        renderCanvasLayersOnSurface();
+    }
+
+    updateCanvasResizeStageShift(next.leftOffset, next.topOffset);
+    updateCanvasResizeTooltip(event.clientX, event.clientY, next.width, next.height);
+}
+
+function handleCanvasResizeMouseUp(event) {
+    if (!activeCanvasResizeDrag) return;
+
+    const next = resolveCanvasResizeDragSize(event);
+
+    const surface = el('canvasSurface');
+    if (surface) surface.classList.remove('canvas-resize-dragging');
+
+    if (next) {
+        applyCanvasResizeLayerOffsets(next.leftOffset, next.topOffset);
+        resizeCurrentCanvasTo(next.width, next.height);
+        updateCanvasResizeStageShift(next.leftOffset, next.topOffset);
+        preserveCanvasResizeDisplayScale(next.width, next.height);
+    }
+
+    settleCanvasResizeStageShift();
+    activeCanvasResizeDrag = null;
+
+    hideCanvasResizeTooltip();
+    if (next) {
+        renderCanvas(next.width, next.height);
+    }
+    renderLayerList();
+    renderCanvasLayersOnSurface();
+    saveCanvasState();
+}
+
+function getImageResizeGuideOverlay() {
+    let overlay = el('imageResizeGuideOverlay');
+
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'imageResizeGuideOverlay';
+        overlay.className = 'image-resize-guide-overlay';
+
+        ['tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l'].forEach((handle) => {
+            const node = document.createElement('div');
+            node.className = `image-resize-guide-handle ${handle}`;
+            overlay.appendChild(node);
+        });
+
+        document.body.appendChild(overlay);
+    }
+
+    return overlay;
+}
+
+function updateImageResizeGuideOverlay(bounds) {
+    const surface = el('canvasSurface');
+    if (!surface || !bounds) return;
+
+    const rect = surface.getBoundingClientRect();
+    const displayScale = getCanvasDisplayScale();
+    const overlay = getImageResizeGuideOverlay();
+
+    overlay.style.display = 'block';
+    overlay.style.left = `${rect.left + bounds.x * displayScale}px`;
+    overlay.style.top = `${rect.top + bounds.y * displayScale}px`;
+    overlay.style.width = `${Math.max(1, bounds.width * displayScale)}px`;
+    overlay.style.height = `${Math.max(1, bounds.height * displayScale)}px`;
+}
+
+function updateActiveImageResizeGuideOverlay() {
+    const drag = activeImageResizeDrag;
+    if (!drag) return;
+
+    if (drag.mode === 'multi') {
+        const layers = (drag.starts || [])
+            .map((start) => findCanvasLayer(start.id)?.layer)
+            .filter((layer) => isMultiTransformLayer(layer));
+        updateImageResizeGuideOverlay(getTransformLayerBounds(layers));
+        return;
+    }
+
+    const found = findCanvasLayer(drag.layerId);
+    const layer = found?.layer;
+
+    if (!layer || layer.type !== 'image') return;
+
+    updateImageResizeGuideOverlay({
+        x: Number(layer.x || 0),
+        y: Number(layer.y || 0),
+        width: Number(layer.layerWidth || layer.imageWidth || 1),
+        height: Number(layer.layerHeight || layer.imageHeight || 1)
+    });
+}
+
+function hideImageResizeGuideOverlay() {
+    const overlay = el('imageResizeGuideOverlay');
+    if (overlay) overlay.style.display = 'none';
+}
+
 function openCanvasSelectionContextMenu(event, selectionId) {
     event.preventDefault();
     event.stopPropagation();
@@ -4583,6 +5771,90 @@ async function renderMergedCanvasToDataUrl() {
     }
 
     return offscreen.toDataURL('image/png');
+}
+
+async function dataUrlToBlob(dataUrl) {
+    const response = await fetch(dataUrl);
+    return await response.blob();
+}
+
+async function copyMergedCanvasImageToClipboard() {
+    closeCanvasSurfaceContextMenu();
+
+    if (!currentCanvasWidth || !currentCanvasHeight) {
+        alert('먼저 캔버스를 생성해 주세요.');
+        return;
+    }
+
+    if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+        alert('현재 브라우저에서 이미지 클립보드 복사를 지원하지 않습니다.');
+        return;
+    }
+
+    try {
+        const dataUrl = await renderMergedCanvasToDataUrl();
+        const blob = await dataUrlToBlob(dataUrl);
+
+        await navigator.clipboard.write([
+            new ClipboardItem({ [blob.type || 'image/png']: blob })
+        ]);
+
+        if (typeof showToast === 'function') {
+            showToast('캔버스 통합본을 클립보드에 복사했습니다.');
+        } else {
+            alert('캔버스 통합본을 클립보드에 복사했습니다.');
+        }
+    } catch (error) {
+        alert(`복사 실패: ${error.message || error}`);
+    }
+}
+
+function buildMergedCanvasDownloadName() {
+    const stamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '-')
+        .replace('T', '_')
+        .slice(0, 19);
+
+    const width = Math.max(1, Number(currentCanvasWidth) || 0);
+    const height = Math.max(1, Number(currentCanvasHeight) || 0);
+    return `NAI_canvas_${width}x${height}_${stamp}.png`;
+}
+
+async function downloadMergedCanvasImage() {
+    if (!currentCanvasWidth || !currentCanvasHeight) {
+        alert('먼저 캔버스를 생성해 주세요.');
+        return;
+    }
+
+    const button = el('externalCanvasImageExportBtn');
+    if (button) {
+        button.disabled = true;
+        button.dataset.originalText = button.innerText;
+        button.innerText = '내보내는 중...';
+    }
+
+    try {
+        const dataUrl = await renderMergedCanvasToDataUrl();
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = buildMergedCanvasDownloadName();
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        if (typeof showToast === 'function') {
+            showToast('캔버스 통합본 다운로드를 시작했습니다.');
+        }
+    } catch (error) {
+        alert(`외부 이미지 내보내기 실패: ${error.message || error}`);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.innerText = button.dataset.originalText || '💾 외부 이미지 내보내기';
+            delete button.dataset.originalText;
+        }
+    }
 }
 
 async function buildMergedOnlyCanvasStateSnapshot() {
@@ -4941,6 +6213,12 @@ function renderClipOutputPanel() {
                     title="인페인팅 결과 보기 토글"
                     onclick="toggleClipInpaintPreview()">
                 ◧
+            </button>
+
+            <button class="clip-mask-tool-btn auto-mask ${activeClipAutoMaskPickClipId === target.clip.id ? 'active' : ''}"
+                    title="클릭한 그림 레이어 기준으로 위 레이어 영역을 제외해 자동 선택"
+                    onclick="toggleClipAutoMaskPickMode(${target.clip.id})">
+                A
             </button>
 
             <button class="clip-mask-tool-btn prompt-btn"
@@ -5334,6 +6612,25 @@ function bindClipMaskEditor(panel, clip) {
         event.preventDefault();
         event.stopPropagation();
 
+        if (activeClipAutoMaskPickClipId === Number(clip.id)) {
+            maskLoadToken += 1;
+            maskInitialized = true;
+            applyClipAutoMaskFromPreviewClick(event, clip, overlayCanvas, maskCanvas)
+                .then((applied) => {
+                    if (!applied) return;
+                    activeClipAutoMaskPickClipId = null;
+                    maskDirty = true;
+                    renderMaskPreview();
+                    renderCanvasLayersOnSurface();
+                })
+                .catch((error) => {
+                    activeClipAutoMaskPickClipId = null;
+                    alert(`자동 선택 실패: ${error.message || error}`);
+                    renderCanvasLayersOnSurface();
+                });
+            return;
+        }
+
         isClipMaskPainting = true;
         maskLoadToken += 1;
         maskDirty = true;
@@ -5416,6 +6713,21 @@ function updateClipBrushCursorMode() {
     cursor.classList.toggle('eraser', activeClipMaskTool === 'eraser');
 }
 
+function toggleClipAutoMaskPickMode(clipId) {
+    const id = Number(clipId);
+    activeClipAutoMaskPickClipId = activeClipAutoMaskPickClipId === id ? null : id;
+    if (activeClipAutoMaskPickClipId === id) {
+        isClipInpaintPreviewMode = false;
+    }
+    renderCanvasLayersOnSurface();
+
+    if (typeof showToast === 'function') {
+        showToast(activeClipAutoMaskPickClipId === id
+            ? '자동 선택: 미리보기에서 기준 그림을 클릭하세요.'
+            : '자동 선택을 취소했습니다.');
+    }
+}
+
 function updateClipBrushCursor(event, overlayCanvas, maskCanvas, cursor) {
     if (!cursor || !overlayCanvas || !maskCanvas) return;
 
@@ -5441,6 +6753,128 @@ function getClipMaskPoint(event, overlayCanvas, maskCanvas) {
         x: Math.max(0, Math.min(maskCanvas.width, x)),
         y: Math.max(0, Math.min(maskCanvas.height, y))
     };
+}
+
+function collectAutoMaskSourceLayersForSelection(selection) {
+    if (!selection) return [];
+
+    const selectionX = Number(selection.x || 0);
+    const selectionY = Number(selection.y || 0);
+    const selectionWidth = Number(selection.layerWidth || 0);
+    const selectionHeight = Number(selection.layerHeight || 0);
+
+    return collectDrawableImageLayersForClip(canvasLayers)
+        .filter((layer) => {
+            const rect = getAutoMaskSourceLayerRect(layer, selection);
+            return rectsIntersect(
+                selectionX,
+                selectionY,
+                selectionWidth,
+                selectionHeight,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height
+            );
+        });
+}
+
+function getAutoMaskSourceLayerRect(layer, selection) {
+    const selectionX = Number(selection?.x || 0);
+    const selectionY = Number(selection?.y || 0);
+
+    return {
+        x: Number(layer.x ?? selectionX),
+        y: Number(layer.y ?? selectionY),
+        width: Number(layer.layerWidth || layer.imageWidth || selection?.layerWidth || 0),
+        height: Number(layer.layerHeight || layer.imageHeight || selection?.layerHeight || 0)
+    };
+}
+
+function autoMaskSourceLayerContainsCanvasPoint(layer, selection, x, y) {
+    const rect = getAutoMaskSourceLayerRect(layer, selection);
+    return x >= rect.x &&
+        x <= rect.x + rect.width &&
+        y >= rect.y &&
+        y <= rect.y + rect.height;
+}
+
+function findAutoMaskSourceLayerAtMaskPoint(selection, clip, point, maskCanvas) {
+    if (!selection || !clip || !point || !maskCanvas) return null;
+
+    const selectionWidth = Number(selection.layerWidth || clip.imageWidth || maskCanvas.width || 1);
+    const selectionHeight = Number(selection.layerHeight || clip.imageHeight || maskCanvas.height || 1);
+    const canvasX = Number(selection.x || 0) + (point.x / Math.max(1, maskCanvas.width)) * selectionWidth;
+    const canvasY = Number(selection.y || 0) + (point.y / Math.max(1, maskCanvas.height)) * selectionHeight;
+    const topFirstLayers = collectAutoMaskSourceLayersForSelection(selection).slice().reverse();
+
+    return topFirstLayers
+        .find((layer) => autoMaskSourceLayerContainsCanvasPoint(layer, selection, canvasX, canvasY)) || null;
+}
+
+function applyAutoMaskAboveSourceLayer(selection, clip, targetLayer, maskCanvas) {
+    if (!selection || !clip || !targetLayer || !maskCanvas) return false;
+
+    const layers = collectAutoMaskSourceLayersForSelection(selection);
+    const targetIndex = layers.findIndex((layer) => Number(layer.id) === Number(targetLayer.id));
+    if (targetIndex < 0) return false;
+
+    const ctx = maskCanvas.getContext('2d');
+    const selectionWidth = Number(selection.layerWidth || clip.imageWidth || maskCanvas.width || 1);
+    const selectionHeight = Number(selection.layerHeight || clip.imageHeight || maskCanvas.height || 1);
+    const scaleX = maskCanvas.width / Math.max(1, selectionWidth);
+    const scaleY = maskCanvas.height / Math.max(1, selectionHeight);
+    const selectionX = Number(selection.x || 0);
+    const selectionY = Number(selection.y || 0);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+
+    ctx.globalCompositeOperation = 'destination-out';
+    layers.slice(targetIndex + 1).forEach((layer) => {
+        const rect = getAutoMaskSourceLayerRect(layer, selection);
+        const x = Math.round((rect.x - selectionX) * scaleX);
+        const y = Math.round((rect.y - selectionY) * scaleY);
+        const width = Math.round(rect.width * scaleX);
+        const height = Math.round(rect.height * scaleY);
+
+        if (width > 0 && height > 0) {
+            ctx.fillRect(x, y, width, height);
+        }
+    });
+
+    ctx.restore();
+    return true;
+}
+
+async function applyClipAutoMaskFromPreviewClick(event, clip, overlayCanvas, maskCanvas) {
+    const selection = findSelectionParentForLayerId(clip?.id);
+    if (!selection) {
+        alert('자동 선택 기준이 될 선택영역을 찾을 수 없습니다.');
+        return false;
+    }
+
+    const point = getClipMaskPoint(event, overlayCanvas, maskCanvas);
+    const targetLayer = findAutoMaskSourceLayerAtMaskPoint(selection, clip, point, maskCanvas);
+
+    if (!targetLayer) {
+        alert('클릭한 위치에서 기준 그림 레이어를 찾을 수 없습니다.');
+        return false;
+    }
+
+    const applied = applyAutoMaskAboveSourceLayer(selection, clip, targetLayer, maskCanvas);
+    if (!applied) return false;
+
+    await persistClipMask(clip, maskCanvas);
+
+    if (typeof showToast === 'function') {
+        showToast(`자동 선택 완료: ${targetLayer.name || '선택 레이어'} 기준`);
+    }
+
+    return true;
 }
 
 function drawClipMaskPoint(ctx, x, y, size, tool) {
@@ -5935,6 +7369,26 @@ function getAllClipPromptGroupTags() {
     return [...tags].sort((a, b) => a.localeCompare(b));
 }
 
+function getRenderableClipPromptGroups() {
+    const tempGroups = (Array.isArray(temporaryClipPromptGroups) ? temporaryClipPromptGroups : [])
+        .map((group) => ({
+            id: group.id || `temp_${temporaryClipPromptGroupSeq++}`,
+            name: String(group.name || '임시 그룹').trim() || '임시 그룹',
+            prompts: Array.isArray(group.prompts)
+                ? group.prompts.map((prompt) => String(prompt || '').trim()).filter(Boolean)
+                : [],
+            tags: [],
+            collapsed: true,
+            temporary: true
+        }))
+        .filter((group) => group.prompts.length);
+
+    return [
+        ...tempGroups,
+        ...normalizeSharedPromptGroups(clipPromptGroups)
+    ];
+}
+
 function clipPromptGroupMatchesManagerFilter(group) {
     const search = String(clipPromptGroupSearchText || '').trim().toLowerCase();
     const tag = String(clipPromptGroupActiveTag || 'ALL');
@@ -6252,7 +7706,7 @@ function applyClipPromptGroupsWithIndexes(indexedTokens) {
     let index = 0;
 
     while (index < indexedTokens.length) {
-        const matched = clipPromptGroups.find((group) => {
+        const matched = getRenderableClipPromptGroups().find((group) => {
             const groupTokens = Array.isArray(group.prompts) ? group.prompts : [];
             if (!groupTokens.length || index + groupTokens.length > indexedTokens.length) return false;
 
@@ -6268,6 +7722,8 @@ function applyClipPromptGroupsWithIndexes(indexedTokens) {
             parts.push({
                 type: 'group',
                 name: matched.name,
+                temporary: Boolean(matched.temporary),
+                id: matched.id || '',
                 tokens: matchedTokens.map((part) => part.token),
                 indexes: matchedTokens.map((part) => part.index)
             });
@@ -6335,6 +7791,8 @@ function renderClipPromptTokens(fieldKey) {
     const tokens = parseClipPromptTokens(input.value);
     const disabledState = getDisabledClipPromptVisualState(fieldKey);
 
+    surface.dataset.clipPromptField = fieldKey;
+    surface.onmousedown = (event) => startClipPromptAreaSelection(event, fieldKey, surface);
     surface.innerHTML = '';
 
     if (!tokens.length) {
@@ -6362,6 +7820,195 @@ function renderClipPromptTokens(fieldKey) {
 
     renderClipTokenSequenceWithWeightedRanges(surface, fieldKey, pendingTokens, disabledState);
 }
+
+function setupClipPromptSelectableButton(button, fieldKey, startIndex, endIndex) {
+    button.dataset.clipPromptField = fieldKey;
+    button.dataset.clipPromptStart = String(startIndex);
+    button.dataset.clipPromptEnd = String(endIndex);
+}
+
+function startClipPromptAreaSelection(event, fieldKey, surface) {
+    if (event.button !== 0 || clipPromptViewMode !== 'buttons') return;
+    if (event.target.closest?.('.prompt-token-btn')) return;
+
+    activeClipAreaSelection = {
+        fieldKey,
+        surface,
+        originX: event.clientX,
+        originY: event.clientY,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        start: null,
+        end: null,
+        selectedIndexes: new Set(),
+        moved: false
+    };
+
+    clearClipButtonSelectionMarks();
+    updateClipAreaSelectionBox(event.clientX, event.clientY);
+    event.preventDefault();
+}
+
+function getClipAreaSelectionBox() {
+    let box = el('clipPromptAreaSelectionBox');
+    if (!box) {
+        box = document.createElement('div');
+        box.id = 'clipPromptAreaSelectionBox';
+        box.className = 'clip-prompt-area-selection-box';
+        document.body.appendChild(box);
+    }
+    return box;
+}
+
+function getRectFromPoints(x1, y1, x2, y2) {
+    return {
+        left: Math.min(x1, x2),
+        top: Math.min(y1, y2),
+        right: Math.max(x1, x2),
+        bottom: Math.max(y1, y2),
+        width: Math.abs(x2 - x1),
+        height: Math.abs(y2 - y1)
+    };
+}
+
+function domRectsIntersect(a, b) {
+    return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+}
+
+function updateClipAreaSelectionBox(clientX, clientY) {
+    const state = activeClipAreaSelection;
+    if (!state) return;
+
+    state.clientX = clientX;
+    state.clientY = clientY;
+    state.moved = state.moved || Math.abs(clientX - state.originX) > 4 || Math.abs(clientY - state.originY) > 4;
+
+    const rect = getRectFromPoints(state.originX, state.originY, clientX, clientY);
+    const box = getClipAreaSelectionBox();
+    box.style.display = state.moved ? 'block' : 'none';
+    box.style.left = `${rect.left}px`;
+    box.style.top = `${rect.top}px`;
+    box.style.width = `${rect.width}px`;
+    box.style.height = `${rect.height}px`;
+
+    updateClipAreaSelectionMarks(rect);
+}
+
+function updateClipAreaSelectionMarks(selectionRect) {
+    const state = activeClipAreaSelection;
+    if (!state) return;
+
+    clearClipButtonSelectionMarks();
+
+    state.selectedIndexes = state.selectedIndexes instanceof Set
+        ? state.selectedIndexes
+        : new Set();
+
+    state.surface.querySelectorAll('.prompt-token-btn[data-clip-prompt-field]').forEach((node) => {
+        if (node.dataset.clipPromptField !== state.fieldKey) return;
+
+        const start = Number(node.dataset.clipPromptStart);
+        const end = Number(node.dataset.clipPromptEnd);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+
+        const rect = node.getBoundingClientRect();
+        if (!domRectsIntersect(selectionRect, rect)) return;
+
+        const partStart = Math.min(start, end);
+        const partEnd = Math.max(start, end);
+        for (let index = partStart; index <= partEnd; index += 1) {
+            state.selectedIndexes.add(index);
+        }
+    });
+
+    if (!state.selectedIndexes.size) {
+        state.start = null;
+        state.end = null;
+        return;
+    }
+
+    const selected = [...state.selectedIndexes].sort((a, b) => a - b);
+    const nextStart = selected[0];
+    const nextEnd = selected[selected.length - 1];
+
+    state.start = nextStart;
+    state.end = nextEnd;
+
+    state.surface.querySelectorAll('.prompt-token-btn[data-clip-prompt-field]').forEach((node) => {
+        if (node.dataset.clipPromptField !== state.fieldKey) return;
+
+        const start = Number(node.dataset.clipPromptStart);
+        const end = Number(node.dataset.clipPromptEnd);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+
+        if (Math.max(start, end) >= nextStart && Math.min(start, end) <= nextEnd) {
+            node.classList.add('button-selected');
+        }
+    });
+}
+
+function clearClipButtonSelectionMarks() {
+    document.querySelectorAll('.prompt-token-btn.button-selected').forEach((node) => {
+        node.classList.remove('button-selected');
+    });
+}
+
+function hideClipAreaSelectionBox() {
+    const box = el('clipPromptAreaSelectionBox');
+    if (box) box.style.display = 'none';
+}
+
+function finishClipPromptAreaSelection(event) {
+    if (!activeClipAreaSelection) return;
+
+    const state = activeClipAreaSelection;
+    activeClipAreaSelection = null;
+    hideClipAreaSelectionBox();
+
+    const field = getClipPromptField(state.fieldKey);
+    const input = field ? el(field.inputId) : null;
+    if (!input) {
+        clearClipButtonSelectionMarks();
+        return;
+    }
+
+    const tokens = parseClipPromptTokens(input.value);
+    const start = Number(state.start);
+    const end = Number(state.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        clearClipButtonSelectionMarks();
+        return;
+    }
+
+    const selectedTokens = tokens.slice(start, end + 1);
+
+    if (!selectedTokens.length || !state.moved) {
+        clearClipButtonSelectionMarks();
+        return;
+    }
+
+    selectedClipPromptGroup = {
+        inputId: input.id,
+        fieldKey: state.fieldKey,
+        tokenStart: start,
+        tokenEnd: end,
+        text: joinClipPromptTokens(selectedTokens)
+    };
+
+    suppressNextClipPromptSelectionClear = true;
+    setTimeout(() => {
+        suppressNextClipPromptSelectionClear = false;
+    }, 0);
+    showClipGroupSelectionPopoverAt(event.clientX || state.clientX, event.clientY || state.clientY);
+}
+
+document.addEventListener('mousemove', (event) => {
+    updateClipAreaSelectionBox(event.clientX, event.clientY);
+});
+
+document.addEventListener('mouseup', (event) => {
+    finishClipPromptAreaSelection(event);
+});
 
 function renderClipTokenSequenceWithWeightedRanges(surface, fieldKey, sequence, disabledState) {
     const weightedParts = applyClipWeightedRanges(sequence.map((part) => part.token));
@@ -6397,6 +8044,7 @@ function renderClipPromptPart(surface, fieldKey, token, index, disabledState) {
         button.innerText = `${leadingWeightMatch[1]}:: ${formatClipTokenLabel(token)} ::`;
         button.title = `더블 클릭해서 프롬프트 내용만 수정${disabledTitle}`;
         button.ondblclick = () => startClipTokenEdit(fieldKey, index, token, button);
+        setupClipPromptSelectableButton(button, fieldKey, index, index);
 
         button.draggable = true;
         button.ondragstart = (event) => {
@@ -6426,6 +8074,7 @@ function renderClipPromptPart(surface, fieldKey, token, index, disabledState) {
     button.innerText = formatClipTokenLabel(token);
     button.title = `더블 클릭해서 프롬프트 내용만 수정${disabledTitle}`;
     button.ondblclick = () => startClipTokenEdit(fieldKey, index, token, button);
+    setupClipPromptSelectableButton(button, fieldKey, index, index);
 
     button.draggable = true;
     button.ondragstart = (event) => {
@@ -6457,6 +8106,7 @@ function renderClipWeightedRangePart(surface, fieldKey, part, disabledState) {
     button.className = `prompt-token-btn weighted-range ${hasDisabledItems ? 'has-disabled-items' : ''}`.trim();
     button.title = part.tokens.join(', ');
     button.ondblclick = () => startClipWeightedRangeEdit(fieldKey, part, button);
+    setupClipPromptSelectableButton(button, fieldKey, part.startIndex, part.startIndex + part.tokens.length - 1);
 
     const prefix = document.createElement('span');
     prefix.className = 'prompt-token-range-marker';
@@ -6472,6 +8122,16 @@ function renderClipWeightedRangePart(surface, fieldKey, part, disabledState) {
             chip.style.setProperty('--group-color', getClipPromptGroupColor(groupedPart.name));
             chip.innerText = `[${groupedPart.name}]`;
             chip.title = `${groupedPart.tokens.join(', ')}${isDisabledGroup ? '\n현재 OFF 상태의 제어그룹에 들어 있어 요청에 포함되지 않습니다.' : ''}`;
+            chip.draggable = true;
+            chip.ondragstart = (event) => {
+                event.stopPropagation();
+                setClipPromptDragData(event, {
+                    field: fieldKey,
+                    type: 'group',
+                    name: groupedPart.name,
+                    tokens: groupedPart.tokens
+                });
+            };
 
             chip.oncontextmenu = (event) => {
                 event.preventDefault();
@@ -6496,6 +8156,15 @@ function renderClipWeightedRangePart(surface, fieldKey, part, disabledState) {
         chip.style.setProperty('--tag-color', getClipTagColor(token));
         chip.innerText = formatClipTokenLabel(token);
         chip.title = isDisabledToken ? '현재 OFF 상태의 제어그룹에 들어 있어 요청에 포함되지 않습니다.' : '';
+        chip.draggable = true;
+        chip.ondragstart = (event) => {
+            event.stopPropagation();
+            setClipPromptDragData(event, {
+                field: fieldKey,
+                type: 'token',
+                token
+            });
+        };
         chip.oncontextmenu = (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -6507,15 +8176,6 @@ function renderClipWeightedRangePart(surface, fieldKey, part, disabledState) {
     const suffix = document.createElement('span');
     suffix.className = 'prompt-token-range-marker';
     suffix.innerText = part.suffix;
-    button.draggable = true;
-    button.ondragstart = (event) => {
-        setClipPromptDragData(event, {
-            field: fieldKey,
-            type: 'group',
-            name: '가중치 범위',
-            tokens: part.tokens
-        });
-    };
     button.appendChild(suffix);
 
     surface.appendChild(button);
@@ -6526,10 +8186,23 @@ function renderClipPromptGroupButton(surface, fieldKey, groupPart, disabledState
 
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `prompt-token-btn group ${isDisabled ? 'disabled-by-control' : ''}`.trim();
+    button.className = `prompt-token-btn group ${groupPart.temporary ? 'temporary-group' : ''} ${isDisabled ? 'disabled-by-control' : ''}`.trim();
     button.style.setProperty('--group-color', getClipPromptGroupColor(groupPart.name));
     button.innerText = `[${groupPart.name}]`;
-    button.title = `${groupPart.tokens.join(', ')}${isDisabled ? '\n현재 OFF 상태의 제어그룹에 들어 있어 요청에 포함되지 않습니다.' : ''}`;
+    button.title = `${groupPart.tokens.join(', ')}${groupPart.temporary ? '\n임시 그룹입니다. 클릭하면 해제 메뉴가 열립니다.' : ''}${isDisabled ? '\n현재 OFF 상태의 제어그룹에 들어 있어 요청에 포함되지 않습니다.' : ''}`;
+
+    const indexes = Array.isArray(groupPart.indexes) ? groupPart.indexes : [];
+    if (indexes.length && !groupPart.temporary) {
+        setupClipPromptSelectableButton(button, fieldKey, Math.min(...indexes), Math.max(...indexes));
+    }
+
+    if (groupPart.temporary) {
+        button.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            openTemporaryClipPromptGroupMenu(groupPart.id, event);
+        };
+    }
 
     button.draggable = true;
     button.ondragstart = (event) => {
@@ -6705,9 +8378,14 @@ function handleClipPromptSelection(event) {
         text: selectedText
     };
 
+    showClipGroupSelectionPopoverAt(event.clientX, event.clientY);
+}
+
+function showClipGroupSelectionPopoverAt(clientX, clientY) {
     const popover = el('clipGroupSelectionPopover');
     const nameBox = el('clipPromptGroupNameBox');
     const startButton = el('clipBtnStartPromptGroup');
+    const tempButton = el('clipBtnCreateTempPromptGroup');
 
     if (!popover) return;
 
@@ -6716,12 +8394,12 @@ function handleClipPromptSelection(event) {
     const popoverHeight = 70;
 
     const left = Math.min(
-        event.clientX + 8,
+        clientX + 8,
         window.innerWidth - popoverWidth - margin
     );
 
     const top = Math.min(
-        event.clientY + 8,
+        clientY + 8,
         window.innerHeight - popoverHeight - margin
     );
 
@@ -6731,20 +8409,25 @@ function handleClipPromptSelection(event) {
 
     if (nameBox) nameBox.style.display = 'none';
     if (startButton) startButton.style.display = 'inline-block';
+    if (tempButton) tempButton.style.display = 'inline-block';
 }
 
 function hideClipGroupSelectionPopover() {
     const popover = el('clipGroupSelectionPopover');
     if (popover) popover.style.display = 'none';
     selectedClipPromptGroup = null;
+    clearClipButtonSelectionMarks();
+    hideClipAreaSelectionBox();
 }
 
 function showClipPromptGroupNameInput() {
     const nameBox = el('clipPromptGroupNameBox');
     const startButton = el('clipBtnStartPromptGroup');
+    const tempButton = el('clipBtnCreateTempPromptGroup');
     const input = el('clipPromptGroupNameInput');
 
     if (startButton) startButton.style.display = 'none';
+    if (tempButton) tempButton.style.display = 'none';
     if (nameBox) nameBox.style.display = 'flex';
 
     if (input) {
@@ -6771,6 +8454,57 @@ async function saveSelectedClipPromptGroup() {
     renderAllClipPromptTokens();
     renderClipPromptGroupList();
     saveCanvasState();
+}
+
+function saveSelectedTemporaryClipPromptGroup() {
+    if (!selectedClipPromptGroup) return;
+
+    const prompts = parseClipPromptTokens(selectedClipPromptGroup.text);
+    if (!prompts.length) return;
+
+    const name = `임시 그룹 ${temporaryClipPromptGroupSeq}`;
+    temporaryClipPromptGroups.push({
+        id: `temp_${Date.now()}_${temporaryClipPromptGroupSeq++}`,
+        name,
+        prompts,
+        temporary: true
+    });
+
+    hideClipGroupSelectionPopover();
+    renderAllClipPromptTokens();
+}
+
+function openTemporaryClipPromptGroupMenu(groupId, event) {
+    closeTemporaryClipPromptGroupMenu();
+
+    const group = temporaryClipPromptGroups.find((item) => String(item.id) === String(groupId));
+    if (!group) return;
+
+    const menu = document.createElement('div');
+    menu.id = 'temporaryClipPromptGroupMenu';
+    menu.className = 'prompt-group-popover temporary-group-menu';
+    menu.style.display = 'block';
+    menu.style.left = `${Math.min(event.clientX + 8, window.innerWidth - 180)}px`;
+    menu.style.top = `${Math.min(event.clientY + 8, window.innerHeight - 60)}px`;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.innerText = '임시 그룹 해제';
+    button.onclick = () => removeTemporaryClipPromptGroup(groupId);
+
+    menu.appendChild(button);
+    document.body.appendChild(menu);
+}
+
+function closeTemporaryClipPromptGroupMenu() {
+    const menu = el('temporaryClipPromptGroupMenu');
+    if (menu) menu.remove();
+}
+
+function removeTemporaryClipPromptGroup(groupId) {
+    temporaryClipPromptGroups = temporaryClipPromptGroups.filter((group) => String(group.id) !== String(groupId));
+    closeTemporaryClipPromptGroupMenu();
+    renderAllClipPromptTokens();
 }
 
 async function openClipPromptGroupManager() {
@@ -9430,6 +11164,7 @@ function startImageResizeDrag(event, layerId, handle) {
     };
 
     updateSelectionSizeTooltip(event.clientX, event.clientY, layer.layerWidth, layer.layerHeight);
+    updateActiveImageResizeGuideOverlay();
 }
 
 function handleImageResizeMouseMove(event) {
@@ -9564,6 +11299,7 @@ function handleImageResizeMouseMove(event) {
     );
 
     renderCanvasLayersOnSurface();
+    updateActiveImageResizeGuideOverlay();
 }
 
 function handleImageResizeMouseUp() {
@@ -9588,6 +11324,7 @@ function handleImageResizeMouseUp() {
 
         activeImageResizeDrag = null;
         hideSelectionSizeTooltip();
+        hideImageResizeGuideOverlay();
 
         renderLayerList();
         renderCanvasLayersOnSurface();
@@ -9618,6 +11355,7 @@ function handleImageResizeMouseUp() {
 
     activeImageResizeDrag = null;
     hideSelectionSizeTooltip();
+    hideImageResizeGuideOverlay();
 
     renderLayerList();
     renderCanvasLayersOnSurface();
@@ -9951,6 +11689,7 @@ function startMultiImageResizeDrag(event, handle) {
     };
 
     updateSelectionSizeTooltip(event.clientX, event.clientY, bounds.width, bounds.height);
+    updateActiveImageResizeGuideOverlay();
 }
 
 function handleMultiImageResizeMouseMove(event) {
@@ -10079,6 +11818,7 @@ function handleMultiImageResizeMouseMove(event) {
     );
 
     renderCanvasLayersOnSurface();
+    updateActiveImageResizeGuideOverlay();
 }
 
 /* =========================================================
@@ -10101,6 +11841,9 @@ let referenceGenMaskVisible = true;
 let referenceGenCharPromptSeq = 1;
 let referenceGenMaskCanvas = null;
 let referenceGenMaskCtx = null;
+const REFERENCE_GEN_RESOLUTION_STEP = 64;
+const REFERENCE_GEN_HIGH_AREA_LIMIT = 768 * 2496;
+const REFERENCE_GEN_MAX_SIDE = 2496;
 
 window.addEventListener('load', () => {
     bindCanvasSurfaceReferenceContextMenu();
@@ -10214,6 +11957,84 @@ function applyReferenceGenPreset(width, height) {
 
     if (widthInput) widthInput.value = width;
     if (heightInput) heightInput.value = height;
+    setReferenceGenPresetInfo(`선택 해상도: ${width} × ${height}`);
+}
+
+function getReferenceGenExpectedAnlasCost(width, height, steps = 28) {
+    if (typeof window.getExpectedAnlasCost === 'function') {
+        return window.getExpectedAnlasCost(width, height, steps);
+    }
+
+    const area = Math.max(0, Number(width) || 0) * Math.max(0, Number(height) || 0);
+    if (area <= NAI_FREE_AREA_LIMIT && steps <= 28) return 0;
+    return Math.max(2, Math.ceil((area * steps) / 1460000));
+}
+
+function setReferenceGenPresetInfo(message) {
+    const info = el('referenceGenPresetInfo');
+    if (info) info.innerText = message || '';
+}
+
+function getReferenceGenCanvasRatio() {
+    const width = Math.max(1, Number(currentCanvasWidth) || 1);
+    const height = Math.max(1, Number(currentCanvasHeight) || 1);
+    return width / height;
+}
+
+function findReferenceGenCanvasRatioResolution(mode) {
+    const targetRatio = getReferenceGenCanvasRatio();
+    const maxArea = mode === 'paid' ? REFERENCE_GEN_HIGH_AREA_LIMIT : NAI_FREE_AREA_LIMIT;
+    const minArea = mode === 'paid' ? NAI_FREE_AREA_LIMIT + 1 : 0;
+    const ratioTolerance = mode === 'free' ? 0.02 : 0.000001;
+    const candidates = [];
+
+    for (let width = REFERENCE_GEN_RESOLUTION_STEP; width <= REFERENCE_GEN_MAX_SIDE; width += REFERENCE_GEN_RESOLUTION_STEP) {
+        for (let height = REFERENCE_GEN_RESOLUTION_STEP; height <= REFERENCE_GEN_MAX_SIDE; height += REFERENCE_GEN_RESOLUTION_STEP) {
+            const area = width * height;
+            if (area > maxArea || area < minArea) continue;
+
+            candidates.push({
+                width,
+                height,
+                area,
+                ratioError: Math.abs(Math.log((width / height) / targetRatio))
+            });
+        }
+    }
+
+    if (!candidates.length) return null;
+
+    const bestRatioError = Math.min(...candidates.map((candidate) => candidate.ratioError));
+    return candidates
+        .filter((candidate) => candidate.ratioError <= bestRatioError + ratioTolerance)
+        .sort((a, b) => b.area - a.area)[0] || null;
+}
+
+function applyReferenceGenCanvasRatioPreset(mode) {
+    if (!currentCanvasWidth || !currentCanvasHeight) {
+        alert('먼저 캔버스를 생성해 주세요.');
+        return;
+    }
+
+    const presetMode = mode === 'paid' ? 'paid' : 'free';
+    const result = findReferenceGenCanvasRatioResolution(presetMode);
+
+    if (!result) {
+        setReferenceGenPresetInfo('현재 캔버스 비율에 맞는 해상도 후보를 찾지 못했습니다.');
+        return;
+    }
+
+    applyReferenceGenPreset(result.width, result.height);
+
+    const ratio = (result.width / result.height).toFixed(4);
+    const canvasRatio = getReferenceGenCanvasRatio().toFixed(4);
+    const cost = getReferenceGenExpectedAnlasCost(result.width, result.height, 28);
+    const label = presetMode === 'paid' ? '고해상도' : '무료 최대';
+    const costLabel = cost > 0 ? `예상 ${cost} Anlas` : 'Anlas 0';
+
+    setReferenceGenPresetInfo(
+        `${label}: ${result.width} × ${result.height} · ${costLabel} · 캔버스 비율 ${canvasRatio} / 선택 비율 ${ratio}`
+    );
 }
 
 function readReferenceGenResolutionInput() {

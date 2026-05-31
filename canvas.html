@@ -23,8 +23,24 @@
                     📂 저장한 캔버스
                 </button>
                 <button class="secondary" onclick="clearCurrentCanvasCompletely()">
-                🧹 캔버스 초기화
-            </button>
+                    🧹 캔버스 초기화
+                </button>
+                <button id="externalCanvasImageBtn" class="secondary" onclick="openExternalCanvasImagePicker()">
+                    📁 외부 이미지 가져오기
+                </button>
+                <button id="externalCanvasImageExportBtn" class="secondary" onclick="downloadMergedCanvasImage()">
+                    💾 외부 이미지 내보내기
+                </button>
+                <button id="externalCanvasImageManagerBtn" class="secondary" onclick="openCanvasImportManagerModal()">
+                    🖼 외부 이미지 목록
+                </button>
+                <input
+                    type="file"
+                    id="externalCanvasImageInput"
+                    accept="image/png,image/jpeg,image/webp"
+                    style="display:none;"
+                    onchange="handleExternalCanvasImageSelected(this)"
+                >
             </nav>
         </div>
     </header>
@@ -74,6 +90,15 @@
                     <div id="imageResizeToolHint" class="canvas-tool-hint">
                         버튼을 켠 뒤 이미지 레이어를 선택하고 가장자리/모서리를 드래그하세요.
                         Alt를 누르면 더 세밀하게, Shift를 누르면 비율 유지 없이 조절합니다.
+                    </div>
+
+                    <button id="canvasResizeToolBtn"
+                            class="secondary canvas-tool-btn"
+                            onclick="toggleCanvasResizeMode()">
+                        ⛶ 캔버스 크기 조절
+                    </button>
+                    <div id="canvasResizeToolHint" class="canvas-tool-hint">
+                        버튼을 켠 뒤 캔버스 오른쪽/아래쪽/오른쪽 아래 핸들을 드래그하세요.
                     </div>
                 </div>
 
@@ -188,6 +213,9 @@
         <button class="canvas-layer-context-item" onclick="openReferenceGenResolutionModal()">
             참조 이미지 생성
         </button>
+        <button class="canvas-layer-context-item" onclick="copyMergedCanvasImageToClipboard()">
+            복사
+        </button>
     </div>
 
     <div id="canvasSelectionContextMenu" class="canvas-layer-context-menu">
@@ -213,7 +241,14 @@
                     <button class="secondary" onclick="applyReferenceGenPreset(768, 2496)">
                         768 × 2496
                     </button>
+                    <button class="secondary" onclick="applyReferenceGenCanvasRatioPreset('free')">
+                        캔버스 비율 무료 최대
+                    </button>
+                    <button class="secondary" onclick="applyReferenceGenCanvasRatioPreset('paid')">
+                        캔버스 비율 고해상도
+                    </button>
                 </div>
+                <div id="referenceGenPresetInfo" class="reference-gen-preset-info"></div>
             </div>
 
             <div class="form-group">
@@ -532,6 +567,7 @@
 
     <div id="clipGroupSelectionPopover" class="prompt-group-popover" style="display:none;">
         <button id="clipBtnStartPromptGroup" onclick="showClipPromptGroupNameInput()">그룹묶기</button>
+        <button id="clipBtnCreateTempPromptGroup" onclick="saveSelectedTemporaryClipPromptGroup()">임시 그룹묶기</button>
         <div id="clipPromptGroupNameBox" style="display:none; gap:6px; align-items:center;">
             <input type="text" id="clipPromptGroupNameInput" placeholder="그룹명">
             <button onclick="saveSelectedClipPromptGroup()">저장</button>
