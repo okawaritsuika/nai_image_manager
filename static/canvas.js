@@ -6755,6 +6755,33 @@ function getClipMaskPoint(event, overlayCanvas, maskCanvas) {
     };
 }
 
+function collectAutoMaskSourceCandidateLayers(layers, output = []) {
+    [...(layers || [])].reverse().forEach((layer) => {
+        if (!layer || !layer.visible) return;
+
+        if (layer.type === 'folder' || layer.type === 'selection') {
+            collectAutoMaskSourceCandidateLayers(layer.children, output);
+            return;
+        }
+
+        if (layer.type === 'canvas') {
+            output.push(layer);
+            return;
+        }
+
+        if (layer.type === 'image' && layer.src) {
+            output.push(layer);
+            return;
+        }
+
+        if (layer.type === 'clip' && layer.renderOnCanvas && layer.src) {
+            output.push(layer);
+        }
+    });
+
+    return output;
+}
+
 function collectAutoMaskSourceLayersForSelection(selection) {
     if (!selection) return [];
 
@@ -6763,7 +6790,7 @@ function collectAutoMaskSourceLayersForSelection(selection) {
     const selectionWidth = Number(selection.layerWidth || 0);
     const selectionHeight = Number(selection.layerHeight || 0);
 
-    return collectDrawableImageLayersForClip(canvasLayers)
+    return collectAutoMaskSourceCandidateLayers(canvasLayers)
         .filter((layer) => {
             const rect = getAutoMaskSourceLayerRect(layer, selection);
             return rectsIntersect(
@@ -6782,6 +6809,15 @@ function collectAutoMaskSourceLayersForSelection(selection) {
 function getAutoMaskSourceLayerRect(layer, selection) {
     const selectionX = Number(selection?.x || 0);
     const selectionY = Number(selection?.y || 0);
+
+    if (layer?.type === 'canvas') {
+        return {
+            x: 0,
+            y: 0,
+            width: Number(layer.canvasWidth || currentCanvasWidth || selection?.layerWidth || 0),
+            height: Number(layer.canvasHeight || currentCanvasHeight || selection?.layerHeight || 0)
+        };
+    }
 
     return {
         x: Number(layer.x ?? selectionX),
