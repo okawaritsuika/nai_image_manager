@@ -12723,6 +12723,8 @@ let referenceGenMaskVisible = true;
 let referenceGenCharPromptSeq = 1;
 let referenceGenMaskCanvas = null;
 let referenceGenMaskCtx = null;
+let referenceGenInternalClipboard = null;
+let referenceGenUpscaleLastEditedAxis = 'width';
 const REFERENCE_GEN_RESOLUTION_STEP = 64;
 const REFERENCE_GEN_HIGH_AREA_LIMIT = 768 * 2496;
 const REFERENCE_GEN_MAX_SIDE = 2496;
@@ -12732,6 +12734,7 @@ window.addEventListener('load', () => {
 
     document.addEventListener('click', (event) => {
         const surfaceMenu = el('canvasSurfaceContextMenu');
+        const referenceMenu = getReferenceGenClipboardContextMenu(false);
 
         if (
             surfaceMenu &&
@@ -12739,6 +12742,14 @@ window.addEventListener('load', () => {
             !surfaceMenu.contains(event.target)
         ) {
             closeCanvasSurfaceContextMenu();
+        }
+
+        if (
+            referenceMenu &&
+            referenceMenu.style.display === 'block' &&
+            !referenceMenu.contains(event.target)
+        ) {
+            closeReferenceGenClipboardContextMenu();
         }
 
         if (!event.target.closest?.('.reference-gen-tool-wrap')) {
@@ -12752,10 +12763,13 @@ window.addEventListener('load', () => {
         if (event.key !== 'Escape') return;
 
         closeCanvasSurfaceContextMenu();
+        closeReferenceGenClipboardContextMenu();
+        closeReferenceGenUpscaleExportModal();
     });
 
     document.addEventListener('scroll', () => {
         closeCanvasSurfaceContextMenu();
+        closeReferenceGenClipboardContextMenu();
     }, true);
 
     window.addEventListener('resize', () => {
@@ -12808,6 +12822,165 @@ function openCanvasSurfaceContextMenu(event) {
 function closeCanvasSurfaceContextMenu() {
     const menu = el('canvasSurfaceContextMenu');
     if (menu) menu.style.display = 'none';
+}
+
+function getReferenceGenClipboardContextMenu(createIfMissing = true) {
+    let menu = el('referenceGenClipboardContextMenu');
+
+    if (!menu && createIfMissing) {
+        menu = document.createElement('div');
+        menu.id = 'referenceGenClipboardContextMenu';
+        menu.className = 'canvas-layer-context-menu reference-gen-clipboard-context-menu';
+        menu.innerHTML = `
+            <button class="canvas-layer-context-item" onclick="copyReferenceGenImageToClipboard()">
+                복사
+            </button>
+            <button class="canvas-layer-context-item" onclick="pasteClipboardToReferenceGenImage()">
+                가져오기
+            </button>
+        `;
+        document.body.appendChild(menu);
+    }
+
+    return menu;
+}
+
+function openReferenceGenClipboardContextMenu(event) {
+    if (!referenceGenSession?.currentSrc) {
+        return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    closeCanvasImageLayerContextMenu();
+    closeCanvasSelectionContextMenu();
+    closeCanvasSurfaceContextMenu();
+    closeClipOutputClipboardContextMenu();
+
+    const menu = getReferenceGenClipboardContextMenu();
+    if (!menu) return;
+
+    menu.style.display = 'block';
+
+    const margin = 12;
+    const menuWidth = menu.offsetWidth || 180;
+    const menuHeight = menu.offsetHeight || 80;
+
+    const left = Math.min(event.clientX, window.innerWidth - menuWidth - margin);
+    const top = Math.min(event.clientY, window.innerHeight - menuHeight - margin);
+
+    menu.style.left = `${Math.max(margin, left)}px`;
+    menu.style.top = `${Math.max(margin, top)}px`;
+}
+
+function closeReferenceGenClipboardContextMenu() {
+    const menu = getReferenceGenClipboardContextMenu(false);
+    if (menu) menu.style.display = 'none';
+}
+
+function buildReferenceGenClipboardPayload(src, width, height, promptInfo = null) {
+    if (!src) return null;
+
+    return {
+        src,
+        width: Math.max(1, Math.round(Number(width) || 1)),
+        height: Math.max(1, Math.round(Number(height) || 1)),
+        promptInfo: normalizeReferenceGenPromptInfo(promptInfo || referenceGenSession?.promptInfo || {}),
+        copiedAt: Date.now()
+    };
+}
+
+async function copyReferenceGenImageToClipboard() {
+    closeReferenceGenClipboardContextMenu();
+
+    if (!referenceGenSession?.currentSrc) {
+        alert('복사할 참조 이미지가 없습니다.');
+        return false;
+    }
+
+    referenceGenInternalClipboard = buildReferenceGenClipboardPayload(
+        referenceGenSession.currentSrc,
+        referenceGenSession.width,
+        referenceGenSession.height,
+        referenceGenSession.promptInfo
+    );
+
+    try {
+        await writeClipOutputToSystemClipboard(referenceGenSession.currentSrc);
+        showReferenceGenToast('참조 이미지를 클립보드에 복사했습니다.');
+        return true;
+    } catch (error) {
+        alert(`참조 이미지 복사 실패: ${error.message || error}`);
+        return false;
+    }
+}
+
+async function getImageSizeFromDataUrl(dataUrl) {
+    const image = await loadReferenceGenImage(dataUrl);
+    return {
+        width: image.naturalWidth || image.width || 1,
+        height: image.naturalHeight || image.height || 1
+    };
+}
+
+async function pasteClipboardToReferenceGenImage() {
+    closeReferenceGenClipboardContextMenu();
+
+    if (!referenceGenSession) {
+        alert('참조 이미지 세션이 없습니다.');
+        return false;
+    }
+
+    try {
+        let clipboard = null;
+        const externalImageDataUrl = await readExternalCanvasImageDataUrlFromSystemClipboard();
+
+        if (externalImageDataUrl) {
+            const size = await getImageSizeFromDataUrl(externalImageDataUrl);
+            clipboard = buildReferenceGenClipboardPayload(
+                externalImageDataUrl,
+                size.width,
+                size.height,
+                referenceGenSession.promptInfo
+            );
+        } else if (referenceGenInternalClipboard?.src) {
+            clipboard = referenceGenInternalClipboard;
+        } else if (clipOutputInternalClipboard?.src) {
+            clipboard = buildReferenceGenClipboardPayload(
+                clipOutputInternalClipboard.src,
+                clipOutputInternalClipboard.imageWidth || clipOutputInternalClipboard.layerWidth,
+                clipOutputInternalClipboard.imageHeight || clipOutputInternalClipboard.layerHeight,
+                clipOutputInternalClipboard.promptInfo || referenceGenSession.promptInfo
+            );
+        }
+
+        if (!clipboard?.src) {
+            alert('가져올 클립보드 이미지가 없습니다.');
+            return false;
+        }
+
+        const pastedSrc = String(clipboard.src).startsWith('data:')
+            ? await saveClipDataUrlToServer(clipboard.src)
+            : clipboard.src;
+
+        referenceGenSession.width = Math.max(1, Math.round(Number(clipboard.width) || referenceGenSession.width || 1));
+        referenceGenSession.height = Math.max(1, Math.round(Number(clipboard.height) || referenceGenSession.height || 1));
+        referenceGenSession.currentSrc = pastedSrc;
+        referenceGenSession.originalSrc = pastedSrc;
+        referenceGenSession.resultSrc = '';
+        referenceGenSession.promptInfo = normalizeReferenceGenPromptInfo(
+            clipboard.promptInfo || referenceGenSession.promptInfo
+        );
+        referenceGenSession.maskDataUrl = '';
+
+        openReferenceGenLayer();
+        showReferenceGenToast('클립보드 이미지를 참조 이미지로 가져왔습니다.');
+        return true;
+    } catch (error) {
+        alert(`참조 이미지 가져오기 실패: ${error.message || error}`);
+        return false;
+    }
 }
 
 function openReferenceGenResolutionModal() {
@@ -13064,6 +13237,7 @@ function closeReferenceGen() {
 function setupReferenceGenOverlay() {
     const img = el('referenceGenImage');
     const overlay = el('referenceGenOverlay');
+    const wrap = el('referenceGenImageWrap');
 
     if (!img || !overlay || !referenceGenSession) return;
 
@@ -13101,9 +13275,16 @@ function setupReferenceGenOverlay() {
             hideReferenceGenBrushCursor();
         });
 
+        overlay.addEventListener('contextmenu', openReferenceGenClipboardContextMenu);
+
         overlay.addEventListener('touchstart', startReferenceGenMaskPaint, { passive: false });
         overlay.addEventListener('touchmove', moveReferenceGenMaskPaint, { passive: false });
         overlay.addEventListener('touchend', stopReferenceGenMaskPaint, { passive: false });
+    }
+
+    if (wrap && wrap.dataset.referenceGenContextBound !== '1') {
+        wrap.dataset.referenceGenContextBound = '1';
+        wrap.addEventListener('contextmenu', openReferenceGenClipboardContextMenu);
     }
 }
 
@@ -13140,6 +13321,7 @@ function getReferenceGenPointer(event) {
 
 function startReferenceGenMaskPaint(event) {
     if (!referenceGenSession) return;
+    if (Number.isInteger(event?.button) && event.button !== 0) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -13180,13 +13362,13 @@ function moveReferenceGenMaskPaint(event) {
 }
 
 function stopReferenceGenMaskPaint(event) {
+    if (!referenceGenPainting) {
+        return;
+    }
+
     if (event) {
         event.preventDefault?.();
         event.stopPropagation?.();
-    }
-
-    if (!referenceGenPainting) {
-        return;
     }
 
     referenceGenPainting = false;
@@ -13698,6 +13880,195 @@ async function requestReferenceGenInpaint() {
 
     } catch (error) {
         alert(`인페인팅 실패: ${error.message || error}`);
+    } finally {
+        setReferenceGenProcessing(false);
+    }
+}
+
+function getReferenceGenExportCoverSize(width = null, height = null) {
+    const imageWidth = Math.max(1, Number(width || referenceGenSession?.width) || 1);
+    const imageHeight = Math.max(1, Number(height || referenceGenSession?.height) || 1);
+
+    if (!currentCanvasWidth || !currentCanvasHeight) {
+        return {
+            width: imageWidth,
+            height: imageHeight
+        };
+    }
+
+    const scale = Math.max(
+        currentCanvasWidth / imageWidth,
+        currentCanvasHeight / imageHeight
+    );
+
+    return {
+        width: Math.max(1, Math.round(imageWidth * scale)),
+        height: Math.max(1, Math.round(imageHeight * scale))
+    };
+}
+
+function getReferenceGenUpscaleInputSize() {
+    const width = Math.max(64, Math.min(20000, parseInt(el('referenceGenUpscaleWidthInput')?.value, 10) || 2500));
+    const height = Math.max(64, Math.min(20000, parseInt(el('referenceGenUpscaleHeightInput')?.value, 10) || 8000));
+
+    return { width, height };
+}
+
+function getSelectedReferenceGenUpscaleQuality() {
+    return document.querySelector('input[name="referenceGenUpscaleQuality"]:checked')?.value || 'standard';
+}
+
+function applyReferenceGenUpscalePreset(width, height) {
+    const widthInput = el('referenceGenUpscaleWidthInput');
+    const heightInput = el('referenceGenUpscaleHeightInput');
+
+    if (widthInput) widthInput.value = Math.max(64, Math.min(20000, Math.round(Number(width) || 2500)));
+    if (heightInput) heightInput.value = Math.max(64, Math.min(20000, Math.round(Number(height) || 8000)));
+
+    referenceGenUpscaleLastEditedAxis = 'width';
+    updateReferenceGenUpscaleInfo();
+}
+
+function applyReferenceGenUpscaleExportSizePreset() {
+    const size = getReferenceGenExportCoverSize();
+    applyReferenceGenUpscalePreset(size.width, size.height);
+}
+
+function applyReferenceGenUpscaleMultiplierPreset(multiplier) {
+    if (!referenceGenSession) return;
+
+    const scale = Math.max(1, Number(multiplier) || 1);
+    applyReferenceGenUpscalePreset(
+        Math.round(referenceGenSession.width * scale),
+        Math.round(referenceGenSession.height * scale)
+    );
+}
+
+function handleReferenceGenUpscaleWidthInput() {
+    referenceGenUpscaleLastEditedAxis = 'width';
+
+    if (el('referenceGenUpscaleRatioLock')?.checked && referenceGenSession?.width && referenceGenSession?.height) {
+        const width = parseInt(el('referenceGenUpscaleWidthInput')?.value, 10) || 2500;
+        const ratio = referenceGenSession.height / Math.max(1, referenceGenSession.width);
+        const heightInput = el('referenceGenUpscaleHeightInput');
+        if (heightInput) heightInput.value = Math.round(width * ratio);
+    }
+
+    updateReferenceGenUpscaleInfo();
+}
+
+function handleReferenceGenUpscaleHeightInput() {
+    referenceGenUpscaleLastEditedAxis = 'height';
+
+    if (el('referenceGenUpscaleRatioLock')?.checked && referenceGenSession?.width && referenceGenSession?.height) {
+        const height = parseInt(el('referenceGenUpscaleHeightInput')?.value, 10) || 8000;
+        const ratio = referenceGenSession.width / Math.max(1, referenceGenSession.height);
+        const widthInput = el('referenceGenUpscaleWidthInput');
+        if (widthInput) widthInput.value = Math.round(height * ratio);
+    }
+
+    updateReferenceGenUpscaleInfo();
+}
+
+function updateReferenceGenUpscaleInfo() {
+    const info = el('referenceGenUpscaleInfo');
+    if (!info) return;
+
+    const size = getReferenceGenUpscaleInputSize();
+    const mp = (size.width * size.height / 1000000).toFixed(1);
+
+    if (!referenceGenSession?.width || !referenceGenSession?.height) {
+        info.innerText = `목표 해상도 ${size.width} × ${size.height}px · 약 ${mp}MP`;
+        return;
+    }
+
+    const sx = size.width / Math.max(1, referenceGenSession.width);
+    const sy = size.height / Math.max(1, referenceGenSession.height);
+
+    info.innerText = `목표 해상도 ${size.width} × ${size.height}px · 약 ${mp}MP · 원본 대비 ${sx.toFixed(2)}x / ${sy.toFixed(2)}x`;
+}
+
+function openReferenceGenUpscaleExportModal() {
+    if (!referenceGenSession || !referenceGenSession.currentSrc) {
+        alert('업스케일링할 참조 이미지가 없습니다.');
+        return;
+    }
+
+    if (!currentCanvasWidth || !currentCanvasHeight) {
+        alert('먼저 캔버스를 생성해 주세요.');
+        return;
+    }
+
+    const meta = el('referenceGenUpscaleMeta');
+    if (meta) {
+        const exportSize = getReferenceGenExportCoverSize();
+        meta.innerText = `원본 ${referenceGenSession.width} × ${referenceGenSession.height}px · 내보내기 기준 ${exportSize.width} × ${exportSize.height}px`;
+    }
+
+    applyReferenceGenUpscaleExportSizePreset();
+
+    const layer = el('referenceGenUpscaleLayer');
+    if (layer) layer.style.display = 'flex';
+}
+
+function closeReferenceGenUpscaleExportModal() {
+    const layer = el('referenceGenUpscaleLayer');
+    if (layer) layer.style.display = 'none';
+}
+
+async function startReferenceGenUpscaleExport() {
+    if (!referenceGenSession || !referenceGenSession.currentSrc) {
+        alert('업스케일링할 참조 이미지가 없습니다.');
+        return;
+    }
+
+    if (!currentCanvasWidth || !currentCanvasHeight) {
+        alert('먼저 캔버스를 생성해 주세요.');
+        return;
+    }
+
+    const size = getReferenceGenUpscaleInputSize();
+    const engine = el('referenceGenUpscaleEngine')?.value || 'realcugan';
+    const quality = getSelectedReferenceGenUpscaleQuality();
+
+    if (size.width * size.height > 130000000) {
+        alert('목표 해상도가 너무 큽니다. 130MP 이하로 설정해 주세요.');
+        return;
+    }
+
+    closeReferenceGenUpscaleExportModal();
+    setReferenceGenProcessing(true, '참조 이미지 업스케일링 처리 중...');
+
+    try {
+        const response = await fetch('/api/canvas/reference_upscale', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                image: referenceGenSession.currentSrc,
+                target_width: size.width,
+                target_height: size.height,
+                engine,
+                quality,
+                sessionId: CANVAS_IMPORT_SESSION_ID
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || data.status !== 'success') {
+            throw new Error(data.message || '참조 이미지 업스케일링 실패');
+        }
+
+        await addReferenceGenImageLayerCoverCanvas({
+            src: data.src,
+            name: `참조 이미지 업스케일 ${data.width || size.width}×${data.height || size.height}`,
+            promptInfo: referenceGenSession.promptInfo
+        });
+
+        closeReferenceGen();
+        showReferenceGenToast('업스케일링한 참조 이미지를 내보냈습니다.');
+    } catch (error) {
+        alert(`업스케일링 내보내기 실패: ${error.message || error}`);
     } finally {
         setReferenceGenProcessing(false);
     }

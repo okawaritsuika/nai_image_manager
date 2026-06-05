@@ -25,10 +25,14 @@
         .gallery-filter-loading { font-size: 12px; color: #f1c40f; font-weight: 800; }
 
         /* 🌟 캐릭터 버튼(칩) 스타일 복구 */
-        #char-chip-container { display: none; flex-wrap: wrap; gap: 10px; padding: 15px 40px; background: #0a0a0f; border-bottom: 1px solid #222; }
-        .char-chip { background: #1a1a24; border: 1px solid #444; color: #ccc; padding: 8px 18px; border-radius: 20px; cursor: pointer; font-size: 13px; font-weight: bold; transition: 0.2s; }
+        #char-chip-container { --char-chip-row-height: 38px; --char-chip-row-gap: 10px; display: none; flex-wrap: wrap; align-content: flex-start; gap: var(--char-chip-row-gap); padding: 15px 40px; background: #0a0a0f; border-bottom: 1px solid #222; max-height: var(--gallery-character-filter-max-height, 38px); overflow-y: auto; overscroll-behavior: contain; }
+        #char-chip-container::-webkit-scrollbar { width: 10px; }
+        #char-chip-container::-webkit-scrollbar-track { background: #08080d; }
+        #char-chip-container::-webkit-scrollbar-thumb { background: #33334a; border-radius: 999px; border: 2px solid #08080d; }
+        #char-chip-container::-webkit-scrollbar-thumb:hover { background: #4b4b68; }
+        .char-chip { height: var(--char-chip-row-height); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; background: #1a1a24; border: 1px solid #444; color: #ccc; padding: 0 18px; border-radius: 20px; cursor: pointer; font-size: 13px; font-weight: bold; line-height: 1; transition: 0.2s; }
         .char-chip:hover { background: #333; border-color: #666; }
-        .char-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 0 12px rgba(255,0,124,0.4); transform: translateY(-2px); }
+        .char-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 0 12px rgba(255,0,124,0.4); }
 
         .section-title { margin: 40px 40px 10px 40px; padding: 10px 20px; border-left: 5px solid var(--accent); background: rgba(255, 255, 255, 0.03); font-size: 20px; font-weight: 900; letter-spacing: 2px; }
         .collapsible-wrapper { margin-bottom: 20px; border-bottom: 1px solid #222; }
