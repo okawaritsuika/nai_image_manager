@@ -66,6 +66,7 @@ let galleryDesignSettings = {
     fixedWidth: 260,
     fixedHeight: 360,
     navTabRows: 1,
+    characterFilterRows: 4,
     characterKoreanNames: true
 };
 let galleryCharacterNameOverrides = {};
@@ -132,6 +133,7 @@ function normalizeGalleryDesignSettings(raw) {
         fixedWidth: clampGalleryNumber(data.fixedWidth, 260, 120, 800),
         fixedHeight: clampGalleryNumber(data.fixedHeight, 360, 120, 1000),
         navTabRows: clampGalleryNumber(data.navTabRows, 1, 1, 3),
+        characterFilterRows: clampGalleryNumber(data.characterFilterRows, 4, 1, 8),
         characterKoreanNames: data.characterKoreanNames !== false
     };
 }
@@ -175,6 +177,12 @@ function saveGalleryDesignSettings() {
 
 function applyGalleryDesignSettingsToDocument() {
     galleryDesignSettings = normalizeGalleryDesignSettings(galleryDesignSettings);
+    const characterFilterRows = galleryDesignSettings.characterFilterRows;
+    const characterChipRowHeight = 38;
+    const characterChipRowGap = 10;
+    const characterFilterMaxHeight =
+        (characterChipRowHeight * characterFilterRows) +
+        (characterChipRowGap * Math.max(0, characterFilterRows - 1));
 
     document.documentElement.style.setProperty(
         '--gallery-image-scale',
@@ -192,6 +200,14 @@ function applyGalleryDesignSettingsToDocument() {
         '--gallery-nav-tab-rows',
         String(galleryDesignSettings.navTabRows)
     );
+    document.documentElement.style.setProperty(
+        '--gallery-character-filter-rows',
+        String(characterFilterRows)
+    );
+    document.documentElement.style.setProperty(
+        '--gallery-character-filter-max-height',
+        `${characterFilterMaxHeight}px`
+    );
 
     document.body.classList.toggle(
         'gallery-nav-tabs-multiline',
@@ -208,6 +224,8 @@ function syncGalleryDesignSettingsInputs() {
     const fixedWidthInput = document.getElementById('galleryFixedWidthInput');
     const fixedHeightInput = document.getElementById('galleryFixedHeightInput');
     const characterKoreanNamesInput = document.getElementById('galleryCharacterKoreanNamesInput');
+    const characterFilterRowsRange = document.getElementById('galleryCharacterFilterRowsRange');
+    const characterFilterRowsInput = document.getElementById('galleryCharacterFilterRowsInput');
 
     if (scaleRange) scaleRange.value = galleryDesignSettings.imageScalePercent;
     if (scaleInput) scaleInput.value = galleryDesignSettings.imageScalePercent;
@@ -215,6 +233,8 @@ function syncGalleryDesignSettingsInputs() {
     if (fixedWidthInput) fixedWidthInput.value = galleryDesignSettings.fixedWidth;
     if (fixedHeightInput) fixedHeightInput.value = galleryDesignSettings.fixedHeight;
     if (characterKoreanNamesInput) characterKoreanNamesInput.checked = galleryDesignSettings.characterKoreanNames;
+    if (characterFilterRowsRange) characterFilterRowsRange.value = galleryDesignSettings.characterFilterRows;
+    if (characterFilterRowsInput) characterFilterRowsInput.value = galleryDesignSettings.characterFilterRows;
     document.querySelectorAll('.gallery-design-nav-row-control button, .gallery-design-header-row-control button').forEach((button) => {
         button.classList.remove('active');
     });
@@ -266,6 +286,12 @@ function setGalleryCharacterKoreanNames(enabled) {
     applyGalleryDesignSettingsToDocument();
     buildFilterDropdowns(currentPath[currentPath.length - 1]);
     renderView();
+}
+
+function setGalleryCharacterFilterRows(value) {
+    galleryDesignSettings.characterFilterRows = clampGalleryNumber(value, 4, 1, 8);
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
 }
 
 function setGalleryFixedSizeValue() {

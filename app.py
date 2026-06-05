@@ -23,6 +23,7 @@ import datetime
 import random
 import sqlite3
 import atexit
+import tempfile
 from urllib.parse import urlsplit, unquote, quote
 
 app = Flask(__name__)
@@ -5333,6 +5334,78 @@ def save_canvas_generated_image(raw_bytes, prefix="canvas_inpaint", category=Non
         f.write(raw_bytes)
 
     return canvas_import_public_src(rel_name), rel_name
+
+
+@app.route('/api/canvas/reference_upscale', methods=['POST'])
+def canvas_reference_upscale():
+    try:
+        data = request.json or {}
+
+        image_ref = data.get("image", "")
+        if not image_ref:
+            return jsonify({"status": "error", "message": "업스케일할 참조 이미지가 없습니다."}), 400
+
+        target_width, target_height = upscale_logic.validate_target_size(
+            data.get("target_width", 2500),
+            data.get("target_height", 8000)
+        )
+
+        engine = str(data.get("engine") or "realcugan").strip().lower()
+        if engine not in ("realcugan", "lanczos"):
+            engine = "realcugan"
+
+        quality = str(data.get("quality") or "standard").strip().lower()
+        if quality not in ("fast", "standard", "high"):
+            quality = "standard"
+
+        source_bytes = read_canvas_image_bytes(image_ref)
+        session_id = data.get("sessionId") or None
+
+        with tempfile.TemporaryDirectory(prefix="naia_reference_upscale_") as temp_dir:
+            source_path = os.path.join(temp_dir, "source.png")
+            target_path = os.path.join(temp_dir, "upscaled.png")
+
+            with Image.open(io.BytesIO(source_bytes)) as img:
+                img.convert("RGBA").save(source_path, "PNG")
+
+            result = upscale_logic.run_upscale(
+                source_path=source_path,
+                target_path=target_path,
+                target_width=target_width,
+                target_height=target_height,
+                engine=engine,
+                quality=quality
+            )
+
+            with open(target_path, "rb") as f:
+                result_bytes = f.read()
+
+        src, rel_name = save_canvas_generated_image(
+            result_bytes,
+            prefix="canvas_reference_upscale",
+            category="canvas",
+            session_id=session_id
+        )
+
+        return jsonify({
+            "status": "success",
+            "src": src,
+            "name": rel_name,
+            "width": target_width,
+            "height": target_height,
+            "engine": engine,
+            "quality": quality,
+            "result": result
+        })
+
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    except FileNotFoundError as e:
+        return jsonify({"status": "error", "message": str(e)}), 404
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route('/api/canvas/cleanup_imports', methods=['POST'])

@@ -771,6 +771,18 @@
 
                 <div class="gallery-design-setting-row">
                     <div>
+                        <div class="gallery-design-setting-title">캐릭터 필터 표시 줄 수</div>
+                        <div class="gallery-design-setting-desc">브랜드 선택 후 캐릭터 버튼을 몇 줄까지 보일지 정합니다. 캐릭터가 많으면 줄 단위로 끊기고 영역 안에서 스크롤합니다.</div>
+                    </div>
+                    <div class="gallery-design-setting-control">
+                        <input type="range" id="galleryCharacterFilterRowsRange" min="1" max="8" step="1" value="4" oninput="setGalleryCharacterFilterRows(this.value)">
+                        <input type="number" id="galleryCharacterFilterRowsInput" min="1" max="8" step="1" value="4" oninput="setGalleryCharacterFilterRows(this.value)">
+                        <span>줄</span>
+                    </div>
+                </div>
+
+                <div class="gallery-design-setting-row">
+                    <div>
                         <div class="gallery-design-setting-title">고정 크기</div>
                         <div class="gallery-design-setting-desc">고정 크기 모드에서 사용할 썸네일 박스 크기입니다.</div>
                     </div>

@@ -344,6 +344,11 @@
                         onclick="exportReferenceGenToCanvas()">
                     내보내기
                 </button>
+
+                <button class="reference-gen-tool-btn success"
+                        onclick="openReferenceGenUpscaleExportModal()">
+                    업스케일링 내보내기
+                </button>
             </div>
 
             <div class="reference-gen-body">
@@ -359,6 +364,99 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="referenceGenUpscaleLayer"
+        class="reference-gen-upscale-layer">
+        <div class="reference-gen-upscale-card">
+            <div class="canvas-modal-header">
+                <div>
+                    <h3>참조 이미지 업스케일링 내보내기</h3>
+                    <div id="referenceGenUpscaleMeta" class="reference-gen-meta">-</div>
+                </div>
+                <button class="icon-btn danger" onclick="closeReferenceGenUpscaleExportModal()">×</button>
+            </div>
+
+            <div class="reference-gen-upscale-section">
+                <div class="reference-gen-upscale-preset-row">
+                    <button type="button" onclick="applyReferenceGenUpscaleExportSizePreset()">
+                        내보내기 크기
+                    </button>
+                    <button type="button" onclick="applyReferenceGenUpscaleMultiplierPreset(2)">
+                        2x
+                    </button>
+                    <button type="button" onclick="applyReferenceGenUpscaleMultiplierPreset(4)">
+                        4x
+                    </button>
+                </div>
+
+                <div class="reference-gen-upscale-resolution-row">
+                    <input id="referenceGenUpscaleWidthInput"
+                        type="number"
+                        min="64"
+                        max="20000"
+                        step="1"
+                        oninput="handleReferenceGenUpscaleWidthInput()">
+                    <span>×</span>
+                    <input id="referenceGenUpscaleHeightInput"
+                        type="number"
+                        min="64"
+                        max="20000"
+                        step="1"
+                        oninput="handleReferenceGenUpscaleHeightInput()">
+                </div>
+
+                <label class="reference-gen-upscale-check">
+                    <input id="referenceGenUpscaleRatioLock" type="checkbox" checked>
+                    <span>비율 고정</span>
+                </label>
+
+                <div id="referenceGenUpscaleInfo" class="reference-gen-upscale-help"></div>
+            </div>
+
+            <div class="reference-gen-upscale-section">
+                <label for="referenceGenUpscaleEngine">엔진</label>
+                <select id="referenceGenUpscaleEngine">
+                    <option value="realcugan" selected>Real-CUGAN / 애니 그림 추천</option>
+                    <option value="lanczos">Lanczos / 빠른 리사이즈</option>
+                </select>
+                <div class="reference-gen-upscale-help">
+                    Real-CUGAN은 setup의 3단계 업스케일 엔진 설치 후 사용할 수 있습니다.
+                </div>
+            </div>
+
+            <div class="reference-gen-upscale-section">
+                <label>품질</label>
+                <div class="reference-gen-upscale-quality-list">
+                    <label class="reference-gen-upscale-quality-item">
+                        <input type="radio" name="referenceGenUpscaleQuality" value="fast">
+                        <span>
+                            <strong>빠름</strong>
+                            <small>가벼운 처리</small>
+                        </span>
+                    </label>
+                    <label class="reference-gen-upscale-quality-item">
+                        <input type="radio" name="referenceGenUpscaleQuality" value="standard" checked>
+                        <span>
+                            <strong>표준</strong>
+                            <small>권장 균형</small>
+                        </span>
+                    </label>
+                    <label class="reference-gen-upscale-quality-item">
+                        <input type="radio" name="referenceGenUpscaleQuality" value="high">
+                        <span>
+                            <strong>고품질</strong>
+                            <small>느리지만 더 선명</small>
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="reference-gen-upscale-actions">
+                <button class="secondary" onclick="closeReferenceGenUpscaleExportModal()">닫기</button>
+                <button class="success" onclick="startReferenceGenUpscaleExport()">업스케일링 내보내기</button>
             </div>
         </div>
     </div>

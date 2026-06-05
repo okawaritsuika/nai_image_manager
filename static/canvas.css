@@ -391,6 +391,10 @@
     overflow: hidden;
 }
 
+.reference-gen-clipboard-context-menu {
+    z-index: 28000;
+}
+
 .canvas-layer-context-item {
     width: 100%;
     padding: 13px 16px;
@@ -3307,6 +3311,123 @@
     min-height: 96px;
 }
 
+.reference-gen-upscale-layer {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 26000;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.82);
+}
+
+.reference-gen-upscale-card {
+    width: min(680px, calc(100vw - 48px));
+    max-height: 88vh;
+    overflow-y: auto;
+    background: var(--card-bg);
+    border: 2px solid var(--accent-blue);
+    border-radius: 16px;
+    padding: 22px;
+    box-shadow: 0 20px 70px rgba(0, 0, 0, 0.75);
+}
+
+.reference-gen-upscale-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.reference-gen-upscale-section label {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 900;
+}
+
+.reference-gen-upscale-preset-row,
+.reference-gen-upscale-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.reference-gen-upscale-preset-row button {
+    flex: 1;
+    min-width: 120px;
+    padding: 9px 12px;
+}
+
+.reference-gen-upscale-resolution-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+}
+
+.reference-gen-upscale-resolution-row input,
+.reference-gen-upscale-section select {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.reference-gen-upscale-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.reference-gen-upscale-check input {
+    width: auto;
+}
+
+.reference-gen-upscale-help {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.reference-gen-upscale-quality-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.reference-gen-upscale-quality-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-color);
+    cursor: pointer;
+}
+
+.reference-gen-upscale-quality-item input {
+    margin-top: 3px;
+}
+
+.reference-gen-upscale-quality-item strong {
+    display: block;
+    color: var(--text-main);
+    font-size: 13px;
+}
+
+.reference-gen-upscale-quality-item small {
+    display: block;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: 3px;
+}
+
+.reference-gen-upscale-actions {
+    justify-content: flex-end;
+    margin-top: 18px;
+}
+
 .reference-gen-char-prompt-item {
     border: 1px solid var(--border-color);
     border-radius: 10px;
@@ -3365,6 +3486,15 @@
     .reference-gen-prompt-card {
         width: calc(100vw - 24px);
         padding: 16px;
+    }
+
+    .reference-gen-upscale-card {
+        width: calc(100vw - 24px);
+        padding: 16px;
+    }
+
+    .reference-gen-upscale-quality-list {
+        grid-template-columns: 1fr;
     }
 }
 
