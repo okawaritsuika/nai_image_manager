@@ -240,7 +240,8 @@ def get_canvas_saved_setups():
     return jsonify({
         "status": "success",
         "setups": setups,
-        "count": len(setups)
+        "count": len(setups),
+        "allowLegacyMigration": not getattr(sys, "frozen", False)
     })
 
 
