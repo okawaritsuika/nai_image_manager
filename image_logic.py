@@ -868,7 +868,12 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     USE_AI_FILTER = use_ai
     USE_GPU_MODE = use_gpu  # 🌟 사용자 선택값을 전역 변수에 저장
     if USE_AI_FILTER:
-        get_nsfw_model()
+        if is_ai_available():
+            get_nsfw_model()
+        else:
+            log_func("ℹ️ AI 자동분류 패키지가 없어 일반 분류로 진행합니다.")
+            USE_AI_FILTER = False
+            USE_GPU_MODE = False
     if getattr(sys, 'frozen', False):
         current_dir = os.path.dirname(sys.executable)
     else:

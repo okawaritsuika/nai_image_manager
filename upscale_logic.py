@@ -8,7 +8,15 @@ import time
 from PIL import Image
 
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+def get_app_dir():
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+CURRENT_DIR = get_app_dir()
 REALCUGAN_EXE = os.path.join(
     CURRENT_DIR,
     "tools",

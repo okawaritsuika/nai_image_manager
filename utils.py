@@ -10,6 +10,14 @@ import time
 CONFIG_FILE = "gallery_config.json"
 
 
+def get_app_dir():
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def clean_tag(raw_tag):
     """프롬프트의 텍스트를 Danbooru DB 표준 포맷으로 완벽 정제합니다."""
     if not raw_tag: return ""
@@ -82,7 +90,7 @@ def is_port_active(port, host='127.0.0.1'):
 
 class HistoryDB:
     def __init__(self, _unused_path=None):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = get_app_dir()
         db_folder = os.path.join(base_dir, "TOTAL_CLASSIFIED")
         os.makedirs(db_folder, exist_ok=True)
         self.db_path = os.path.join(db_folder, "naia_history.db")
