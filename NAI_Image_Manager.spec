@@ -11,12 +11,6 @@ datas = [
     ("static", "static"),
     ("data", "data"),
     ("tools", "tools"),
-    ("artists.json", "."),
-    ("styles.json", "."),
-    ("gallery_config.json", "."),
-    ("gallery_image_tags.json", "."),
-    ("lab_config.json", "."),
-    ("tag_dictionary_user_overrides.json", "."),
     ("danbooru_tags.db", "."),
 ]
 
