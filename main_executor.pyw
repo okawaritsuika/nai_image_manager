@@ -524,18 +524,19 @@ class NaiaHyperExecutor:
             classify_settings = {}
 
         ai_available = image_logic.is_ai_available()
-        ai_enabled_by_default = bool(classify_settings.get("use_ai", False)) and ai_available
+        lite_ai_disabled = is_frozen_app() and not ai_available
+        ai_enabled_by_default = bool(classify_settings.get("use_ai", False)) and not lite_ai_disabled
 
         self.use_ai_var = tk.BooleanVar(value=ai_enabled_by_default)
-        self.use_gpu_var = tk.BooleanVar(value=bool(classify_settings.get("use_gpu", False)) and ai_available)
+        self.use_gpu_var = tk.BooleanVar(value=bool(classify_settings.get("use_gpu", False)) and not lite_ai_disabled)
         self.skip_nsfw_var = tk.BooleanVar(value=bool(classify_settings.get("skip_nsfw", False)))
         self.skip_char_var = tk.BooleanVar(value=bool(classify_settings.get("skip_char", False)))  # 🌟 [신규] 캐릭터 판별 무시 변수
         legacy_thread_count = int(classify_settings.get("thread_count", 4) or 4)
         normal_thread_default = int(classify_settings.get("normal_thread_count", legacy_thread_count) or legacy_thread_count)
         ai_thread_default = int(classify_settings.get("ai_thread_count", min(4, legacy_thread_count)) or min(4, legacy_thread_count))
 
-        ai_check_state = "normal" if ai_available else "disabled"
-        ai_check_text = "🤖 딥러닝 AI 야짤 정밀 판독" if ai_available else "🤖 AI 자동분류 제외됨"
+        ai_check_state = "disabled" if lite_ai_disabled else "normal"
+        ai_check_text = "🤖 AI 자동분류 제외됨" if lite_ai_disabled else "🤖 딥러닝 AI 야짤 정밀 판독"
         tk.Checkbutton(ai_frame, text=ai_check_text, variable=self.use_ai_var, bg="#1e1e2e", fg="#00f2ff",
                        selectcolor="#222", font=("Malgun Gothic", 9, "bold"),
                        command=self.update_thread_guide, state=ai_check_state).pack(side="left")
@@ -766,7 +767,7 @@ class NaiaHyperExecutor:
         self.lbl_thread_guide.config(fg=color)
 
     def apply_auto_config(self):
-        use_ai = self.use_ai_var.get() and image_logic.is_ai_available()
+        use_ai = self.use_ai_var.get()
         use_gpu = self.use_gpu_var.get()
         cpu_cores = os.cpu_count() or 4
         vram_gb = 0
@@ -1342,7 +1343,7 @@ class NaiaHyperExecutor:
         method = self.classify_method_var.get()
         is_fast = self.is_fast_mode.get()
         use_ai = self.use_ai_var.get()
-        if use_ai and not image_logic.is_ai_available():
+        if use_ai and is_frozen_app() and not image_logic.is_ai_available():
             use_ai = False
             self.use_ai_var.set(False)
             self.log("ℹ️ 이 lite exe에는 AI 자동분류 패키지가 포함되어 있지 않아 일반 분류로 진행합니다.")
@@ -1438,7 +1439,7 @@ class NaiaHyperExecutor:
 
         # 🌟 [신규] 실행 전 확인 팝업 구성
         use_ai = self.use_ai_var.get()
-        if use_ai and not image_logic.is_ai_available():
+        if use_ai and is_frozen_app() and not image_logic.is_ai_available():
             use_ai = False
             self.use_ai_var.set(False)
             self.log("ℹ️ 이 lite exe에는 AI 자동분류 패키지가 포함되어 있지 않아 일반 재정렬로 진행합니다.")

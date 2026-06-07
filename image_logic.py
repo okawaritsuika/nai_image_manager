@@ -867,7 +867,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     global USE_AI_FILTER, USE_GPU_MODE
     USE_AI_FILTER = use_ai
     USE_GPU_MODE = use_gpu  # 🌟 사용자 선택값을 전역 변수에 저장
-    if USE_AI_FILTER:
+    if USE_AI_FILTER and getattr(sys, 'frozen', False):
         if is_ai_available():
             get_nsfw_model()
         else:
