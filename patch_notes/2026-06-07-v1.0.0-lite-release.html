@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NAI Image Manager v1.0.0 Lite Release Notes</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #121319;
+      --panel: #1a1d27;
+      --panel-strong: #222635;
+      --line: #34394c;
+      --text: #f1f3fb;
+      --muted: #b7becf;
+      --soft: #d9deed;
+      --accent: #7c89ff;
+      --green: #34d399;
+      --amber: #f6c76b;
+      --red: #ff7a7a;
+      --code: #10121a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 32px 18px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, "Malgun Gothic", sans-serif;
+      line-height: 1.72;
+    }
+
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+    }
+
+    header,
+    section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    header {
+      padding: 24px;
+      background: var(--panel-strong);
+    }
+
+    section {
+      margin-top: 18px;
+      padding: 20px 22px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+      font-size: 28px;
+      line-height: 1.32;
+    }
+
+    h2 {
+      margin-bottom: 12px;
+      font-size: 20px;
+    }
+
+    h3 {
+      margin-bottom: 8px;
+      font-size: 17px;
+    }
+
+    p {
+      color: var(--soft);
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 22px;
+      color: var(--soft);
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    a {
+      color: #aeb8ff;
+      text-decoration: none;
+    }
+
+    code {
+      padding: 2px 6px;
+      border: 1px solid #2c3142;
+      border-radius: 5px;
+      background: var(--code);
+      color: #f5f7ff;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.94em;
+    }
+
+    .badge {
+      display: inline-block;
+      margin-bottom: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .meta {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .card {
+      padding: 15px 16px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      background: var(--panel-strong);
+    }
+
+    .card.good {
+      border-left-color: var(--green);
+    }
+
+    .card.warn {
+      border-left-color: var(--amber);
+    }
+
+    .card.danger {
+      border-left-color: var(--red);
+    }
+
+    .card p {
+      margin-bottom: 0;
+    }
+
+    .note {
+      background: #221f17;
+      border-color: #51452e;
+    }
+
+    .note h2 {
+      color: #ffe2a3;
+    }
+
+    .file-list {
+      columns: 2;
+      column-gap: 26px;
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 18px 12px;
+      }
+
+      header,
+      section {
+        padding: 18px 16px;
+      }
+
+      h1 {
+        font-size: 23px;
+      }
+
+      .file-list {
+        columns: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="badge">릴리즈 노트</div>
+      <h1>NAI Image Manager v1.0.0 Lite Windows 배포</h1>
+      <p class="meta">
+        날짜: <strong>2026-06-07</strong><br>
+        태그: <code>v1.0.0-lite</code><br>
+        브랜치: <code>codex/lite-exe-packaging</code><br>
+        릴리즈:
+        <a href="https://github.com/okawaritsuika/nai_image_manager/releases/tag/v1.0.0-lite">
+          GitHub Releases
+        </a>
+      </p>
+    </header>
+
+    <section>
+      <h2>요약</h2>
+      <p>
+        Windows에서 바로 실행할 수 있는 Lite 배포판을 추가했습니다. 기존 대용량 빌드에서
+        <code>torch</code>, CUDA, <code>transformers</code> 계열 AI 자동분류 패키지를 제외하고,
+        기본 갤러리/캔버스 기능과 Real-CUGAN 업스케일 도구 중심으로 구성했습니다.
+      </p>
+      <p>
+        배포 zip에는 개인 설정 파일과 캔버스 저장본을 포함하지 않도록 정리했으며,
+        소스코드로 실행하는 기존 사용자의 동작은 유지되도록 exe 전용 조건으로 분리했습니다.
+      </p>
+    </section>
+
+    <section>
+      <h2>주요 변경 사항</h2>
+      <div class="grid">
+        <article class="card good">
+          <h3>Lite exe 패키징 추가</h3>
+          <p>
+            <code>NAI_Image_Manager.spec</code>를 추가해 PyInstaller 기반 Windows 배포본을 만들 수 있게 했습니다.
+            실행 파일은 같은 exe를 <code>--server</code> 모드로 다시 실행해 Flask 서버를 띄웁니다.
+          </p>
+        </article>
+
+        <article class="card good">
+          <h3>용량 축소</h3>
+          <p>
+            AI 자동분류용 대형 패키지를 제외해 릴리즈 zip을 약 96MB 수준으로 줄였습니다.
+            Real-CUGAN 업스케일러와 모델 파일은 그대로 포함됩니다.
+          </p>
+        </article>
+
+        <article class="card warn">
+          <h3>AI 자동분류 제한</h3>
+          <p>
+            Lite exe에서는 AI 자동분류 패키지가 포함되지 않으므로 AI 체크박스와 설치 API를 제한합니다.
+            소스 실행에서는 기존 AI 설정과 설치 흐름을 유지합니다.
+          </p>
+        </article>
+
+        <article class="card warn">
+          <h3>개인 설정 제외</h3>
+          <p>
+            배포 zip에서 갤러리 설정, 스타일 설정, 캔버스 저장본 같은 로컬 데이터 파일을 제외했습니다.
+            첫 실행 후 필요한 설정 파일은 사용자 환경에서 새로 생성됩니다.
+          </p>
+        </article>
+
+        <article class="card">
+          <h3>캔버스 저장본 자동 복구 차단</h3>
+          <p>
+            Lite exe에서는 브라우저 <code>localStorage</code>에 남아 있던 기존 캔버스 저장본을
+            새 배포본으로 자동 마이그레이션하지 않도록 했습니다.
+          </p>
+        </article>
+
+        <article class="card">
+          <h3>exe 기준 경로 보정</h3>
+          <p>
+            frozen exe에서는 실행 파일 폴더를 기준으로 정적 파일, DB, 업스케일 도구, 작업 폴더를 찾도록 보정했습니다.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>포함된 항목</h2>
+      <ul>
+        <li><code>NAI_Image_Manager.exe</code></li>
+        <li>갤러리, 캔버스, 스타일 연구소, 다키 워크숍 화면</li>
+        <li>Real-CUGAN 업스케일 실행 파일과 모델 파일</li>
+        <li>Danbooru 태그 DB 및 기본 태그 데이터</li>
+        <li>Flask, Pillow 등 앱 실행에 필요한 기본 런타임 의존성</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>제외된 항목</h2>
+      <ul>
+        <li><code>torch</code>, CUDA, <code>transformers</code>, <code>tokenizers</code> 기반 AI 자동분류 패키지</li>
+        <li><code>gallery_config.json</code></li>
+        <li><code>lab_config.json</code></li>
+        <li><code>artists.json</code>, <code>styles.json</code></li>
+        <li><code>gallery_image_tags.json</code></li>
+        <li><code>tag_dictionary_user_overrides.json</code></li>
+        <li><code>canvas_saved_setups.json</code>, <code>quality_presets.json</code></li>
+        <li>사용자 이미지 라이브러리와 생성 결과 폴더</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>사용 방법</h2>
+      <ol>
+        <li>GitHub Release에서 <code>NAI_Image_Manager_v1.0.0-lite_windows.zip</code>을 다운로드합니다.</li>
+        <li>원하는 위치에 압축을 풉니다.</li>
+        <li>압축 해제된 폴더 안의 <code>NAI_Image_Manager.exe</code>를 실행합니다.</li>
+        <li>exe 파일만 따로 옮기지 말고, 압축 해제된 폴더 전체 구조를 유지합니다.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>검증 내용</h2>
+      <ul>
+        <li><code>python -m py_compile</code>로 주요 Python 파일 문법 검사 통과</li>
+        <li><code>python -m PyInstaller --clean --distpath dist_lite</code> 빌드 성공</li>
+        <li>zip 내부 개인 설정 파일 검사 결과: <code>NO_PRIVATE_CONFIGS_IN_ZIP</code></li>
+        <li>AI 대형 패키지 파일 검색 결과: <code>0</code></li>
+        <li>업스케일러, HTML, 태그 DB 포함 여부 확인</li>
+        <li>GitHub Release asset 교체 및 다운로드 URL 확인</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>수정 파일</h2>
+      <ul class="file-list">
+        <li><code>.gitignore</code></li>
+        <li><code>NAI_Image_Manager.spec</code></li>
+        <li><code>app.py</code></li>
+        <li><code>main_executor.pyw</code></li>
+        <li><code>image_logic.py</code></li>
+        <li><code>static/canvas.js</code></li>
+        <li><code>utils.py</code></li>
+        <li><code>upscale_logic.py</code></li>
+      </ul>
+    </section>
+
+    <section class="note">
+      <h2>참고</h2>
+      <p>
+        이 패치노트는 별도 JavaScript 없이 HTML 태그와 <code>&lt;style&gt;</code>만 사용해 작성했습니다.
+        Lite exe는 배포 편의를 위한 별도 산출물이며, 소스코드로 실행하는 기존 사용자의 AI 및 캔버스 저장본 동작은 유지됩니다.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

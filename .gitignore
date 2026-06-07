@@ -31,7 +31,8 @@ dist/
 dist_lite/
 dist_release/
 release_assets/
-patch_notes/
+patch_notes/*
+!patch_notes/2026-06-07-v1.0.0-lite-release.html
 canvas_imports/
 daki_generated_temp/
 output/
