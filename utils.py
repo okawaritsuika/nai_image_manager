@@ -238,10 +238,47 @@ class HistoryDB:
                     updated_at REAL
                 )
             ''')
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS gallery_prompt_index (
+                    rel_path TEXT PRIMARY KEY,
+                    folder_path TEXT,
+                    file_name TEXT,
+                    mode TEXT,
+                    mtime REAL,
+                    prompt_text TEXT,
+                    normalized_text TEXT,
+                    text_bytes INTEGER DEFAULT 0,
+                    indexed_at REAL
+                )
+            ''')
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS gallery_prompt_index_profiles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    mode TEXT,
+                    scope_paths_json TEXT,
+                    image_count INTEGER DEFAULT 0,
+                    text_bytes INTEGER DEFAULT 0,
+                    created_at REAL,
+                    updated_at REAL,
+                    built_at REAL
+                )
+            ''')
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS gallery_prompt_index_profile_items (
+                    profile_id TEXT,
+                    rel_path TEXT,
+                    PRIMARY KEY (profile_id, rel_path)
+                )
+            ''')
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_images_folder_path ON gallery_images(folder_path)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_images_mode ON gallery_images(mode)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_folders_parent_path ON gallery_folders(parent_path)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_folders_mode ON gallery_folders(mode)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_prompt_folder_path ON gallery_prompt_index(folder_path)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_prompt_mode ON gallery_prompt_index(mode)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_prompt_mtime ON gallery_prompt_index(mtime)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_prompt_profile_items_path ON gallery_prompt_index_profile_items(rel_path)")
 
     def extract_characters_from_prompt(self, prompt_text):
         if not prompt_text: return []
@@ -546,6 +583,374 @@ class HistoryDB:
                 "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
                 ("full_index_built", "0", time.time())
             )
+
+    def upsert_gallery_prompt_records(self, records):
+        if not records:
+            return
+
+        now = time.time()
+        rows = []
+
+        for record in records:
+            rel_path = self.normalize_gallery_rel_path(record.get("rel_path"))
+            if not rel_path:
+                continue
+
+            folder_path = self.normalize_gallery_rel_path(record.get("folder_path") or os.path.dirname(rel_path))
+            prompt_text = str(record.get("prompt_text") or "")
+            rows.append((
+                rel_path,
+                folder_path,
+                str(record.get("file_name") or os.path.basename(rel_path)),
+                str(record.get("mode") or "general"),
+                float(record.get("mtime") or 0),
+                prompt_text,
+                str(record.get("normalized_text") or ""),
+                len(prompt_text.encode("utf-8")),
+                now
+            ))
+
+        if not rows:
+            return
+
+        with self.conn:
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO gallery_prompt_index
+                (rel_path, folder_path, file_name, mode, mtime, prompt_text, normalized_text, text_bytes, indexed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows
+            )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                ("prompt_index_updated_at", str(now), now)
+            )
+
+    def clear_gallery_prompt_index(self, folder_prefix=None):
+        folder_prefix = self.normalize_gallery_rel_path(folder_prefix or "")
+        now = time.time()
+
+        with self.conn:
+            if folder_prefix:
+                like_value = folder_prefix.rstrip("/") + "/%"
+                self.conn.execute(
+                    """
+                    DELETE FROM gallery_prompt_index
+                    WHERE folder_path = ? OR folder_path LIKE ? OR rel_path LIKE ?
+                    """,
+                    (folder_prefix, like_value, like_value)
+                )
+            else:
+                self.conn.execute("DELETE FROM gallery_prompt_index")
+
+            self.conn.execute(
+                "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                ("prompt_index_updated_at", str(now), now)
+            )
+
+    def clear_all_gallery_prompt_index_data(self):
+        now = time.time()
+        with self.conn:
+            self.conn.execute("DELETE FROM gallery_prompt_index")
+            self.conn.execute("DELETE FROM gallery_prompt_index_profiles")
+            self.conn.execute("DELETE FROM gallery_prompt_index_profile_items")
+            self.conn.execute(
+                "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                ("prompt_index_updated_at", str(now), now)
+            )
+
+    def _normalize_gallery_scope_paths(self, scope_paths=None):
+        if isinstance(scope_paths, (list, tuple, set)):
+            raw_paths = scope_paths
+        else:
+            raw_paths = [scope_paths]
+
+        cleaned = []
+        seen = set()
+
+        for raw_path in raw_paths:
+            clean = self.normalize_gallery_rel_path(raw_path or "")
+            if clean in seen:
+                continue
+            seen.add(clean)
+            cleaned.append(clean)
+
+        return cleaned
+
+    def _append_gallery_scope_where(self, clauses, params, scope_paths=None):
+        scopes = [path for path in self._normalize_gallery_scope_paths(scope_paths) if path]
+
+        if not scopes:
+            return
+
+        scope_clauses = []
+
+        for scope in scopes:
+            like_value = scope.rstrip("/") + "/%"
+            scope_clauses.append("(folder_path = ? OR folder_path LIKE ? OR rel_path LIKE ?)")
+            params.extend([scope, like_value, like_value])
+
+        clauses.append("(" + " OR ".join(scope_clauses) + ")")
+
+    def get_gallery_prompt_index_status(self, folder_prefix=None, mode=None):
+        clauses = []
+        params = []
+
+        self._append_gallery_scope_where(clauses, params, folder_prefix)
+
+        if mode == "all":
+            clauses.append("mode != ?")
+            params.append("trash")
+        elif mode:
+            clauses.append("mode = ?")
+            params.append(str(mode))
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cur = self.conn.cursor()
+        cur.execute(
+            f"""
+            SELECT COUNT(*), COALESCE(SUM(text_bytes), 0), MAX(indexed_at)
+            FROM gallery_prompt_index
+            {where_sql}
+            """,
+            params
+        )
+        count, text_bytes, updated_at = cur.fetchone()
+
+        return {
+            "indexed_images": int(count or 0),
+            "text_bytes": int(text_bytes or 0),
+            "updated_at": float(updated_at or 0)
+        }
+
+    def get_gallery_prompt_index_mtimes(self, rel_paths):
+        clean_paths = [
+            self.normalize_gallery_rel_path(path)
+            for path in (rel_paths or [])
+            if self.normalize_gallery_rel_path(path)
+        ]
+        clean_paths = list(dict.fromkeys(clean_paths))
+
+        if not clean_paths:
+            return {}
+
+        result = {}
+        cur = self.conn.cursor()
+        chunk_size = 450
+
+        for index in range(0, len(clean_paths), chunk_size):
+            chunk = clean_paths[index:index + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            cur.execute(
+                f"SELECT rel_path, mtime FROM gallery_prompt_index WHERE rel_path IN ({placeholders})",
+                chunk
+            )
+            for rel_path, mtime in cur.fetchall():
+                result[rel_path] = float(mtime or 0)
+
+        return result
+
+    def search_gallery_prompt_index(self, terms, scope_path="", mode="all", limit=50000):
+        clean_terms = [
+            str(term or "").strip().lower()
+            for term in (terms or [])
+            if str(term or "").strip()
+        ]
+        if not clean_terms:
+            return []
+
+        clauses = []
+        params = []
+
+        self._append_gallery_scope_where(clauses, params, scope_path)
+
+        if mode == "all":
+            clauses.append("mode != ?")
+            params.append("trash")
+        elif mode:
+            clauses.append("mode = ?")
+            params.append(str(mode))
+
+        for term in clean_terms:
+            clauses.append("normalized_text LIKE ?")
+            params.append(f"%{term}%")
+
+        where_sql = f"WHERE {' AND '.join(clauses)}"
+        cur = self.conn.cursor()
+        cur.execute(
+            f"""
+            SELECT rel_path, folder_path, file_name
+            FROM gallery_prompt_index
+            {where_sql}
+            ORDER BY folder_path, file_name
+            LIMIT ?
+            """,
+            params + [int(limit)]
+        )
+
+        return [
+            {"rel_path": row[0], "folder_path": row[1], "file_name": row[2]}
+            for row in cur.fetchall()
+        ]
+
+    def search_gallery_prompt_index_profile(self, profile_id, terms, limit=50000):
+        clean_terms = [
+            str(term or "").strip().lower()
+            for term in (terms or [])
+            if str(term or "").strip()
+        ]
+        if not profile_id or not clean_terms:
+            return []
+
+        clauses = ["pi.profile_id = ?"]
+        params = [str(profile_id)]
+
+        for term in clean_terms:
+            clauses.append("g.normalized_text LIKE ?")
+            params.append(f"%{term}%")
+
+        cur = self.conn.cursor()
+        cur.execute(
+            f"""
+            SELECT g.rel_path, g.folder_path, g.file_name
+            FROM gallery_prompt_index_profile_items pi
+            JOIN gallery_prompt_index g ON g.rel_path = pi.rel_path
+            WHERE {' AND '.join(clauses)}
+            ORDER BY g.folder_path, g.file_name
+            LIMIT ?
+            """,
+            params + [int(limit)]
+        )
+
+        return [
+            {"rel_path": row[0], "folder_path": row[1], "file_name": row[2]}
+            for row in cur.fetchall()
+        ]
+
+    def make_gallery_prompt_index_profile_id(self, mode, scope_paths):
+        scope_list = [path for path in self._normalize_gallery_scope_paths(scope_paths) if path]
+        signature = json.dumps({
+            "mode": str(mode or "all"),
+            "scope_paths": scope_list
+        }, ensure_ascii=False, sort_keys=True)
+        digest = hashlib.sha1(signature.encode("utf-8")).hexdigest()[:16]
+        return f"prompt_{digest}"
+
+    def upsert_gallery_prompt_index_profile(self, name, mode, scope_paths, rel_paths, text_bytes=0):
+        scope_list = [path for path in self._normalize_gallery_scope_paths(scope_paths) if path]
+        profile_id = self.make_gallery_prompt_index_profile_id(mode, scope_list)
+        now = time.time()
+        rel_list = [
+            self.normalize_gallery_rel_path(path)
+            for path in (rel_paths or [])
+            if self.normalize_gallery_rel_path(path)
+        ]
+        rel_list = list(dict.fromkeys(rel_list))
+        scope_json = json.dumps(scope_list, ensure_ascii=False)
+
+        cur = self.conn.cursor()
+        cur.execute("SELECT created_at FROM gallery_prompt_index_profiles WHERE id = ?", (profile_id,))
+        row = cur.fetchone()
+        created_at = float(row[0]) if row and row[0] else now
+
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO gallery_prompt_index_profiles
+                (id, name, mode, scope_paths_json, image_count, text_bytes, created_at, updated_at, built_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    str(name or profile_id),
+                    str(mode or "all"),
+                    scope_json,
+                    len(rel_list),
+                    int(text_bytes or 0),
+                    created_at,
+                    now,
+                    now
+                )
+            )
+            self.conn.execute(
+                "DELETE FROM gallery_prompt_index_profile_items WHERE profile_id = ?",
+                (profile_id,)
+            )
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO gallery_prompt_index_profile_items
+                (profile_id, rel_path)
+                VALUES (?, ?)
+                """,
+                [(profile_id, rel_path) for rel_path in rel_list]
+            )
+
+        return {
+            "id": profile_id,
+            "name": str(name or profile_id),
+            "mode": str(mode or "all"),
+            "scope_paths_json": scope_json,
+            "image_count": len(rel_list),
+            "text_bytes": int(text_bytes or 0),
+            "created_at": created_at,
+            "updated_at": now,
+            "built_at": now
+        }
+
+    def list_gallery_prompt_index_profiles(self):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, mode, scope_paths_json, image_count, text_bytes, created_at, updated_at, built_at
+            FROM gallery_prompt_index_profiles
+            ORDER BY updated_at DESC, name ASC
+            """
+        )
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "mode": row[2],
+                "scope_paths_json": row[3],
+                "image_count": int(row[4] or 0),
+                "text_bytes": int(row[5] or 0),
+                "created_at": float(row[6] or 0),
+                "updated_at": float(row[7] or 0),
+                "built_at": float(row[8] or 0)
+            }
+            for row in cur.fetchall()
+        ]
+
+    def get_gallery_prompt_index_profile_paths(self, profile_id):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT rel_path
+            FROM gallery_prompt_index_profile_items
+            WHERE profile_id = ?
+            ORDER BY rel_path
+            """,
+            (str(profile_id or ""),)
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def delete_gallery_prompt_index_profile(self, profile_id):
+        profile_id = str(profile_id or "")
+        if not profile_id:
+            return False
+
+        with self.conn:
+            cur = self.conn.execute(
+                "DELETE FROM gallery_prompt_index_profiles WHERE id = ?",
+                (profile_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM gallery_prompt_index_profile_items WHERE profile_id = ?",
+                (profile_id,)
+            )
+
+        return cur.rowcount > 0
 
     def build_gallery_image_record_from_file(self, file_path, classified_root=None, **overrides):
         classified_root = classified_root or os.path.dirname(self.db_path)

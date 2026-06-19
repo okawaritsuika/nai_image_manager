@@ -36,6 +36,19 @@ let galleryPromptFilterMetaLoading = false;
 let galleryPromptFilterMetaRequestKey = '';
 let galleryPromptFilterMetaLoadSeq = 0;
 const GALLERY_PROMPT_META_CHUNK_SIZE = 120;
+let galleryPromptSearchOpen = false;
+let galleryPromptSearchText = '';
+let galleryPromptSearchActive = false;
+let galleryPromptAutocompleteTimer = null;
+let galleryPromptIndexStatusTimer = null;
+let galleryPromptAutocompleteItems = [];
+let galleryPromptAutocompleteActiveIndex = -1;
+let galleryPromptSearchResult = {
+    imagePaths: new Set(),
+    folderCounts: new Map(),
+    totalMatches: 0,
+    indexed: false
+};
 const topBtn = document.getElementById('topBtn');
 
 let globalBrandMap = {};
@@ -1508,6 +1521,7 @@ async function loadData(options = {}) {
 
         buildFilterDropdowns(currentPath[currentPath.length - 1]);
         renderView();
+        refreshGalleryPromptIndexStatus().catch(() => {});
 
         if (galleryPendingScrollY !== null) {
             const scrollY = galleryPendingScrollY;
@@ -1715,6 +1729,492 @@ function normalizeGalleryPathKey(path) {
         .replace(/^image\//, '')
         .replace(/^TOTAL_CLASSIFIED\//, '')
         .split('?')[0];
+}
+
+function getCurrentGalleryScopePath() {
+    const node = currentPath[currentPath.length - 1];
+    return normalizeGalleryPathKey(node?.path || '');
+}
+
+function getGalleryPromptSearchMode() {
+    return getGalleryRadioValue('viewMode', 'general');
+}
+
+function getGalleryPromptSearchScopePaths() {
+    const currentNode = currentPath[currentPath.length - 1];
+    const baseScope = getCurrentGalleryScopePath();
+
+    if (!currentNode || isFinalImageFolder(currentNode) || currentSelectedBrand === 'ALL') {
+        return baseScope ? [baseScope] : [];
+    }
+
+    const folders = Array.isArray(currentNode.folders) ? currentNode.folders : [];
+    const scoped = folders
+        .filter(folder => {
+            if (!passesGalleryDakiFilter(folder, true)) return false;
+
+            const names = getGalleryFolderCharacterNames(folder);
+            const hasSelectedBrand = names.some(name => getGalleryBrandForCharacterName(name) === currentSelectedBrand);
+
+            if (!hasSelectedBrand) return false;
+
+            if (currentSelectedChar !== 'ALL') {
+                const normalizedNames = names.map(normalizeGalleryCharacterName);
+                if (!normalizedNames.includes(currentSelectedChar)) return false;
+            }
+
+            return true;
+        })
+        .map(folder => normalizeGalleryPathKey(folder.path || getGalleryBulkDeleteFolderKey(folder)))
+        .filter(Boolean);
+
+    return scoped.length ? scoped : (baseScope ? [baseScope] : []);
+}
+
+function resetGalleryPromptSearchResult() {
+    galleryPromptSearchActive = false;
+    galleryPromptSearchResult = {
+        imagePaths: new Set(),
+        folderCounts: new Map(),
+        totalMatches: 0,
+        indexed: false
+    };
+}
+
+function clearGalleryPromptSearch() {
+    const input = document.getElementById('galleryPromptSearchInput');
+    const autocomplete = document.getElementById('galleryPromptAutocomplete');
+    const status = document.getElementById('galleryPromptSearchStatus');
+
+    galleryPromptSearchText = '';
+    galleryPromptAutocompleteItems = [];
+    galleryPromptAutocompleteActiveIndex = -1;
+    resetGalleryPromptSearchResult();
+
+    if (input) input.value = '';
+    if (autocomplete) autocomplete.innerHTML = '';
+    if (status) status.textContent = '프롬프트 검색 대기 중';
+
+    renderView();
+    saveGallerySessionState();
+}
+
+function getGalleryPromptMatchedFolderCount(folder) {
+    if (!galleryPromptSearchActive) return Number(folder?.total_images || 0);
+
+    const key = normalizeGalleryPathKey(folder?.path || getGalleryBulkDeleteFolderKey(folder));
+    return Number(galleryPromptSearchResult.folderCounts.get(key) || 0);
+}
+
+function galleryPromptSearchMatchesFolder(folder) {
+    if (!galleryPromptSearchActive) return true;
+    return getGalleryPromptMatchedFolderCount(folder) > 0;
+}
+
+function galleryPromptSearchMatchesImage(item) {
+    if (!galleryPromptSearchActive) return true;
+    return galleryPromptSearchResult.imagePaths.has(normalizeGalleryPathKey(item?.path || ''));
+}
+
+function formatGalleryPromptIndexBytes(bytes) {
+    const value = Number(bytes || 0);
+
+    if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+
+    return `${value} B`;
+}
+
+function toggleGalleryPromptSearchPanel() {
+    galleryPromptSearchOpen = !galleryPromptSearchOpen;
+
+    const panel = document.getElementById('galleryPromptSearchPanel');
+    const icon = document.getElementById('galleryPromptSearchToggleIcon');
+
+    if (panel) panel.classList.toggle('collapsed', !galleryPromptSearchOpen);
+    if (icon) icon.textContent = galleryPromptSearchOpen ? '▲' : '▼';
+}
+
+function handleGalleryPromptSearchInput() {
+    galleryPromptSearchText = document.getElementById('galleryPromptSearchInput')?.value || '';
+    updateGalleryPromptAutocomplete();
+}
+
+async function runGalleryPromptSearch() {
+    const input = document.getElementById('galleryPromptSearchInput');
+    const status = document.getElementById('galleryPromptSearchStatus');
+    const query = String(input?.value || '').trim();
+
+    galleryPromptSearchText = query;
+
+    if (!query) {
+        resetGalleryPromptSearchResult();
+        if (status) status.textContent = '프롬프트 검색 대기 중';
+        renderView();
+        saveGallerySessionState();
+        return;
+    }
+
+    try {
+        const scopePaths = getGalleryPromptSearchScopePaths();
+        const scopeLabel = scopePaths.length
+            ? ` · 범위 ${scopePaths.length.toLocaleString()}개 폴더`
+            : ' · 전체 범위';
+
+        if (status) status.textContent = `프롬프트 검색 준비 중${scopeLabel}`;
+
+        const res = await fetch('/api/gallery/prompt_search/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                query,
+                scope_paths: scopePaths,
+                mode: getGalleryPromptSearchMode()
+            })
+        });
+        const json = await res.json();
+
+        if (!res.ok || json.status === 'error') {
+            throw new Error(json.message || '프롬프트 검색 시작 실패');
+        }
+
+        await pollGalleryPromptSearchJob(json.job?.id, scopeLabel);
+    } catch (e) {
+        if (status) status.textContent = `프롬프트 검색 실패: ${e.message || e}`;
+        showToast(`프롬프트 검색 실패: ${e.message || e}`);
+    }
+}
+
+async function pollGalleryPromptSearchJob(jobId, scopeLabel = '') {
+    if (!jobId) throw new Error('검색 작업 ID가 없습니다.');
+
+    const status = document.getElementById('galleryPromptSearchStatus');
+
+    while (true) {
+        const res = await fetch(`/api/gallery/prompt_search/status/${encodeURIComponent(jobId)}?ts=${Date.now()}`, {
+            cache: 'no-store'
+        });
+        const json = await res.json();
+
+        if (!res.ok || json.status === 'error') {
+            throw new Error(json.message || '프롬프트 검색 상태 조회 실패');
+        }
+
+        const job = json.job || {};
+        const total = Number(job.total || 0);
+        const processed = Number(job.processed || 0);
+        const percent = total ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+
+        if (status) {
+            const progressText = total
+                ? `${processed.toLocaleString()} / ${total.toLocaleString()} (${percent}%)`
+                : '대상 계산 중';
+            status.textContent = `${job.message || '프롬프트 검색 중...'} · ${progressText}${scopeLabel}`;
+        }
+
+        if (job.done || !job.running) {
+            if (job.error) throw new Error(job.error);
+
+            const result = job.result || {};
+            galleryPromptSearchActive = true;
+            galleryPromptSearchResult = {
+                imagePaths: new Set((result.image_paths || []).map(normalizeGalleryPathKey)),
+                folderCounts: new Map(
+                    Object.entries(result.folder_counts || {})
+                        .map(([key, value]) => [normalizeGalleryPathKey(key), Number(value || 0)])
+                ),
+                totalMatches: Number(result.total_matches || 0),
+                indexed: Boolean(result.indexed)
+            };
+
+            if (status) {
+                const sourceText = galleryPromptSearchResult.indexed ? '인덱스 검색' : '인덱스 없는 직접 검색';
+                status.textContent = `${sourceText} 완료 · 매칭 이미지 ${galleryPromptSearchResult.totalMatches.toLocaleString()}장${scopeLabel}`;
+            }
+
+            renderView();
+            saveGallerySessionState();
+            return;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+}
+
+async function refreshGalleryPromptIndexStatus() {
+    const scopePaths = [];
+    const scopeLabel = 'TOTAL_CLASSIFIED 전체';
+    const mode = 'all';
+    const params = new URLSearchParams();
+    params.set('mode', mode);
+
+    const res = await fetch(`/api/gallery/prompt_index/status?${params.toString()}`);
+    const json = await res.json();
+
+    if (!res.ok || json.status === 'error') {
+        throw new Error(json.message || '프롬프트 인덱스 상태 조회 실패');
+    }
+
+    const body = document.getElementById('galleryPromptIndexModalBody');
+    const job = json.job || {};
+    const total = Number(job.total || 0);
+    const processed = Number(job.processed || 0);
+    const percent = total ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+    const targetImages = Number(json.target_images || 0);
+    const missingImages = Number(json.missing_images || 0);
+    const jobStateText = job.running
+        ? `${processed.toLocaleString()} / ${total.toLocaleString()} (${percent}%)`
+        : job.error
+            ? '실패'
+            : job.done
+                ? (job.message || '완료')
+                : '대기 중';
+
+    if (body) {
+        body.innerHTML = `
+            <div class="gallery-prompt-index-row"><span>인덱스 종류</span><b>프롬프트 검색 전용 인덱스</b></div>
+            <div class="gallery-prompt-index-row"><span>대상 범위</span><b>${escapeHtml(scopeLabel)}</b></div>
+            <div class="gallery-prompt-index-row"><span>포함 모드</span><b>일반 + R-19, 휴지통 제외</b></div>
+            <div class="gallery-prompt-index-row"><span>대상 이미지</span><b>${targetImages.toLocaleString()}장</b></div>
+            <div class="gallery-prompt-index-row"><span>인덱싱된 이미지</span><b>${Number(json.indexed_images || 0).toLocaleString()}장</b></div>
+            <div class="gallery-prompt-index-row"><span>새로 추가할 이미지</span><b>${missingImages.toLocaleString()}장</b></div>
+            <div class="gallery-prompt-index-row"><span>프롬프트 텍스트 크기</span><b>${formatGalleryPromptIndexBytes(json.text_bytes)}</b></div>
+            <div class="gallery-prompt-index-row"><span>마지막 갱신</span><b>${json.updated_at ? new Date(json.updated_at * 1000).toLocaleString() : '없음'}</b></div>
+            <div class="gallery-prompt-index-row"><span>작업 상태</span><b>${escapeHtml(jobStateText)}</b></div>
+            <div class="gallery-prompt-index-progress"><div class="gallery-prompt-index-progress-fill" style="width:${percent}%"></div></div>
+            ${job.message ? `<div class="gallery-prompt-search-status">${escapeHtml(job.message)}</div>` : ''}
+            ${job.error ? `<div class="gallery-prompt-search-status" style="color:#ff6b6b;">${escapeHtml(job.error)}</div>` : ''}
+            <div class="gallery-prompt-search-status">이 인덱스는 이미지 표시용 갤러리 인덱스와 별개입니다. 한 번 생성하면 브랜드/캐릭터/폴더 필터 안에서도 같은 프롬프트 캐시를 사용해 빠르게 검색합니다.</div>
+        `;
+    }
+
+    const missingBtn = document.getElementById('galleryPromptIndexMissingBtn');
+    if (missingBtn) {
+        missingBtn.textContent = missingImages > 0
+            ? `새 파일만 추가 (${missingImages.toLocaleString()}장)`
+            : '새 파일 없음';
+        missingBtn.disabled = missingImages <= 0 || Boolean(job.running);
+        missingBtn.title = missingImages > 0
+            ? '아직 프롬프트 인덱스에 없는 새 이미지 파일만 추가합니다.'
+            : '현재 프롬프트 인덱스에 추가할 새 이미지가 없습니다.';
+    }
+
+    const status = document.getElementById('galleryPromptSearchStatus');
+
+    if (status) {
+        if (job.running) {
+            const progressText = total
+                ? `${processed.toLocaleString()} / ${total.toLocaleString()} (${percent}%)`
+                : '대상 계산 중';
+            status.textContent = `인덱스 생성 중 · ${progressText}`;
+        } else if (!galleryPromptSearchActive) {
+            status.textContent = Number(json.indexed_images || 0) > 0
+                ? `프롬프트 인덱스 ${Number(json.indexed_images || 0).toLocaleString()}장 · ${formatGalleryPromptIndexBytes(json.text_bytes)}`
+                : '프롬프트 인덱스 없음. 인덱스 없이도 검색할 수 있지만 느릴 수 있습니다.';
+        }
+    }
+
+    if (galleryPromptIndexStatusTimer) {
+        clearTimeout(galleryPromptIndexStatusTimer);
+        galleryPromptIndexStatusTimer = null;
+    }
+
+    if (job.running) {
+        galleryPromptIndexStatusTimer = setTimeout(() => {
+            refreshGalleryPromptIndexStatus().catch(e => console.warn('Prompt index status refresh failed:', e));
+        }, 500);
+    }
+}
+
+function openGalleryPromptIndexModal() {
+    const layer = document.getElementById('galleryPromptIndexModal');
+    if (layer) layer.style.display = 'flex';
+    refreshGalleryPromptIndexStatus().catch(e => showToast(e.message || String(e)));
+}
+
+async function deleteGalleryPromptIndex() {
+    if (!confirm('프롬프트 검색 인덱스를 삭제할까요? 이미지 파일과 갤러리 표시용 인덱스는 삭제하지 않습니다.')) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/gallery/prompt_index', { method: 'DELETE' });
+        const json = await res.json();
+
+        if (!res.ok || json.status === 'error') {
+            throw new Error(json.message || '프롬프트 인덱스 삭제 실패');
+        }
+
+        resetGalleryPromptSearchResult();
+        const status = document.getElementById('galleryPromptSearchStatus');
+        if (status) {
+            status.textContent = '프롬프트 인덱스를 삭제했습니다. 인덱스 없이도 검색할 수 있지만 느릴 수 있습니다.';
+        }
+        refreshGalleryPromptIndexStatus().catch(e => showToast(e.message || String(e)));
+    } catch (e) {
+        showToast(`프롬프트 인덱스 삭제 실패: ${e.message || e}`);
+    }
+}
+
+function closeGalleryPromptIndexModal() {
+    const layer = document.getElementById('galleryPromptIndexModal');
+    if (layer) layer.style.display = 'none';
+}
+
+async function startGalleryPromptIndexBuild(rebuild) {
+    try {
+        const missingOnly = rebuild === 'missing';
+        const rebuildAll = rebuild === true;
+        const scopePaths = [];
+        const status = document.getElementById('galleryPromptSearchStatus');
+        if (status) {
+            status.textContent = rebuildAll
+                ? '전체 프롬프트 인덱스 재생성 준비 중...'
+                : (missingOnly ? '새 파일만 프롬프트 인덱스에 추가 준비 중...' : '전체 프롬프트 인덱스 갱신 준비 중...');
+        }
+        const res = await fetch('/api/gallery/prompt_index/rebuild', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                scope_paths: scopePaths,
+                mode: 'all',
+                rebuild: rebuildAll,
+                missing_only: missingOnly
+            })
+        });
+        const json = await res.json();
+
+        if (!res.ok || json.status === 'error') {
+            throw new Error(json.message || '프롬프트 인덱스 생성 시작 실패');
+        }
+
+        openGalleryPromptIndexModal();
+        refreshGalleryPromptIndexStatus().catch(e => showToast(e.message || String(e)));
+    } catch (e) {
+        showToast(`프롬프트 인덱스 생성 실패: ${e.message || e}`);
+    }
+}
+
+function applyGalleryPromptAutocompleteValue(value) {
+    const input = document.getElementById('galleryPromptSearchInput');
+    const box = document.getElementById('galleryPromptAutocomplete');
+
+    if (!input) return;
+
+    const current = String(input.value || '');
+    const next = current.match(/[^\s,\n]+$/)
+        ? current.replace(/[^\s,\n]+$/, value)
+        : `${current}${value}`;
+
+    input.value = next;
+    galleryPromptSearchText = next;
+    galleryPromptAutocompleteItems = [];
+    galleryPromptAutocompleteActiveIndex = -1;
+    if (box) box.innerHTML = '';
+    input.focus();
+}
+
+function renderGalleryPromptAutocompleteItems() {
+    const box = document.getElementById('galleryPromptAutocomplete');
+    if (!box) return;
+
+    box.innerHTML = '';
+
+    galleryPromptAutocompleteItems.forEach((item, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = item;
+        button.classList.toggle('active', index === galleryPromptAutocompleteActiveIndex);
+        button.onclick = () => applyGalleryPromptAutocompleteValue(item);
+        box.appendChild(button);
+    });
+}
+
+function moveGalleryPromptAutocompleteSelection(delta) {
+    if (!galleryPromptAutocompleteItems.length) return;
+
+    if (galleryPromptAutocompleteActiveIndex < 0) {
+        galleryPromptAutocompleteActiveIndex = delta >= 0 ? 0 : galleryPromptAutocompleteItems.length - 1;
+    } else {
+        galleryPromptAutocompleteActiveIndex =
+            (galleryPromptAutocompleteActiveIndex + delta + galleryPromptAutocompleteItems.length) %
+            galleryPromptAutocompleteItems.length;
+    }
+
+    renderGalleryPromptAutocompleteItems();
+}
+
+function handleGalleryPromptSearchKeydown(event) {
+    if (event.key === 'Enter' && galleryPromptAutocompleteActiveIndex < 0) {
+        event.preventDefault();
+        runGalleryPromptSearch();
+        return;
+    }
+
+    if (!galleryPromptAutocompleteItems.length) return;
+
+    if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (galleryPromptAutocompleteActiveIndex < 0) {
+            galleryPromptAutocompleteActiveIndex = 0;
+        }
+        renderGalleryPromptAutocompleteItems();
+        return;
+    }
+
+    if (event.key === 'ArrowLeft' && galleryPromptAutocompleteActiveIndex >= 0) {
+        event.preventDefault();
+        moveGalleryPromptAutocompleteSelection(-1);
+        return;
+    }
+
+    if (event.key === 'ArrowRight' && galleryPromptAutocompleteActiveIndex >= 0) {
+        event.preventDefault();
+        moveGalleryPromptAutocompleteSelection(1);
+        return;
+    }
+
+    if (event.key === 'Enter' && galleryPromptAutocompleteActiveIndex >= 0) {
+        event.preventDefault();
+        applyGalleryPromptAutocompleteValue(galleryPromptAutocompleteItems[galleryPromptAutocompleteActiveIndex]);
+    }
+}
+
+function updateGalleryPromptAutocomplete() {
+    clearTimeout(galleryPromptAutocompleteTimer);
+
+    galleryPromptAutocompleteTimer = setTimeout(async () => {
+        const input = document.getElementById('galleryPromptSearchInput');
+        const box = document.getElementById('galleryPromptAutocomplete');
+
+        if (!input || !box) return;
+
+        const token = String(input.value || '').split(/[\s,\n]+/).pop().trim();
+
+        if (token.length < 2) {
+            galleryPromptAutocompleteItems = [];
+            galleryPromptAutocompleteActiveIndex = -1;
+            box.innerHTML = '';
+            return;
+        }
+
+        try {
+            const scope = getCurrentGalleryScopePath();
+            const mode = getGalleryPromptSearchMode();
+            const res = await fetch(`/api/gallery/prompt_index/autocomplete?q=${encodeURIComponent(token)}&scope_path=${encodeURIComponent(scope)}&mode=${encodeURIComponent(mode)}`);
+            const json = await res.json();
+            const items = Array.isArray(json.items) ? json.items : [];
+
+            galleryPromptAutocompleteItems = items;
+            galleryPromptAutocompleteActiveIndex = -1;
+            renderGalleryPromptAutocompleteItems();
+        } catch (e) {
+            console.warn('Prompt autocomplete failed:', e);
+            galleryPromptAutocompleteItems = [];
+            galleryPromptAutocompleteActiveIndex = -1;
+            box.innerHTML = '';
+        }
+    }, 180);
 }
 
 function getGalleryImageSrc(path) {
@@ -3741,6 +4241,7 @@ function renderView() {
 
     let displayFolders = currentNode.folders.filter(f => {
         if (!passesGalleryDakiFilter(f, true)) return false;
+        if (!galleryPromptSearchMatchesFolder(f)) return false;
 
         const folderNameText = String(f.name || '').replace(/_/g, ' ').toLowerCase();
         const charNameText = getGalleryFolderCharacterNames(f)
@@ -3778,7 +4279,7 @@ function renderView() {
     });
 
     let displayImages = (currentNode.images || []).filter(item => {
-        return passesGalleryDakiFilter(item, false);
+        return passesGalleryDakiFilter(item, false) && galleryPromptSearchMatchesImage(item);
     });
 
     if (isFinalFolder) {
@@ -3793,8 +4294,8 @@ function renderView() {
     }
 
     const isSearchFiltering = isFinalFolder
-        ? (currentSelectedGalleryArtStyle !== 'ALL' || currentGalleryTagFilter !== 'ALL' || searchText !== '')
-        : (currentSelectedBrand !== 'ALL' || currentGalleryTagFilter !== 'ALL' || searchText !== '');
+        ? (currentSelectedGalleryArtStyle !== 'ALL' || currentGalleryTagFilter !== 'ALL' || searchText !== '' || galleryPromptSearchActive)
+        : (currentSelectedBrand !== 'ALL' || currentGalleryTagFilter !== 'ALL' || searchText !== '' || galleryPromptSearchActive);
 
     const majorFolders = displayFolders.filter(f => f.total_images >= 10);
     const minorFolders = displayFolders.filter(f => f.total_images < 10);
@@ -3856,6 +4357,7 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
     folders.forEach((child, idx) => {
         const card = document.createElement('div');
         const bulkFolderKey = getGalleryBulkDeleteFolderKey(child);
+        const visibleCount = getGalleryPromptMatchedFolderCount(child);
 
         card.className = `card gallery-bulk-delete-selectable ${galleryBulkDeleteFolders.has(bulkFolderKey) ? 'bulk-delete-selected' : ''}`;
         card.dataset.bulkDeleteType = 'folder';
@@ -3917,7 +4419,7 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
             <div class="card-body">
                 ${imgSrc ? `<img src="${imgSrc}" class="card-main-img" loading="lazy" draggable="false">` : '<div style="height:150px;background:#222;"></div>'}
                 ${isDaki ? `<div class="daki-badge-neon">DAKIMAKURA</div>` : ''}
-                <div class="count-badge"><span class="count-num">${child.total_images}</span><span>FILES</span></div>
+                <div class="count-badge"><span class="count-num">${visibleCount}</span><span>FILES</span></div>
             </div>
             <div class="card-header">${nameRows}</div>`;
         cols[idx % colCount].appendChild(card);

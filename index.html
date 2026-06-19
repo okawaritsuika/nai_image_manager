@@ -33,6 +33,11 @@
                                 style="background: #22c55e; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(34, 197, 94, 0.3);">
                             🔄 인덱스 갱신
                         </button>
+                        <button onclick="openGalleryPromptIndexModal()"
+                                title="프롬프트 검색 인덱스 관리"
+                                style="background: #0ea5e9; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(14, 165, 233, 0.3);">
+                            🔎 프롬프트 인덱스
+                        </button>
                         <button onclick="toggleStats()" title="통계 보기" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">📊 통계</button>
                         <button onclick="openGalleryDesignSettings()" title="갤러리 디자인 설정" style="background: #8b5cf6; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(139, 92, 246, 0.3);">⚙️ 설정</button>
                         <button id="galleryBulkDeleteModeBtn"
@@ -102,6 +107,25 @@
         <div class="search-container">
             <textarea id="folder-search" rows="1" placeholder="🔍 폴더 이름 실시간 검색..." oninput="handleSearch(this.value)"></textarea>
             <button id="clear-search" onclick="clearSearch()">×</button>
+        </div>
+    </div>
+    <div id="galleryPromptSearchPanel" class="gallery-prompt-search-panel collapsed">
+        <button type="button" class="gallery-prompt-search-toggle" onclick="toggleGalleryPromptSearchPanel()">
+            <span>프롬프트 검색</span>
+            <span id="galleryPromptSearchToggleIcon">▼</span>
+        </button>
+        <div class="gallery-prompt-search-body">
+            <div class="gallery-prompt-search-row">
+                <textarea id="galleryPromptSearchInput"
+                          rows="2"
+                          placeholder="프롬프트 검색어를 입력하세요. 쉼표/줄바꿈은 AND 조건입니다."
+                          oninput="handleGalleryPromptSearchInput()"
+                          onkeydown="handleGalleryPromptSearchKeydown(event)"></textarea>
+                <button type="button" onclick="runGalleryPromptSearch()">검색</button>
+                <button type="button" onclick="clearGalleryPromptSearch()">초기화</button>
+            </div>
+            <div id="galleryPromptAutocomplete" class="gallery-prompt-autocomplete"></div>
+            <div id="galleryPromptSearchStatus" class="gallery-prompt-search-status">프롬프트 검색 대기 중</div>
         </div>
     </div>
     </div>
@@ -850,6 +874,23 @@
         </div>
     </div>
     <div id="galleryTagPicker" class="gallery-tag-picker"></div>
+
+    <div id="galleryPromptIndexModal" class="gallery-prompt-index-layer" style="display:none;">
+        <div class="gallery-prompt-index-card">
+            <div class="gallery-prompt-index-header">
+                <span>프롬프트 인덱스 관리</span>
+                <button type="button" onclick="closeGalleryPromptIndexModal()">×</button>
+            </div>
+            <div id="galleryPromptIndexModalBody" class="gallery-prompt-index-body"></div>
+            <div class="gallery-prompt-index-actions">
+                <button type="button" id="galleryPromptIndexMissingBtn" onclick="startGalleryPromptIndexBuild('missing')">새 파일만 추가</button>
+                <button type="button" onclick="startGalleryPromptIndexBuild(false)">프롬프트 인덱스 갱신</button>
+                <button type="button" onclick="startGalleryPromptIndexBuild(true)">프롬프트 인덱스 재생성</button>
+                <button type="button" class="danger" onclick="deleteGalleryPromptIndex()">프롬프트 인덱스 삭제</button>
+                <button type="button" class="secondary" onclick="closeGalleryPromptIndexModal()">닫기</button>
+            </div>
+        </div>
+    </div>
 
     <div id="galleryTagManagerLayer" class="gallery-tag-manager-layer">
         <div class="gallery-tag-manager-card">
