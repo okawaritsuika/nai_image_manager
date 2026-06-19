@@ -32,7 +32,7 @@ dist_lite/
 dist_release/
 release_assets/
 patch_notes/*
-!patch_notes/2026-06-07-v1.0.0-lite-release.html
+NAI_Image_Manager.spec
 tests/
 docs/superpowers/
 canvas_imports/
