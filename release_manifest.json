@@ -3,8 +3,8 @@
     "version":  "1.1.0",
     "tag":  "v1.1.0-exe",
     "asset_url":  "https://github.com/okawaritsuika/nai_image_manager/releases/download/v1.1.0-exe/NAI_Image_Manager_v1.1.0-exe_windows.zip",
-    "sha256":  "4d6b58434ed54841681d030b3efdf0e0b2dcb911876d6ad634dc72da4e29c0c7",
-    "size":  105581714,
+    "sha256":  "b918e6ac4ff3622c8f5c649cc07e88a62388e389811b9b5072cd06fad96937d7",
+    "size":  105580491,
     "payload_root":  "NAI_Image_Manager",
     "summary":  "Adds in-app EXE updates, legacy Lite migration, and user-data preservation."
 }
