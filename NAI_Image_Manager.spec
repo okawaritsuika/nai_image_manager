@@ -9,7 +9,8 @@ datas = [
     ("style_lab.html", "."),
     ("daki_workshop.html", "."),
     ("static", "static"),
-    ("data", "data"),
+    ("data/danbooru_tags.sqlite3", "data"),
+    ("data/tag_categories_ko.generated.json", "data"),
     ("tools", "tools"),
     ("danbooru_tags.db", "."),
 ]

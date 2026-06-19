@@ -30,6 +30,8 @@ build/
 dist/
 dist_lite/
 dist_release/
+dist_exe/
+dist_updater/
 release_assets/
 patch_notes/
 canvas_imports/
