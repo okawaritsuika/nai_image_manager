@@ -180,6 +180,43 @@
         .search-container textarea#folder-search { width: 100%; min-height: 42px; max-height: 130px; resize: vertical; background: transparent; border: none; outline: none; color: #fff; font-size: 14px; line-height: 1.45; padding: 11px 46px 11px 14px; box-sizing: border-box; font-family: inherit; }
         .search-container textarea#folder-search.prompt-filter-mode { min-height: 86px; white-space: pre-wrap; }
         .search-container textarea#folder-search::placeholder { color: #777; }
+        .gallery-prompt-search-panel { background: #0a0a0f; border-bottom: 1px solid #222; padding: 0 40px 10px; }
+        .gallery-prompt-search-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; background: #15151f; color: #e8eef8; border: 1px solid #303044; border-radius: 8px; padding: 10px 14px; font-weight: 900; cursor: pointer; }
+        .gallery-prompt-search-body { margin-top: 8px; padding: 12px; background: #101018; border: 1px solid #29293a; border-radius: 8px; }
+        .gallery-prompt-search-panel.collapsed .gallery-prompt-search-body { display: none; }
+        .gallery-prompt-search-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto auto; gap: 8px; align-items: stretch; }
+        .gallery-prompt-search-row textarea { min-height: 54px; resize: vertical; background: #1a1a24; color: #fff; border: 1px solid #333; border-radius: 8px; padding: 10px 12px; box-sizing: border-box; font-family: inherit; line-height: 1.45; }
+        .gallery-prompt-search-row textarea:focus { outline: none; border-color: var(--thumb); box-shadow: 0 0 12px rgba(0, 242, 255, 0.16); }
+        .gallery-prompt-search-row button,
+        .gallery-prompt-index-actions button { background: #232338; color: #fff; border: 1px solid #3a3a52; border-radius: 8px; padding: 0 12px; font-weight: 900; cursor: pointer; white-space: nowrap; }
+        .gallery-prompt-search-row button:hover,
+        .gallery-prompt-index-actions button:hover { border-color: var(--thumb); color: var(--thumb); }
+        .gallery-prompt-autocomplete { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .gallery-prompt-autocomplete button { background: #17202d; color: #dff8ff; border: 1px solid #2d5f72; border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+        .gallery-prompt-autocomplete button.active { background: var(--thumb); color: #001015; border-color: var(--thumb); }
+        .gallery-prompt-search-status { margin-top: 8px; color: #aeb7c8; font-size: 12px; font-weight: 700; }
+        .gallery-prompt-index-layer { position: fixed; inset: 0; z-index: 9400; background: rgba(0,0,0,0.72); align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; }
+        .gallery-prompt-index-card { width: min(760px, 100%); max-height: calc(100vh - 48px); overflow: auto; background: #12121c; border: 1px solid #34384a; border-radius: 8px; box-shadow: 0 24px 80px rgba(0,0,0,0.55); }
+        .gallery-prompt-index-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid #29293a; font-weight: 900; }
+        .gallery-prompt-index-header button { background: transparent; color: #fff; border: none; font-size: 24px; cursor: pointer; }
+        .gallery-prompt-index-body { padding: 16px; display: grid; gap: 10px; color: #d9e1ee; }
+        .gallery-prompt-index-row { display: flex; justify-content: space-between; gap: 16px; padding: 10px 12px; background: #191927; border: 1px solid #2b2b40; border-radius: 8px; }
+        .gallery-prompt-index-row b { color: var(--thumb); text-align: right; word-break: break-all; }
+        .gallery-prompt-index-progress { height: 10px; background: #252535; border-radius: 999px; overflow: hidden; border: 1px solid #34344a; }
+        .gallery-prompt-index-progress-fill { height: 100%; background: var(--thumb); width: 0%; transition: width 0.2s; }
+        .gallery-prompt-index-profile-title { margin-top: 12px; color: #fff; font-weight: 900; border-top: 1px solid #2b2b40; padding-top: 14px; }
+        .gallery-prompt-index-profile-list { display: grid; gap: 8px; }
+        .gallery-prompt-index-profile-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 12px; background: #181824; border: 1px solid #2b2b40; border-radius: 8px; }
+        .gallery-prompt-index-profile-row.active { border-color: var(--thumb); box-shadow: 0 0 12px rgba(0, 242, 255, 0.14); }
+        .gallery-prompt-index-profile-row b { display: block; color: #fff; margin-bottom: 4px; }
+        .gallery-prompt-index-profile-row span { display: block; color: #aeb7c8; font-size: 12px; }
+        .gallery-prompt-index-profile-actions { display: flex; gap: 6px; }
+        .gallery-prompt-index-profile-actions button { min-height: 30px; background: #232338; color: #fff; border: 1px solid #3a3a52; border-radius: 6px; padding: 0 10px; cursor: pointer; font-weight: 800; }
+        .gallery-prompt-index-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 14px 16px; border-top: 1px solid #29293a; }
+        .gallery-prompt-index-actions button { min-height: 36px; }
+        .gallery-prompt-index-actions button:disabled { opacity: 0.45; cursor: not-allowed; color: #777; border-color: #333; }
+        .gallery-prompt-index-actions button.secondary { background: #181824; color: #bbb; }
+        .gallery-prompt-index-actions button.danger { background: #3a1218; color: #ff8a9a; border-color: #7f1d2d; }
         #clear-search { position: absolute; right: 15px; background: none; border: none; color: #888; font-size: 20px; cursor: pointer; display: none; }
         body.hide-reasons .nsfw-reason-box { display: none !important; }
         .reason-nsfw { color: #ff4d4d; font-size: 12px; font-weight: bold; padding: 5px 10px; text-align: center; line-height: 1.4; background: #111; }

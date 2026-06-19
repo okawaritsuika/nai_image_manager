@@ -24,6 +24,7 @@ import random
 import sqlite3
 import atexit
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, unquote, quote
 
 app = Flask(__name__)
@@ -40,6 +41,22 @@ GALLERY_INDEX_REBUILD_JOB = {
     "started_at": 0,
     "finished_at": 0
 }
+GALLERY_PROMPT_INDEX_LOCK = threading.Lock()
+GALLERY_PROMPT_INDEX_JOB = {
+    "running": False,
+    "processed": 0,
+    "total": 0,
+    "message": "",
+    "error": "",
+    "done": False,
+    "started_at": 0,
+    "finished_at": 0,
+    "scope_path": "",
+    "mode": "all"
+}
+GALLERY_PROMPT_SEARCH_LOCK = threading.Lock()
+GALLERY_PROMPT_SEARCH_JOBS = {}
+GALLERY_PROMPT_INDEX_WORKERS = min(12, max(4, (os.cpu_count() or 4)))
 
 # 경로 설정
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1857,6 +1874,708 @@ def gallery_index_status():
         "index_mode_available": bool(full_index_built)
     })
     return jsonify(payload)
+
+
+def normalize_gallery_prompt_search_text(value):
+    text = str(value or "").lower().replace("_", " ")
+    text = re.sub(r"[\r\n,]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def split_gallery_prompt_search_terms(query):
+    return [
+        normalize_gallery_prompt_search_text(part)
+        for part in re.split(r"[\n,]+", str(query or ""))
+        if normalize_gallery_prompt_search_text(part)
+    ]
+
+
+def normalize_gallery_prompt_scope_paths(value):
+    raw_paths = value if isinstance(value, list) else [value]
+    paths = []
+    seen = set()
+
+    for raw_path in raw_paths:
+        clean = clean_gallery_rel_path(raw_path)
+        if clean in seen:
+            continue
+        seen.add(clean)
+        paths.append(clean)
+
+    return paths
+
+
+def gallery_prompt_mode_matches(rel_path, mode):
+    file_mode = infer_gallery_mode_from_rel_path(rel_path)
+    if mode == "general":
+        return file_mode == "general"
+    if mode == "r18":
+        return file_mode == "r18"
+    if mode == "trash":
+        return file_mode == "trash"
+    return file_mode != "trash" or mode == "trash"
+
+
+def iter_gallery_prompt_index_files(scope_path="", mode="all"):
+    scope_paths = normalize_gallery_prompt_scope_paths(scope_path)
+
+    if not scope_paths:
+        scope_paths = [""]
+
+    roots = []
+
+    for scope in scope_paths:
+        try:
+            root = utils.resolve_safe_path(
+                CLASSIFIED_DIR,
+                scope,
+                strip_prefix="TOTAL_CLASSIFIED/"
+            ) if scope else CLASSIFIED_DIR
+        except ValueError:
+            continue
+
+        if os.path.isdir(root):
+            roots.append(root)
+
+    if not roots:
+        return []
+
+    image_paths = []
+    seen_paths = set()
+
+    for root in roots:
+        for scan_root, dirs, files in os.walk(root):
+            dirs[:] = [
+                d for d in dirs
+                if not should_skip_gallery_index_child_directory(scan_root, d)
+            ]
+
+            if should_skip_gallery_index_directory(scan_root):
+                dirs[:] = []
+                continue
+
+            for file_name in files:
+                if not file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                    continue
+
+                full_path = os.path.join(scan_root, file_name)
+                rel_path = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
+
+                if rel_path in seen_paths:
+                    continue
+                seen_paths.add(rel_path)
+
+                if mode == "general" and rel_path.startswith(("_R-18/", "_R-15/", "_TRASH/")):
+                    continue
+                if mode == "r18" and not rel_path.startswith(("_R-18/", "_R-15/")):
+                    continue
+                if mode == "trash" and not rel_path.startswith("_TRASH/"):
+                    continue
+                if mode == "all" and rel_path.startswith("_TRASH/"):
+                    continue
+
+                image_paths.append(full_path)
+
+    return image_paths
+
+
+def build_gallery_prompt_index_record(full_path):
+    rel_path = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
+    folder_path = os.path.dirname(rel_path).replace("\\", "/")
+
+    if os.path.basename(folder_path) == UPSCALE_OUTPUT_FOLDER_NAME:
+        folder_path = os.path.dirname(folder_path).replace("\\", "/")
+
+    try:
+        mtime = os.path.getmtime(full_path)
+    except Exception:
+        mtime = time.time()
+
+    prompt_info = load_prompt_sidecar(full_path) or extract_prompt_info_from_image(full_path) or {}
+    prompt_text = build_gallery_prompt_filter_text(prompt_info)
+
+    return {
+        "rel_path": rel_path,
+        "folder_path": folder_path,
+        "file_name": os.path.basename(rel_path),
+        "mode": infer_gallery_mode_from_rel_path(rel_path),
+        "mtime": mtime,
+        "prompt_text": prompt_text,
+        "normalized_text": normalize_gallery_prompt_search_text(prompt_text)
+    }
+
+
+def build_gallery_prompt_index_profile_name(scope_paths, mode):
+    scope_paths = normalize_gallery_prompt_scope_paths(scope_paths)
+    mode_label = str(mode or "all")
+
+    if not scope_paths:
+        return f"{mode_label} · TOTAL_CLASSIFIED 전체"
+
+    if len(scope_paths) == 1:
+        return f"{mode_label} · {scope_paths[0]}"
+
+    return f"{mode_label} · {len(scope_paths)}개 필터 폴더"
+
+
+def filter_gallery_prompt_missing_files(db, image_paths):
+    rel_paths = [
+        os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
+        for full_path in image_paths
+    ]
+    indexed_mtimes = db.get_gallery_prompt_index_mtimes(rel_paths)
+
+    return [
+        full_path
+        for full_path, rel_path in zip(image_paths, rel_paths)
+        if rel_path not in indexed_mtimes
+    ]
+
+
+def gallery_prompt_index_worker(scope_path="", mode="all", rebuild=False, missing_only=False):
+    db = None
+
+    try:
+        clean_scopes = normalize_gallery_prompt_scope_paths(scope_path)
+        scope_label = clean_scopes[0] if len(clean_scopes) == 1 else f"{len(clean_scopes)} scopes"
+        image_paths = iter_gallery_prompt_index_files(clean_scopes, mode)
+        profile_name = build_gallery_prompt_index_profile_name(clean_scopes, mode)
+
+        with GALLERY_PROMPT_INDEX_LOCK:
+            GALLERY_PROMPT_INDEX_JOB.update({
+                "running": True,
+                "processed": 0,
+                "total": len(image_paths),
+                "message": "프롬프트 인덱스 재생성 중..." if rebuild else "프롬프트 인덱스 갱신 중...",
+                "error": "",
+                "done": False,
+                "started_at": time.time(),
+                "finished_at": 0,
+                "scope_path": scope_label,
+                "mode": mode or "all"
+            })
+
+        db = utils.HistoryDB()
+
+        if rebuild:
+            for clean_scope in clean_scopes:
+                db.clear_gallery_prompt_index(clean_scope)
+            if not clean_scopes:
+                db.clear_gallery_prompt_index("")
+        elif missing_only:
+            image_paths = filter_gallery_prompt_missing_files(db, image_paths)
+            with GALLERY_PROMPT_INDEX_LOCK:
+                GALLERY_PROMPT_INDEX_JOB.update({
+                    "processed": 0,
+                    "total": len(image_paths),
+                    "message": "프롬프트 인덱스 새 파일 추가 중..."
+                })
+
+        batch = []
+        processed = 0
+        last_progress_at = 0
+
+        with ThreadPoolExecutor(max_workers=GALLERY_PROMPT_INDEX_WORKERS) as executor:
+            future_map = {
+                executor.submit(build_gallery_prompt_index_record, full_path): full_path
+                for full_path in image_paths
+            }
+
+            for future in as_completed(future_map):
+                full_path = future_map[future]
+                processed += 1
+
+                try:
+                    batch.append(future.result())
+                except Exception as item_error:
+                    print(f"[WARN] gallery prompt index item failed: {full_path} | {item_error}")
+
+                if len(batch) >= 500:
+                    db.upsert_gallery_prompt_records(batch)
+                    batch = []
+
+                now = time.time()
+                if processed % 50 == 0 or now - last_progress_at >= 0.35 or processed == len(image_paths):
+                    last_progress_at = now
+                    with GALLERY_PROMPT_INDEX_LOCK:
+                        GALLERY_PROMPT_INDEX_JOB["processed"] = processed
+
+        if batch:
+            db.upsert_gallery_prompt_records(batch)
+
+        rel_paths = [
+            os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
+            for full_path in image_paths
+        ]
+        status = db.get_gallery_prompt_index_status(clean_scopes, mode)
+        profile = db.upsert_gallery_prompt_index_profile(
+            name=profile_name,
+            mode=mode,
+            scope_paths=clean_scopes,
+            rel_paths=rel_paths,
+            text_bytes=status.get("text_bytes", 0)
+        )
+
+        with GALLERY_PROMPT_INDEX_LOCK:
+            GALLERY_PROMPT_INDEX_JOB.update({
+                "running": False,
+                "processed": len(image_paths),
+                "done": True,
+                "message": "프롬프트 인덱스 생성 완료",
+                "profile_id": profile.get("id", ""),
+                "profile_name": profile.get("name", ""),
+                "finished_at": time.time()
+            })
+
+    except Exception as e:
+        with GALLERY_PROMPT_INDEX_LOCK:
+            GALLERY_PROMPT_INDEX_JOB.update({
+                "running": False,
+                "done": True,
+                "error": str(e),
+                "message": "프롬프트 인덱스 생성 실패",
+                "finished_at": time.time()
+            })
+    finally:
+        if db:
+            db.close()
+
+
+def build_gallery_prompt_search_payload(rows):
+    image_paths = []
+    folder_counts = {}
+
+    for row in rows:
+        rel_path = clean_gallery_rel_path(row.get("rel_path"))
+        folder_path = clean_gallery_rel_path(row.get("folder_path"))
+
+        if not rel_path:
+            continue
+
+        image_paths.append(rel_path)
+        current = folder_path
+
+        while current:
+            folder_counts[current] = folder_counts.get(current, 0) + 1
+            current = os.path.dirname(current).replace("\\", "/")
+
+    return {
+        "image_paths": image_paths,
+        "folder_counts": folder_counts,
+        "total_matches": len(image_paths)
+    }
+
+
+def search_gallery_prompts_without_index(query, scope_path="", mode="all", progress=None):
+    terms = split_gallery_prompt_search_terms(query)
+    if not terms:
+        return []
+
+    rows = []
+    image_paths = iter_gallery_prompt_index_files(scope_path, mode)
+
+    if progress:
+        progress(total=len(image_paths), processed=0, message="인덱스 없이 프롬프트 파일을 읽는 중...")
+
+    processed = 0
+    last_progress_at = 0
+
+    with ThreadPoolExecutor(max_workers=GALLERY_PROMPT_INDEX_WORKERS) as executor:
+        future_map = {
+            executor.submit(build_gallery_prompt_index_record, full_path): full_path
+            for full_path in image_paths
+        }
+
+        for future in as_completed(future_map):
+            full_path = future_map[future]
+            rel_path = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
+            processed += 1
+
+            try:
+                record = future.result()
+                text = record.get("normalized_text") or ""
+
+                if all(term in text for term in terms):
+                    rows.append({
+                        "rel_path": rel_path,
+                        "folder_path": record.get("folder_path") or os.path.dirname(rel_path).replace("\\", "/"),
+                        "file_name": os.path.basename(rel_path)
+                    })
+            except Exception as e:
+                print(f"[WARN] gallery prompt fallback search failed: {rel_path} | {e}")
+
+            now = time.time()
+            if progress and (processed % 25 == 0 or now - last_progress_at >= 0.35 or processed == len(image_paths)):
+                last_progress_at = now
+                progress(total=len(image_paths), processed=processed, message="인덱스 없이 프롬프트 파일을 읽는 중...")
+
+    return rows
+
+
+def public_gallery_prompt_search_job(job):
+    result = job.get("result") or {}
+    return {
+        "id": job.get("id", ""),
+        "running": bool(job.get("running")),
+        "done": bool(job.get("done")),
+        "processed": int(job.get("processed") or 0),
+        "total": int(job.get("total") or 0),
+        "message": job.get("message", ""),
+        "error": job.get("error", ""),
+        "started_at": job.get("started_at", 0),
+        "updated_at": job.get("updated_at", 0),
+        "finished_at": job.get("finished_at", 0),
+        "result": result
+    }
+
+
+def update_gallery_prompt_search_job(job_id, **kwargs):
+    with GALLERY_PROMPT_SEARCH_LOCK:
+        job = GALLERY_PROMPT_SEARCH_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(kwargs)
+        job["updated_at"] = time.time()
+
+
+def gallery_prompt_search_worker(job_id, query, scope_paths, mode):
+    try:
+        terms = split_gallery_prompt_search_terms(query)
+        profile_id = ""
+
+        with GALLERY_PROMPT_SEARCH_LOCK:
+            job = GALLERY_PROMPT_SEARCH_JOBS.get(job_id) or {}
+            profile_id = str(job.get("profile_id") or "")
+
+        if not terms:
+            payload = {"image_paths": [], "folder_counts": {}, "total_matches": 0, "indexed": True}
+            update_gallery_prompt_search_job(
+                job_id,
+                running=False,
+                done=True,
+                processed=0,
+                total=0,
+                message="검색어가 비어 있습니다.",
+                result=payload,
+                finished_at=time.time()
+            )
+            return
+
+        db = utils.HistoryDB()
+
+        try:
+            if profile_id:
+                profile_paths = db.get_gallery_prompt_index_profile_paths(profile_id)
+                index_status = {"indexed_images": len(profile_paths)}
+            else:
+                index_status = db.get_gallery_prompt_index_status(scope_paths, mode)
+            indexed_total = int(index_status.get("indexed_images") or 0)
+            update_gallery_prompt_search_job(
+                job_id,
+                total=indexed_total,
+                processed=0,
+                message="프롬프트 인덱스 검색 중..."
+            )
+            rows = db.search_gallery_prompt_index_profile(profile_id, terms) if profile_id else db.search_gallery_prompt_index(terms, scope_paths, mode)
+        finally:
+            db.close()
+
+        indexed = indexed_total > 0
+
+        if indexed:
+            processed = indexed_total
+        else:
+            processed_holder = {"value": 0}
+
+            def progress(total=0, processed=0, message="검색 중..."):
+                processed_holder["value"] = int(processed or 0)
+                update_gallery_prompt_search_job(
+                    job_id,
+                    total=int(total or 0),
+                    processed=int(processed or 0),
+                    message=message
+                )
+
+            rows = search_gallery_prompts_without_index(query, scope_paths, mode, progress=progress)
+            processed = processed_holder["value"]
+
+        payload = build_gallery_prompt_search_payload(rows)
+        update_gallery_prompt_search_job(
+            job_id,
+            running=False,
+            done=True,
+            processed=processed,
+            message="프롬프트 검색 완료",
+            result={**payload, "indexed": indexed},
+            finished_at=time.time()
+        )
+    except Exception as e:
+        update_gallery_prompt_search_job(
+            job_id,
+            running=False,
+            done=True,
+            error=str(e),
+            message="프롬프트 검색 실패",
+            finished_at=time.time()
+        )
+
+
+@app.route('/api/gallery/prompt_index/status')
+def gallery_prompt_index_status():
+    scope_paths = normalize_gallery_prompt_scope_paths(request.args.getlist("scope_path") or request.args.get("scope_path") or "")
+    mode = request.args.get("mode", "all")
+    target_files = iter_gallery_prompt_index_files(scope_paths, mode)
+    db = utils.HistoryDB()
+
+    try:
+        status = db.get_gallery_prompt_index_status(scope_paths, mode)
+        profiles = db.list_gallery_prompt_index_profiles()
+        missing_count = len(filter_gallery_prompt_missing_files(db, target_files))
+    finally:
+        db.close()
+
+    with GALLERY_PROMPT_INDEX_LOCK:
+        job = dict(GALLERY_PROMPT_INDEX_JOB)
+
+    return jsonify({
+        "status": "success",
+        **status,
+        "target_images": len(target_files),
+        "missing_images": missing_count,
+        "profiles": profiles,
+        "job": job
+    })
+
+
+@app.route('/api/gallery/prompt_search/start', methods=['POST'])
+def gallery_prompt_search_start():
+    data = request.json or {}
+    query = data.get("query") or ""
+    mode = data.get("mode") or "all"
+    profile_id = str(data.get("profile_id") or "")
+    scope_paths = normalize_gallery_prompt_scope_paths(
+        data.get("scope_paths") if "scope_paths" in data else data.get("scope_path")
+    )
+    job_id = f"prompt_search_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    now = time.time()
+
+    with GALLERY_PROMPT_SEARCH_LOCK:
+        GALLERY_PROMPT_SEARCH_JOBS[job_id] = {
+            "id": job_id,
+            "running": True,
+            "done": False,
+            "processed": 0,
+            "total": 0,
+            "message": "프롬프트 검색 준비 중...",
+            "error": "",
+            "result": {},
+            "profile_id": profile_id,
+            "started_at": now,
+            "updated_at": now,
+            "finished_at": 0
+        }
+
+    threading.Thread(
+        target=gallery_prompt_search_worker,
+        args=(job_id, query, scope_paths, mode),
+        daemon=True
+    ).start()
+
+    with GALLERY_PROMPT_SEARCH_LOCK:
+        payload = public_gallery_prompt_search_job(GALLERY_PROMPT_SEARCH_JOBS[job_id])
+
+    return jsonify({"status": "success", "job": payload})
+
+
+@app.route('/api/gallery/prompt_index/profile/<profile_id>', methods=['DELETE'])
+def gallery_prompt_index_profile_delete(profile_id):
+    db = utils.HistoryDB()
+    try:
+        deleted = db.delete_gallery_prompt_index_profile(profile_id)
+    finally:
+        db.close()
+
+    return jsonify({
+        "status": "success",
+        "deleted": bool(deleted)
+    })
+
+
+@app.route('/api/gallery/prompt_search/status/<job_id>')
+def gallery_prompt_search_status(job_id):
+    with GALLERY_PROMPT_SEARCH_LOCK:
+        job = GALLERY_PROMPT_SEARCH_JOBS.get(job_id)
+
+    if not job:
+        return jsonify({"status": "error", "message": "검색 작업을 찾을 수 없습니다."}), 404
+
+    return jsonify({"status": "success", "job": public_gallery_prompt_search_job(job)})
+
+
+@app.route('/api/gallery/prompt_index/rebuild', methods=['POST'])
+def gallery_prompt_index_rebuild():
+    data = request.json or {}
+    scope_paths = normalize_gallery_prompt_scope_paths(
+        data.get("scope_paths") if "scope_paths" in data else data.get("scope_path")
+    )
+    scope_label = scope_paths[0] if len(scope_paths) == 1 else f"{len(scope_paths)} scopes"
+    mode = data.get("mode") or "all"
+    rebuild = bool(data.get("rebuild"))
+    missing_only = bool(data.get("missing_only"))
+    start_message = "프롬프트 인덱스 재생성 준비 중..." if rebuild else ("프롬프트 인덱스 새 파일 추가 준비 중..." if missing_only else "프롬프트 인덱스 갱신 준비 중...")
+
+    with GALLERY_PROMPT_INDEX_LOCK:
+        if GALLERY_PROMPT_INDEX_JOB.get("running"):
+            return jsonify({"status": "success", **dict(GALLERY_PROMPT_INDEX_JOB)})
+
+        GALLERY_PROMPT_INDEX_JOB.update({
+            "running": True,
+            "processed": 0,
+            "total": 0,
+            "message": "프롬프트 인덱스 재생성 준비 중..." if rebuild else "프롬프트 인덱스 갱신 준비 중...",
+            "error": "",
+            "done": False,
+            "started_at": time.time(),
+            "finished_at": 0,
+            "scope_path": scope_label,
+            "mode": mode
+        })
+
+    threading.Thread(
+        target=gallery_prompt_index_worker,
+        args=(scope_paths, mode, rebuild, missing_only),
+        daemon=True
+    ).start()
+
+    with GALLERY_PROMPT_INDEX_LOCK:
+        payload = dict(GALLERY_PROMPT_INDEX_JOB)
+
+    return jsonify({"status": "success", **payload})
+
+
+@app.route('/api/gallery/prompt_index', methods=['DELETE'])
+def gallery_prompt_index_delete_all():
+    with GALLERY_PROMPT_INDEX_LOCK:
+        if GALLERY_PROMPT_INDEX_JOB.get("running"):
+            return jsonify({
+                "status": "error",
+                "message": "프롬프트 인덱스 작업이 진행 중입니다. 완료 후 삭제해 주세요."
+            }), 409
+
+    db = utils.HistoryDB()
+    try:
+        db.clear_all_gallery_prompt_index_data()
+    finally:
+        db.close()
+
+    with GALLERY_PROMPT_INDEX_LOCK:
+        GALLERY_PROMPT_INDEX_JOB.update({
+            "running": False,
+            "processed": 0,
+            "total": 0,
+            "message": "프롬프트 인덱스를 삭제했습니다.",
+            "error": "",
+            "done": True,
+            "finished_at": time.time()
+        })
+
+    return jsonify({"status": "success", "deleted": True})
+
+
+@app.route('/api/gallery/prompt_search', methods=['POST'])
+def gallery_prompt_search():
+    data = request.json or {}
+    query = data.get("query") or ""
+    scope_paths = normalize_gallery_prompt_scope_paths(
+        data.get("scope_paths") if "scope_paths" in data else data.get("scope_path")
+    )
+    mode = data.get("mode") or "all"
+    terms = split_gallery_prompt_search_terms(query)
+
+    if not terms:
+        return jsonify({
+            "status": "success",
+            "image_paths": [],
+            "folder_counts": {},
+            "total_matches": 0,
+            "indexed": True
+        })
+
+    db = utils.HistoryDB()
+
+    try:
+        index_status = db.get_gallery_prompt_index_status(scope_paths, mode)
+        rows = db.search_gallery_prompt_index(terms, scope_paths, mode)
+    finally:
+        db.close()
+
+    indexed = int(index_status.get("indexed_images") or 0) > 0
+
+    if not indexed:
+        rows = search_gallery_prompts_without_index(query, scope_paths, mode)
+
+    payload = build_gallery_prompt_search_payload(rows)
+    return jsonify({
+        "status": "success",
+        **payload,
+        "indexed": indexed
+    })
+
+
+@app.route('/api/gallery/prompt_index/autocomplete')
+def gallery_prompt_index_autocomplete():
+    prefix = normalize_gallery_prompt_search_text(request.args.get("q") or "")
+
+    if len(prefix) < 2:
+        return jsonify({"status": "success", "items": []})
+
+    scope_path = clean_gallery_rel_path(request.args.get("scope_path") or "")
+    mode = request.args.get("mode") or "all"
+    db = utils.HistoryDB()
+    clauses = ["normalized_text LIKE ?"]
+    params = [f"%{prefix}%"]
+
+    if scope_path:
+        like_value = scope_path.rstrip("/") + "/%"
+        clauses.append("(folder_path = ? OR folder_path LIKE ? OR rel_path LIKE ?)")
+        params.extend([scope_path, like_value, like_value])
+
+    if mode == "all":
+        clauses.append("mode != ?")
+        params.append("trash")
+    elif mode:
+        clauses.append("mode = ?")
+        params.append(str(mode))
+
+    try:
+        cur = db.conn.cursor()
+        cur.execute(
+            f"""
+            SELECT normalized_text
+            FROM gallery_prompt_index
+            WHERE {' AND '.join(clauses)}
+            LIMIT 200
+            """,
+            params
+        )
+        suggestions = []
+
+        for (text,) in cur.fetchall():
+            for token in re.split(r"\s+", str(text or "")):
+                token = token.strip()
+                if len(token) < 2:
+                    continue
+                if token.startswith(prefix) and token not in suggestions:
+                    suggestions.append(token)
+                if len(suggestions) >= 20:
+                    break
+            if len(suggestions) >= 20:
+                break
+    finally:
+        db.close()
+
+    return jsonify({"status": "success", "items": suggestions})
 
 
 @app.route('/api/gallery/tags', methods=['GET'])
