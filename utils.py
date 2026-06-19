@@ -471,8 +471,20 @@ class HistoryDB:
                 self.conn.execute("DELETE FROM gallery_images WHERE rel_path = ?", (clean,))
                 self.conn.execute("DELETE FROM file_metadata WHERE path = ?", (clean,))
                 self.conn.execute(
+                    "DELETE FROM gallery_prompt_index_profile_items WHERE rel_path = ?",
+                    (clean,)
+                )
+                self.conn.execute(
+                    "DELETE FROM gallery_prompt_index WHERE rel_path = ?",
+                    (clean,)
+                )
+                self.conn.execute(
                     "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
                     ("partial_index_updated_at", str(now), now)
+                )
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("prompt_index_updated_at", str(now), now)
                 )
             return True
         except Exception as e:
@@ -498,8 +510,20 @@ class HistoryDB:
                     (clean, like_pattern, clean, like_pattern)
                 )
                 self.conn.execute(
+                    "DELETE FROM gallery_prompt_index_profile_items WHERE rel_path = ? OR rel_path LIKE ?",
+                    (clean, like_pattern)
+                )
+                self.conn.execute(
+                    "DELETE FROM gallery_prompt_index WHERE rel_path = ? OR rel_path LIKE ? OR folder_path = ? OR folder_path LIKE ?",
+                    (clean, like_pattern, clean, like_pattern)
+                )
+                self.conn.execute(
                     "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
                     ("partial_index_updated_at", str(now), now)
+                )
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("prompt_index_updated_at", str(now), now)
                 )
             return True
         except Exception as e:
