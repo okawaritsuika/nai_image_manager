@@ -73,6 +73,7 @@ import ctypes
 try:
     import utils
     import image_logic
+    import exe_update
 
     try:
         import danbooru_sync
@@ -118,6 +119,7 @@ class NaiaHyperExecutor:
 
         self.stop_requested = False
         self.log_visible = False
+        self.update_in_progress = False
 
         self.server_process = None
         self.is_opened = False
@@ -373,6 +375,20 @@ class NaiaHyperExecutor:
                                         bg="#3b3b4f", fg="#ffffff", font=("Malgun Gothic", 8, "bold"),
                                         relief="flat", padx=10, cursor="hand2")
         self.btn_log_toggle.pack(side="right")
+
+        if is_frozen_app():
+            self.btn_update = tk.Button(
+                top_btn_line,
+                text=f"⬆ 업데이트 확인 (v{exe_update.APP_VERSION})",
+                command=self.check_for_exe_update,
+                bg="#5b67ff",
+                fg="#ffffff",
+                font=("Malgun Gothic", 8, "bold"),
+                relief="flat",
+                padx=10,
+                cursor="hand2",
+            )
+            self.btn_update.pack(side="right", padx=(0, 8))
 
         # [중앙] 메인 타이틀
         tk.Label(header, text="👑 NAI ImageManager", font=("Malgun Gothic", 24, "bold"),
@@ -1613,6 +1629,70 @@ class NaiaHyperExecutor:
             self.root.geometry("1150x780")
             self.log_sidebar.pack(side="right", fill="y", padx=(10, 30), pady=40)
             self.log_visible = True
+
+    def _finish_update_check(self):
+        self.update_in_progress = False
+        if hasattr(self, "btn_update"):
+            self.btn_update.config(state="normal")
+
+    def check_for_exe_update(self):
+        if not is_frozen_app() or self.update_in_progress:
+            return
+        self.update_in_progress = True
+        self.btn_update.config(state="disabled")
+        self.log("🔎 GitHub에서 EXE 업데이트를 확인합니다...")
+
+        def worker():
+            try:
+                manifest = exe_update.fetch_manifest()
+                available = exe_update.is_update_available(exe_update.APP_VERSION, manifest)
+            except Exception as exc:
+                error_message = str(exc)
+                self.root.after(0, lambda: self._show_update_error(error_message))
+                return
+            self.root.after(0, lambda: self._show_update_result(manifest, available))
+
+        Thread(target=worker, daemon=True).start()
+
+    def _show_update_error(self, error_message):
+        self._finish_update_check()
+        self.log(f"❌ 업데이트 확인 실패: {error_message}")
+        messagebox.showerror("업데이트 확인 실패", error_message)
+
+    def _show_update_result(self, manifest, available):
+        if not available:
+            self._finish_update_check()
+            self.log("✅ 현재 EXE가 최신 버전입니다.")
+            messagebox.showinfo(
+                "업데이트 확인",
+                f"현재 버전 v{exe_update.APP_VERSION}이 최신 버전입니다.",
+            )
+            return
+
+        summary = manifest.get("summary") or "새 EXE 버전이 준비되었습니다."
+        confirmed = messagebox.askyesno(
+            "EXE 업데이트",
+            f"현재 버전: v{exe_update.APP_VERSION}\n"
+            f"새 버전: v{manifest['version']}\n\n"
+            f"{summary}\n\n"
+            "프로그램을 종료하고 업데이트할까요?\n"
+            "개인 설정과 TOTAL_CLASSIFIED는 그대로 유지됩니다.",
+        )
+        if not confirmed:
+            self._finish_update_check()
+            return
+
+        try:
+            updater = exe_update.resolve_updater_executable(APP_DIR, frozen=True)
+            command = exe_update.build_updater_command(APP_DIR, os.getpid(), sys.executable)
+            command[0] = str(updater)
+            subprocess.Popen(command, cwd=APP_DIR)
+        except Exception as exc:
+            self._show_update_error(str(exc))
+            return
+
+        self.log(f"⬆ v{manifest['version']} 업데이터를 시작했습니다.")
+        self.root.after(150, self.on_closing)
 
     def open_gallery(self):
         if not utils.is_port_active(5000):

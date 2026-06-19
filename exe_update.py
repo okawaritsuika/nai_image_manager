@@ -1,6 +1,7 @@
 import json
 import re
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlsplit
 
 
@@ -80,3 +81,28 @@ def fetch_manifest(url=MANIFEST_URL, timeout=10, opener=urllib.request.urlopen):
 def is_update_available(current_version, manifest):
     validated = validate_manifest(manifest)
     return parse_version(validated["version"]) > parse_version(current_version)
+
+
+def resolve_updater_executable(app_dir, frozen):
+    if not frozen:
+        raise RuntimeError("EXE 업데이트는 frozen 빌드에서만 사용할 수 있습니다.")
+    updater = Path(app_dir) / "NAIM_Updater.exe"
+    if not updater.is_file():
+        raise FileNotFoundError("NAIM_Updater.exe를 찾을 수 없습니다.")
+    return updater
+
+
+def build_updater_command(app_dir, pid, restart_path, manifest_url=MANIFEST_URL):
+    app_dir = Path(app_dir)
+    updater = app_dir / "NAIM_Updater.exe"
+    return [
+        str(updater),
+        "--install-dir",
+        str(app_dir),
+        "--pid",
+        str(pid),
+        "--restart",
+        str(restart_path),
+        "--manifest-url",
+        manifest_url,
+    ]

@@ -1,6 +1,8 @@
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import exe_update
 
@@ -93,6 +95,30 @@ class ExeUpdateTests(unittest.TestCase):
 
         self.assertEqual(result["version"], "1.1.0")
         self.assertEqual(opened, [("https://example.invalid/manifest.json", 3)])
+
+    def test_resolve_updater_executable_requires_frozen_mode_and_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            updater = Path(tmpdir, "NAIM_Updater.exe")
+            updater.write_bytes(b"exe")
+
+            self.assertEqual(exe_update.resolve_updater_executable(tmpdir, frozen=True), updater)
+            with self.assertRaises(RuntimeError):
+                exe_update.resolve_updater_executable(tmpdir, frozen=False)
+            updater.unlink()
+            with self.assertRaises(FileNotFoundError):
+                exe_update.resolve_updater_executable(tmpdir, frozen=True)
+
+    def test_build_updater_command_passes_install_pid_restart_and_manifest(self):
+        command = exe_update.build_updater_command(
+            Path("C:/Portable/NAI"),
+            321,
+            Path("C:/Portable/NAI/NAI_Image_Manager.exe"),
+        )
+
+        self.assertEqual(command[0], str(Path("C:/Portable/NAI/NAIM_Updater.exe")))
+        self.assertEqual(command[1:3], ["--install-dir", str(Path("C:/Portable/NAI"))])
+        self.assertIn("321", command)
+        self.assertIn(exe_update.MANIFEST_URL, command)
 
 
 if __name__ == "__main__":
