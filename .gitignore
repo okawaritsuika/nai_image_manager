@@ -26,6 +26,11 @@ canvas_saved_setups.json
 data/tag_categories_ko.json
 
 # Generated/imported output and user image library
+build/
+dist/
+dist_lite/
+dist_release/
+release_assets/
 patch_notes/
 canvas_imports/
 daki_generated_temp/

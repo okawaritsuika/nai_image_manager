@@ -16,6 +16,21 @@ def get_app_dir():
 # ---------------------------------------------------------
 APP_DIR = get_app_dir()
 
+
+def is_frozen_app():
+    return getattr(sys, "frozen", False)
+
+
+def run_server_mode_if_requested():
+    if "--server" not in sys.argv:
+        return
+
+    os.chdir(APP_DIR)
+    import app as server_app
+
+    server_app.run_server()
+    sys.exit(0)
+
 if sys.prefix == sys.base_prefix:
     venv_python_candidates = []
 
@@ -43,6 +58,8 @@ if sys.prefix == sys.base_prefix:
 # ---------------------------------------------------------
 # .venv 진입 후 또는 시스템 Python 사용 가능 시 일반 패키지 로드
 # ---------------------------------------------------------
+run_server_mode_if_requested()
+
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, messagebox
 from threading import Thread
@@ -506,19 +523,26 @@ class NaiaHyperExecutor:
         if not isinstance(classify_settings, dict):
             classify_settings = {}
 
-        self.use_ai_var = tk.BooleanVar(value=bool(classify_settings.get("use_ai", False)))
-        self.use_gpu_var = tk.BooleanVar(value=bool(classify_settings.get("use_gpu", False)))
+        ai_available = image_logic.is_ai_available()
+        lite_ai_disabled = is_frozen_app() and not ai_available
+        ai_enabled_by_default = bool(classify_settings.get("use_ai", False)) and not lite_ai_disabled
+
+        self.use_ai_var = tk.BooleanVar(value=ai_enabled_by_default)
+        self.use_gpu_var = tk.BooleanVar(value=bool(classify_settings.get("use_gpu", False)) and not lite_ai_disabled)
         self.skip_nsfw_var = tk.BooleanVar(value=bool(classify_settings.get("skip_nsfw", False)))
         self.skip_char_var = tk.BooleanVar(value=bool(classify_settings.get("skip_char", False)))  # 🌟 [신규] 캐릭터 판별 무시 변수
         legacy_thread_count = int(classify_settings.get("thread_count", 4) or 4)
         normal_thread_default = int(classify_settings.get("normal_thread_count", legacy_thread_count) or legacy_thread_count)
         ai_thread_default = int(classify_settings.get("ai_thread_count", min(4, legacy_thread_count)) or min(4, legacy_thread_count))
 
-        tk.Checkbutton(ai_frame, text="🤖 딥러닝 AI 야짤 정밀 판독", variable=self.use_ai_var, bg="#1e1e2e", fg="#00f2ff",
+        ai_check_state = "disabled" if lite_ai_disabled else "normal"
+        ai_check_text = "🤖 AI 자동분류 제외됨" if lite_ai_disabled else "🤖 딥러닝 AI 야짤 정밀 판독"
+        tk.Checkbutton(ai_frame, text=ai_check_text, variable=self.use_ai_var, bg="#1e1e2e", fg="#00f2ff",
                        selectcolor="#222", font=("Malgun Gothic", 9, "bold"),
-                       command=self.update_thread_guide).pack(side="left")
+                       command=self.update_thread_guide, state=ai_check_state).pack(side="left")
         tk.Checkbutton(ai_frame, text="🚀 GPU 가속", variable=self.use_gpu_var, bg="#1e1e2e", fg="#39ff14",
-                       selectcolor="#222", font=("Malgun Gothic", 9, "bold")).pack(side="left", padx=(10, 5))
+                       selectcolor="#222", font=("Malgun Gothic", 9, "bold"),
+                       state=ai_check_state).pack(side="left", padx=(10, 5))
         tk.Checkbutton(ai_frame, text="🙈 수위 무시", variable=self.skip_nsfw_var, bg="#1e1e2e", fg="#ff9ff3",
                        selectcolor="#222", font=("Malgun Gothic", 9, "bold")).pack(side="left", padx=5)
         tk.Checkbutton(ai_frame, text="👤 캐릭 판별 무시", variable=self.skip_char_var, bg="#1e1e2e", fg="#feca57",
@@ -1319,6 +1343,10 @@ class NaiaHyperExecutor:
         method = self.classify_method_var.get()
         is_fast = self.is_fast_mode.get()
         use_ai = self.use_ai_var.get()
+        if use_ai and is_frozen_app() and not image_logic.is_ai_available():
+            use_ai = False
+            self.use_ai_var.set(False)
+            self.log("ℹ️ 이 lite exe에는 AI 자동분류 패키지가 포함되어 있지 않아 일반 분류로 진행합니다.")
         skip_nsfw = self.skip_nsfw_var.get()
         skip_char = self.skip_char_var.get()  # 🌟
 
@@ -1411,6 +1439,10 @@ class NaiaHyperExecutor:
 
         # 🌟 [신규] 실행 전 확인 팝업 구성
         use_ai = self.use_ai_var.get()
+        if use_ai and is_frozen_app() and not image_logic.is_ai_available():
+            use_ai = False
+            self.use_ai_var.set(False)
+            self.log("ℹ️ 이 lite exe에는 AI 자동분류 패키지가 포함되어 있지 않아 일반 재정렬로 진행합니다.")
         skip_nsfw = self.skip_nsfw_var.get()
         skip_char = self.skip_char_var.get()  # 🌟
 
@@ -1483,15 +1515,16 @@ class NaiaHyperExecutor:
         self.server_transitioning = True
         self.server_monitor_token += 1
         monitor_token = self.server_monitor_token
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = APP_DIR
         app_script = os.path.join(base_dir, "app.py")
 
         try:
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
+            server_cmd = [sys.executable, "--server"] if is_frozen_app() else [sys.executable, "-u", app_script]
 
-            self.server_process = subprocess.Popen([sys.executable, "-u", app_script], stdout=subprocess.PIPE,
+            self.server_process = subprocess.Popen(server_cmd, stdout=subprocess.PIPE,
                                                    stderr=subprocess.STDOUT,
                                                    encoding='utf-8', errors='replace', bufsize=1, cwd=base_dir, env=env,
                                                    creationflags=creation_flags)

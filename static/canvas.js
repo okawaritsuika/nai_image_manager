@@ -10972,7 +10972,7 @@ async function loadSavedCanvasSetupsFromServer(force = false) {
             }
 
             const serverList = normalizeSavedCanvasSetupsList(data.setups);
-            const legacyList = readLegacySavedCanvasSetups();
+            const legacyList = data.allowLegacyMigration === false ? [] : readLegacySavedCanvasSetups();
 
             if (legacyList.length) {
                 const merged = mergeSavedCanvasSetups(serverList, legacyList);

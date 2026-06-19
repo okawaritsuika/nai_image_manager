@@ -27,6 +27,12 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, unquote, quote
 
+def get_app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 app = Flask(__name__)
 
 GALLERY_INDEX_REBUILD_LOCK = threading.Lock()
@@ -59,7 +65,7 @@ GALLERY_PROMPT_SEARCH_JOBS = {}
 GALLERY_PROMPT_INDEX_WORKERS = min(12, max(4, (os.cpu_count() or 4)))
 
 # 경로 설정
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+CURRENT_DIR = get_app_dir()
 CLASSIFIED_DIR = os.path.join(CURRENT_DIR, "TOTAL_CLASSIFIED")
 TRASH_DIR = os.path.join(CLASSIFIED_DIR, "_TRASH")
 QUALITY_PRESETS_FILE = os.path.join(CURRENT_DIR, "quality_presets.json")
@@ -251,7 +257,8 @@ def get_canvas_saved_setups():
     return jsonify({
         "status": "success",
         "setups": setups,
-        "count": len(setups)
+        "count": len(setups),
+        "allowLegacyMigration": not getattr(sys, "frozen", False)
     })
 
 
@@ -951,6 +958,12 @@ def safe_file_operation(target_path, dest_path=None, is_delete=False, retries=5,
 @app.route('/api/install_ai', methods=['POST'])
 def install_ai():
     try:
+        if getattr(sys, "frozen", False):
+            return jsonify({
+                "status": "error",
+                "message": "lite exe에는 AI 자동분류 패키지가 포함되지 않습니다. AI 자동분류는 소스 버전에서 naim_setup.py로 설치해 사용해 주세요."
+            }), 400
+
         # 시스템의 파이썬을 이용해 백그라운드에서 torch와 transformers 설치
         # 설치가 오래 걸릴 수 있으므로 즉시 응답합니다.
         print("AI 분석 패키지 설치를 백그라운드에서 시작합니다. (완료까지 시간이 걸릴 수 있습니다...)")
@@ -8424,7 +8437,7 @@ def normalize_char_prompts(data):
     single = str(data or "").strip()
     return [single] if single else []
 
-if __name__ == '__main__':
+def run_server():
     app.run(
         host='127.0.0.1',
         port=5000,
@@ -8432,3 +8445,7 @@ if __name__ == '__main__':
         use_reloader=False,
         threaded=True
     )
+
+
+if __name__ == '__main__':
+    run_server()
