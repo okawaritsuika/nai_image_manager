@@ -109,6 +109,19 @@ class NaimUpdaterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 naim_updater.apply_staged_update(payload, install)
 
+    def test_apply_update_rejects_environment_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            install = root / "install"
+            payload = root / "payload"
+            install.mkdir()
+            payload.mkdir()
+            (payload / ".env.local").write_text("SECRET=value", encoding="utf-8")
+            self.write_managed_manifest(payload, [".env.local"])
+
+            with self.assertRaises(ValueError):
+                naim_updater.apply_staged_update(payload, install)
+
     def test_apply_update_rolls_back_after_copy_failure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

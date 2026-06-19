@@ -70,7 +70,8 @@ $PayloadFiles = Get-ChildItem -LiteralPath $PortableDir -Recurse -File
 foreach ($file in $PayloadFiles) {
     $relative = Get-PortableRelativePath $PortableDir $file.FullName
     $parts = $relative.Split("/")
-    if ($ProtectedFiles -contains $file.Name -or ($parts | Where-Object { $ProtectedDirectories -contains $_ })) {
+    $isEnvironmentFile = $file.Name.StartsWith(".env", [StringComparison]::OrdinalIgnoreCase)
+    if ($ProtectedFiles -contains $file.Name -or $isEnvironmentFile -or ($parts | Where-Object { $ProtectedDirectories -contains $_ })) {
         throw "Protected user data was included in the build: $relative"
     }
 }
@@ -94,7 +95,8 @@ $archive = [IO.Compression.ZipFile]::OpenRead($ZipPath)
 try {
     foreach ($entry in $archive.Entries) {
         $entryParts = $entry.FullName.Replace("\", "/").Split("/")
-        if ($ProtectedFiles -contains $entry.Name -or ($entryParts | Where-Object { $ProtectedDirectories -contains $_ })) {
+        $isEnvironmentFile = $entry.Name.StartsWith(".env", [StringComparison]::OrdinalIgnoreCase)
+        if ($ProtectedFiles -contains $entry.Name -or $isEnvironmentFile -or ($entryParts | Where-Object { $ProtectedDirectories -contains $_ })) {
             throw "Protected user data was included in the ZIP: $($entry.FullName)"
         }
     }

@@ -48,7 +48,11 @@ def _normalized_relative_path(value):
 
 def _is_protected(path):
     lowered = [part.lower() for part in path.parts]
-    return any(part in PROTECTED_DIRECTORIES for part in lowered) or lowered[-1] in PROTECTED_FILES
+    return (
+        any(part in PROTECTED_DIRECTORIES for part in lowered)
+        or lowered[-1] in PROTECTED_FILES
+        or lowered[-1].startswith(".env")
+    )
 
 
 def _validated_managed_paths(paths):
