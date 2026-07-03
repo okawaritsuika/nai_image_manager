@@ -28,6 +28,9 @@ let currentSelectedGalleryArtStyle = 'ALL';
 let galleryTagDefs = [];
 let galleryImageTags = {};
 let currentGalleryTagFilter = 'ALL';
+let isGalleryTagAssignmentMode = false;
+let selectedGalleryAssignmentTagId = '';
+let galleryTagAssignmentBusy = false;
 let pendingGalleryTagImageDataUrl = '';
 let galleryImageFilterMeta = {};
 let galleryImageFilterMetaLoading = false;
@@ -744,6 +747,72 @@ function renderGalleryTagIcon(tag) {
     return `<img class="gallery-tag-icon-img" src="${escapeHtml(tag.value)}" alt="">`;
 }
 
+function getGalleryTagAssignmentLabel(tagId) {
+    if (tagId === 'NONE') return '태그 제거';
+
+    const tag = getGalleryTagDef(tagId);
+    if (!tag) return '선택 없음';
+
+    return tag.type === 'text'
+        ? `태그: ${tag.value}`
+        : '그림 태그';
+}
+
+function updateGalleryTagAssignmentModeUi() {
+    document.body.classList.toggle('gallery-tag-assignment-mode', isGalleryTagAssignmentMode);
+
+    const btn = document.getElementById('galleryTagAssignmentModeBtn');
+    if (btn) {
+        btn.classList.toggle('active', isGalleryTagAssignmentMode);
+        btn.innerText = isGalleryTagAssignmentMode ? '🏷️ 태그 모드 ON' : '🏷️ 태그 모드';
+    }
+
+    const status = document.getElementById('galleryTagAssignmentModeStatus');
+    if (status) {
+        status.style.display = 'none';
+        status.innerText = '';
+    }
+
+    updateGalleryTagAssignmentBar();
+    renderGalleryTagFilterBar();
+}
+
+function updateGalleryTagAssignmentBar() {
+    const text = document.getElementById('galleryTagAssignmentModeBarText');
+    if (!text) return;
+
+    text.innerText = selectedGalleryAssignmentTagId
+        ? `${getGalleryTagAssignmentLabel(selectedGalleryAssignmentTagId)} 선택됨. 그림을 클릭하면 적용됩니다.`
+        : '아래 태그를 선택한 뒤 그림을 클릭하세요.';
+}
+
+function clearGalleryTagAssignmentSelection() {
+    selectedGalleryAssignmentTagId = '';
+    updateGalleryTagAssignmentModeUi();
+}
+
+function toggleGalleryTagAssignmentMode() {
+    isGalleryTagAssignmentMode = !isGalleryTagAssignmentMode;
+
+    if (!isGalleryTagAssignmentMode) {
+        selectedGalleryAssignmentTagId = '';
+    }
+
+    if (isGalleryTagAssignmentMode && isGalleryBulkDeleteMode) {
+        isGalleryBulkDeleteMode = false;
+        clearGalleryBulkDeleteSelection(false);
+        updateGalleryBulkDeleteModeUi();
+    }
+
+    closeGalleryTagPicker();
+    updateGalleryTagAssignmentModeUi();
+}
+
+function selectGalleryTagForAssignment(tagId) {
+    selectedGalleryAssignmentTagId = tagId || '';
+    updateGalleryTagAssignmentModeUi();
+}
+
 function imageMatchesGalleryTagFilter(item) {
     if (currentGalleryTagFilter === 'ALL') return true;
 
@@ -765,10 +834,19 @@ function renderGalleryTagFilterBar() {
     const makeChip = (value, label, iconHtml = '') => {
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = `gallery-tag-filter-chip ${currentGalleryTagFilter === value ? 'active' : ''}`;
-        btn.title = label;
+        btn.className = [
+            'gallery-tag-filter-chip',
+            currentGalleryTagFilter === value ? 'active' : '',
+            isGalleryTagAssignmentMode && selectedGalleryAssignmentTagId === value ? 'gallery-tag-assignment-selected' : ''
+        ].filter(Boolean).join(' ');
+        btn.title = isGalleryTagAssignmentMode ? `${label} 선택` : label;
         btn.innerHTML = iconHtml || '<span class="gallery-tag-filter-all-dot">ALL</span>';
         btn.onclick = () => {
+            if (isGalleryTagAssignmentMode) {
+                selectGalleryTagForAssignment(value === 'ALL' ? '' : value);
+                return;
+            }
+
             currentGalleryTagFilter = value;
             renderView();
             saveGallerySessionState();
@@ -870,6 +948,32 @@ async function updateGalleryImageTag(imagePath, tagId) {
     } catch (error) {
         alert(`태그 변경 실패: ${error.message || error}`);
     }
+}
+
+async function applySelectedGalleryTagToImage(imagePath) {
+    if (!isGalleryTagAssignmentMode) return false;
+
+    if (!selectedGalleryAssignmentTagId) {
+        showToast('먼저 아래 태그를 선택하세요.');
+        return true;
+    }
+
+    if (galleryTagAssignmentBusy) {
+        return true;
+    }
+
+    galleryTagAssignmentBusy = true;
+
+    try {
+        await updateGalleryImageTag(
+            imagePath,
+            selectedGalleryAssignmentTagId === 'NONE' ? '' : selectedGalleryAssignmentTagId
+        );
+    } finally {
+        galleryTagAssignmentBusy = false;
+    }
+
+    return true;
 }
 
 function renderGalleryImageTagButton(imagePath, tagId) {
@@ -4621,6 +4725,12 @@ function updateGalleryBulkDeleteModeUi() {
 function toggleGalleryBulkDeleteMode() {
     isGalleryBulkDeleteMode = !isGalleryBulkDeleteMode;
 
+    if (isGalleryBulkDeleteMode && isGalleryTagAssignmentMode) {
+        isGalleryTagAssignmentMode = false;
+        selectedGalleryAssignmentTagId = '';
+        updateGalleryTagAssignmentModeUi();
+    }
+
     if (!isGalleryBulkDeleteMode) {
         clearGalleryBulkDeleteSelection(false);
     }
@@ -4713,6 +4823,13 @@ function handleGalleryImageCardClick(event, imagePath, folderId, folderKey, file
         }
 
         toggleGalleryBulkDeleteImage(imagePath, folderId, folderKey, fileName, boxId);
+        return;
+    }
+
+    if (isGalleryTagAssignmentMode) {
+        event.preventDefault();
+        event.stopPropagation();
+        applySelectedGalleryTagToImage(imagePath);
         return;
     }
 
