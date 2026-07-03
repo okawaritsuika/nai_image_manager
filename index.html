@@ -27,6 +27,12 @@
                         <button onclick="toggleBrandManager()" title="브랜드 관리" style="background: #ff007c; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(255, 0, 124, 0.3);">👑 브랜드</button>
                         <button onclick="toggleArtStyleManager()" title="그림체 관리" style="background: #f1c40f; color: #000; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(241, 196, 15, 0.3);">🎨 그림체</button>
                         <button onclick="openGalleryTagManager()" title="태그 관리" style="background: #2dd4bf; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(45, 212, 191, 0.3);">🏷️ 태그</button>
+                        <button id="galleryTagAssignmentModeBtn"
+                                onclick="toggleGalleryTagAssignmentMode()"
+                                title="태그 모드"
+                                style="background: #0f766e; color: #dff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);">
+                            🏷️ 태그 모드
+                        </button>
                         <button onclick="openGalleryCharacterNameManager()" title="캐릭터 이름 한글 표기 관리" style="background: #14b8a6; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);">🔤 이름</button>
                         <button onclick="startGalleryIndexRebuild()"
                                 title="갤러리 인덱스 수동 갱신"
@@ -100,6 +106,7 @@
     </div>
 
     <div id="galleryTagFilterBar" class="gallery-tag-filter-bar"></div>
+    <div id="galleryTagAssignmentModeStatus" class="gallery-tag-assignment-status"></div>
 
     <div id="char-chip-container"></div>
 
@@ -834,6 +841,16 @@
             <button type="button" class="secondary" onclick="clearGalleryBulkDeleteSelection()">선택 해제</button>
             <button type="button" class="danger" onclick="applyGalleryBulkDeleteSelection()">선택 항목 휴지통으로</button>
             <button type="button" onclick="toggleGalleryBulkDeleteMode()">닫기</button>
+        </div>
+    </div>
+    <div id="galleryTagAssignmentModeBar" class="gallery-tag-assignment-bar">
+        <div class="gallery-tag-assignment-info">
+            <b>🏷️ 태그 모드</b>
+            <span id="galleryTagAssignmentModeBarText">선택 없음</span>
+        </div>
+        <div class="gallery-tag-assignment-actions">
+            <button type="button" class="secondary" onclick="clearGalleryTagAssignmentSelection()">선택 해제</button>
+            <button type="button" onclick="toggleGalleryTagAssignmentMode()">닫기</button>
         </div>
     </div>
     <div id="galleryBulkDeleteConfirmLayer" class="gallery-bulk-delete-confirm-layer"

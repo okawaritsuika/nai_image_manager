@@ -5154,6 +5154,29 @@ body.gallery-bulk-delete-mode .gallery-bulk-delete-bar {
     display: flex;
 }
 
+.gallery-tag-assignment-bar {
+    display: none;
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 12000;
+    min-width: 420px;
+    max-width: calc(100vw - 40px);
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid #14b8a6;
+    background: rgba(6, 32, 31, 0.96);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.65), 0 0 20px rgba(20,184,166,0.25);
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+body.gallery-tag-assignment-mode .gallery-tag-assignment-bar {
+    display: flex;
+}
+
 .gallery-bulk-delete-info {
     display: flex;
     flex-direction: column;
@@ -5178,6 +5201,30 @@ body.gallery-bulk-delete-mode .gallery-bulk-delete-bar {
     align-items: center;
 }
 
+.gallery-tag-assignment-info {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    color: #fff;
+    font-size: 13px;
+}
+
+.gallery-tag-assignment-info b {
+    color: #5eead4;
+    font-size: 14px;
+}
+
+.gallery-tag-assignment-info span {
+    color: #d6fffa;
+    font-size: 12px;
+}
+
+.gallery-tag-assignment-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
 .gallery-bulk-delete-actions button {
     border: none;
     border-radius: 9px;
@@ -5188,10 +5235,26 @@ body.gallery-bulk-delete-mode .gallery-bulk-delete-bar {
     color: #fff;
 }
 
+.gallery-tag-assignment-actions button {
+    border: none;
+    border-radius: 9px;
+    padding: 9px 13px;
+    font-weight: 900;
+    cursor: pointer;
+    background: #14b8a6;
+    color: #001;
+}
+
 .gallery-bulk-delete-actions button.secondary {
     background: #252535;
     color: #ddd;
     border: 1px solid #444;
+}
+
+.gallery-tag-assignment-actions button.secondary {
+    background: #12312f;
+    color: #99f6e4;
+    border: 1px solid #0f766e;
 }
 
 .gallery-bulk-delete-actions button.danger {
@@ -5203,6 +5266,43 @@ body.gallery-bulk-delete-mode .gallery-bulk-delete-bar {
     background: #fff !important;
     color: #ef4444 !important;
     box-shadow: 0 0 0 2px rgba(239,68,68,0.45), 0 0 18px rgba(239,68,68,0.6) !important;
+}
+
+#galleryTagAssignmentModeBtn.active {
+    background: #14b8a6 !important;
+    color: #001 !important;
+    box-shadow: 0 0 0 2px rgba(20,184,166,0.35), 0 0 18px rgba(20,184,166,0.55) !important;
+}
+
+.gallery-tag-assignment-status {
+    display: none;
+    align-items: center;
+    min-height: 32px;
+    padding: 8px 40px;
+    background: #06201f;
+    border-bottom: 1px solid #134e4a;
+    color: #99f6e4;
+    font-size: 12px;
+    font-weight: 900;
+}
+
+body.gallery-tag-assignment-mode .gallery-tag-filter-bar {
+    background: #071b1b;
+    border-bottom-color: #0f766e;
+}
+
+body.gallery-tag-assignment-mode .gallery-tag-filter-chip {
+    border-color: #0f766e;
+}
+
+.gallery-tag-filter-chip.gallery-tag-assignment-selected {
+    border-color: #2dd4bf !important;
+    box-shadow: 0 0 0 3px rgba(45,212,191,0.22), 0 0 14px rgba(45,212,191,0.35);
+    transform: translateY(-1px) scale(1.08);
+}
+
+body.gallery-tag-assignment-mode .zoomable {
+    cursor: copy !important;
 }
 
 body.gallery-bulk-delete-mode .gallery-bulk-delete-selectable {
