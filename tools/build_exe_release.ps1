@@ -1,6 +1,6 @@
 param(
     [string]$Python = "C:\Users\LEE SANGGGON\AppData\Local\Programs\Python\Python310\python.exe",
-    [string]$Version = "1.1.0"
+    [string]$Version = "1.1.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,7 +118,7 @@ $Manifest = [ordered]@{
     sha256 = $Hash
     size = $ZipItem.Length
     payload_root = "NAI_Image_Manager"
-    summary = "Adds in-app EXE updates, legacy Lite migration, and user-data preservation."
+    summary = "Adds gallery tag assignment mode for quickly applying image tags from the gallery."
 }
 [IO.File]::WriteAllText(
     (Join-Path $Root "release_manifest.json"),

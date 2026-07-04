@@ -8,12 +8,15 @@ import exe_update
 
 
 class ExeUpdateTests(unittest.TestCase):
+    def test_app_version_is_current_release_version(self):
+        self.assertEqual(exe_update.APP_VERSION, "1.1.1")
+
     def valid_manifest(self, **overrides):
         manifest = {
             "schema_version": 1,
-            "version": "1.1.0",
-            "tag": "v1.1.0-exe",
-            "asset_url": "https://github.com/okawaritsuika/nai_image_manager/releases/download/v1.1.0-exe/NAI_Image_Manager_v1.1.0-exe_windows.zip",
+            "version": "1.1.1",
+            "tag": "v1.1.1-exe",
+            "asset_url": "https://github.com/okawaritsuika/nai_image_manager/releases/download/v1.1.1-exe/NAI_Image_Manager_v1.1.1-exe_windows.zip",
             "sha256": "a" * 64,
             "size": 12345,
             "payload_root": "NAI_Image_Manager",
@@ -37,7 +40,7 @@ class ExeUpdateTests(unittest.TestCase):
         validated = exe_update.validate_manifest(source)
 
         self.assertEqual(validated["sha256"], "a" * 64)
-        self.assertEqual(validated["version"], "1.1.0")
+        self.assertEqual(validated["version"], "1.1.1")
         self.assertIsNot(validated, source)
 
     def test_validate_manifest_rejects_missing_fields(self):
@@ -72,7 +75,8 @@ class ExeUpdateTests(unittest.TestCase):
 
     def test_is_update_available_only_for_newer_version(self):
         self.assertTrue(exe_update.is_update_available("1.0.9", self.valid_manifest()))
-        self.assertFalse(exe_update.is_update_available("1.1.0", self.valid_manifest()))
+        self.assertTrue(exe_update.is_update_available("1.1.0", self.valid_manifest()))
+        self.assertFalse(exe_update.is_update_available("1.1.1", self.valid_manifest()))
         self.assertFalse(exe_update.is_update_available("1.2.0", self.valid_manifest()))
 
     def test_fetch_manifest_reads_and_validates_json(self):
@@ -93,7 +97,7 @@ class ExeUpdateTests(unittest.TestCase):
 
         result = exe_update.fetch_manifest("https://example.invalid/manifest.json", timeout=3, opener=opener)
 
-        self.assertEqual(result["version"], "1.1.0")
+        self.assertEqual(result["version"], "1.1.1")
         self.assertEqual(opened, [("https://example.invalid/manifest.json", 3)])
 
     def test_resolve_updater_executable_requires_frozen_mode_and_file(self):

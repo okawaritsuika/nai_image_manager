@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 MANIFEST_URL = (
     "https://raw.githubusercontent.com/okawaritsuika/"
     "nai_image_manager/exe-release/release_manifest.json"

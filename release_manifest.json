@@ -1,10 +1,10 @@
 {
     "schema_version":  1,
-    "version":  "1.1.0",
-    "tag":  "v1.1.0-exe",
-    "asset_url":  "https://github.com/okawaritsuika/nai_image_manager/releases/download/v1.1.0-exe/NAI_Image_Manager_v1.1.0-exe_windows.zip",
-    "sha256":  "b918e6ac4ff3622c8f5c649cc07e88a62388e389811b9b5072cd06fad96937d7",
-    "size":  105580491,
+    "version":  "1.1.1",
+    "tag":  "v1.1.1-exe",
+    "asset_url":  "https://github.com/okawaritsuika/nai_image_manager/releases/download/v1.1.1-exe/NAI_Image_Manager_v1.1.1-exe_windows.zip",
+    "sha256":  "66baaee975ff0637f6babbff3e9e194e4c7012fcccda87ac8ccca701a8fee3b2",
+    "size":  105583354,
     "payload_root":  "NAI_Image_Manager",
-    "summary":  "Adds in-app EXE updates, legacy Lite migration, and user-data preservation."
+    "summary":  "Adds gallery tag assignment mode for quickly applying image tags from the gallery."
 }
