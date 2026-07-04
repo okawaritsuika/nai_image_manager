@@ -26,6 +26,7 @@ canvas_saved_setups.json
 data/tag_categories_ko.json
 
 # Generated/imported output and user image library
+docs/
 tests/
 patch_notes/
 canvas_imports/
