@@ -3311,6 +3311,13 @@
     min-height: 96px;
 }
 
+.gpt-detail-prompt-card textarea {
+    min-height: min(430px, 58vh);
+    font-family: Consolas, "Malgun Gothic", sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
 .reference-gen-upscale-layer {
     display: none;
     position: fixed;

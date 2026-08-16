@@ -1,5 +1,5 @@
 ﻿<!DOCTYPE html>
-<html lang="ko">
+<html lang="ko" class="gallery-scrollbar-custom">
 <head>
     <meta charset="UTF-8">
     <title>NAI Image Server Archive</title>
@@ -44,6 +44,7 @@
                                 style="background: #0ea5e9; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(14, 165, 233, 0.3);">
                             🔎 프롬프트 인덱스
                         </button>
+                        <button onclick="openGalleryVirtualFolderManager()" title="가상 폴더 관리" style="background: #7c3aed; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px;">🗂️ 가상 폴더</button>
                         <button onclick="toggleStats()" title="통계 보기" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">📊 통계</button>
                         <button onclick="openGalleryDesignSettings()" title="갤러리 디자인 설정" style="background: #8b5cf6; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(139, 92, 246, 0.3);">⚙️ 설정</button>
                         <button id="galleryBulkDeleteModeBtn"
@@ -66,24 +67,52 @@
             </div>
         </div>
 
-        <div class="header-row" style="justify-content: flex-end;">
-            <div style="display:flex; gap: 10px; align-items: center;">
-                <div style="background: #0a0a0f; padding: 6px 15px; border-radius: 25px; border: 1px solid #39ff14; display: flex; gap: 12px; align-items: center;">
+        <div class="header-row gallery-header-row" style="justify-content: flex-end;">
+            <div class="gallery-header-control-stack">
+                <div class="gallery-header-control-row gallery-header-top-row">
+                <div class="gallery-daki-controls" style="background: #0a0a0f; padding: 6px 15px; border-radius: 25px; border: 1px solid #39ff14; display: flex; gap: 12px; align-items: center;">
                     <span style="font-size: 10px; font-weight: bold; color: #39ff14;">DAKI</span>
                     <label style="display:flex; align-items:center; gap:4px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="dakiFilter" value="all" class="view-radio" checked onchange="setDakiFilter('all')"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>전체</label>
                     <label style="display:flex; align-items:center; gap:4px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="dakiFilter" value="hide" class="view-radio" onchange="setDakiFilter('hide')"><div class="view-circle" style="background:#f44; width:12px; height:12px;"></div>제외</label>
                     <label style="display:flex; align-items:center; gap:4px; cursor:pointer; color:#39ff14; font-size:11px;"><input type="radio" name="dakiFilter" value="only" class="view-radio" onchange="setDakiFilter('only')"><div class="view-circle" style="background:#39ff14; width:12px; height:12px;"></div>다키만</label>
                 </div>
-                <div style="background: #1a1a24; padding: 6px 15px; border-radius: 25px; border: 1px solid #333; display: flex; gap: 12px; align-items: center;">
+                <div class="gallery-sort-view-controls" style="background: #1a1a24; padding: 6px 15px; border-radius: 25px; border: 1px solid #333; display: flex; gap: 12px; align-items: center;">
                     <span style="font-size: 10px; font-weight: bold; color: #888;">SORT</span>
-                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="name" class="view-radio" checked onchange="loadData()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>이름순</label>
-                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="count" class="view-radio" onchange="loadData()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>갯수순</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="name" class="view-radio" checked onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>이름순</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="count" class="view-radio" onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>갯수순</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="newest" class="view-radio" onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>최신순</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="oldest" class="view-radio" onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>오래된순</label>
                     <div style="width:1px; height:12px; background:#444; margin: 0 5px;"></div>
                     <span style="font-size: 10px; font-weight: bold; color: #888;">VIEW</span>
                     <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#39ff14; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="general" class="view-radio" checked onchange="loadData()"><div class="view-circle" style="background:#39ff14; width:12px; height:12px;"></div>일반</label>
                     <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ff007c; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="r18" class="view-radio" onchange="loadData()"><div class="view-circle" style="background:#ff007c; width:12px; height:12px;"></div>R-19</label>
                     <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ff8c00; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="all" class="view-radio" onchange="loadData()"><div class="view-circle" style="background:#ff8c00; width:12px; height:12px;"></div>전체</label>
                     <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#888; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="trash" class="view-radio" onchange="loadData()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>🗑️ 휴지통</label>
+                </div>
+                </div>
+                <div class="gallery-header-control-row gallery-header-bottom-row">
+                    <div class="gallery-date-controls" aria-label="갤러리 보기 방식">
+                        <div class="gallery-date-control-group">
+                            <span class="gallery-date-control-title">GALLERY</span>
+                            <label><input type="radio" name="galleryViewMode" value="character" class="view-radio" checked onchange="onGalleryViewModeChange()"><div class="view-circle" style="background:#39ff14; width:12px; height:12px;"></div>캐릭터별</label>
+                            <label><input type="radio" name="galleryViewMode" value="date" class="view-radio" onchange="onGalleryViewModeChange()"><div class="view-circle" style="background:#00f2ff; width:12px; height:12px;"></div>날짜별</label>
+                            <label><input type="radio" name="galleryViewMode" value="virtual" class="view-radio" onchange="onGalleryViewModeChange()"><div class="view-circle" style="background:#a78bfa; width:12px; height:12px;"></div>가상 폴더</label>
+                        </div>
+                        <div id="galleryVirtualControls" class="gallery-date-control-group gallery-virtual-controls-is-hidden" aria-label="가상 폴더 표시 옵션" aria-hidden="true" hidden>
+                            <span class="gallery-date-control-title">VIRTUAL</span>
+                            <label><input type="radio" name="galleryVirtualGrouping" value="character" class="view-radio" checked onchange="onGalleryVirtualGroupingChange()"><div class="view-circle" style="background:#a78bfa; width:12px; height:12px;"></div>캐릭터별</label>
+                            <label><input type="radio" name="galleryVirtualGrouping" value="combined" class="view-radio" onchange="onGalleryVirtualGroupingChange()"><div class="view-circle" style="background:#a78bfa; width:12px; height:12px;"></div>통합</label>
+                            <span class="gallery-date-control-divider"></span>
+                            <label><input type="radio" name="galleryVirtualUncategorized" value="only" class="view-radio" checked onchange="onGalleryVirtualUncategorizedChange()"><div class="view-circle" style="background:#f59e0b; width:12px; height:12px;"></div>구분만</label>
+                            <label><input type="radio" name="galleryVirtualUncategorized" value="include" class="view-radio" onchange="onGalleryVirtualUncategorizedChange()"><div class="view-circle" style="background:#f59e0b; width:12px; height:12px;"></div>미구분 포함</label>
+                        </div>
+                        <div class="gallery-date-control-group">
+                            <span class="gallery-date-control-title">DATE</span>
+                            <label><input type="radio" name="galleryDateGrouping" value="month" class="view-radio" checked onchange="onGalleryDateGroupingChange()"><div class="view-circle" style="background:#ff8c00; width:12px; height:12px;"></div>월</label>
+                            <label><input type="radio" name="galleryDateGrouping" value="week" class="view-radio" onchange="onGalleryDateGroupingChange()"><div class="view-circle" style="background:#ff8c00; width:12px; height:12px;"></div>주</label>
+                            <label><input type="radio" name="galleryDateGrouping" value="day" class="view-radio" onchange="onGalleryDateGroupingChange()"><div class="view-circle" style="background:#ff8c00; width:12px; height:12px;"></div>일</label>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -125,11 +154,12 @@
             <div class="gallery-prompt-search-row">
                 <textarea id="galleryPromptSearchInput"
                           rows="2"
-                          placeholder="프롬프트 검색어를 입력하세요. 쉼표/줄바꿈은 AND 조건입니다."
+                          placeholder="정확 일치 · 공백/쉼표=AND · %문구%=부분 일치 · ||=OR (예: 프롬프트1, 프롬프트2 || 프롬프트3)"
                           oninput="handleGalleryPromptSearchInput()"
                           onkeydown="handleGalleryPromptSearchKeydown(event)"></textarea>
                 <button type="button" onclick="runGalleryPromptSearch()">검색</button>
                 <button type="button" onclick="clearGalleryPromptSearch()">초기화</button>
+                <button id="galleryPromptAddVirtualFolderBtn" type="button" onclick="openGalleryVirtualFolderCreateFromPrompt()">가상 폴더 추가</button>
             </div>
             <div id="galleryPromptAutocomplete" class="gallery-prompt-autocomplete"></div>
             <div id="galleryPromptSearchStatus" class="gallery-prompt-search-status">프롬프트 검색 대기 중</div>
@@ -142,6 +172,15 @@
     <div id="reviewBoard"><div class="rv-header"><span>작업 리스트 확인</span><span onclick="toggleRv()" style="cursor:pointer; font-size:24px;">&times;</span></div><div class="rv-body" id="rvBody"></div></div>
     <button id="viewRvBtn" onclick="toggleRv()">👁️ 리뷰 보드</button>
     <button id="topBtn" onclick="scrollToTop()">TOP</button>
+    <div id="galleryScrollbarDestinationGuide" class="gallery-scrollbar-destination-guide">
+        <div class="gallery-scrollbar-track" role="scrollbar" aria-label="갤러리 스크롤 위치" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+            <div class="gallery-scrollbar-marks"></div>
+            <div class="gallery-scrollbar-thumb"></div>
+        </div>
+    </div>
+    <nav id="galleryScrollNavigation" class="gallery-scroll-nav" aria-label="갤러리 페이지 내비게이션">
+        <div class="gallery-scroll-nav-dots"></div>
+    </nav>
     <div id="zoomLayer" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:9000; align-items:center; justify-content:center; cursor:zoom-out;" onclick="closeZoom()">
         <img id="zoomImg" style="max-width:95%; max-height:95%; object-fit:contain; box-shadow: 0 0 30px rgba(0,0,0,0.5);">
     </div>
@@ -199,10 +238,11 @@
                 <label>모델</label>
                 <select id="galleryUpscaleEngine">
                     <option value="realcugan" selected>Real-CUGAN / 애니 그림 추천</option>
+                    <option value="waifu2x">Waifu2x CUNet / 선화 보존·노이즈 억제</option>
                     <option value="lanczos">Lanczos / 엔진 없을 때 임시 리사이즈</option>
                 </select>
                 <div class="gallery-upscale-help">
-                    Real-CUGAN은 setup의 3단계 업스케일 엔진 설치 후 사용할 수 있습니다.
+                    Real-CUGAN은 디테일 복원, Waifu2x는 원본 선화와 색 보존에 적합합니다.
                 </div>
             </div>
 
@@ -577,6 +617,9 @@
         <button class="image-context-item" onclick="sendContextImageToCanvas()">캔버스로 가져오기</button>
         <button class="image-context-item" onclick="openGalleryInpaintFromContext()">인페인팅</button>
     </div>
+    <div id="galleryMultiFolderContextMenu" class="gallery-multi-folder-context-menu">
+        <button id="galleryMultiFolderOpenBtn" type="button" onclick="openSelectedGalleryFolders()">📂 선택한 폴더 열기</button>
+    </div>
     <div id="promptLayer">
         <div class="prompt-card">
             <div class="prompt-header">
@@ -800,7 +843,34 @@
                     </span>
                 </label>
 
-                <div class="gallery-design-setting-row">
+                <label class="gallery-design-check-row">
+                    <input type="checkbox" id="galleryMultiFolderSelectionInput" onchange="setGalleryMultiFolderSelectionEnabled(this.checked)">
+                    <span>
+                        <b>폴더 다중 선택·통합 보기</b>
+                        <small>폴더를 드래그하거나 더블클릭해 여러 개 선택한 뒤 한 화면에서 함께 봅니다.</small>
+                    </span>
+                </label>
+
+                <label class="gallery-design-check-row">
+                    <input type="checkbox" id="galleryRadialTagMenuInput" onchange="setGalleryRadialTagMenuEnabled(this.checked)">
+                    <span>
+                        <b>길게 눌러 다이얼 태그 선택</b>
+                        <small>그림을 마우스로 약 0.25초 누른 뒤 방향으로 태그를 빠르게 선택합니다.</small>
+                    </span>
+                </label>
+
+                <div class="gallery-design-setting-row gallery-design-setting-row--stacked-control">
+                    <div>
+                        <div class="gallery-design-setting-title">이미지 점진 렌더링 단위</div>
+                        <div class="gallery-design-setting-desc">한 번에 화면에 추가할 이미지 수입니다. 스크롤하면 다음 묶음을 자동으로 표시합니다.</div>
+                    </div>
+                    <div class="gallery-design-setting-control">
+                        <input type="number" id="galleryImageRenderBatchSizeInput" min="100" max="10000" step="100" value="1000" oninput="setGalleryImageRenderBatchSize(this.value)">
+                        <span>장</span>
+                    </div>
+                </div>
+
+                <div class="gallery-design-setting-row gallery-design-setting-row--stacked-control">
                     <div>
                         <div class="gallery-design-setting-title">캐릭터 필터 표시 줄 수</div>
                         <div class="gallery-design-setting-desc">브랜드 선택 후 캐릭터 버튼을 몇 줄까지 보일지 정합니다. 캐릭터가 많으면 줄 단위로 끊기고 영역 안에서 스크롤합니다.</div>
@@ -830,6 +900,16 @@
                     <button onclick="closeGalleryDesignSettings()">닫기</button>
                 </div>
             </div>
+        </div>
+    </div>
+    <div id="galleryMultiFolderSelectionBar" class="gallery-multi-folder-selection-bar">
+        <div class="gallery-multi-folder-selection-info">
+            <b>📁 폴더 선택 중</b>
+            <span id="galleryMultiFolderSelectionCount">0개 폴더 선택됨</span>
+        </div>
+        <div class="gallery-multi-folder-selection-actions">
+            <button type="button" class="secondary" onclick="selectAllGalleryMultiFolderElements()">모두 선택</button>
+            <button type="button" onclick="clearGalleryMultiFolderSelection()">취소</button>
         </div>
     </div>
     <div id="galleryBulkDeleteBar" class="gallery-bulk-delete-bar">
@@ -891,6 +971,8 @@
         </div>
     </div>
     <div id="galleryTagPicker" class="gallery-tag-picker"></div>
+    <div id="galleryRadialTagMenu" class="gallery-radial-tag-menu"
+         role="menu" aria-label="다이얼 태그 선택" aria-hidden="true"></div>
 
     <div id="galleryPromptIndexModal" class="gallery-prompt-index-layer" style="display:none;">
         <div class="gallery-prompt-index-card">
@@ -905,6 +987,68 @@
                 <button type="button" onclick="startGalleryPromptIndexBuild(true)">프롬프트 인덱스 재생성</button>
                 <button type="button" class="danger" onclick="deleteGalleryPromptIndex()">프롬프트 인덱스 삭제</button>
                 <button type="button" class="secondary" onclick="closeGalleryPromptIndexModal()">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="galleryVirtualFolderLayer" class="gallery-virtual-folder-layer" style="display:none;" aria-hidden="true">
+        <div class="gallery-virtual-folder-card">
+            <div class="gallery-virtual-folder-header">
+                <div><h3>🗂️ 가상 폴더 관리</h3><span>실제 파일 위치는 변경되지 않습니다.</span></div>
+                <button type="button" onclick="closeGalleryVirtualFolderManager()">×</button>
+            </div>
+            <div class="gallery-virtual-folder-body">
+                <div id="galleryVirtualFolderManagerStatus" class="gallery-prompt-search-status"></div>
+                <div class="gallery-virtual-folder-create-form">
+                    <input id="galleryVirtualFolderNameInput" type="text" placeholder="폴더 이름" maxlength="200">
+                    <div class="gallery-virtual-folder-query-field">
+                        <input id="galleryVirtualFolderQueryInput" type="text" placeholder="저장할 프롬프트 (선택)" oninput="updateGalleryVirtualFolderAutocomplete('create')" onkeydown="handleGalleryVirtualFolderAutocompleteKeydown(event, 'create')" autocomplete="off">
+                        <div id="galleryVirtualFolderAutocomplete" class="gallery-prompt-autocomplete gallery-virtual-folder-autocomplete" role="listbox" aria-label="가상 폴더 프롬프트 자동완성"></div>
+                    </div>
+                    <select id="galleryVirtualFolderParentInput"><option value="">루트에 추가</option></select>
+                    <select id="galleryVirtualFolderModeInput"><option value="all">VIEW 전체</option><option value="general">일반</option><option value="r18">R-19</option></select>
+                    <button type="button" onclick="createGalleryVirtualFolderFromManager()">추가</button>
+                </div>
+                <div class="gallery-virtual-folder-fields-help">프롬프트를 입력하면 검색 결과를 동적으로 묶습니다. 비워 둔 폴더는 수동으로 사용할 수 있습니다.</div>
+                <div id="galleryVirtualFolderManagerTree" class="gallery-virtual-folder-manager-tree"></div>
+            </div>
+            <div class="gallery-virtual-folder-footer"><button type="button" class="gallery-virtual-folder-secondary" onclick="closeGalleryVirtualFolderManager()">닫기</button></div>
+        </div>
+        <div id="galleryVirtualFolderEditorLayer" class="gallery-virtual-folder-editor-layer" style="display:none;" aria-hidden="true" onclick="if (event.target === this) closeGalleryVirtualFolderEditor();">
+            <div class="gallery-virtual-folder-editor-card" role="dialog" aria-modal="true" aria-labelledby="galleryVirtualFolderEditorTitle">
+                <div class="gallery-virtual-folder-editor-header">
+                    <div>
+                        <h3 id="galleryVirtualFolderEditorTitle">가상 폴더 편집</h3>
+                        <span id="galleryVirtualFolderEditorFolderLabel">현재 폴더</span>
+                    </div>
+                    <button type="button" aria-label="편집 닫기" onclick="closeGalleryVirtualFolderEditor()">×</button>
+                </div>
+                <div class="gallery-virtual-folder-editor-body">
+                    <div id="galleryVirtualFolderEditorStatus" class="gallery-virtual-folder-editor-status" role="status" aria-live="polite"></div>
+                    <label class="gallery-virtual-folder-editor-field">폴더 이름
+                        <input id="galleryVirtualFolderEditorNameInput" type="text" maxlength="200" autocomplete="off">
+                    </label>
+                    <label class="gallery-virtual-folder-editor-field">저장할 프롬프트
+                        <div class="gallery-virtual-folder-query-field">
+                            <textarea id="galleryVirtualFolderEditorQueryInput" rows="3" placeholder="선택 사항" oninput="updateGalleryVirtualFolderAutocomplete('editor')" onkeydown="handleGalleryVirtualFolderAutocompleteKeydown(event, 'editor')" autocomplete="off"></textarea>
+                            <div id="galleryVirtualFolderEditorAutocomplete" class="gallery-prompt-autocomplete gallery-virtual-folder-autocomplete" role="listbox" aria-label="가상 폴더 편집 프롬프트 자동완성"></div>
+                        </div>
+                    </label>
+                    <label class="gallery-virtual-folder-editor-field">검색 범위
+                        <textarea id="galleryVirtualFolderEditorScopeInput" rows="3" placeholder='JSON 배열 또는 한 경로 (비워 두면 전체)'></textarea>
+                    </label>
+                    <label class="gallery-virtual-folder-editor-field">VIEW mode
+                        <select id="galleryVirtualFolderEditorModeInput">
+                            <option value="all">VIEW 전체</option>
+                            <option value="general">일반</option>
+                            <option value="r18">R-19</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="gallery-virtual-folder-editor-footer">
+                    <button type="button" class="gallery-virtual-folder-secondary" onclick="closeGalleryVirtualFolderEditor()">취소</button>
+                    <button type="button" class="gallery-virtual-folder-editor-primary" onclick="saveGalleryVirtualFolderEdit()">저장</button>
+                </div>
             </div>
         </div>
     </div>

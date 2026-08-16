@@ -12,7 +12,7 @@ import sys
 import utils
 import time
 import os
-from PIL import Image
+from PIL import Image, ImageOps
 from PIL.PngImagePlugin import PngInfo
 import urllib.request
 import urllib.error
@@ -25,6 +25,7 @@ import sqlite3
 import atexit
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from urllib.parse import urlsplit, unquote, quote
 
 def get_app_dir():
@@ -1890,18 +1891,13 @@ def gallery_index_status():
 
 
 def normalize_gallery_prompt_search_text(value):
-    text = str(value or "").lower().replace("_", " ")
-    text = re.sub(r"[\r\n,]+", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return utils.normalize_gallery_prompt_search_text(value)
 
 
 def split_gallery_prompt_search_terms(query):
-    return [
-        normalize_gallery_prompt_search_text(part)
-        for part in re.split(r"[\n,]+", str(query or ""))
-        if normalize_gallery_prompt_search_text(part)
-    ]
+    # Kept as a compatibility wrapper for existing route callers.  The
+    # returned value is now the shared OR-of-AND parser structure.
+    return utils.parse_gallery_prompt_search_query(query)
 
 
 def normalize_gallery_prompt_scope_paths(value):
@@ -2181,8 +2177,8 @@ def build_gallery_prompt_search_payload(rows):
 
 
 def search_gallery_prompts_without_index(query, scope_path="", mode="all", progress=None):
-    terms = split_gallery_prompt_search_terms(query)
-    if not terms:
+    groups = split_gallery_prompt_search_terms(query)
+    if not groups:
         return []
 
     rows = []
@@ -2207,9 +2203,12 @@ def search_gallery_prompts_without_index(query, scope_path="", mode="all", progr
 
             try:
                 record = future.result()
-                text = record.get("normalized_text") or ""
 
-                if all(term in text for term in terms):
+                if utils.gallery_prompt_search_matches(
+                    record.get("prompt_text"),
+                    groups,
+                    record.get("normalized_text"),
+                ):
                     rows.append({
                         "rel_path": rel_path,
                         "folder_path": record.get("folder_path") or os.path.dirname(rel_path).replace("\\", "/"),
@@ -2536,6 +2535,288 @@ def gallery_prompt_search():
     })
 
 
+def get_gallery_history_db():
+    """Open the normal history DB, with an opt-in path for isolated callers/tests."""
+    configured_path = app.config.get("GALLERY_HISTORY_DB_PATH")
+    if configured_path is None:
+        configured_path = app.config.get("HISTORY_DB_PATH")
+    return utils.HistoryDB(configured_path) if configured_path else utils.HistoryDB()
+
+
+def normalize_virtual_folder_scope_paths(value):
+    scopes = normalize_gallery_prompt_scope_paths(value)
+    for scope in scopes:
+        if any(part == ".." for part in scope.split("/") if part):
+            raise ValueError("가상 폴더 검색 범위가 올바르지 않습니다.")
+        if scope:
+            utils.resolve_safe_path(CLASSIFIED_DIR, scope, strip_prefix="TOTAL_CLASSIFIED/")
+    return scopes
+
+
+def virtual_folder_payload(db, folder, summary=False):
+    """Resolve only the folder's persisted query/scope/mode on every request."""
+    if not folder.get("query"):
+        payload = {
+            "image_paths": [],
+            "folder_counts": {},
+            "total_matches": 0,
+            "indexed": True
+        }
+        if summary:
+            payload["thumb"] = None
+        return payload
+
+    query = folder.get("query") or ""
+    scope_paths = normalize_virtual_folder_scope_paths(folder.get("scope_paths") or [])
+    mode = folder.get("mode") or "all"
+    terms = split_gallery_prompt_search_terms(query)
+    if not terms:
+        payload = {
+            "image_paths": [],
+            "folder_counts": {},
+            "total_matches": 0,
+            "indexed": True
+        }
+        if summary:
+            payload["thumb"] = None
+        return payload
+
+    index_status = db.get_gallery_prompt_index_status(scope_paths, mode)
+    indexed = int(index_status.get("indexed_images") or 0) > 0
+    prompt_revision = db.get_gallery_index_state("prompt_index_updated_at")
+
+    # Keep the legacy filesystem fallback when this scope/mode has no indexed
+    # rows yet.  A revision marker alone can also exist immediately after an
+    # index clear, so it is not sufficient to claim the DB index is ready.
+    if prompt_revision and indexed:
+        cache_result = db.resolve_gallery_virtual_folder_cache(
+            folder, terms, include_items=not summary
+        )
+        if summary:
+            return {
+                "image_paths": [],
+                "folder_counts": {},
+                "total_matches": cache_result["total_matches"],
+                "thumb": cache_result["thumb"],
+                "indexed": cache_result["indexed"],
+                "cached": cache_result["cached"],
+            }
+        rows = cache_result.get("rows") or []
+        return {
+            **build_gallery_prompt_search_payload(rows),
+            "indexed": cache_result["indexed"],
+            "cached": cache_result["cached"],
+        }
+
+    if indexed:
+        rows = db.search_gallery_prompt_index(terms, scope_paths, mode)
+    else:
+        rows = search_gallery_prompts_without_index(query, scope_paths, mode)
+
+    if summary:
+        thumb = None
+        total_matches = 0
+        for row in rows:
+            rel_path = clean_gallery_rel_path(row.get("rel_path"))
+            if not rel_path:
+                continue
+            total_matches += 1
+            if thumb is None:
+                thumb = rel_path
+        return {
+            "image_paths": [],
+            "folder_counts": {},
+            "total_matches": total_matches,
+            "thumb": thumb,
+            "indexed": indexed,
+            "cached": False
+        }
+
+    return {**build_gallery_prompt_search_payload(rows), "indexed": indexed, "cached": False}
+
+
+def virtual_folder_error(message, status_code=400):
+    return jsonify({"status": "error", "message": str(message)}), status_code
+
+
+def virtual_folder_request_data(data, current=None):
+    data = data if isinstance(data, dict) else {}
+    current = current or {}
+    result = {}
+
+    if "name" in data:
+        result["name"] = data.get("name")
+    if "query" in data:
+        result["query"] = data.get("query")
+    if "scope_paths" in data or "scope_path" in data:
+        raw_scopes = data.get("scope_paths") if "scope_paths" in data else data.get("scope_path")
+        result["scope_paths"] = normalize_virtual_folder_scope_paths(raw_scopes)
+    if "mode" in data:
+        result["mode"] = data.get("mode")
+    if "parent_id" in data or "parentId" in data:
+        result["parent_id"] = data.get("parent_id") if "parent_id" in data else data.get("parentId")
+    if "order_index" in data or "orderIndex" in data:
+        result["order_index"] = data.get("order_index") if "order_index" in data else data.get("orderIndex")
+    return result
+
+
+@app.route('/api/gallery/virtual_folders', methods=['GET'])
+def gallery_virtual_folder_list():
+    parent_id = request.args.get("parent_id", "__all__")
+    if parent_id.lower() in {"null", "root"}:
+        parent_id = None
+    db = get_gallery_history_db()
+    try:
+        folders = db.list_gallery_virtual_folders(parent_id)
+    finally:
+        db.close()
+    return jsonify({"status": "success", "folders": folders})
+
+
+@app.route('/api/gallery/virtual_folders', methods=['POST'])
+def gallery_virtual_folder_create():
+    data = request.json or {}
+    try:
+        values = virtual_folder_request_data(data)
+        if "name" not in values:
+            return virtual_folder_error("가상 폴더 이름이 필요합니다.")
+        db = get_gallery_history_db()
+        try:
+            folder = db.create_gallery_virtual_folder(
+                name=values["name"],
+                query=values.get("query", ""),
+                scope_paths=values.get("scope_paths", []),
+                mode=values.get("mode", "all"),
+                parent_id=values.get("parent_id"),
+                order_index=values.get("order_index", 0)
+            )
+        finally:
+            db.close()
+        return jsonify({"status": "success", "folder": folder}), 201
+    except ValueError as error:
+        message = str(error)
+        return virtual_folder_error(message, 409 if "이미" in message or "상위" in message or "자기" in message else 400)
+
+
+@app.route('/api/gallery/virtual_folders/<folder_id>', methods=['GET'])
+def gallery_virtual_folder_get(folder_id):
+    db = get_gallery_history_db()
+    try:
+        folder = db.get_gallery_virtual_folder(folder_id)
+        children = db.list_gallery_virtual_folders(folder_id) if folder else []
+    finally:
+        db.close()
+    if not folder:
+        return virtual_folder_error("가상 폴더를 찾을 수 없습니다.", 404)
+    return jsonify({"status": "success", "folder": folder, "children": children})
+
+
+@app.route('/api/gallery/virtual_folders/<folder_id>', methods=['PATCH', 'PUT'])
+def gallery_virtual_folder_update(folder_id):
+    db = get_gallery_history_db()
+    try:
+        if not db.get_gallery_virtual_folder(folder_id):
+            return virtual_folder_error("가상 폴더를 찾을 수 없습니다.", 404)
+        values = virtual_folder_request_data(request.json or {})
+        folder = db.update_gallery_virtual_folder(folder_id, **values)
+    except ValueError as error:
+        message = str(error)
+        return virtual_folder_error(message, 409 if ("이미" in message or "상위" in message or "자기" in message or "순환" in message) else 400)
+    finally:
+        db.close()
+    return jsonify({"status": "success", "folder": folder})
+
+
+@app.route('/api/gallery/virtual_folders/<folder_id>', methods=['DELETE'])
+def gallery_virtual_folder_delete(folder_id):
+    db = get_gallery_history_db()
+    try:
+        if not db.get_gallery_virtual_folder(folder_id):
+            return virtual_folder_error("가상 폴더를 찾을 수 없습니다.", 404)
+        deleted = db.delete_gallery_virtual_folder(folder_id)
+    except ValueError as error:
+        return virtual_folder_error(str(error), 409)
+    finally:
+        db.close()
+    return jsonify({"status": "success", "deleted": bool(deleted)})
+
+
+@app.route('/api/gallery/virtual_folders/<folder_id>/reparent', methods=['POST'])
+def gallery_virtual_folder_reparent(folder_id):
+    data = request.json or {}
+    try:
+        parent_id = data.get("parent_id") if "parent_id" in data else data.get("parentId")
+        values = {"parent_id": parent_id}
+        if "order_index" in data or "orderIndex" in data:
+            values["order_index"] = data.get("order_index") if "order_index" in data else data.get("orderIndex")
+        db = get_gallery_history_db()
+        try:
+            folder = db.reparent_gallery_virtual_folder(folder_id, **values)
+        finally:
+            db.close()
+        if not folder:
+            return virtual_folder_error("가상 폴더를 찾을 수 없습니다.", 404)
+        return jsonify({"status": "success", "folder": folder})
+    except ValueError as error:
+        message = str(error)
+        return virtual_folder_error(message, 409 if ("상위" in message or "자기" in message or "순환" in message) else 400)
+
+
+def gallery_virtual_folder_resolve(folder_id):
+    db = get_gallery_history_db()
+    try:
+        folder = db.get_gallery_virtual_folder(folder_id)
+        if not folder:
+            return virtual_folder_error("가상 폴더를 찾을 수 없습니다.", 404)
+        summary_value = str(request.args.get("summary") or "").strip().lower()
+        summary = summary_value in {"1", "true", "yes", "on"}
+        result = virtual_folder_payload(db, folder, summary=summary)
+    except ValueError as error:
+        return virtual_folder_error(str(error), 400)
+    finally:
+        db.close()
+    return jsonify({"status": "success", "folder": folder, **result})
+
+
+def gallery_virtual_folder_uncategorized_summary(owner_id=None):
+    """Return the indexed count/thumb for images outside an owner's descendants."""
+    requested_owner = owner_id
+    if requested_owner is None:
+        requested_owner = request.args.get("owner_id") or request.args.get("ownerId")
+    clean_owner = str(requested_owner or "").strip()
+    if clean_owner.lower() in {"", "root", "null"}:
+        clean_owner = None
+
+    db = get_gallery_history_db()
+    try:
+        result = db.summarize_gallery_virtual_uncategorized(clean_owner)
+    except ValueError as error:
+        return virtual_folder_error(str(error), 404)
+    finally:
+        db.close()
+    return jsonify({"status": "success", "owner_id": clean_owner or "root", **result})
+
+
+@app.route('/api/gallery/virtual_folders/uncategorized_summary', methods=['GET'])
+def gallery_virtual_folder_uncategorized_summary_route():
+    return gallery_virtual_folder_uncategorized_summary()
+
+
+@app.route('/api/gallery/virtual_folders/<folder_id>/uncategorized_summary', methods=['GET'])
+def gallery_virtual_folder_uncategorized_summary_for_folder_route(folder_id):
+    return gallery_virtual_folder_uncategorized_summary(folder_id)
+
+
+@app.route('/api/gallery/virtual_folders/<folder_id>/resolve', methods=['GET'])
+def gallery_virtual_folder_resolve_route(folder_id):
+    return gallery_virtual_folder_resolve(folder_id)
+
+
+@app.route('/api/gallery/virtual_folders/<folder_id>/search', methods=['GET'])
+def gallery_virtual_folder_search_route(folder_id):
+    return gallery_virtual_folder_resolve(folder_id)
+
+
 @app.route('/api/gallery/prompt_index/autocomplete')
 def gallery_prompt_index_autocomplete():
     prefix = normalize_gallery_prompt_search_text(request.args.get("q") or "")
@@ -2649,6 +2930,85 @@ def set_gallery_image_tag():
     })
 
 
+CANVAS_DISPLAY_PREVIEW_MAX_SIDE = 4096
+CANVAS_DISPLAY_PREVIEW_BUILD_LOCK = threading.Lock()
+
+
+def get_display_oriented_image_size(image):
+    width, height = image.size
+
+    try:
+        orientation = image.getexif().get(274, 1)
+    except Exception:
+        orientation = 1
+
+    if orientation in (5, 6, 7, 8):
+        return height, width
+    return width, height
+
+
+def get_requested_image_preview_max_side():
+    raw_value = request.args.get("preview")
+    if raw_value is None:
+        return 0
+
+    try:
+        requested = int(raw_value)
+    except (TypeError, ValueError):
+        return 0
+
+    return max(256, min(CANVAS_DISPLAY_PREVIEW_MAX_SIDE, requested))
+
+
+@lru_cache(maxsize=8)
+def build_cached_image_preview(file_path, mtime_ns, file_size, max_side):
+    del mtime_ns, file_size
+
+    with CANVAS_DISPLAY_PREVIEW_BUILD_LOCK:
+        return build_image_preview_bytes(file_path, max_side)
+
+
+def build_image_preview_bytes(file_path, max_side):
+    with Image.open(file_path) as source:
+        preview = ImageOps.exif_transpose(source)
+        preview.thumbnail(
+            (max_side, max_side),
+            Image.Resampling.LANCZOS,
+            reducing_gap=3.0
+        )
+
+        has_alpha = "A" in preview.getbands() or "transparency" in preview.info
+        output = io.BytesIO()
+
+        if has_alpha:
+            preview.convert("RGBA").save(output, format="PNG", compress_level=1)
+            mimetype = "image/png"
+        else:
+            preview.convert("RGB").save(output, format="JPEG", quality=88, optimize=False)
+            mimetype = "image/jpeg"
+
+    return output.getvalue(), mimetype
+
+
+def serve_image_preview(file_path, max_side):
+    stat = os.stat(file_path)
+    preview_bytes, mimetype = build_cached_image_preview(
+        file_path,
+        stat.st_mtime_ns,
+        stat.st_size,
+        max_side
+    )
+    response = send_file(
+        io.BytesIO(preview_bytes),
+        mimetype=mimetype,
+        max_age=0
+    )
+    response.set_etag(f"{stat.st_mtime_ns:x}-{stat.st_size:x}-{max_side:x}")
+    response.cache_control.public = True
+    response.cache_control.must_revalidate = True
+    return response.make_conditional(request)
+
+
 @app.route('/image/<path:filename>')
 def serve_image(filename):
     try:
@@ -2656,6 +3016,9 @@ def serve_image(filename):
     except ValueError:
         return "Invalid path", 400
     if os.path.exists(file_path):
+        preview_max_side = get_requested_image_preview_max_side()
+        if preview_max_side:
+            return serve_image_preview(file_path, preview_max_side)
         return send_file(file_path)
     return "Not found", 404
 
@@ -3291,9 +3654,7 @@ def start_gallery_upscale():
             data.get("target_height", 8000)
         )
 
-        engine = str(data.get("engine") or "realcugan").strip().lower()
-        if engine not in ("realcugan", "lanczos"):
-            engine = "realcugan"
+        engine = upscale_logic.normalize_upscale_engine(data.get("engine") or "realcugan")
 
         quality = str(data.get("quality") or "standard").strip().lower()
         if quality not in ("fast", "standard", "high"):
@@ -5813,7 +6174,7 @@ def list_canvas_import_items():
 
             try:
                 with Image.open(full_path) as img:
-                    width, height = img.size
+                    width, height = get_display_oriented_image_size(img)
             except Exception:
                 pass
 
@@ -5851,6 +6212,9 @@ def serve_canvas_import(filename):
         return "Invalid path", 400
 
     if os.path.exists(file_path):
+        preview_max_side = get_requested_image_preview_max_side()
+        if preview_max_side:
+            return serve_image_preview(file_path, preview_max_side)
         return send_file(file_path)
 
     return "Not found", 404
@@ -5923,8 +6287,12 @@ def canvas_upload_image():
     if not raw:
         return jsonify({"status": "error", "message": "이미지 파일이 비어 있습니다."}), 400
 
+    width = 0
+    height = 0
+
     try:
         with Image.open(io.BytesIO(raw)) as img:
+            width, height = get_display_oriented_image_size(img)
             img.verify()
     except Exception:
         return jsonify({"status": "error", "message": "이미지 파일을 읽을 수 없습니다."}), 400
@@ -5959,6 +6327,8 @@ def canvas_upload_image():
             "src": src,
             "path": src,
             "name": original_name,
+            "width": width,
+            "height": height,
             "promptInfo": prompt_info,
             "hasPromptInfo": has_prompt_info_text(prompt_info)
         })
@@ -6082,9 +6452,7 @@ def canvas_reference_upscale():
             data.get("target_height", 8000)
         )
 
-        engine = str(data.get("engine") or "realcugan").strip().lower()
-        if engine not in ("realcugan", "lanczos"):
-            engine = "realcugan"
+        engine = upscale_logic.normalize_upscale_engine(data.get("engine") or "realcugan")
 
         quality = str(data.get("quality") or "standard").strip().lower()
         if quality not in ("fast", "standard", "high"):
@@ -6092,6 +6460,8 @@ def canvas_reference_upscale():
 
         source_bytes = read_canvas_image_bytes(image_ref)
         session_id = data.get("sessionId") or None
+        save_category = data.get("tempCategory") or data.get("temp_category") or "canvas"
+        save_prefix = "canvas_inpaint_upscale" if save_category == "canvas_inpaint" else "canvas_reference_upscale"
 
         with tempfile.TemporaryDirectory(prefix="naia_reference_upscale_") as temp_dir:
             source_path = os.path.join(temp_dir, "source.png")
@@ -6114,8 +6484,8 @@ def canvas_reference_upscale():
 
         src, rel_name = save_canvas_generated_image(
             result_bytes,
-            prefix="canvas_reference_upscale",
-            category="canvas",
+            prefix=save_prefix,
+            category=save_category,
             session_id=session_id
         )
 
@@ -6335,6 +6705,7 @@ def canvas_inpaint():
         return jsonify({"status": "error", "message": f"NovelAI 서버 에러(HTTP {e.code}): {error_body}"}), 500
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)

@@ -33,11 +33,18 @@ dist_release/
 dist_exe/
 dist_updater/
 release_assets/
+docs/
+!NAI_Image_Manager_2.0/docs/
+!NAI_Image_Manager_2.0/docs/**
+tests/
+!tests/
+!tests/*.py
 patch_notes/
 canvas_imports/
 daki_generated_temp/
 output/
 TOTAL_CLASSIFIED/
+tools/downloads/
 
 # OS/editor noise
 .DS_Store

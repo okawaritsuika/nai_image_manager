@@ -1870,6 +1870,23 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
     import datetime
     import utils  # 🌟 DB 사용을 위해 추가
 
+    original_log_func = log_func
+
+    def safe_log(message):
+        """Keep a console encoding failure from undoing completed file work."""
+        try:
+            original_log_func(message)
+        except UnicodeEncodeError:
+            try:
+                fallback = str(message).encode("cp949", errors="replace").decode("cp949")
+                original_log_func(fallback)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    log_func = safe_log
+
     thumbs = data.get("thumbs", [])
     deletes = list(data.get("deletes", []) or [])
     delete_folders = list(data.get("delete_folders", []) or [])
