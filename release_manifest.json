@@ -1,10 +1,10 @@
 {
     "schema_version":  1,
-    "version":  "1.1.1",
-    "tag":  "v1.1.1-exe",
-    "asset_url":  "https://github.com/okawaritsuika/nai_image_manager/releases/download/v1.1.1-exe/NAI_Image_Manager_v1.1.1-exe_windows.zip",
-    "sha256":  "66baaee975ff0637f6babbff3e9e194e4c7012fcccda87ac8ccca701a8fee3b2",
-    "size":  105583354,
+    "version":  "1.2.0",
+    "tag":  "v1.2.0-exe",
+    "asset_url":  "https://github.com/okawaritsuika/nai_image_manager/releases/download/v1.2.0-exe/NAI_Image_Manager_v1.2.0-exe_windows.zip",
+    "sha256":  "03f04d63c12c132160a49da9167f951dd558163fc9dfebf4cc24a365f7b0ef62",
+    "size":  141157645,
     "payload_root":  "NAI_Image_Manager",
-    "summary":  "Adds gallery tag assignment mode for quickly applying image tags from the gallery."
+    "summary":  "Adds advanced gallery views, virtual folders, Waifu2x upscaling, and canvas workflow improvements."
 }
