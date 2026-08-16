@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import math
 import os
 import shutil
 import subprocess
@@ -15,6 +14,13 @@ REALCUGAN_EXE = os.path.join(
     "realcugan-ncnn-vulkan",
     "realcugan-ncnn-vulkan.exe"
 )
+WAIFU2X_EXE = os.path.join(
+    CURRENT_DIR,
+    "tools",
+    "waifu2x-ncnn-vulkan",
+    "waifu2x-ncnn-vulkan.exe"
+)
+SUPPORTED_UPSCALE_ENGINES = ("realcugan", "waifu2x", "lanczos")
 
 try:
     LANCZOS = Image.Resampling.LANCZOS
@@ -51,6 +57,25 @@ QUALITY_SETTINGS = {
         "multi_stage": True,
     },
 }
+
+WAIFU2X_QUALITY_SETTINGS = {
+    "fast": {
+        "noise": -1,
+        "tta": False,
+        "multi_stage": False,
+    },
+    "standard": {
+        "noise": 0,
+        "tta": False,
+        "multi_stage": False,
+    },
+    "high": {
+        "noise": 0,
+        "tta": True,
+        "multi_stage": True,
+    },
+}
+
 
 def clamp_int(value, fallback, min_value, max_value):
     try:
@@ -121,9 +146,55 @@ def build_stage_scales(source_width, source_height, target_width, target_height,
     return stages
 
 
+def choose_waifu2x_scale(required_scale):
+    return 2 if required_scale <= 2 else 4
+
+
+def build_waifu2x_stage_scales(source_width, source_height, target_width, target_height, quality):
+    required = max(target_width / max(1, source_width), target_height / max(1, source_height))
+    settings = WAIFU2X_QUALITY_SETTINGS.get(quality, WAIFU2X_QUALITY_SETTINGS["standard"])
+
+    if required <= 1:
+        return []
+
+    if not settings["multi_stage"]:
+        return [choose_waifu2x_scale(required)]
+
+    stages = []
+    remaining = required
+
+    while remaining > 4.05 and len(stages) < 2:
+        stages.append(4)
+        remaining /= 4
+
+    stages.append(choose_waifu2x_scale(remaining))
+    return stages
+
+
 def check_cancel(cancel_event):
     if cancel_event and cancel_event.is_set():
         raise UpscaleCancelled("업스케일 작업이 취소되었습니다.")
+
+
+def normalize_upscale_engine(engine):
+    value = str(engine or "realcugan").strip().lower()
+    aliases = {
+        "waifu": "waifu2x",
+        "waifu-2x": "waifu2x",
+        "waifu2x-ncnn": "waifu2x",
+        "waifu2x-ncnn-vulkan": "waifu2x",
+    }
+    value = aliases.get(value, value)
+
+    if value in SUPPORTED_UPSCALE_ENGINES:
+        return value
+
+    return "realcugan"
+
+
+def get_waifu2x_model_dir():
+    return os.path.join(os.path.dirname(WAIFU2X_EXE), "models-cunet")
+
 
 def get_realcugan_model_dir():
     return os.path.join(os.path.dirname(REALCUGAN_EXE), "models-se")
@@ -241,6 +312,73 @@ def run_process_with_cancel(cmd, cancel_event=None, cwd=None):
                 pass
         raise
 
+
+def run_waifu2x_once(input_path, output_path, scale, noise, tta, cancel_event=None):
+    if not os.path.exists(WAIFU2X_EXE):
+        raise FileNotFoundError(
+            "Waifu2x 업스케일 엔진을 찾을 수 없습니다. setup의 3단계를 먼저 실행해 주세요."
+        )
+
+    model_dir = get_waifu2x_model_dir()
+    if not os.path.exists(model_dir):
+        raise FileNotFoundError(
+            f"Waifu2x 모델 폴더를 찾을 수 없습니다: {model_dir}\n"
+            "setup의 3단계를 다시 실행해 주세요."
+        )
+
+    tile_candidates = [0, 256, 192, 128, 96, 64]
+    errors = []
+
+    for tile in tile_candidates:
+        check_cancel(cancel_event)
+
+        cmd = [
+            WAIFU2X_EXE,
+            "-i", input_path,
+            "-o", output_path,
+            "-s", str(scale),
+            "-n", str(noise),
+            "-t", str(tile),
+            "-m", model_dir,
+            "-f", "png",
+        ]
+
+        if tta:
+            cmd.append("-x")
+
+        code, output = run_process_with_cancel(
+            cmd,
+            cancel_event=cancel_event,
+            cwd=os.path.dirname(WAIFU2X_EXE)
+        )
+
+        if code == 0 and os.path.exists(output_path):
+            return {
+                "tile": tile,
+                "scale": scale,
+                "tta": tta,
+                "noise": noise,
+                "model_dir": model_dir,
+            }
+
+        errors.append(f"tile={tile}, noise={noise}, code={code}\n{output}")
+
+        if ".param failed" in output or "_wfopen" in output:
+            break
+
+    if tta:
+        return run_waifu2x_once(
+            input_path=input_path,
+            output_path=output_path,
+            scale=scale,
+            noise=noise,
+            tta=False,
+            cancel_event=cancel_event
+        )
+
+    raise RuntimeError("Waifu2x 실행에 실패했습니다.\n" + "\n\n".join(errors[-2:]))
+
+
 def run_realcugan_once(input_path, output_path, scale, denoise, tta, cancel_event=None):
     if not os.path.exists(REALCUGAN_EXE):
         raise FileNotFoundError(
@@ -316,6 +454,16 @@ def resize_to_target(input_path, output_path, target_width, target_height, cance
     check_cancel(cancel_event)
 
     with Image.open(input_path) as img:
+        input_size = img.size
+        input_format = str(img.format or "").upper()
+
+    if input_size == (target_width, target_height) and input_format == "PNG":
+        if os.path.abspath(input_path) != os.path.abspath(output_path):
+            shutil.copyfile(input_path, output_path)
+        check_cancel(cancel_event)
+        return
+
+    with Image.open(input_path) as img:
         img = img.convert("RGBA")
 
         if img.size != (target_width, target_height):
@@ -323,6 +471,88 @@ def resize_to_target(input_path, output_path, target_width, target_height, cance
 
         check_cancel(cancel_event)
         img.save(output_path, "PNG")
+
+
+def run_waifu2x_upscale(
+    source_path,
+    target_path,
+    target_width,
+    target_height,
+    quality="standard",
+    progress_callback=None,
+    cancel_event=None,
+):
+    source_width, source_height = get_image_size(source_path)
+    settings = WAIFU2X_QUALITY_SETTINGS[quality]
+    stages = build_waifu2x_stage_scales(
+        source_width,
+        source_height,
+        target_width,
+        target_height,
+        quality,
+    )
+
+    if not stages:
+        return run_lanczos_only(
+            source_path,
+            target_path,
+            target_width,
+            target_height,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
+
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="naia_waifu2x_") as temp_dir:
+        current_input = source_path
+        stage_results = []
+        total_stages = len(stages)
+
+        for index, scale in enumerate(stages, 1):
+            check_cancel(cancel_event)
+            stage_output = os.path.join(temp_dir, f"stage_{index}_x{scale}.png")
+
+            if progress_callback:
+                start_progress = 12 + int((index - 1) * 58 / max(1, total_stages))
+                progress_callback(start_progress, f"Waifu2x {scale}x 처리 중... ({index}/{total_stages})")
+
+            result = run_waifu2x_once(
+                input_path=current_input,
+                output_path=stage_output,
+                scale=scale,
+                noise=settings["noise"],
+                tta=settings["tta"],
+                cancel_event=cancel_event,
+            )
+            stage_results.append(result)
+            current_input = stage_output
+
+            if progress_callback:
+                done_progress = 12 + int(index * 58 / max(1, total_stages))
+                progress_callback(done_progress, f"Waifu2x 단계 완료 ({index}/{total_stages})")
+
+        if progress_callback:
+            progress_callback(82, f"최종 해상도 {target_width} × {target_height}px로 정리 중...")
+
+        resize_to_target(
+            current_input,
+            target_path,
+            target_width,
+            target_height,
+            cancel_event=cancel_event,
+        )
+
+    if progress_callback:
+        progress_callback(95, "결과 파일 저장 완료")
+
+    return {
+        "engine": "waifu2x",
+        "quality": quality,
+        "stages": stage_results,
+        "final_width": target_width,
+        "final_height": target_height,
+    }
 
 
 def run_lanczos_only(source_path, target_path, target_width, target_height, progress_callback=None, cancel_event=None):
@@ -358,7 +588,7 @@ def run_upscale(
     cancel_event=None,
 ):
     target_width, target_height = validate_target_size(target_width, target_height)
-    engine = str(engine or "realcugan").strip().lower()
+    engine = normalize_upscale_engine(engine)
     quality = str(quality or "standard").strip().lower()
 
     if quality not in QUALITY_SETTINGS:
@@ -377,6 +607,17 @@ def run_upscale(
             target_height,
             progress_callback=progress_callback,
             cancel_event=cancel_event
+        )
+
+    if engine == "waifu2x":
+        return run_waifu2x_upscale(
+            source_path=source_path,
+            target_path=target_path,
+            target_width=target_width,
+            target_height=target_height,
+            quality=quality,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
         )
 
     if engine != "realcugan":

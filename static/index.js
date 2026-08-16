@@ -27,11 +27,31 @@ let dakiFilter = 'all';
 let currentSelectedGalleryArtStyle = 'ALL';
 let galleryTagDefs = [];
 let galleryImageTags = {};
+let galleryViewMode = 'character';
+let galleryDateGrouping = 'month';
+let galleryVirtualGrouping = 'character';
+let galleryVirtualUncategorized = 'only';
+let galleryVirtualFolders = [];
+let galleryVirtualFolderMap = new Map();
+let galleryVirtualRootNode = null;
+let galleryVirtualLoading = false;
+let galleryVirtualManagerOpen = false;
+let galleryVirtualFolderEditingId = '';
+const galleryVirtualFolderAutocompleteState = {
+    create: {timer: null, items: [], activeIndex: -1, version: 0},
+    editor: {timer: null, items: [], activeIndex: -1, version: 0}
+};
 let currentGalleryTagFilter = 'ALL';
 let isGalleryTagAssignmentMode = false;
 let selectedGalleryAssignmentTagId = '';
 let galleryTagAssignmentBusy = false;
 let pendingGalleryTagImageDataUrl = '';
+let galleryRadialTagGesture = null;
+let galleryRadialTagSuppressClickElement = null;
+let galleryRadialTagSuppressClickUntil = 0;
+const GALLERY_RADIAL_TAG_LONG_PRESS_MS = 250;
+const GALLERY_RADIAL_TAG_MOVE_THRESHOLD = 10;
+const GALLERY_RADIAL_TAG_DEAD_ZONE = 28;
 let galleryImageFilterMeta = {};
 let galleryImageFilterMetaLoading = false;
 let galleryImageFilterMetaRequestKey = '';
@@ -52,7 +72,26 @@ let galleryPromptSearchResult = {
     totalMatches: 0,
     indexed: false
 };
+let galleryImageOrder = 'newest';
+let galleryFolderSort = 'name';
+let galleryImageRenderSessions = new Set();
+let galleryVirtualSummaryObservers = new Set();
+let galleryVirtualRenderGeneration = 0;
 const topBtn = document.getElementById('topBtn');
+const galleryScrollNavigation = document.getElementById('galleryScrollNavigation');
+const galleryScrollbarDestinationGuide = document.getElementById('galleryScrollbarDestinationGuide');
+let galleryScrollNavigationFrame = 0;
+let galleryScrollNavigationResizeObserver = null;
+let galleryScrollNavigationInitialized = false;
+let galleryScrollNavigationHoveredIndex = null;
+let galleryScrollNavigationFocusedIndex = null;
+let galleryScrollbarDragState = null;
+const GALLERY_SCROLL_NAV_MIN_SCROLL = 480;
+const GALLERY_SCROLL_NAV_MIN_SCROLL_RATIO = 0.75;
+const GALLERY_SCROLL_NAV_MIN_DOTS = 7;
+const GALLERY_SCROLL_NAV_MAX_DOTS = 12;
+const GALLERY_SCROLLBAR_MIN_THUMB = 44;
+const GALLERY_SCROLLBAR_TRACK_INSET = 8;
 
 let globalBrandMap = {};
 let globalBrandVisibility = {}; // 🌟 노출 스위치 변수 추가
@@ -67,11 +106,19 @@ let isGalleryBulkDeleteMode = false;
 let galleryBulkDeleteFolders = new Map();
 let galleryBulkDeleteSelectionBoxState = null;
 let galleryBulkDeleteSuppressNextClick = false;
+let galleryMultiFolderSelection = new Map();
+let galleryMultiFolderSelectionBoxState = null;
+let galleryMultiFolderSuppressNextClick = false;
+let galleryFolderOpenTimer = null;
 
 const GALLERY_INPAINT_TEMP_CATEGORY = 'gallery_inpaint';
 const GALLERY_PERSISTENT_UI_KEY = 'naia_gallery_persistent_ui_v1';
 const GALLERY_SESSION_STATE_KEY = 'naia_gallery_session_state_v1';
 const GALLERY_HEADER_TOOLS_COLLAPSED_KEY = 'naia_gallery_header_tools_collapsed_v1';
+const GALLERY_VIEW_MODE_VALUES = new Set(['character', 'date', 'virtual']);
+const GALLERY_DATE_GROUPING_VALUES = new Set(['month', 'week', 'day']);
+const GALLERY_VIRTUAL_GROUPING_VALUES = new Set(['character', 'combined']);
+const GALLERY_VIRTUAL_UNCATEGORIZED_VALUES = new Set(['only', 'include']);
 
 const GALLERY_DESIGN_SETTINGS_KEY = 'naia_gallery_design_settings_v1';
 const GALLERY_CHARACTER_NAME_OVERRIDES_KEY = 'naia_gallery_character_name_overrides_v1';
@@ -83,7 +130,10 @@ let galleryDesignSettings = {
     fixedHeight: 360,
     navTabRows: 1,
     characterFilterRows: 4,
-    characterKoreanNames: true
+    characterKoreanNames: true,
+    multiFolderSelectionEnabled: true,
+    radialTagMenuEnabled: true,
+    imageRenderBatchSize: 1000
 };
 let galleryCharacterNameOverrides = {};
 let galleryCharacterNameManagerSort = 'count';
@@ -110,9 +160,33 @@ function loadGalleryPersistentUi() {
         const data = raw ? JSON.parse(raw) : {};
 
         dakiFilter = data.dakiFilter || dakiFilter || 'all';
+        galleryViewMode = GALLERY_VIEW_MODE_VALUES.has(data.galleryViewMode)
+            ? data.galleryViewMode
+            : 'character';
+        galleryDateGrouping = GALLERY_DATE_GROUPING_VALUES.has(data.galleryDateGrouping)
+            ? data.galleryDateGrouping
+            : 'month';
+        galleryVirtualGrouping = GALLERY_VIRTUAL_GROUPING_VALUES.has(data.galleryVirtualGrouping)
+            ? data.galleryVirtualGrouping
+            : 'character';
+        galleryVirtualUncategorized = GALLERY_VIRTUAL_UNCATEGORIZED_VALUES.has(data.galleryVirtualUncategorized)
+            ? data.galleryVirtualUncategorized
+            : 'only';
+        const storedSortMode = ['name', 'count', 'newest', 'oldest'].includes(data.sortMode)
+            ? data.sortMode
+            : null;
+        galleryFolderSort = data.folderSort === 'count' ||
+            (data.folderSort !== 'name' && storedSortMode === 'count')
+            ? 'count'
+            : 'name';
+        galleryImageOrder = storedSortMode === 'oldest' || data.galleryImageOrder === 'oldest'
+            ? 'oldest'
+            : 'newest';
         setGalleryRadioValue('dakiFilter', dakiFilter);
-        setGalleryRadioValue('sortMode', data.sortMode || 'name');
+        setGalleryRadioValue('sortMode', galleryFolderSort);
         setGalleryRadioValue('viewMode', data.viewMode || 'general');
+
+        syncGalleryViewModeControls();
     } catch (error) {
         console.warn('Gallery persistent UI restore failed:', error);
     }
@@ -122,8 +196,16 @@ function saveGalleryPersistentUi() {
     try {
         localStorage.setItem(GALLERY_PERSISTENT_UI_KEY, JSON.stringify({
             dakiFilter,
-            sortMode: getGalleryRadioValue('sortMode', 'name'),
-            viewMode: getGalleryRadioValue('viewMode', 'general')
+            // folderSort와 galleryImageOrder를 분리 저장한다. sortMode는
+            // 구버전 설정을 위한 legacy mirror로 유지한다.
+            folderSort: galleryFolderSort,
+            sortMode: galleryFolderSort,
+            viewMode: getGalleryRadioValue('viewMode', 'general'),
+            galleryViewMode,
+            galleryDateGrouping,
+            galleryVirtualGrouping,
+            galleryVirtualUncategorized,
+            galleryImageOrder
         }));
     } catch (error) {
         console.warn('Gallery persistent UI save failed:', error);
@@ -150,7 +232,10 @@ function normalizeGalleryDesignSettings(raw) {
         fixedHeight: clampGalleryNumber(data.fixedHeight, 360, 120, 1000),
         navTabRows: clampGalleryNumber(data.navTabRows, 1, 1, 3),
         characterFilterRows: clampGalleryNumber(data.characterFilterRows, 4, 1, 8),
-        characterKoreanNames: data.characterKoreanNames !== false
+        characterKoreanNames: data.characterKoreanNames !== false,
+        multiFolderSelectionEnabled: data.multiFolderSelectionEnabled !== false,
+        radialTagMenuEnabled: data.radialTagMenuEnabled !== false,
+        imageRenderBatchSize: clampGalleryNumber(data.imageRenderBatchSize, 1000, 100, 10000)
     };
 }
 
@@ -240,6 +325,9 @@ function syncGalleryDesignSettingsInputs() {
     const fixedWidthInput = document.getElementById('galleryFixedWidthInput');
     const fixedHeightInput = document.getElementById('galleryFixedHeightInput');
     const characterKoreanNamesInput = document.getElementById('galleryCharacterKoreanNamesInput');
+    const multiFolderSelectionInput = document.getElementById('galleryMultiFolderSelectionInput');
+    const radialTagMenuInput = document.getElementById('galleryRadialTagMenuInput');
+    const imageRenderBatchSizeInput = document.getElementById('galleryImageRenderBatchSizeInput');
     const characterFilterRowsRange = document.getElementById('galleryCharacterFilterRowsRange');
     const characterFilterRowsInput = document.getElementById('galleryCharacterFilterRowsInput');
 
@@ -249,6 +337,9 @@ function syncGalleryDesignSettingsInputs() {
     if (fixedWidthInput) fixedWidthInput.value = galleryDesignSettings.fixedWidth;
     if (fixedHeightInput) fixedHeightInput.value = galleryDesignSettings.fixedHeight;
     if (characterKoreanNamesInput) characterKoreanNamesInput.checked = galleryDesignSettings.characterKoreanNames;
+    if (multiFolderSelectionInput) multiFolderSelectionInput.checked = galleryDesignSettings.multiFolderSelectionEnabled;
+    if (radialTagMenuInput) radialTagMenuInput.checked = galleryDesignSettings.radialTagMenuEnabled;
+    if (imageRenderBatchSizeInput) imageRenderBatchSizeInput.value = galleryDesignSettings.imageRenderBatchSize;
     if (characterFilterRowsRange) characterFilterRowsRange.value = galleryDesignSettings.characterFilterRows;
     if (characterFilterRowsInput) characterFilterRowsInput.value = galleryDesignSettings.characterFilterRows;
     document.querySelectorAll('.gallery-design-nav-row-control button, .gallery-design-header-row-control button').forEach((button) => {
@@ -304,6 +395,154 @@ function setGalleryCharacterKoreanNames(enabled) {
     renderView();
 }
 
+function setGalleryImageRenderBatchSize(value) {
+    galleryDesignSettings.imageRenderBatchSize = clampGalleryNumber(value, 1000, 100, 10000);
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+    renderView();
+}
+
+function setGalleryImageOrder(value) {
+    galleryImageOrder = value === 'oldest' ? 'oldest' : 'newest';
+    saveGalleryPersistentUi();
+    renderView();
+}
+
+function syncGallerySortControls(context = 'folder') {
+    const imageContext = context === 'image';
+    const visibleValues = imageContext ? ['newest', 'oldest'] : ['name', 'count'];
+    document.querySelectorAll('input[name="sortMode"]').forEach((input) => {
+        const label = input.closest('label');
+        if (label) label.hidden = !visibleValues.includes(input.value);
+    });
+    setGalleryRadioValue('sortMode', imageContext ? galleryImageOrder : galleryFolderSort);
+}
+
+function onGallerySortChange() {
+    const sortMode = getGalleryRadioValue('sortMode', 'name');
+    if (sortMode === 'newest' || sortMode === 'oldest') {
+        setGalleryImageOrder(sortMode);
+        return;
+    }
+
+    galleryFolderSort = sortMode === 'count' ? 'count' : 'name';
+    saveGalleryPersistentUi();
+    loadData();
+}
+
+function getGalleryViewMode() {
+    return GALLERY_VIEW_MODE_VALUES.has(galleryViewMode) ? galleryViewMode : 'character';
+}
+
+function getGalleryDateGrouping() {
+    return GALLERY_DATE_GROUPING_VALUES.has(galleryDateGrouping) ? galleryDateGrouping : 'month';
+}
+
+function syncGalleryViewModeControls() {
+    setGalleryRadioValue('galleryViewMode', getGalleryViewMode());
+    setGalleryRadioValue('galleryDateGrouping', getGalleryDateGrouping());
+    setGalleryRadioValue('galleryVirtualGrouping', galleryVirtualGrouping);
+    setGalleryRadioValue('galleryVirtualUncategorized', galleryVirtualUncategorized);
+    const controls = document.getElementById('galleryVirtualControls');
+    if (controls) {
+        const isVirtual = getGalleryViewMode() === 'virtual';
+        controls.classList.toggle('gallery-virtual-controls-is-hidden', !isVirtual);
+        controls.hidden = !isVirtual;
+        controls.setAttribute('aria-hidden', String(!isVirtual));
+        controls.querySelectorAll('input').forEach(input => { input.tabIndex = isVirtual ? 0 : -1; });
+    }
+}
+
+function onGalleryViewModeChange() {
+    const nextMode = getGalleryRadioValue('galleryViewMode', 'character');
+    galleryViewMode = GALLERY_VIEW_MODE_VALUES.has(nextMode) ? nextMode : 'character';
+    syncGalleryViewModeControls();
+
+    if (getGalleryViewMode() === 'virtual' && getGalleryRadioValue('viewMode', 'general') === 'trash') {
+        setGalleryRadioValue('viewMode', 'all');
+        saveGalleryPersistentUi();
+        loadData();
+        return;
+    }
+
+    if (!rootTree) {
+        saveGalleryPersistentUi();
+        return;
+    }
+
+    if (getGalleryViewMode() === 'virtual') {
+        currentPath = [rootTree];
+        searchText = '';
+        const searchInput = document.getElementById('folder-search');
+        if (searchInput) searchInput.value = '';
+        loadGalleryVirtualFolders().then(() => {
+            currentPath = [rootTree, galleryVirtualRootNode].filter(Boolean);
+            renderView();
+            saveGallerySessionState();
+        });
+        saveGalleryPersistentUi();
+        saveGallerySessionState();
+        return;
+    }
+
+    // 날짜 그룹은 실제 트리에 존재하지 않으므로 모드 전환 시 최상위 카테고리만 유지한다.
+    clearGalleryMultiFolderSelection(false);
+    const topCategory = currentPath[1] && !currentPath[1].isGalleryVirtualRoot
+        ? currentPath[1]
+        : getDefaultGalleryPath()[1];
+    currentPath = topCategory ? [rootTree, topCategory] : getDefaultGalleryPath();
+    searchText = '';
+    const searchInput = document.getElementById('folder-search');
+    if (searchInput) searchInput.value = '';
+
+    buildFilterDropdowns(currentPath[currentPath.length - 1]);
+    renderView();
+    saveGalleryPersistentUi();
+    saveGallerySessionState();
+    window.scrollTo(0, 0);
+}
+
+function onGalleryDateGroupingChange() {
+    const nextGrouping = getGalleryRadioValue('galleryDateGrouping', 'month');
+    galleryDateGrouping = GALLERY_DATE_GROUPING_VALUES.has(nextGrouping) ? nextGrouping : 'month';
+    syncGalleryViewModeControls();
+    if (!rootTree) {
+        saveGalleryPersistentUi();
+        return;
+    }
+    if (getGalleryViewMode() === 'date') {
+        const topCategory = currentPath[1] || getDefaultGalleryPath()[1];
+        currentPath = topCategory ? [rootTree, topCategory] : getDefaultGalleryPath();
+        searchText = '';
+        const searchInput = document.getElementById('folder-search');
+        if (searchInput) searchInput.value = '';
+        renderView();
+    }
+    saveGalleryPersistentUi();
+    saveGallerySessionState();
+}
+
+function setGalleryMultiFolderSelectionEnabled(enabled) {
+    galleryDesignSettings.multiFolderSelectionEnabled = Boolean(enabled);
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+
+    if (!galleryDesignSettings.multiFolderSelectionEnabled) {
+        clearGalleryMultiFolderSelection();
+        closeGalleryMultiFolderContextMenu();
+    }
+}
+
+function setGalleryRadialTagMenuEnabled(enabled) {
+    galleryDesignSettings.radialTagMenuEnabled = Boolean(enabled);
+    saveGalleryDesignSettings();
+    applyGalleryDesignSettingsToDocument();
+
+    if (!galleryDesignSettings.radialTagMenuEnabled) {
+        cancelGalleryRadialTagGesture();
+    }
+}
+
 function setGalleryCharacterFilterRows(value) {
     galleryDesignSettings.characterFilterRows = clampGalleryNumber(value, 4, 1, 8);
     saveGalleryDesignSettings();
@@ -346,6 +585,10 @@ function readGallerySessionState() {
 
 function getGalleryNodeKey(node) {
     if (!node) return '';
+    if (node.isGalleryVirtualRoot) return '__gallery_virtual_root__';
+    if (node.isGalleryVirtualFolder || node.isGalleryVirtualUnassigned || node.isGalleryVirtualCharacterGroup) {
+        return `__gallery_virtual__/${node.virtualFolderId || node.virtualParentId || node.name || ''}`;
+    }
     return String(node.path || node.name || '');
 }
 
@@ -371,6 +614,1206 @@ function restoreGalleryPathFromKeys(pathKeys) {
     }
 
     return newPath;
+}
+
+function getGallerySessionPathKeys() {
+    if (getGalleryViewMode() === 'virtual') {
+        return currentPath.slice(1).map(getGalleryNodeKey);
+    }
+    const dateGroupIndex = currentPath.findIndex(isGalleryDateGroupNode);
+    const sessionPath = dateGroupIndex >= 0 ? currentPath.slice(0, dateGroupIndex) : currentPath;
+    return sessionPath.map(getGalleryNodeKey);
+}
+
+function getGalleryVirtualGrouping() {
+    return GALLERY_VIRTUAL_GROUPING_VALUES.has(galleryVirtualGrouping) ? galleryVirtualGrouping : 'character';
+}
+
+function getGalleryVirtualUncategorizedMode() {
+    return GALLERY_VIRTUAL_UNCATEGORIZED_VALUES.has(galleryVirtualUncategorized)
+        ? galleryVirtualUncategorized
+        : 'only';
+}
+
+function getGalleryVirtualPromptMode() {
+    const mode = getGalleryPromptSearchMode();
+    return ['general', 'r18', 'all'].includes(mode) ? mode : 'all';
+}
+
+function normalizeGalleryVirtualFolderRecord(raw = {}) {
+    return {
+        ...raw,
+        id: String(raw.id || ''),
+        parent_id: raw.parent_id ? String(raw.parent_id) : null,
+        name: String(raw.name || '가상 폴더'),
+        query: String(raw.query || ''),
+        scope_paths: Array.isArray(raw.scope_paths) ? raw.scope_paths.map(normalizeGalleryPathKey).filter(Boolean) : [],
+        mode: ['general', 'r18', 'all'].includes(String(raw.mode || 'all')) ? String(raw.mode || 'all') : 'all',
+        folders: [],
+        images: [],
+        total_images: 0,
+        isGalleryVirtualFolder: true,
+        virtualFolder: raw
+    };
+}
+
+function rebuildGalleryVirtualFolderTree(records = []) {
+    const nodes = records.map(normalizeGalleryVirtualFolderRecord).filter(folder => folder.id);
+    const map = new Map(nodes.map(folder => [folder.id, folder]));
+    nodes.forEach(folder => {
+        const parent = folder.parent_id ? map.get(folder.parent_id) : null;
+        (parent ? parent.folders : []).push(folder);
+    });
+    const roots = nodes.filter(folder => !folder.parent_id || !map.has(folder.parent_id));
+    const rootImages = [];
+    collectGalleryFolderImages(rootTree, rootImages, new Set());
+    galleryVirtualFolderMap = map;
+    galleryVirtualFolders = nodes;
+    galleryVirtualRootNode = {
+        id: '__gallery_virtual_root__',
+        name: '가상 폴더',
+        path: '__gallery_virtual_root__',
+        folders: roots,
+        images: [],
+        total_images: 0,
+        isGalleryVirtualRoot: true,
+        virtualRootImages: rootImages
+    };
+    return galleryVirtualRootNode;
+}
+
+async function loadGalleryVirtualFolders() {
+    galleryVirtualLoading = true;
+    try {
+        const res = await fetch('/api/gallery/virtual_folders?parent_id=__all__', {cache: 'no-store'});
+        const json = await res.json();
+        if (!res.ok || json.status === 'error') throw new Error(json.message || '가상 폴더 목록을 불러오지 못했습니다.');
+        rebuildGalleryVirtualFolderTree(Array.isArray(json.folders) ? json.folders : []);
+        return galleryVirtualRootNode;
+    } finally {
+        galleryVirtualLoading = false;
+    }
+}
+
+function getGalleryVirtualAllImages() {
+    if (galleryVirtualRootNode?.virtualRootImages) return galleryVirtualRootNode.virtualRootImages.slice();
+    const images = [];
+    if (rootTree) collectGalleryFolderImages(rootTree, images, new Set());
+    return images;
+}
+
+function galleryVirtualImageMatchesMode(item, mode) {
+    if (mode === 'all') return true;
+    const isR18 = String(item?.path || '').includes('_R-18') || String(item?.path || '').includes('_R-15');
+    return mode === 'r18' ? isR18 : !isR18;
+}
+
+function galleryVirtualImageInScopes(item, scopePaths = [], mode = 'all') {
+    if (!galleryVirtualImageMatchesMode(item, mode)) return false;
+    const path = normalizeGalleryPathKey(item?.path || '');
+    const scopes = Array.isArray(scopePaths) ? scopePaths.map(normalizeGalleryPathKey).filter(Boolean) : [];
+    return !scopes.length || scopes.some(scope => path === scope || path.startsWith(`${scope.replace(/\/$/, '')}/`));
+}
+
+function galleryVirtualFindImagesByPaths(paths = []) {
+    const existingByPath = new Map();
+    getGalleryVirtualAllImages().forEach(item => {
+        const key = normalizeGalleryPathKey(item?.path || '');
+        if (key && !existingByPath.has(key)) existingByPath.set(key, item);
+    });
+
+    const seen = new Set();
+    return paths.map(rawPath => {
+        const path = normalizeGalleryPathKey(rawPath);
+        if (!path || seen.has(path)) return null;
+        seen.add(path);
+
+        const existing = existingByPath.get(path);
+        if (existing) return existing;
+
+        const parentPath = path.split('/').slice(0, -1).join('/');
+        return {
+            path,
+            name: getImageFileName(path),
+            galleryParentPath: parentPath,
+            galleryParentName: parentPath.split('/').pop() || '',
+            isGalleryVirtualFallback: true
+        };
+    }).filter(Boolean);
+}
+
+function createGalleryVirtualResolveState() {
+    return {
+        completed: new Map(),
+        errors: new Map(),
+        inflight: new Map(),
+        summaryCompleted: new Map(),
+        summaryInflight: new Map(),
+        summaryQueue: [],
+        summaryActive: 0,
+        summaryLimit: 5,
+        resolveQueue: [],
+        resolveActive: 0,
+        resolveLimit: 5
+    };
+}
+
+function beginGalleryVirtualLoading(container, title, message = '') {
+    if (!container) return () => {};
+    const state = document.createElement('div');
+    state.className = 'gallery-load-state gallery-virtual-load-state';
+    state.innerHTML = `
+        <div class="gallery-load-spinner"></div>
+        <div class="gallery-load-title">${escapeHtml(title || '가상 폴더를 불러오는 중...')}</div>
+        ${message ? `<div class="gallery-load-message">${escapeHtml(message)}</div>` : ''}
+    `;
+    container.appendChild(state);
+    return () => state.remove();
+}
+
+function enqueueGalleryVirtualSummaryRequest(resolveState, task) {
+    return new Promise((resolve, reject) => {
+        resolveState.summaryQueue.push({task, resolve, reject});
+        const drain = () => {
+            while (resolveState.summaryActive < resolveState.summaryLimit && resolveState.summaryQueue.length) {
+                const entry = resolveState.summaryQueue.shift();
+                resolveState.summaryActive += 1;
+                Promise.resolve()
+                    .then(entry.task)
+                    .then(entry.resolve, entry.reject)
+                    .finally(() => {
+                        resolveState.summaryActive -= 1;
+                        drain();
+                    });
+            }
+        };
+        drain();
+    });
+}
+
+function enqueueGalleryVirtualResolveRequest(resolveState, task) {
+    return new Promise((resolve, reject) => {
+        resolveState.resolveQueue.push({task, resolve, reject});
+        const drain = () => {
+            while (resolveState.resolveActive < resolveState.resolveLimit && resolveState.resolveQueue.length) {
+                const entry = resolveState.resolveQueue.shift();
+                resolveState.resolveActive += 1;
+                Promise.resolve()
+                    .then(entry.task)
+                    .then(entry.resolve, entry.reject)
+                    .finally(() => {
+                        resolveState.resolveActive -= 1;
+                        drain();
+                    });
+            }
+        };
+        drain();
+    });
+}
+
+function isGalleryVirtualContainerNode(node) {
+    return Boolean(node?.isGalleryVirtualFolder && Array.isArray(node.folders) && node.folders.length);
+}
+
+async function resolveGalleryVirtualFolderNode(node, resolveState = null) {
+    if (!node?.isGalleryVirtualFolder || !node.id) return [];
+    const state = resolveState || createGalleryVirtualResolveState();
+    const id = String(node.id);
+    if (state.completed.has(id)) return state.completed.get(id);
+    if (state.errors.has(id)) throw state.errors.get(id);
+    if (state.inflight.has(id)) return state.inflight.get(id);
+
+    const request = (async () => enqueueGalleryVirtualResolveRequest(state, async () => {
+        const res = await fetch(`/api/gallery/virtual_folders/${encodeURIComponent(node.id)}/resolve?ts=${Date.now()}`, {cache: 'no-store'});
+        const json = await res.json();
+        if (!res.ok || json.status === 'error') throw new Error(json.message || '가상 폴더 검색 결과를 불러오지 못했습니다.');
+        const images = galleryVirtualFindImagesByPaths(json.image_paths || []);
+        node.images = images;
+        node.total_images = images.length;
+        node.thumb = images[0]?.path || null;
+        node.virtualResolved = true;
+        node.virtualResolvePayload = json;
+        return images;
+    }))();
+    state.inflight.set(id, request);
+    try {
+        const images = await request;
+        state.completed.set(id, images);
+        return images;
+    } catch (error) {
+        state.errors.set(id, error);
+        throw error;
+    } finally {
+        state.inflight.delete(id);
+    }
+}
+
+async function getGalleryVirtualBaseImages(node, resolveState = null) {
+    if (node?.isGalleryVirtualFolder && node.query) {
+        return resolveGalleryVirtualFolderNode(node, resolveState);
+    }
+    const folder = node?.virtualFolder || {};
+    return getGalleryVirtualAllImages().filter(item => galleryVirtualImageInScopes(item, folder.scope_paths || [], folder.mode || getGalleryVirtualPromptMode()));
+}
+
+async function collectGalleryVirtualDescendantImages(node, output = new Map(), resolveState = null) {
+    await Promise.all((node?.folders || []).map(async child => {
+        try {
+            if (child.isGalleryVirtualFolder && child.query) {
+                const images = await resolveGalleryVirtualFolderNode(child, resolveState);
+                images.forEach(item => output.set(normalizeGalleryPathKey(item.path), item));
+            }
+            await collectGalleryVirtualDescendantImages(child, output, resolveState);
+        } catch (error) {
+            child.images = [];
+            child.total_images = 0;
+            child.thumb = null;
+            child.virtualSummaryError = error?.message || String(error || '');
+        }
+    }));
+    return output;
+}
+
+async function buildGalleryVirtualUncategorizedNode(node, baseImages, descendantRootNode = node, resolveState = null) {
+    if (getGalleryVirtualUncategorizedMode() !== 'include') return null;
+    const assigned = await collectGalleryVirtualDescendantImages(descendantRootNode, new Map(), resolveState);
+    const images = baseImages.filter(item => !assigned.has(normalizeGalleryPathKey(item?.path || '')));
+    if (!images.length) return null;
+    return {
+        id: `__gallery_virtual_unassigned__/${node?.id || 'root'}`,
+        name: '미구분',
+        path: `__gallery_virtual_unassigned__/${node?.id || 'root'}`,
+        images,
+        total_images: images.length,
+        thumb: images[0]?.path || null,
+        folders: [],
+        isGalleryVirtualUnassigned: true,
+        virtualParentId: node?.isGalleryVirtualFolder ? node.id : null,
+        virtualBaseImages: images
+    };
+}
+
+function getGalleryVirtualUncategorizedSummaryUrl(ownerNode) {
+    const ownerId = ownerNode?.isGalleryVirtualRoot
+        ? 'root'
+        : (ownerNode?.id || 'root');
+    return `/api/gallery/virtual_folders/uncategorized_summary?owner_id=${encodeURIComponent(ownerId)}&ts=${Date.now()}`;
+}
+
+function normalizeGalleryVirtualUncategorizedSummary(payload = {}) {
+    const summary = payload?.summary && typeof payload.summary === 'object'
+        ? payload.summary
+        : payload;
+    const total = Number(
+        summary?.total_matches ??
+        summary?.total_images ??
+        summary?.count ??
+        0
+    );
+    return {
+        total_images: Number.isFinite(total) ? Math.max(0, total) : 0,
+        thumb: normalizeGalleryPathKey(summary?.thumb || summary?.thumbnail || '') || null,
+        indexed: Boolean(summary?.indexed),
+        source: summary?.source || 'index'
+    };
+}
+
+async function hydrateGalleryVirtualUncategorizedSummary(ownerNode, descendantRootNode, resolveState) {
+    if (!ownerNode || getGalleryVirtualUncategorizedMode() !== 'include') return null;
+    resolveState = resolveState || createGalleryVirtualResolveState();
+    const cached = ownerNode.galleryVirtualUncategorizedSummary;
+    if (cached?.resolved) {
+        return cached.total_images > 0
+            ? ownerNode.galleryVirtualUncategorizedNode || buildGalleryVirtualUncategorizedPlaceholderNode(ownerNode, descendantRootNode)
+            : null;
+    }
+    if (ownerNode.galleryVirtualUncategorizedSummaryInflight) {
+        return ownerNode.galleryVirtualUncategorizedSummaryInflight;
+    }
+
+    const request = (async () => {
+        let summary = null;
+        try {
+            const response = await enqueueGalleryVirtualSummaryRequest(resolveState, async () => {
+                const res = await fetch(getGalleryVirtualUncategorizedSummaryUrl(ownerNode), {cache: 'no-store'});
+                const payload = await res.json();
+                if (!res.ok || payload.status === 'error') {
+                    throw new Error(payload.message || '미구분 요약을 불러오지 못했습니다.');
+                }
+                return payload;
+            });
+            summary = normalizeGalleryVirtualUncategorizedSummary(response);
+            // HTTP 200이어도 prompt index를 사용할 수 없다는 응답이면
+            // 0장으로 캐시하지 말고 기존 전체 계산 경로를 사용한다.
+            if (!summary.indexed) {
+                throw new Error('미구분 요약 인덱스를 사용할 수 없습니다.');
+            }
+        } catch (error) {
+            // 구버전 서버나 인덱스가 없는 경우에도 기존 동작을 유지한다.
+            // 이 경로만 전체 결과를 계산하며, 정상 서버에서는 인덱스 요약으로 끝난다.
+            try {
+                const baseImages = ownerNode.isGalleryVirtualRoot
+                    ? getGalleryVirtualAllImages()
+                    : await getGalleryVirtualBaseImages(ownerNode, resolveState);
+                const resolved = await buildGalleryVirtualUncategorizedNode(
+                    ownerNode.isGalleryVirtualRoot ? null : ownerNode,
+                    baseImages,
+                    descendantRootNode || ownerNode,
+                    resolveState
+                );
+                summary = {
+                    total_images: Number(resolved?.total_images || 0),
+                    thumb: resolved?.thumb || null,
+                    indexed: false,
+                    source: 'fallback',
+                    fallbackNode: resolved
+                };
+            } catch (fallbackError) {
+                throw fallbackError || error;
+            }
+        }
+
+        ownerNode.galleryVirtualUncategorizedSummary = {...summary, resolved: true};
+        if (summary.total_images <= 0) {
+            ownerNode.galleryVirtualUncategorizedNode = null;
+            return null;
+        }
+
+        const node = summary.fallbackNode || buildGalleryVirtualUncategorizedPlaceholderNode(ownerNode, descendantRootNode);
+        if (!node) return null;
+        node.total_images = summary.total_images;
+        node.thumb = summary.thumb || node.thumb || null;
+        // 인덱스 요약은 카드에 먼저 표시하고, 클릭 시에만 전체 결과를 조회한다.
+        // fallback은 이미 images를 갖고 있으므로 다시 조회하지 않는다.
+        node.virtualUncategorizedPending = !summary.fallbackNode;
+        node.virtualUncategorizedSummaryResolved = true;
+        ownerNode.galleryVirtualUncategorizedNode = node;
+        return node;
+    })();
+    ownerNode.galleryVirtualUncategorizedSummaryInflight = request;
+    try {
+        return await request;
+    } finally {
+        delete ownerNode.galleryVirtualUncategorizedSummaryInflight;
+    }
+}
+
+function buildGalleryVirtualUncategorizedPlaceholderNode(ownerNode, descendantRootNode) {
+    if (getGalleryVirtualUncategorizedMode() !== 'include') return null;
+    if (ownerNode?.galleryVirtualUncategorizedSummary?.resolved &&
+        Number(ownerNode.galleryVirtualUncategorizedSummary.total_images || 0) <= 0) {
+        return null;
+    }
+    if (ownerNode?.galleryVirtualUncategorizedNode) return ownerNode.galleryVirtualUncategorizedNode;
+    const ownerId = ownerNode?.isGalleryVirtualRoot ? 'root' : (ownerNode?.id || 'root');
+    const placeholder = {
+        id: `__gallery_virtual_unassigned__/${ownerId}`,
+        name: '미구분',
+        path: `__gallery_virtual_unassigned__/${ownerId}`,
+        images: [],
+        total_images: 0,
+        thumb: null,
+        folders: [],
+        isGalleryVirtualUnassigned: true,
+        virtualParentId: ownerNode?.isGalleryVirtualFolder ? ownerNode.id : null,
+        virtualUncategorizedPending: true,
+        virtualUncategorizedOwnerNode: ownerNode,
+        virtualUncategorizedDescendantRootNode: descendantRootNode
+    };
+    if (ownerNode) ownerNode.galleryVirtualUncategorizedNode = placeholder;
+    return placeholder;
+}
+
+async function hydrateGalleryVirtualFolderSummary(node, resolveState) {
+    if (!node?.isGalleryVirtualFolder || !resolveState) return node;
+    const id = String(node.id || '');
+    if (!id) return node;
+    if (resolveState.summaryCompleted.has(id)) return resolveState.summaryCompleted.get(id);
+    if (resolveState.summaryInflight.has(id)) return resolveState.summaryInflight.get(id);
+
+    const task = (async () => {
+        try {
+            if (isGalleryVirtualContainerNode(node)) {
+                for (const child of (node.folders || [])) {
+                    await hydrateGalleryVirtualFolderSummary(child, resolveState);
+                }
+                node.total_images = (node.folders || []).reduce((sum, child) => sum + Number(child.total_images || 0), 0);
+                node.thumb = (node.folders || []).find(child => child.thumb)?.thumb || null;
+            } else {
+                const json = await enqueueGalleryVirtualSummaryRequest(resolveState, async () => {
+                    const res = await fetch(`/api/gallery/virtual_folders/${encodeURIComponent(id)}/resolve?summary=1&ts=${Date.now()}`, {cache: 'no-store'});
+                    const payload = await res.json();
+                    if (!res.ok || payload.status === 'error') throw new Error(payload.message || '가상 폴더 요약을 불러오지 못했습니다.');
+                    return payload;
+                });
+                node.total_images = Number(json.total_matches ?? (Array.isArray(json.image_paths) ? json.image_paths.length : 0));
+                node.thumb = normalizeGalleryPathKey(json.thumb || '') || null;
+                node.virtualSummaryPayload = json;
+            }
+            node.virtualSummaryResolved = true;
+            node.virtualSummaryError = '';
+        } catch (error) {
+            node.images = [];
+            node.total_images = 0;
+            node.thumb = null;
+            node.virtualSummaryError = error?.message || String(error || '');
+        }
+        resolveState.summaryCompleted.set(id, node);
+        return node;
+    })();
+    resolveState.summaryInflight.set(id, task);
+    try {
+        return await task;
+    } finally {
+        resolveState.summaryInflight.delete(id);
+    }
+}
+
+async function hydrateGalleryVirtualFolderSummaries(folders, resolveState) {
+    const queue = (folders || []).slice();
+    const worker = async () => {
+        while (queue.length) await hydrateGalleryVirtualFolderSummary(queue.shift(), resolveState);
+    };
+    await Promise.all(Array.from({length: Math.min(5, queue.length)}, () => worker()));
+    return folders;
+}
+
+function buildGalleryVirtualCharacterNodes(images, parentId) {
+    const groups = new Map();
+    images.forEach(item => {
+        const parent = getGalleryImageParentInfo(item);
+        const key = parent.path || parent.name || '기타';
+        const sourceNames = (Array.isArray(item?.galleryParentCharNames) && item.galleryParentCharNames.length
+            ? item.galleryParentCharNames
+            : [parent.name || '기타'])
+            .flatMap(splitGalleryCharacterNameParts)
+            .filter(Boolean);
+        if (!groups.has(key)) {
+            groups.set(key, {
+                id: `__gallery_virtual_character__/${parentId || 'root'}/${key}`,
+                name: getGalleryFolderKoreanDisplayName(sourceNames.join(' and ') || parent.name || '기타'),
+                char_names: sourceNames.length ? sourceNames : [parent.name || '기타'],
+                path: `__gallery_virtual_character__/${parentId || 'root'}/${key}`,
+                folders: [],
+                images: [],
+                total_images: 0,
+                thumb: null,
+                is_dakimakura: Boolean(item?.galleryParentIsDakimakura),
+                isGalleryVirtualCharacterGroup: true,
+                virtualParentId: parentId || null
+            });
+        }
+        const group = groups.get(key);
+        group.images.push(item);
+        group.total_images += 1;
+        group.is_dakimakura = group.is_dakimakura || Boolean(item?.galleryParentIsDakimakura);
+        if (!group.thumb) group.thumb = item.path;
+    });
+    return [...groups.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+function getGalleryVirtualDisplayImages(images) {
+    let result = (images || []).filter(item => passesGalleryDakiFilter(item, false));
+    if (galleryPromptSearchActive) result = result.filter(galleryPromptSearchMatchesImage);
+    if (currentGalleryTagFilter !== 'ALL') result = result.filter(imageMatchesGalleryTagFilter);
+    return result;
+}
+
+function renderGalleryVirtualBreadcrumb() {
+    const bcPath = document.getElementById('breadcrumb-path');
+    if (!bcPath) return;
+    bcPath.innerHTML = '<span style="cursor:pointer; color:#d7c7ff" onclick="goToGalleryVirtualRoot()">🗂️ 가상 폴더</span>';
+    currentPath.slice(2).forEach((node, index) => {
+        const pathIndex = index + 2;
+        const span = document.createElement('span');
+        span.innerHTML = ` <span style="color:var(--accent)">❯</span> <span style="cursor:pointer;color:${pathIndex === currentPath.length - 1 ? '#fff' : '#888'}">${escapeHtml(node.name || '')}</span>`;
+        span.onclick = () => {
+            currentPath = currentPath.slice(0, pathIndex + 1);
+            renderView();
+            saveGallerySessionState();
+        };
+        bcPath.appendChild(span);
+    });
+}
+
+function goToGalleryVirtualRoot() {
+    if (!galleryVirtualRootNode) return;
+    currentPath = [rootTree, galleryVirtualRootNode];
+    renderView();
+    saveGallerySessionState();
+}
+
+function sortGalleryVirtualFolderCards(folders) {
+    const sortMode = galleryFolderSort;
+    return folders.slice().sort((a, b) => {
+        if (sortMode === 'count') {
+            const countDiff = Number(b.total_images || 0) - Number(a.total_images || 0);
+            if (countDiff) return countDiff;
+        }
+        // 가상 폴더 화면에는 폴더 단위의 공통 mtime 계약이 없으므로
+        // 최신/오래된순은 카드 순서를 바꾸지 않고 이름순으로 안정화한다.
+        // 실제 이미지가 있는 leaf 화면은 renderImageGrid에서 시간 정렬한다.
+        return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+}
+
+function updateGalleryVirtualFolderCardSummary(card, child) {
+    if (!card?.isConnected) return;
+    const count = card.querySelector('.count-num');
+    if (count) count.textContent = Number(child.total_images || 0).toLocaleString();
+    const body = card.querySelector('.card-body');
+    if (!body || !child.thumb || body.querySelector('.card-main-img')) return;
+    const placeholder = body.querySelector('.gallery-virtual-folder-card-placeholder');
+    const image = document.createElement('img');
+    image.src = getGalleryImageSrc(child.thumb);
+    image.className = 'card-main-img';
+    image.loading = 'lazy';
+    image.draggable = false;
+    if (placeholder) placeholder.replaceWith(image);
+    else body.prepend(image);
+}
+
+async function renderGalleryVirtualFolderCards(container, folders, title = '🗂️ 가상 폴더', resolveState = null, generation = galleryVirtualRenderGeneration) {
+    if (!folders.length) return;
+    const state = resolveState || createGalleryVirtualResolveState();
+    const sortedFolders = sortGalleryVirtualFolderCards(folders);
+    let stopLoading = () => {};
+    if (galleryFolderSort === 'count') {
+        stopLoading = beginGalleryVirtualLoading(
+            container,
+            '가상 폴더 개수 정렬 중...',
+            `${sortedFolders.length.toLocaleString()}개 폴더의 인덱스 요약을 확인하고 있습니다.`
+        );
+        try {
+            await hydrateGalleryVirtualFolderSummaries(sortedFolders, state);
+            sortedFolders.splice(0, sortedFolders.length, ...sortGalleryVirtualFolderCards(sortedFolders));
+        } finally {
+            stopLoading();
+        }
+        if (generation !== galleryVirtualRenderGeneration) return;
+    }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'collapsible-wrapper';
+    wrapper.innerHTML = `<div class="section-header" style="border-left-color:#a78bfa"><span style="font-size:20px;font-weight:900;color:#a78bfa">${escapeHtml(title)} (${folders.length})</span><span class="arrow">▼</span></div><div class="section-content"><div class="flex-masonry"></div></div>`;
+    container.appendChild(wrapper);
+    const grid = wrapper.querySelector('.flex-masonry');
+    const cols = Array.from({length: getGalleryEffectiveColumnCount()}, () => {
+        const col = document.createElement('div'); col.className = 'flex-masonry-col'; grid.appendChild(col); return col;
+    });
+    let observer = null;
+    if (typeof IntersectionObserver !== 'undefined') {
+        observer = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting) return;
+                const card = entry.target;
+                observer.unobserve(card);
+                card._galleryVirtualSummaryLoad?.();
+            });
+        }, {rootMargin: '240px'});
+        galleryVirtualSummaryObservers.add(observer);
+    }
+    sortedFolders.forEach((child, idx) => {
+        const card = document.createElement('div');
+        card.className = 'card gallery-virtual-folder-card-item';
+        const icon = child.isGalleryVirtualUnassigned ? '🟠' : child.isGalleryVirtualCharacterGroup ? '👤' : '🗂️';
+        const isVirtualCharacterGroup = Boolean(child.isGalleryVirtualCharacterGroup);
+        const isDaki = isVirtualCharacterGroup && isGalleryDakimakuraFolder(child);
+        const characterNames = isVirtualCharacterGroup
+            ? (Array.isArray(child.char_names) && child.char_names.length ? child.char_names : [child.name])
+                .flatMap(splitGalleryCharacterNameParts)
+            : [];
+        const nameRows = isVirtualCharacterGroup
+            ? characterNames.map(n => {
+                const rawName = normalizeGalleryCharacterName(n);
+                const displayName = getGalleryCharacterKoreanDisplayName(rawName);
+                const title = rawName && rawName !== displayName ? ` title="${escapeHtml(rawName)}"` : '';
+                return `<div class="char-row"${title}><span class="user-icon">👤</span><span class="char-name">${escapeHtml(displayName)}</span></div>`;
+            }).join('')
+            : `<div class="char-row"><span class="user-icon">${icon}</span><span class="char-name">${escapeHtml(child.name || '')}</span></div>`;
+        const cardMeta = child.isGalleryVirtualFolder && child.query
+            ? `검색: ${escapeHtml(child.query)}`
+            : child.folders?.length
+                ? `${child.folders.length}개 하위 폴더`
+            : '';
+        const cardMetaHtml = cardMeta ? `<div class="gallery-virtual-folder-card-meta">${cardMeta}</div>` : '';
+        const isSummaryPending = child.isGalleryVirtualFolder && !child.virtualSummaryResolved;
+        const isUncategorizedPending = Boolean(child.virtualUncategorizedPending);
+        card.innerHTML = `<div class="card-body">${child.thumb ? `<img src="${getGalleryImageSrc(child.thumb)}" class="card-main-img" loading="lazy" draggable="false">` : '<div class="gallery-virtual-folder-card-placeholder" style="height:150px;background:#222;display:flex;align-items:center;justify-content:center;font-size:48px">🗂️</div>'}${isDaki ? '<div class="daki-badge-neon">DAKIMAKURA</div>' : ''}<div class="count-badge"><span class="count-num">${isSummaryPending || isUncategorizedPending ? '…' : Number(child.total_images || 0).toLocaleString()}</span><span>FILES</span></div></div><div class="card-header">${nameRows}${cardMetaHtml}</div>`;
+        card.onclick = () => {
+            currentPath.push(child);
+            currentSelectedGalleryArtStyle = 'ALL';
+            searchText = '';
+            const input = document.getElementById('folder-search'); if (input) input.value = '';
+            renderView();
+            saveGallerySessionState();
+            window.scrollTo(0, 0);
+        };
+        cols[idx % cols.length].appendChild(card);
+        if (observer && isSummaryPending && child.isGalleryVirtualFolder) {
+            card._galleryVirtualSummaryLoad = async () => {
+                try {
+                    await hydrateGalleryVirtualFolderSummary(child, state);
+                    if (generation === galleryVirtualRenderGeneration && card.isConnected) updateGalleryVirtualFolderCardSummary(card, child);
+                } catch (error) {
+                    child.virtualSummaryError = error?.message || String(error || '');
+                }
+            };
+            observer.observe(card);
+        } else if (!observer && isSummaryPending && child.isGalleryVirtualFolder) {
+            child.virtualSummaryResolved = false;
+            hydrateGalleryVirtualFolderSummary(child, state).then(() => {
+                if (generation === galleryVirtualRenderGeneration && card.isConnected) updateGalleryVirtualFolderCardSummary(card, child);
+            });
+        }
+    });
+}
+
+async function renderGalleryVirtualView(container) {
+    const generation = ++galleryVirtualRenderGeneration;
+    galleryVirtualSummaryObservers.forEach(observer => observer.disconnect());
+    galleryVirtualSummaryObservers.clear();
+    if (!rootTree) return;
+    if (!galleryVirtualRootNode) {
+        container.innerHTML = '<div class="gallery-load-state"><div class="gallery-load-title">가상 폴더 목록을 불러오는 중...</div></div>';
+        try { await loadGalleryVirtualFolders(); } catch (error) { if (generation !== galleryVirtualRenderGeneration) return; container.innerHTML = `<div class="gallery-load-state error"><div class="gallery-load-title">가상 폴더 로드 실패</div><div class="gallery-load-message">${escapeHtml(error.message || error)}</div></div>`; return; }
+        if (generation !== galleryVirtualRenderGeneration) return;
+    }
+    renderGalleryVirtualBreadcrumb();
+    const currentNode = currentPath[currentPath.length - 1] || galleryVirtualRootNode;
+    const resolveState = createGalleryVirtualResolveState();
+    const isVirtualContainer = isGalleryVirtualContainerNode(currentNode);
+    if (currentNode.isGalleryVirtualUnassigned && currentNode.virtualUncategorizedPending) {
+        const stopLoading = beginGalleryVirtualLoading(
+            container,
+            '미구분 이미지를 계산하는 중...',
+            '가상 폴더 검색 결과에서 이미 구분된 이미지를 제외하고 있습니다.'
+        );
+        const ownerNode = currentNode.virtualUncategorizedOwnerNode;
+        try {
+            const ownerImages = ownerNode?.isGalleryVirtualRoot
+                ? getGalleryVirtualAllImages()
+                : await getGalleryVirtualBaseImages(ownerNode, resolveState);
+            if (generation !== galleryVirtualRenderGeneration) return;
+            const resolved = await buildGalleryVirtualUncategorizedNode(
+                ownerNode?.isGalleryVirtualRoot ? null : ownerNode,
+                ownerImages,
+                currentNode.virtualUncategorizedDescendantRootNode || ownerNode,
+                resolveState
+            );
+            if (generation !== galleryVirtualRenderGeneration) return;
+            if (resolved) Object.assign(currentNode, resolved, {virtualUncategorizedPending: false, virtualUncategorizedResolved: true});
+            else {
+                currentNode.images = [];
+                currentNode.total_images = 0;
+                currentNode.thumb = null;
+                currentNode.virtualUncategorizedPending = false;
+                currentNode.virtualUncategorizedResolved = true;
+            }
+        } catch (error) {
+            if (generation !== galleryVirtualRenderGeneration) return;
+            container.innerHTML = `<div class="gallery-load-state error"><div class="gallery-load-title">미구분 이미지 계산 실패</div><div class="gallery-load-message">${escapeHtml(error.message || error)}</div></div>`;
+            showToast(`미구분 이미지 계산 실패: ${error.message || error}`);
+            return;
+        } finally {
+            stopLoading();
+        }
+    }
+    if (currentNode.isGalleryVirtualFolder && currentNode.query && !isVirtualContainer) {
+        const stopLoading = beginGalleryVirtualLoading(
+            container,
+            '가상 폴더 검색 중...',
+            `“${currentNode.name || currentNode.query}” 검색 결과를 준비하고 있습니다.`
+        );
+        try {
+            await resolveGalleryVirtualFolderNode(currentNode, resolveState);
+        } catch (error) {
+            if (generation !== galleryVirtualRenderGeneration) return;
+            container.innerHTML = `<div class="gallery-load-state error"><div class="gallery-load-title">가상 폴더 검색 실패</div><div class="gallery-load-message">${escapeHtml(error.message || error)}</div></div>`;
+            showToast(`가상 폴더 검색 실패: ${error.message || error}`);
+            return;
+        } finally {
+            stopLoading();
+        }
+    }
+    let baseImages = currentNode.isGalleryVirtualRoot
+        ? getGalleryVirtualAllImages()
+        : isVirtualContainer
+            ? []
+        : currentNode.isGalleryVirtualCharacterGroup || currentNode.isGalleryVirtualUnassigned
+            ? currentNode.images || []
+            : await getGalleryVirtualBaseImages(currentNode, resolveState);
+    baseImages = getGalleryVirtualDisplayImages(baseImages);
+    const isQuerylessVirtualContainer = currentNode.isGalleryVirtualRoot ||
+        isVirtualContainer ||
+        (currentNode.isGalleryVirtualFolder && !currentNode.query);
+    const renderImages = isQuerylessVirtualContainer ? [] : baseImages;
+    let childFolders = currentNode.isGalleryVirtualFolder || currentNode.isGalleryVirtualRoot ? (currentNode.folders || []).slice() : [];
+    if (searchText) {
+        childFolders = childFolders.filter(folder => {
+            const text = `${folder.name || ''} ${folder.query || ''}`.toLowerCase();
+            return text.includes(searchText);
+        });
+    }
+    if (currentNode.isGalleryVirtualRoot || currentNode.isGalleryVirtualFolder) {
+        const stopLoading = beginGalleryVirtualLoading(
+            container,
+            '미구분 개수 확인 중...',
+            '인덱스에서 미구분 이미지 수와 대표 썸네일을 확인하고 있습니다.'
+        );
+        let unassigned = null;
+        try {
+            unassigned = await hydrateGalleryVirtualUncategorizedSummary(
+                currentNode,
+                currentNode.isGalleryVirtualRoot ? galleryVirtualRootNode : currentNode,
+                resolveState
+            );
+        } catch (error) {
+            // 미구분 요약 실패는 가상 폴더 전체 화면을 막지 않는다.
+            console.warn('Gallery virtual uncategorized summary failed:', error);
+        } finally {
+            stopLoading();
+        }
+        if (unassigned) childFolders.push(unassigned);
+    }
+    if (generation !== galleryVirtualRenderGeneration) return;
+    const shouldGroup = getGalleryVirtualGrouping() === 'character' && !isQuerylessVirtualContainer && !currentNode.isGalleryVirtualCharacterGroup;
+    const groupedImages = shouldGroup ? buildGalleryVirtualCharacterNodes(renderImages, currentNode.id) : [];
+    if (currentNode.isGalleryVirtualRoot) await renderGalleryVirtualFolderCards(container, childFolders, '🗂️ 가상 폴더', resolveState, generation);
+    else {
+        await renderGalleryVirtualFolderCards(container, childFolders, '🗂️ 가상 폴더', resolveState, generation);
+        if (shouldGroup && groupedImages.length) await renderGalleryVirtualFolderCards(container, groupedImages, '👤 캐릭터별', resolveState, generation);
+    }
+    if (generation !== galleryVirtualRenderGeneration) return;
+    if (renderImages.length && (getGalleryVirtualGrouping() === 'combined' || currentNode.isGalleryVirtualCharacterGroup)) {
+        renderImageGrid(container, `🖼️ 이미지 (${renderImages.length})`, renderImages, currentNode);
+    }
+    if (!childFolders.length && !renderImages.length && !groupedImages.length) {
+        container.innerHTML += '<div class="gallery-load-state"><div class="gallery-load-title">비어 있는 가상 폴더</div><div class="gallery-load-message">관리 버튼에서 하위 가상 폴더를 추가할 수 있습니다.</div></div>';
+    }
+    const spacer = document.createElement('div'); spacer.style.height = '400px'; spacer.style.width = '100%'; container.appendChild(spacer);
+    scheduleGalleryScrollNavigationUpdate();
+}
+
+function getGalleryVirtualManagerStatus() {
+    return document.getElementById('galleryVirtualFolderManagerStatus');
+}
+
+function setGalleryVirtualManagerStatus(message, isError = false) {
+    const box = getGalleryVirtualManagerStatus();
+    if (box) {
+        box.textContent = message || '';
+        box.style.color = isError ? '#ff8a9a' : '';
+    }
+}
+
+function getGalleryVirtualFolderEditorStatus() {
+    return document.getElementById('galleryVirtualFolderEditorStatus');
+}
+
+function setGalleryVirtualFolderEditorStatus(message, isError = true) {
+    const box = getGalleryVirtualFolderEditorStatus();
+    if (box) {
+        box.textContent = message || '';
+        box.style.color = isError ? '#ff8a9a' : '#a7f3d0';
+    }
+}
+
+function getGalleryVirtualDescendantIds(folderId) {
+    const result = new Set([String(folderId || '')]);
+    const visit = id => galleryVirtualFolders.filter(folder => folder.parent_id === id).forEach(child => { result.add(child.id); visit(child.id); });
+    visit(String(folderId || ''));
+    return result;
+}
+
+function getGalleryVirtualManagerParentOptions(excludeId = '') {
+    const excluded = getGalleryVirtualDescendantIds(excludeId);
+    return [{id: '', name: '루트'}].concat(galleryVirtualFolders
+        .filter(folder => !excluded.has(folder.id))
+        .map(folder => ({id: folder.id, name: folder.name})));
+}
+
+function renderGalleryVirtualFolderManager() {
+    const tree = document.getElementById('galleryVirtualFolderManagerTree');
+    const parentSelect = document.getElementById('galleryVirtualFolderParentInput');
+    if (!tree) return;
+    if (parentSelect) {
+        parentSelect.innerHTML = getGalleryVirtualManagerParentOptions().map(option => `<option value="${escapeHtml(option.id)}">${escapeHtml(option.name)}</option>`).join('');
+    }
+    tree.innerHTML = '';
+    const roots = galleryVirtualFolders.filter(folder => !folder.parent_id);
+    const rootRow = document.createElement('div');
+    rootRow.className = 'gallery-virtual-folder-manager-root';
+    rootRow.innerHTML = `<div class="gallery-virtual-folder-manager-root-main"><div class="gallery-virtual-folder-manager-root-name">⌂ 루트</div><div class="gallery-virtual-folder-manager-root-meta">${roots.length.toLocaleString()}개 루트 폴더</div></div><button type="button" onclick="prepareGalleryVirtualFolderRoot()">루트에 추가</button>`;
+    tree.appendChild(rootRow);
+    const rows = [];
+    const flatten = (folders, depth) => folders.forEach(folder => { rows.push({folder, depth}); flatten(galleryVirtualFolders.filter(child => child.parent_id === folder.id), depth + 1); });
+    flatten(roots, 0);
+    if (!rows.length) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'gallery-virtual-folder-fields-help';
+        emptyState.textContent = '아직 가상 폴더가 없습니다.';
+        tree.appendChild(emptyState);
+        return;
+    }
+    rows.forEach(({folder, depth}) => {
+        const row = document.createElement('div');
+        row.className = 'gallery-virtual-folder-manager-row';
+        row.dataset.depth = String(depth);
+        row.style.setProperty('--gallery-virtual-depth', String(depth));
+        row.style.setProperty('--gallery-virtual-branch-opacity', depth > 0 ? '1' : '0');
+        const parentOptions = getGalleryVirtualManagerParentOptions(folder.id);
+        const managerMeta = [folder.query ? `검색: ${escapeHtml(folder.query)}` : '', escapeHtml(folder.mode || 'all'), `${folder.scope_paths?.length || 0}개 범위`].filter(Boolean).join(' · ');
+        row.innerHTML = `<div class="gallery-virtual-folder-manager-main"><div class="gallery-virtual-folder-manager-name">${escapeHtml(folder.name)}</div><div class="gallery-virtual-folder-manager-meta">${managerMeta}</div></div><div class="gallery-virtual-folder-manager-actions"><button type="button" onclick="prepareGalleryVirtualFolderChild('${folder.id}')">하위 추가</button><select title="상위 폴더 이동" onchange="reparentGalleryVirtualFolder('${folder.id}', this.value)">${parentOptions.map(option => `<option value="${escapeHtml(option.id)}" ${String(option.id || '') === String(folder.parent_id || '') ? 'selected' : ''}>${escapeHtml(option.name)}</option>`).join('')}</select><button type="button" onclick="editGalleryVirtualFolder('${folder.id}')">편집</button><button type="button" class="danger" onclick="deleteGalleryVirtualFolder('${folder.id}')">삭제</button></div>`;
+        tree.appendChild(row);
+    });
+}
+
+async function openGalleryVirtualFolderManager() {
+    const layer = document.getElementById('galleryVirtualFolderLayer');
+    if (!layer) return;
+    galleryVirtualManagerOpen = true;
+    layer.style.display = 'flex';
+    layer.setAttribute('aria-hidden', 'false');
+    setGalleryVirtualManagerStatus('가상 폴더 목록을 불러오는 중...');
+    try {
+        await loadGalleryVirtualFolders();
+        renderGalleryVirtualFolderManager();
+        const modeInput = document.getElementById('galleryVirtualFolderModeInput');
+        if (modeInput) modeInput.value = getGalleryVirtualPromptMode();
+        setGalleryVirtualManagerStatus(`${galleryVirtualFolders.length.toLocaleString()}개 가상 폴더`);
+    } catch (error) {
+        setGalleryVirtualManagerStatus(error.message || error, true);
+        showToast(`가상 폴더 목록 로드 실패: ${error.message || error}`);
+    }
+}
+
+function closeGalleryVirtualFolderManager() {
+    closeGalleryVirtualFolderEditor();
+    clearGalleryVirtualFolderAutocomplete('create');
+    const layer = document.getElementById('galleryVirtualFolderLayer');
+    if (layer) { layer.style.display = 'none'; layer.setAttribute('aria-hidden', 'true'); }
+    galleryVirtualManagerOpen = false;
+}
+
+function closeGalleryVirtualFolderEditor() {
+    clearGalleryVirtualFolderAutocomplete('editor');
+    const layer = document.getElementById('galleryVirtualFolderEditorLayer');
+    if (layer) { layer.style.display = 'none'; layer.setAttribute('aria-hidden', 'true'); }
+    galleryVirtualFolderEditingId = '';
+    setGalleryVirtualFolderEditorStatus('');
+}
+
+function prepareGalleryVirtualFolderChild(parentId) {
+    const parentInput = document.getElementById('galleryVirtualFolderParentInput');
+    if (parentInput) parentInput.value = String(parentId || '');
+    document.getElementById('galleryVirtualFolderNameInput')?.focus();
+}
+
+function prepareGalleryVirtualFolderRoot() {
+    const parentInput = document.getElementById('galleryVirtualFolderParentInput');
+    if (parentInput) parentInput.value = '';
+    document.getElementById('galleryVirtualFolderNameInput')?.focus();
+}
+
+function getGalleryVirtualCreateScopePaths() {
+    const scopePaths = getGalleryPromptSearchScopePaths();
+    return scopePaths.length ? scopePaths : [];
+}
+
+function getGalleryVirtualFolderAutocompleteConfig(target) {
+    const key = target === 'editor' ? 'editor' : 'create';
+    if (key === 'editor') {
+        return {
+            key,
+            input: document.getElementById('galleryVirtualFolderEditorQueryInput'),
+            box: document.getElementById('galleryVirtualFolderEditorAutocomplete')
+        };
+    }
+    return {
+        key,
+        input: document.getElementById('galleryVirtualFolderQueryInput'),
+        box: document.getElementById('galleryVirtualFolderAutocomplete')
+    };
+}
+
+function getGalleryVirtualFolderAutocompleteScopePath(target) {
+    if (target === 'editor') {
+        const scopeInput = document.getElementById('galleryVirtualFolderEditorScopeInput');
+        const text = String(scopeInput?.value || '').trim();
+        if (!text) return '';
+        try {
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed)) return String(parsed.find(Boolean) || '');
+            return String(parsed || '');
+        } catch {
+            return text;
+        }
+    }
+    return String(getGalleryVirtualCreateScopePaths()[0] || '');
+}
+
+function getGalleryVirtualFolderAutocompleteMode(target) {
+    const id = target === 'editor'
+        ? 'galleryVirtualFolderEditorModeInput'
+        : 'galleryVirtualFolderModeInput';
+    return String(document.getElementById(id)?.value || getGalleryVirtualPromptMode() || 'all');
+}
+
+function getGalleryVirtualPromptAutocompleteToken(value) {
+    const text = String(value || '');
+    const match = text.match(/(?:^|[\s,\n|])([^,\s\n|]*)$/);
+    return match ? String(match[1] || '').trim() : '';
+}
+
+function clearGalleryVirtualFolderAutocomplete(target) {
+    const config = getGalleryVirtualFolderAutocompleteConfig(target);
+    const state = galleryVirtualFolderAutocompleteState[config.key];
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = null;
+    state.version += 1;
+    state.items = [];
+    state.activeIndex = -1;
+    if (config.box) config.box.innerHTML = '';
+}
+
+function clearAllGalleryVirtualFolderAutocomplete() {
+    clearGalleryVirtualFolderAutocomplete('create');
+    clearGalleryVirtualFolderAutocomplete('editor');
+}
+
+function applyGalleryVirtualFolderAutocompleteValue(target, value) {
+    const config = getGalleryVirtualFolderAutocompleteConfig(target);
+    const input = config.input;
+    if (!input) return;
+    const current = String(input.value || '');
+    const next = current.replace(/[^,\s\n|]*$/, String(value || ''));
+    input.value = next;
+    clearGalleryVirtualFolderAutocomplete(target);
+    input.focus();
+}
+
+function renderGalleryVirtualFolderAutocompleteItems(target) {
+    const config = getGalleryVirtualFolderAutocompleteConfig(target);
+    const state = galleryVirtualFolderAutocompleteState[config.key];
+    if (!config.box) return;
+    config.box.innerHTML = '';
+    state.items.forEach((item, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.role = 'option';
+        button.textContent = item;
+        button.classList.toggle('active', index === state.activeIndex);
+        button.setAttribute('aria-selected', String(index === state.activeIndex));
+        button.onclick = () => applyGalleryVirtualFolderAutocompleteValue(target, item);
+        config.box.appendChild(button);
+    });
+}
+
+function moveGalleryVirtualFolderAutocompleteSelection(target, delta) {
+    const config = getGalleryVirtualFolderAutocompleteConfig(target);
+    const state = galleryVirtualFolderAutocompleteState[config.key];
+    if (!state.items.length) return;
+    if (state.activeIndex < 0) state.activeIndex = delta >= 0 ? 0 : state.items.length - 1;
+    else state.activeIndex = (state.activeIndex + delta + state.items.length) % state.items.length;
+    renderGalleryVirtualFolderAutocompleteItems(target);
+}
+
+function handleGalleryVirtualFolderAutocompleteKeydown(event, target) {
+    const config = getGalleryVirtualFolderAutocompleteConfig(target);
+    const state = galleryVirtualFolderAutocompleteState[config.key];
+    if (event.key === 'Escape') {
+        if (state.items.length) {
+            event.preventDefault();
+            clearGalleryVirtualFolderAutocomplete(target);
+        }
+        return;
+    }
+    if (!state.items.length) return;
+    if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        moveGalleryVirtualFolderAutocompleteSelection(target, 1);
+    } else if (event.key === 'ArrowLeft' && state.activeIndex >= 0) {
+        event.preventDefault();
+        moveGalleryVirtualFolderAutocompleteSelection(target, -1);
+    } else if (event.key === 'ArrowRight' && state.activeIndex >= 0) {
+        event.preventDefault();
+        moveGalleryVirtualFolderAutocompleteSelection(target, 1);
+    } else if (event.key === 'Enter' && state.activeIndex >= 0) {
+        event.preventDefault();
+        applyGalleryVirtualFolderAutocompleteValue(target, state.items[state.activeIndex]);
+    }
+}
+
+function updateGalleryVirtualFolderAutocomplete(target) {
+    const config = getGalleryVirtualFolderAutocompleteConfig(target);
+    const state = galleryVirtualFolderAutocompleteState[config.key];
+    clearGalleryVirtualFolderAutocomplete(target);
+    if (!config.input || !config.box) return;
+    const requestValue = String(config.input.value || '');
+    const token = getGalleryVirtualPromptAutocompleteToken(requestValue);
+    if (token.length < 2) return;
+    const requestVersion = state.version;
+    state.timer = setTimeout(async () => {
+        try {
+            if (state.version !== requestVersion) return;
+            const scopePath = getGalleryVirtualFolderAutocompleteScopePath(target);
+            const mode = getGalleryVirtualFolderAutocompleteMode(target);
+            const res = await fetch(`/api/gallery/prompt_index/autocomplete?q=${encodeURIComponent(token)}&scope_path=${encodeURIComponent(scopePath)}&mode=${encodeURIComponent(mode)}`);
+            const json = await res.json();
+            if (state.version !== requestVersion) return;
+            if (String(config.input.value || '') !== requestValue) return;
+            state.items = Array.isArray(json.items) ? json.items : [];
+            state.activeIndex = -1;
+            renderGalleryVirtualFolderAutocompleteItems(target);
+        } catch (error) {
+            if (state.version !== requestVersion) return;
+            console.warn('Virtual folder prompt autocomplete failed:', error);
+            clearGalleryVirtualFolderAutocomplete(target);
+        }
+    }, 180);
+}
+
+async function createGalleryVirtualFolderFromManager() {
+    const nameInput = document.getElementById('galleryVirtualFolderNameInput');
+    const queryInput = document.getElementById('galleryVirtualFolderQueryInput');
+    const parentInput = document.getElementById('galleryVirtualFolderParentInput');
+    const modeInput = document.getElementById('galleryVirtualFolderModeInput');
+    const name = String(nameInput?.value || '').trim();
+    if (!name) { setGalleryVirtualManagerStatus('폴더 이름을 입력하세요.', true); return; }
+    const query = String(queryInput?.value || '').trim();
+    try {
+        const res = await fetch('/api/gallery/virtual_folders', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, query, scope_paths: getGalleryVirtualCreateScopePaths(), mode: modeInput?.value || getGalleryVirtualPromptMode(), parent_id: parentInput?.value || null})});
+        const json = await res.json();
+        if (!res.ok || json.status === 'error') throw new Error(json.message || '가상 폴더 추가 실패');
+        if (nameInput) nameInput.value = '';
+        if (queryInput) queryInput.value = '';
+        clearGalleryVirtualFolderAutocomplete('create');
+        await loadGalleryVirtualFolders();
+        renderGalleryVirtualFolderManager();
+        setGalleryVirtualManagerStatus('가상 폴더를 추가했습니다.');
+        showToast('가상 폴더를 추가했습니다.');
+        if (getGalleryViewMode() === 'virtual') { currentPath = [rootTree, galleryVirtualRootNode]; renderView(); }
+    } catch (error) {
+        setGalleryVirtualManagerStatus(error.message || error, true);
+        showToast(`가상 폴더 추가 실패: ${error.message || error}`);
+    }
+}
+
+async function editGalleryVirtualFolder(folderId) {
+    const folder = galleryVirtualFolderMap.get(String(folderId));
+    if (!folder) return;
+    const layer = document.getElementById('galleryVirtualFolderEditorLayer');
+    const nameInput = document.getElementById('galleryVirtualFolderEditorNameInput');
+    const queryInput = document.getElementById('galleryVirtualFolderEditorQueryInput');
+    const scopeInput = document.getElementById('galleryVirtualFolderEditorScopeInput');
+    const modeInput = document.getElementById('galleryVirtualFolderEditorModeInput');
+    const folderLabel = document.getElementById('galleryVirtualFolderEditorFolderLabel');
+    if (!layer || !nameInput || !queryInput || !scopeInput || !modeInput) return;
+    galleryVirtualFolderEditingId = String(folderId);
+    nameInput.value = folder.name || '';
+    queryInput.value = folder.query || '';
+    scopeInput.value = JSON.stringify(Array.isArray(folder.scope_paths) ? folder.scope_paths : []);
+    modeInput.value = ['all', 'general', 'r18'].includes(folder.mode) ? folder.mode : 'all';
+    if (folderLabel) folderLabel.textContent = `현재 폴더: ${folder.name || '(이름 없음)'}`;
+    clearGalleryVirtualFolderAutocomplete('editor');
+    setGalleryVirtualFolderEditorStatus('');
+    layer.style.display = 'flex';
+    layer.setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => nameInput.focus());
+}
+
+async function saveGalleryVirtualFolderEdit() {
+    const folderId = galleryVirtualFolderEditingId;
+    const folder = galleryVirtualFolderMap.get(String(folderId));
+    const nameInput = document.getElementById('galleryVirtualFolderEditorNameInput');
+    const queryInput = document.getElementById('galleryVirtualFolderEditorQueryInput');
+    const scopeInput = document.getElementById('galleryVirtualFolderEditorScopeInput');
+    const modeInput = document.getElementById('galleryVirtualFolderEditorModeInput');
+    if (!folderId || !folder || !nameInput || !queryInput || !scopeInput || !modeInput) return;
+    const name = String(nameInput.value || '').trim();
+    if (!name) { setGalleryVirtualFolderEditorStatus('폴더 이름을 입력하세요.'); nameInput.focus(); return; }
+    const query = String(queryInput.value || '').trim();
+    const scopeText = String(scopeInput.value || '').trim();
+    const mode = String(modeInput.value || '').trim();
+    if (!['all', 'general', 'r18'].includes(mode)) { setGalleryVirtualFolderEditorStatus('VIEW mode는 all, general, r18 중 하나여야 합니다.'); modeInput.focus(); return; }
+    let scopePaths = [];
+    if (scopeText) {
+        try { scopePaths = JSON.parse(scopeText); } catch { scopePaths = [scopeText]; }
+        if (!Array.isArray(scopePaths)) scopePaths = [String(scopePaths)];
+    }
+    try {
+        const res = await fetch(`/api/gallery/virtual_folders/${encodeURIComponent(folderId)}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: name.trim(), query: query.trim(), scope_paths: scopePaths, mode: ['all', 'general', 'r18'].includes(mode.trim()) ? mode.trim() : folder.mode})});
+        const json = await res.json();
+        if (!res.ok || json.status === 'error') throw new Error(json.message || '가상 폴더 편집 실패');
+        await loadGalleryVirtualFolders(); renderGalleryVirtualFolderManager();
+        closeGalleryVirtualFolderEditor();
+        setGalleryVirtualManagerStatus('가상 폴더를 수정했습니다.');
+        showToast('가상 폴더를 수정했습니다.');
+        if (getGalleryViewMode() === 'virtual') renderView();
+    } catch (error) {
+        setGalleryVirtualFolderEditorStatus(error.message || error);
+        setGalleryVirtualManagerStatus(error.message || error, true);
+        showToast(`가상 폴더 편집 실패: ${error.message || error}`);
+    }
+}
+
+async function reparentGalleryVirtualFolder(folderId, parentId) {
+    try {
+        const res = await fetch(`/api/gallery/virtual_folders/${encodeURIComponent(folderId)}/reparent`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({parent_id: parentId || null})});
+        const json = await res.json();
+        if (!res.ok || json.status === 'error') throw new Error(json.message || '가상 폴더 이동 실패');
+        await loadGalleryVirtualFolders(); renderGalleryVirtualFolderManager();
+        setGalleryVirtualManagerStatus('가상 폴더를 이동했습니다.');
+        if (getGalleryViewMode() === 'virtual') renderView();
+    } catch (error) { setGalleryVirtualManagerStatus(error.message || error, true); showToast(`가상 폴더 이동 실패: ${error.message || error}`); renderGalleryVirtualFolderManager(); }
+}
+
+async function deleteGalleryVirtualFolder(folderId) {
+    const folder = galleryVirtualFolderMap.get(String(folderId));
+    if (!folder || !confirm(`가상 폴더 "${folder.name}"을 삭제할까요?`)) return;
+    try {
+        const res = await fetch(`/api/gallery/virtual_folders/${encodeURIComponent(folderId)}`, {method: 'DELETE'});
+        const json = await res.json();
+        if (!res.ok || json.status === 'error') throw new Error(json.message || '가상 폴더 삭제 실패');
+        await loadGalleryVirtualFolders(); renderGalleryVirtualFolderManager();
+        setGalleryVirtualManagerStatus('가상 폴더를 삭제했습니다.');
+        if (getGalleryViewMode() === 'virtual') { currentPath = [rootTree, galleryVirtualRootNode]; renderView(); }
+    } catch (error) { setGalleryVirtualManagerStatus(error.message || error, true); showToast(`가상 폴더 삭제 실패: ${error.message || error}`); }
+}
+
+async function openGalleryVirtualFolderCreateFromPrompt() {
+    const input = document.getElementById('galleryPromptSearchInput');
+    const query = String(input?.value || '').trim();
+    await openGalleryVirtualFolderManager();
+    const queryInput = document.getElementById('galleryVirtualFolderQueryInput');
+    const nameInput = document.getElementById('galleryVirtualFolderNameInput');
+    const parentInput = document.getElementById('galleryVirtualFolderParentInput');
+    const modeInput = document.getElementById('galleryVirtualFolderModeInput');
+    if (queryInput) queryInput.value = query;
+    if (nameInput && !nameInput.value) nameInput.value = query ? query.slice(0, 40) : '';
+    const currentNode = currentPath[currentPath.length - 1];
+    const parentId = currentNode?.isGalleryVirtualFolder
+        ? currentNode.id
+        : (currentNode?.isGalleryVirtualUnassigned || currentNode?.isGalleryVirtualCharacterGroup)
+            ? currentNode.virtualParentId
+            : '';
+    if (parentInput) parentInput.value = parentId || '';
+    if (modeInput) modeInput.value = getGalleryVirtualPromptMode();
+    nameInput?.focus();
+}
+
+function onGalleryVirtualGroupingChange() {
+    galleryVirtualGrouping = getGalleryRadioValue('galleryVirtualGrouping', 'character');
+    if (!GALLERY_VIRTUAL_GROUPING_VALUES.has(galleryVirtualGrouping)) galleryVirtualGrouping = 'character';
+    saveGalleryPersistentUi();
+    if (getGalleryViewMode() === 'virtual') renderView();
+}
+
+function onGalleryVirtualUncategorizedChange() {
+    galleryVirtualUncategorized = getGalleryRadioValue('galleryVirtualUncategorized', 'only');
+    if (!GALLERY_VIRTUAL_UNCATEGORIZED_VALUES.has(galleryVirtualUncategorized)) galleryVirtualUncategorized = 'only';
+    saveGalleryPersistentUi();
+    if (getGalleryViewMode() === 'virtual') renderView();
 }
 
 function getDefaultGalleryPath() {
@@ -418,7 +1861,7 @@ function saveGallerySessionState() {
     try {
         sessionStorage.setItem(GALLERY_SESSION_STATE_KEY, JSON.stringify({
             serverSessionId: galleryServerSessionId,
-            pathKeys: currentPath.map(getGalleryNodeKey),
+            pathKeys: getGallerySessionPathKeys(),
             searchText,
             currentSelectedBrand,
             currentSelectedChar,
@@ -678,6 +2121,7 @@ function getGalleryUpscaleEngineLabel(engine) {
     engine = String(engine || '').toLowerCase();
 
     if (engine.includes('realcugan')) return 'Real-CUGAN';
+    if (engine.includes('waifu2x')) return 'Waifu2x';
     if (engine.includes('lanczos')) return 'Lanczos';
 
     return engine ? engine.toUpperCase() : 'UPSCALE';
@@ -793,6 +2237,10 @@ function clearGalleryTagAssignmentSelection() {
 
 function toggleGalleryTagAssignmentMode() {
     isGalleryTagAssignmentMode = !isGalleryTagAssignmentMode;
+
+    if (isGalleryTagAssignmentMode) {
+        clearGalleryMultiFolderSelection();
+    }
 
     if (!isGalleryTagAssignmentMode) {
         selectedGalleryAssignmentTagId = '';
@@ -914,6 +2362,313 @@ function openGalleryImageTagPicker(event, imagePath) {
 
     picker.style.left = `${Math.max(margin, left)}px`;
     picker.style.top = `${Math.max(margin, top)}px`;
+}
+
+function closeGalleryRadialTagMenu() {
+    const menu = document.getElementById('galleryRadialTagMenu');
+    if (!menu) return;
+
+    menu.classList.remove('open');
+    menu.setAttribute('aria-hidden', 'true');
+    menu.innerHTML = '';
+}
+
+function getGalleryRadialTagItems() {
+    const items = [{
+        tagId: '',
+        label: '태그 없음',
+        iconHtml: '<span class="gallery-radial-tag-remove-icon" aria-hidden="true">×</span>'
+    }];
+
+    galleryTagDefs.forEach((tag, index) => {
+        const tagId = String(tag?.id ?? '');
+        if (!tagId) return;
+
+        items.push({
+            tagId,
+            label: tag.type === 'text' ? `태그: ${tag.value}` : `그림 태그 ${index + 1}`,
+            iconHtml: renderGalleryTagIcon(tag)
+        });
+    });
+
+    return items;
+}
+
+function updateGalleryRadialTagHighlight(index) {
+    const menu = document.getElementById('galleryRadialTagMenu');
+    if (!menu) return;
+
+    menu.querySelectorAll('.gallery-radial-tag-item, .gallery-radial-tag-sector').forEach((item) => {
+        item.classList.toggle('selected', Number(item.dataset.radialIndex) === index);
+    });
+
+    const hint = menu.querySelector('.gallery-radial-tag-menu-hint');
+    if (hint) {
+        const selected = menu.querySelector(`.gallery-radial-tag-item[data-radial-index="${index}"]`);
+        hint.textContent = selected?.getAttribute('aria-label') || '방향을 선택하세요';
+    }
+}
+
+function getGalleryRadialTagSectorPath(cx, cy, innerRadius, outerRadius, startAngle, endAngle) {
+    const point = (radius, angle) => ({
+        x: cx + (Math.cos(angle) * radius),
+        y: cy + (Math.sin(angle) * radius)
+    });
+    const outerStart = point(outerRadius, startAngle);
+    const outerEnd = point(outerRadius, endAngle);
+    const innerEnd = point(innerRadius, endAngle);
+    const innerStart = point(innerRadius, startAngle);
+    const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
+
+    return [
+        `M ${outerStart.x.toFixed(2)} ${outerStart.y.toFixed(2)}`,
+        `A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${outerEnd.x.toFixed(2)} ${outerEnd.y.toFixed(2)}`,
+        `L ${innerEnd.x.toFixed(2)} ${innerEnd.y.toFixed(2)}`,
+        `A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${innerStart.x.toFixed(2)} ${innerStart.y.toFixed(2)}`,
+        'Z'
+    ].join(' ');
+}
+
+function showGalleryRadialTagMenu(state) {
+    const menu = document.getElementById('galleryRadialTagMenu');
+    if (!menu) return false;
+
+    const items = getGalleryRadialTagItems();
+    if (!items.length) return false;
+
+    const viewportWidth = Math.max(window.innerWidth || 0, 1);
+    const viewportHeight = Math.max(window.innerHeight || 0, 1);
+    const dialSize = 200;
+    const dialCenter = 100;
+    const outerRadius = 96;
+    const innerRadius = 34;
+    const labelRadius = 72;
+    const margin = (dialSize / 2) + 8;
+    const centerX = Math.max(margin, Math.min(viewportWidth - margin, state.startX));
+    const centerY = Math.max(margin, Math.min(viewportHeight - margin, state.startY));
+    const step = (Math.PI * 2) / items.length;
+    const sectorGap = Math.min(0.035, step * 0.16);
+
+    menu.innerHTML = `
+        <div class="gallery-radial-tag-menu-dial" aria-hidden="true">
+            <svg class="gallery-radial-tag-dial-svg" viewBox="0 0 ${dialSize} ${dialSize}" focusable="false">
+                <circle class="gallery-radial-tag-dial-track" cx="${dialCenter}" cy="${dialCenter}" r="${outerRadius}"></circle>
+            </svg>
+            <div class="gallery-radial-tag-menu-center">🏷️</div>
+        </div>
+        <div class="gallery-radial-tag-menu-hint">방향을 선택하세요</div>
+    `;
+
+    items.forEach((item, index) => {
+        const angle = (-Math.PI / 2) + (step * index);
+        const startAngle = angle - (step / 2) + sectorGap;
+        const endAngle = angle + (step / 2) - sectorGap;
+        const sector = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        sector.classList.add('gallery-radial-tag-sector');
+        sector.dataset.radialIndex = String(index);
+        sector.setAttribute('d', getGalleryRadialTagSectorPath(
+            dialCenter,
+            dialCenter,
+            innerRadius,
+            outerRadius,
+            startAngle,
+            endAngle
+        ));
+        sector.setAttribute('aria-hidden', 'true');
+        menu.querySelector('.gallery-radial-tag-dial-svg')?.appendChild(sector);
+
+        const button = document.createElement('div');
+        button.className = 'gallery-radial-tag-item';
+        button.dataset.radialIndex = String(index);
+        button.setAttribute('aria-label', item.label);
+        button.title = item.label;
+        button.innerHTML = item.iconHtml;
+        // 라벨은 다이얼과 달리 메뉴 직계 자식이므로 메뉴 중심을 원점으로 둔다.
+        button.style.left = `${Math.cos(angle) * labelRadius}px`;
+        button.style.top = `${Math.sin(angle) * labelRadius}px`;
+        menu.appendChild(button);
+    });
+
+    menu.style.left = `${centerX}px`;
+    menu.style.top = `${centerY}px`;
+    menu.classList.add('open');
+    menu.setAttribute('aria-hidden', 'false');
+
+    state.centerX = centerX;
+    state.centerY = centerY;
+    state.items = items;
+    state.opened = true;
+    state.selectedIndex = -1;
+    updateGalleryRadialTagHighlight(-1);
+    return true;
+}
+
+function updateGalleryRadialTagSelection(event, state) {
+    // 메뉴는 화면 가장자리에서 안쪽으로 보정될 수 있지만, 방향의 원점은
+    // 사용자가 실제로 누른 위치여야 한다.
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+    const distance = Math.hypot(dx, dy);
+
+    if (distance < GALLERY_RADIAL_TAG_DEAD_ZONE) {
+        state.selectedIndex = -1;
+        updateGalleryRadialTagHighlight(-1);
+        return;
+    }
+
+    const step = (Math.PI * 2) / state.items.length;
+    const angle = Math.atan2(dy, dx);
+    const normalized = (angle + (Math.PI / 2) + (Math.PI * 2)) % (Math.PI * 2);
+    state.selectedIndex = Math.round(normalized / step) % state.items.length;
+    updateGalleryRadialTagHighlight(state.selectedIndex);
+}
+
+function markGalleryRadialTagClickSuppressed(image) {
+    galleryRadialTagSuppressClickElement = image || null;
+    galleryRadialTagSuppressClickUntil = Date.now() + 800;
+    if (image) {
+        image.dataset.galleryRadialTagSuppressClickUntil = String(galleryRadialTagSuppressClickUntil);
+    }
+}
+
+function consumeGalleryRadialTagClick(event) {
+    const image = event.target?.closest?.('.zoomable');
+    const imageUntil = Number(image?.dataset?.galleryRadialTagSuppressClickUntil || 0);
+    const globalMatch = image && galleryRadialTagSuppressClickElement === image;
+    const suppressed = image && Date.now() <= Math.max(imageUntil, globalMatch ? galleryRadialTagSuppressClickUntil : 0);
+
+    if (!suppressed) {
+        if (image && imageUntil) delete image.dataset.galleryRadialTagSuppressClickUntil;
+        return false;
+    }
+
+    delete image.dataset.galleryRadialTagSuppressClickUntil;
+    if (globalMatch) {
+        galleryRadialTagSuppressClickElement = null;
+        galleryRadialTagSuppressClickUntil = 0;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+}
+
+function releaseGalleryRadialTagPointer(state) {
+    try {
+        if (state?.image?.hasPointerCapture?.(state.pointerId)) {
+            state.image.releasePointerCapture(state.pointerId);
+        }
+    } catch (error) {
+        // The pointer may already have been released by the browser.
+    }
+}
+
+function cancelGalleryRadialTagGesture() {
+    const state = galleryRadialTagGesture;
+    if (!state) {
+        closeGalleryRadialTagMenu();
+        return;
+    }
+
+    galleryRadialTagGesture = null;
+    if (state.opened) {
+        markGalleryRadialTagClickSuppressed(state.image);
+    }
+    clearTimeout(state.timer);
+    closeGalleryRadialTagMenu();
+    releaseGalleryRadialTagPointer(state);
+}
+
+function isGalleryRadialTagPointerTarget(event) {
+    if (!galleryDesignSettings.radialTagMenuEnabled) return null;
+    if (event.pointerType !== 'mouse' || event.button !== 0) return null;
+    if (isGalleryBulkDeleteMode || isGalleryTagAssignmentMode || galleryMultiFolderSelection.size > 0) return null;
+
+    const target = event.target?.closest?.('.zoomable');
+    if (!target || target.tagName !== 'IMG') return null;
+    if (event.target.closest?.('button, a, input, select, textarea, .gallery-card-actions')) return null;
+
+    return target;
+}
+
+function beginGalleryRadialTagGesture(event) {
+    const image = isGalleryRadialTagPointerTarget(event);
+    if (!image) return;
+
+    cancelGalleryRadialTagGesture();
+    const card = image.closest('.item-box');
+    const imagePath = normalizeGalleryPathKey(card?.dataset.path || image.getAttribute('src') || '');
+    if (!imagePath) return;
+
+    const state = {
+        image,
+        imagePath,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        centerX: event.clientX,
+        centerY: event.clientY,
+        moved: false,
+        opened: false,
+        selectedIndex: -1,
+        items: [],
+        timer: null
+    };
+    galleryRadialTagGesture = state;
+
+    try {
+        image.setPointerCapture(event.pointerId);
+    } catch (error) {
+        // Pointer capture is a convenience; document listeners still handle cancellation.
+    }
+
+    state.timer = setTimeout(() => {
+        if (galleryRadialTagGesture !== state || state.moved || !galleryDesignSettings.radialTagMenuEnabled) return;
+        showGalleryRadialTagMenu(state);
+    }, GALLERY_RADIAL_TAG_LONG_PRESS_MS);
+}
+
+function updateGalleryRadialTagGesture(event) {
+    const state = galleryRadialTagGesture;
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    const distance = Math.hypot(event.clientX - state.startX, event.clientY - state.startY);
+    if (!state.opened) {
+        if (distance > GALLERY_RADIAL_TAG_MOVE_THRESHOLD) {
+            state.moved = true;
+            cancelGalleryRadialTagGesture();
+        }
+        return;
+    }
+
+    event.preventDefault();
+    updateGalleryRadialTagSelection(event, state);
+}
+
+function finishGalleryRadialTagGesture(event) {
+    const state = galleryRadialTagGesture;
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    clearTimeout(state.timer);
+    galleryRadialTagGesture = null;
+    releaseGalleryRadialTagPointer(state);
+
+    if (!state.opened) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    updateGalleryRadialTagSelection(event, state);
+    markGalleryRadialTagClickSuppressed(state.image);
+    const selected = state.items[state.selectedIndex];
+    closeGalleryRadialTagMenu();
+    if (selected) {
+        updateGalleryImageTag(state.imagePath, selected.tagId);
+    }
+}
+
+function cancelGalleryRadialTagOnLostCapture(event) {
+    if (galleryRadialTagGesture?.image === event.target) {
+        cancelGalleryRadialTagGesture();
+    }
 }
 
 async function updateGalleryImageTag(imagePath, tagId) {
@@ -1114,6 +2869,7 @@ function updateGalleryArtStyleOptions(images) {
 
 function updateGalleryFilterUi(currentNode) {
     const isFinal = isFinalImageFolder(currentNode);
+    const isDateMode = getGalleryViewMode() === 'date';
     const label = document.getElementById('main-filter-label');
     const brandSelect = document.getElementById('brandSelect');
     const charChipContainer = document.getElementById('char-chip-container');
@@ -1123,17 +2879,17 @@ function updateGalleryFilterUi(currentNode) {
     const loading = document.getElementById('galleryFilterLoading');
 
     if (label) {
-        label.textContent = isFinal ? '🎨 그림체 필터' : '👑 BRAND FILTER';
-        label.style.color = isFinal ? '#f1c40f' : '#ff007c';
+        label.textContent = isFinal ? '🎨 그림체 필터' : (isDateMode ? '📅 날짜별 보기' : '👑 BRAND FILTER');
+        label.style.color = isFinal ? '#f1c40f' : (isDateMode ? '#00f2ff' : '#ff007c');
     }
 
-    if (brandSelect) brandSelect.style.display = isFinal ? 'none' : '';
+    if (brandSelect) brandSelect.style.display = isFinal || isDateMode ? 'none' : '';
 
     if (charChipContainer) {
         // 최종 이미지 폴더에서는 캐릭터 칩을 숨긴다.
         // 단, currentSelectedBrand/currentSelectedChar 값은 유지해서
         // Duo/Group 상위로 돌아왔을 때 선택 상태가 복원되게 한다.
-        if (isFinal) {
+        if (isFinal || isDateMode) {
             charChipContainer.style.display = 'none';
         } else if (currentSelectedBrand !== 'ALL') {
             charChipContainer.style.display = 'flex';
@@ -1148,7 +2904,7 @@ function updateGalleryFilterUi(currentNode) {
     if (searchInput) {
         searchInput.placeholder = isFinal
             ? '📝 프롬프트 필터... 여러 단어/태그는 줄바꿈 또는 쉼표로 입력'
-            : '🔍 폴더 이름 실시간 검색...';
+            : (isDateMode ? '🔍 날짜 그룹 이름 검색...' : '🔍 폴더 이름 실시간 검색...');
 
         searchInput.rows = isFinal ? 3 : 1;
         searchInput.classList.toggle('prompt-filter-mode', isFinal);
@@ -1546,12 +3302,20 @@ async function pollGalleryIndexStatus() {
 
 async function loadData(options = {}) {
     try {
+        clearGalleryMultiFolderSelection(false);
         const sessionState = readGallerySessionState();
 
         startGalleryDataStatusPolling();
 
-        const mode = getGalleryRadioValue('viewMode', 'general');
-        const sort = getGalleryRadioValue('sortMode', 'name');
+        let mode = getGalleryRadioValue('viewMode', 'general');
+        if (getGalleryViewMode() === 'virtual' && mode === 'trash') {
+            mode = 'all';
+            setGalleryRadioValue('viewMode', 'all');
+        }
+        const selectedSort = galleryFolderSort;
+        // 서버 폴더 정렬 계약은 이름/개수만 사용한다. 이미지 시간 정렬은
+        // 현재 로드된 이미지 목록에서 renderImageGrid가 처리한다.
+        const sort = selectedSort === 'count' ? 'count' : 'name';
 
         saveGalleryPersistentUi();
 
@@ -1593,16 +3357,39 @@ async function loadData(options = {}) {
         galleryTagDefs = Array.isArray(galleryTagsPayload.tags) ? galleryTagsPayload.tags : [];
         galleryImageTags = galleryTagsPayload.image_tags || {};
 
+        if (getGalleryViewMode() === 'virtual') {
+            try {
+                await loadGalleryVirtualFolders();
+            } catch (error) {
+                showToast(`가상 폴더 목록 로드 실패: ${error.message || error}`);
+            }
+        }
+
         const canRestoreSession =
             sessionState &&
             galleryServerSessionId &&
             sessionState.serverSessionId === galleryServerSessionId;
 
         if (canRestoreSession) {
-            const restoredPath = restoreGalleryPathFromKeys(sessionState.pathKeys);
-            currentPath = restoredPath.length > 1 ? restoredPath : getDefaultGalleryPath();
+            if (getGalleryViewMode() === 'virtual' && galleryVirtualRootNode) {
+                const virtualKeys = Array.isArray(sessionState.pathKeys) ? sessionState.pathKeys : [];
+                const virtualPath = [rootTree, galleryVirtualRootNode];
+                virtualKeys.slice(1).forEach(key => {
+                    const id = String(key || '').replace(/^__gallery_virtual__\//, '');
+                    const match = galleryVirtualFolderMap.get(id);
+                    if (match) virtualPath.push(match);
+                });
+                currentPath = virtualPath;
+            } else {
+                const restoredPath = restoreGalleryPathFromKeys(sessionState.pathKeys);
+                currentPath = restoredPath.length > 1 ? restoredPath : getDefaultGalleryPath();
+            }
+            if (getGalleryViewMode() === 'date') {
+                currentPath = currentPath[1] ? [rootTree, currentPath[1]] : getDefaultGalleryPath();
+            }
 
             searchText = String(sessionState.searchText || '').toLowerCase().trim();
+            if (getGalleryViewMode() === 'date') searchText = '';
             currentSelectedBrand = sessionState.currentSelectedBrand || 'ALL';
             currentSelectedChar = sessionState.currentSelectedChar || 'ALL';
             currentSelectedGalleryArtStyle = sessionState.currentSelectedGalleryArtStyle || 'ALL';
@@ -1610,7 +3397,9 @@ async function loadData(options = {}) {
             galleryPendingScrollY = Number(sessionState.scrollY || 0);
         } else {
             clearGallerySessionState();
-            currentPath = getDefaultGalleryPath();
+            currentPath = getGalleryViewMode() === 'virtual' && galleryVirtualRootNode
+                ? [rootTree, galleryVirtualRootNode]
+                : getDefaultGalleryPath();
 
             searchText = '';
             currentSelectedBrand = 'ALL';
@@ -1648,10 +3437,347 @@ window.onload = () => {
     loadGalleryCharacterNameOverrides();
     syncReasonVisibility();
     bindGalleryNavTabsScroller();
+    initializeGalleryScrollNavigation();
     loadData();
 };
-window.onscroll = function() { topBtn.style.display = document.documentElement.scrollTop > 500 ? "block" : "none"; };
+window.onscroll = function() {
+    topBtn.style.display = document.documentElement.scrollTop > 500 ? "block" : "none";
+    scheduleGalleryScrollNavigationUpdate();
+};
 function scrollToTop() { window.scrollTo({ top: 0, behavior: 'smooth' }); }
+
+function getGalleryScrollNavigationDotCount(maxScroll) {
+    const viewportHeight = Math.max(window.innerHeight || 0, 1);
+    return Math.max(
+        GALLERY_SCROLL_NAV_MIN_DOTS,
+        Math.min(
+            GALLERY_SCROLL_NAV_MAX_DOTS,
+            Math.ceil(maxScroll / Math.max(viewportHeight * 0.8, 1)) + 1
+        )
+    );
+}
+
+function scheduleGalleryScrollNavigationUpdate() {
+    if (galleryScrollNavigationFrame) return;
+
+    galleryScrollNavigationFrame = requestAnimationFrame(() => {
+        galleryScrollNavigationFrame = 0;
+        updateGalleryScrollNavigation();
+    });
+}
+
+function getGalleryScrollNavigationElements() {
+    if (!galleryScrollNavigation) return null;
+
+    const dots = galleryScrollNavigation.querySelector('.gallery-scroll-nav-dots');
+    const scrollbarGuide = galleryScrollbarDestinationGuide;
+    const scrollbarTrack = scrollbarGuide?.querySelector('.gallery-scrollbar-track');
+    const scrollbarThumb = scrollbarGuide?.querySelector('.gallery-scrollbar-thumb');
+    const scrollbarMarks = scrollbarGuide?.querySelector('.gallery-scrollbar-marks');
+
+    if (!dots || !scrollbarGuide || !scrollbarTrack || !scrollbarThumb || !scrollbarMarks) return null;
+    return { dots, scrollbarGuide, scrollbarTrack, scrollbarThumb, scrollbarMarks };
+}
+
+function syncGalleryScrollNavigationGuideHighlight() {
+    const elements = getGalleryScrollNavigationElements();
+    if (!elements) return;
+
+    const highlightedIndex = galleryScrollNavigationFocusedIndex !== null
+        ? galleryScrollNavigationFocusedIndex
+        : galleryScrollNavigationHoveredIndex;
+    if (highlightedIndex === null) {
+        delete elements.scrollbarGuide.dataset.highlightedIndex;
+    } else {
+        elements.scrollbarGuide.dataset.highlightedIndex = String(highlightedIndex);
+    }
+
+    elements.scrollbarMarks
+        .querySelectorAll('.gallery-scrollbar-destination-guide-marker')
+        .forEach((marker, index) => {
+            marker.classList.toggle('is-highlighted', index === highlightedIndex);
+        });
+}
+
+function resetGalleryScrollNavigationGuideHighlight() {
+    galleryScrollNavigationHoveredIndex = null;
+    galleryScrollNavigationFocusedIndex = null;
+    syncGalleryScrollNavigationGuideHighlight();
+}
+
+function getGalleryScrollNavigationBehavior() {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+        ? 'auto'
+        : 'smooth';
+}
+
+function scrollGalleryScrollNavigationToRatio(ratio, behavior = getGalleryScrollNavigationBehavior()) {
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const boundedRatio = Math.min(1, Math.max(0, Number(ratio) || 0));
+    window.scrollTo({ top: maxScroll * boundedRatio, behavior });
+}
+
+function getGalleryScrollbarMetrics(elements) {
+    const trackHeight = elements.scrollbarTrack.clientHeight
+        || elements.scrollbarTrack.getBoundingClientRect().height
+        || Math.max(window.innerHeight || 0, 1);
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const documentHeight = Math.max(document.documentElement.scrollHeight, window.innerHeight || 0, 1);
+    const thumbHeight = Math.min(
+        trackHeight,
+        Math.max(GALLERY_SCROLLBAR_MIN_THUMB, trackHeight * Math.min(1, window.innerHeight / documentHeight))
+    );
+    return {
+        trackHeight,
+        thumbHeight,
+        maxThumbOffset: Math.max(trackHeight - thumbHeight, 0),
+        maxScroll
+    };
+}
+
+function stopGalleryScrollNavigationDrag() {
+    if (!galleryScrollbarDragState) return;
+
+    const { thumb, pointerId } = galleryScrollbarDragState;
+    try {
+        if (thumb.hasPointerCapture(pointerId)) thumb.releasePointerCapture(pointerId);
+    } catch (error) {
+        // Pointer capture can already be released when the browser cancels a touch.
+    }
+    thumb.classList.remove('is-dragging');
+    galleryScrollbarDragState = null;
+}
+
+function bindGalleryScrollbarInteractions(elements) {
+    if (!elements || elements.scrollbarTrack.dataset.interactionsBound === '1') return;
+
+    const { scrollbarTrack: track, scrollbarThumb: thumb } = elements;
+    track.dataset.interactionsBound = '1';
+
+    thumb.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+
+        const metrics = getGalleryScrollbarMetrics(elements);
+        if (metrics.maxThumbOffset <= 0) return;
+
+        event.preventDefault();
+        galleryScrollbarDragState = {
+            pointerId: event.pointerId,
+            startY: event.clientY,
+            startScrollY: window.scrollY || document.documentElement.scrollTop || 0,
+            metrics
+        };
+        thumb.classList.add('is-dragging');
+        thumb.setPointerCapture(event.pointerId);
+    });
+
+    thumb.addEventListener('pointermove', (event) => {
+        if (!galleryScrollbarDragState || galleryScrollbarDragState.pointerId !== event.pointerId) return;
+
+        const { startY, startScrollY, metrics } = galleryScrollbarDragState;
+        const ratio = metrics.maxThumbOffset > 0
+            ? (startScrollY / Math.max(metrics.maxScroll, 1))
+                + ((event.clientY - startY) / metrics.maxThumbOffset)
+            : 0;
+        scrollGalleryScrollNavigationToRatio(ratio, 'auto');
+    });
+
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((eventName) => {
+        thumb.addEventListener(eventName, () => {
+            if (!galleryScrollbarDragState) return;
+            stopGalleryScrollNavigationDrag();
+            scheduleGalleryScrollNavigationUpdate();
+        });
+    });
+
+    track.addEventListener('click', (event) => {
+        if (event.target === thumb || galleryScrollbarDragState) return;
+
+        const metrics = getGalleryScrollbarMetrics(elements);
+        if (metrics.maxThumbOffset <= 0) return;
+
+        const trackRect = track.getBoundingClientRect();
+        const clickOffset = event.clientY - trackRect.top - (metrics.thumbHeight / 2);
+        scrollGalleryScrollNavigationToRatio(clickOffset / metrics.maxThumbOffset, 'auto');
+    });
+
+    track.addEventListener('keydown', (event) => {
+        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        if (maxScroll <= 0) return;
+
+        const currentScroll = window.scrollY || document.documentElement.scrollTop || 0;
+        const pageStep = Math.max(window.innerHeight || 0, 1);
+        let nextScroll = null;
+        switch (event.key) {
+            case 'Home':
+                nextScroll = 0;
+                break;
+            case 'End':
+                nextScroll = maxScroll;
+                break;
+            case 'PageUp':
+                nextScroll = currentScroll - pageStep;
+                break;
+            case 'PageDown':
+                nextScroll = currentScroll + pageStep;
+                break;
+            case 'ArrowUp':
+                nextScroll = currentScroll - 80;
+                break;
+            case 'ArrowDown':
+                nextScroll = currentScroll + 80;
+                break;
+            default:
+                return;
+        }
+
+        event.preventDefault();
+        scrollGalleryScrollNavigationToRatio(nextScroll / maxScroll);
+    });
+}
+
+function updateGalleryScrollNavigation() {
+    if (!galleryScrollNavigation) return;
+
+    const elements = getGalleryScrollNavigationElements();
+    if (!elements) return;
+
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const minScroll = Math.max(
+        GALLERY_SCROLL_NAV_MIN_SCROLL,
+        Math.round(window.innerHeight * GALLERY_SCROLL_NAV_MIN_SCROLL_RATIO)
+    );
+
+    if (maxScroll < minScroll) {
+        document.documentElement.classList.remove('gallery-scrollbar-custom');
+        stopGalleryScrollNavigationDrag();
+        galleryScrollNavigation.classList.remove('is-visible');
+        elements.dots.replaceChildren();
+        elements.scrollbarGuide.classList.remove('is-visible');
+        elements.scrollbarMarks.replaceChildren();
+        elements.scrollbarThumb.style.height = '0px';
+        elements.scrollbarThumb.style.top = '0px';
+        elements.scrollbarTrack.setAttribute('aria-valuenow', '0');
+        elements.scrollbarTrack.setAttribute('aria-valuetext', '0%');
+        delete galleryScrollNavigation.dataset.dotCount;
+        delete elements.scrollbarGuide.dataset.dotCount;
+        resetGalleryScrollNavigationGuideHighlight();
+        return;
+    }
+
+    document.documentElement.classList.add('gallery-scrollbar-custom');
+    const dotCount = getGalleryScrollNavigationDotCount(maxScroll);
+    if (galleryScrollNavigation.dataset.dotCount !== String(dotCount)) {
+        resetGalleryScrollNavigationGuideHighlight();
+        elements.dots.replaceChildren();
+        elements.scrollbarMarks.replaceChildren();
+        galleryScrollNavigation.dataset.dotCount = String(dotCount);
+        elements.scrollbarGuide.dataset.dotCount = String(dotCount);
+
+        for (let index = 0; index < dotCount; index += 1) {
+            const dot = document.createElement('button');
+            dot.type = 'button';
+            dot.className = 'gallery-scroll-nav-dot';
+            dot.title = `페이지 ${index + 1}/${dotCount}로 이동`;
+            dot.setAttribute('aria-label', `페이지 ${index + 1}/${dotCount}로 이동`);
+            dot.addEventListener('mouseenter', () => {
+                galleryScrollNavigationHoveredIndex = index;
+                syncGalleryScrollNavigationGuideHighlight();
+            });
+            dot.addEventListener('mouseleave', () => {
+                if (galleryScrollNavigationHoveredIndex === index) {
+                    galleryScrollNavigationHoveredIndex = null;
+                    syncGalleryScrollNavigationGuideHighlight();
+                }
+            });
+            dot.addEventListener('focus', () => {
+                galleryScrollNavigationFocusedIndex = index;
+                syncGalleryScrollNavigationGuideHighlight();
+            });
+            dot.addEventListener('blur', () => {
+                if (galleryScrollNavigationFocusedIndex === index) {
+                    galleryScrollNavigationFocusedIndex = null;
+                    syncGalleryScrollNavigationGuideHighlight();
+                }
+            });
+            dot.addEventListener('click', (event) => {
+                scrollGalleryScrollNavigationToRatio(index / Math.max(dotCount - 1, 1));
+                if (event.detail > 0) dot.blur();
+            });
+            elements.dots.appendChild(dot);
+
+            const guideMarker = document.createElement('span');
+            guideMarker.className = 'gallery-scrollbar-destination-guide-marker';
+            guideMarker.dataset.index = String(index);
+            guideMarker.setAttribute('aria-hidden', 'true');
+            elements.scrollbarMarks.appendChild(guideMarker);
+        }
+    }
+
+    galleryScrollNavigation.classList.add('is-visible');
+    elements.scrollbarGuide.classList.add('is-visible');
+    const scrollRatio = maxScroll > 0
+        ? Math.min(1, Math.max(0, (window.scrollY || document.documentElement.scrollTop || 0) / maxScroll))
+        : 0;
+    const navRect = galleryScrollNavigation.getBoundingClientRect();
+    const dots = elements.dots.querySelectorAll('.gallery-scroll-nav-dot');
+    const guideMarkers = elements.scrollbarMarks.querySelectorAll('.gallery-scrollbar-destination-guide-marker');
+    const activeIndex = Math.round(scrollRatio * (dotCount - 1));
+    const dotRailHeight = Math.max((navRect.height || window.innerHeight || 0) - (GALLERY_SCROLLBAR_TRACK_INSET * 2), 1);
+    const scrollbarMarkHeight = Math.max(
+        elements.scrollbarMarks.clientHeight || window.innerHeight - (GALLERY_SCROLLBAR_TRACK_INSET * 2),
+        1
+    );
+    const highlightedIndex = galleryScrollNavigationFocusedIndex !== null
+        ? galleryScrollNavigationFocusedIndex
+        : galleryScrollNavigationHoveredIndex;
+
+    dots.forEach((dot, index) => {
+        const dotRatio = index / Math.max(dotCount - 1, 1);
+        dot.style.top = `${GALLERY_SCROLLBAR_TRACK_INSET + dotRatio * dotRailHeight}px`;
+        const isActive = index === activeIndex;
+        dot.classList.toggle('is-active', isActive);
+        if (isActive) {
+            dot.setAttribute('aria-current', 'true');
+        } else {
+            dot.removeAttribute('aria-current');
+        }
+    });
+
+    guideMarkers.forEach((marker, index) => {
+        const dotRatio = index / Math.max(dotCount - 1, 1);
+        marker.style.top = `${dotRatio * scrollbarMarkHeight}px`;
+        marker.classList.toggle('is-highlighted', index === highlightedIndex);
+    });
+
+    const scrollbarMetrics = getGalleryScrollbarMetrics(elements);
+    elements.scrollbarThumb.style.height = `${scrollbarMetrics.thumbHeight}px`;
+    elements.scrollbarThumb.style.top = `${scrollRatio * scrollbarMetrics.maxThumbOffset}px`;
+    elements.scrollbarTrack.setAttribute('aria-valuenow', String(Math.round(scrollRatio * 100)));
+    elements.scrollbarTrack.setAttribute('aria-valuetext', `${Math.round(scrollRatio * 100)}%`);
+}
+
+function initializeGalleryScrollNavigation() {
+    if (galleryScrollNavigationInitialized || !galleryScrollNavigation) return;
+
+    const elements = getGalleryScrollNavigationElements();
+    if (!elements) return;
+
+    galleryScrollNavigationInitialized = true;
+    document.documentElement.classList.add('gallery-scrollbar-custom');
+    bindGalleryScrollbarInteractions(elements);
+    window.addEventListener('resize', scheduleGalleryScrollNavigationUpdate, { passive: true });
+
+    if (typeof ResizeObserver === 'function') {
+        galleryScrollNavigationResizeObserver = new ResizeObserver(scheduleGalleryScrollNavigationUpdate);
+        galleryScrollNavigationResizeObserver.observe(document.documentElement);
+
+        const content = document.getElementById('content');
+        if (content) galleryScrollNavigationResizeObserver.observe(content);
+    }
+
+    scheduleGalleryScrollNavigationUpdate();
+}
 
 function bindGalleryNavTabsScroller() {
     const navTabs = document.getElementById('nav-tabs');
@@ -1755,9 +3881,37 @@ function bindGalleryNavTabsScroller() {
     }, true);
 }
 
+document.addEventListener('pointerdown', beginGalleryRadialTagGesture, true);
+document.addEventListener('pointermove', updateGalleryRadialTagGesture, true);
+document.addEventListener('pointerup', finishGalleryRadialTagGesture, true);
+document.addEventListener('pointercancel', cancelGalleryRadialTagGesture, true);
+document.addEventListener('lostpointercapture', cancelGalleryRadialTagOnLostCapture, true);
 document.addEventListener('click', (event) => {
+    if (
+        galleryRadialTagSuppressClickElement &&
+        Date.now() <= galleryRadialTagSuppressClickUntil &&
+        event.target?.closest?.('.zoomable') === galleryRadialTagSuppressClickElement
+    ) {
+        galleryRadialTagSuppressClickElement = null;
+        galleryRadialTagSuppressClickUntil = 0;
+        closeGalleryRadialTagMenu();
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        return;
+    }
+
+    if (Date.now() > galleryRadialTagSuppressClickUntil) {
+        galleryRadialTagSuppressClickElement = null;
+    }
+
     const menu = document.getElementById('imageContextMenu');
     if (menu.style.display === 'block' && !menu.contains(event.target)) closeImageContextMenu();
+
+    const folderMenu = document.getElementById('galleryMultiFolderContextMenu');
+    if (folderMenu?.style.display === 'block' && !folderMenu.contains(event.target)) {
+        closeGalleryMultiFolderContextMenu();
+    }
 
     const tagPicker = document.getElementById('galleryTagPicker');
     if (tagPicker && tagPicker.classList.contains('open') && !tagPicker.contains(event.target)) {
@@ -1782,8 +3936,12 @@ document.addEventListener('pointerdown', beginGalleryBulkDeleteBoxSelection);
 document.addEventListener('pointermove', updateGalleryBulkDeleteBoxSelection);
 document.addEventListener('pointerup', finishGalleryBulkDeleteBoxSelection);
 document.addEventListener('pointercancel', cancelGalleryBulkDeleteBoxSelection);
+document.addEventListener('pointerdown', beginGalleryMultiFolderBoxSelection);
+document.addEventListener('pointermove', updateGalleryMultiFolderBoxSelection);
+document.addEventListener('pointerup', finishGalleryMultiFolderBoxSelection);
+document.addEventListener('pointercancel', cancelGalleryMultiFolderBoxSelection);
 document.addEventListener('dragstart', (event) => {
-    if (!isGalleryBulkDeleteMode) return;
+    if (!isGalleryBulkDeleteMode && galleryMultiFolderSelection.size === 0) return;
 
     if (
         event.target.closest?.('.gallery-bulk-delete-selectable') ||
@@ -1793,16 +3951,26 @@ document.addEventListener('dragstart', (event) => {
         event.preventDefault();
     }
 });
-document.addEventListener('scroll', () => closeImageContextMenu(), true);
+document.addEventListener('scroll', () => {
+    cancelGalleryRadialTagGesture();
+    closeImageContextMenu();
+    closeGalleryMultiFolderContextMenu();
+}, true);
 document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+        cancelGalleryRadialTagGesture();
+        closeGalleryRadialTagMenu();
         closeImageContextMenu();
+        closeGalleryMultiFolderContextMenu();
+        clearGalleryMultiFolderSelection();
         closeRouteTestImagePreview();
         closeGalleryBulkDeleteConfirm();
+        closeGalleryVirtualFolderEditor();
         localStorage.setItem(GALLERY_HEADER_TOOLS_COLLAPSED_KEY, '1');
         applyGalleryHeaderToolsCollapsedState();
     }
 });
+window.addEventListener('blur', cancelGalleryRadialTagGesture);
 window.addEventListener('pagehide', () => {
     saveGalleryPersistentUi();
     saveGallerySessionState();
@@ -1817,6 +3985,7 @@ window.addEventListener('beforeunload', (event) => {
 
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
+        cancelGalleryRadialTagGesture();
         saveGalleryPersistentUi();
         saveGallerySessionState();
     }
@@ -1846,7 +4015,28 @@ function getGalleryPromptSearchMode() {
 
 function getGalleryPromptSearchScopePaths() {
     const currentNode = currentPath[currentPath.length - 1];
+    if (currentNode?.isGalleryVirtualRoot) return [];
+    if (currentNode?.isGalleryVirtualFolder) {
+        return Array.isArray(currentNode.virtualFolder?.scope_paths)
+            ? currentNode.virtualFolder.scope_paths.slice()
+            : [];
+    }
+    if (currentNode?.isGalleryVirtualUnassigned || currentNode?.isGalleryVirtualCharacterGroup) {
+        const parent = galleryVirtualFolderMap.get(String(currentNode.virtualParentId || ''));
+        return Array.isArray(parent?.scope_paths) ? parent.scope_paths.slice() : [];
+    }
     const baseScope = getCurrentGalleryScopePath();
+
+    if (isGalleryDateGroupNode(currentNode)) {
+        const scoped = [...new Set((currentNode.images || [])
+            .map((item) => getGalleryImageParentInfo(item, currentNode).path)
+            .filter(Boolean))];
+        return scoped.length ? scoped : (baseScope ? [baseScope] : []);
+    }
+
+    if (isCombinedGalleryNode(currentNode)) {
+        return currentNode.sourcePaths.slice();
+    }
 
     if (!currentNode || isFinalImageFolder(currentNode) || currentSelectedBrand === 'ALL') {
         return baseScope ? [baseScope] : [];
@@ -1904,6 +4094,7 @@ function clearGalleryPromptSearch() {
 }
 
 function getGalleryPromptMatchedFolderCount(folder) {
+    if (isGalleryDateGroupNode(folder)) return Number(folder?.total_images || 0);
     if (!galleryPromptSearchActive) return Number(folder?.total_images || 0);
 
     const key = normalizeGalleryPathKey(folder?.path || getGalleryBulkDeleteFolderKey(folder));
@@ -2343,7 +4534,15 @@ function openImageContextMenu(event, imagePath, imgSrc) {
     event.preventDefault();
     event.stopPropagation();
 
-    activeImageContext = { path: imagePath, imgSrc: imgSrc };
+    const imageElement = event.currentTarget?.tagName === 'IMG'
+        ? event.currentTarget
+        : event.target?.closest?.('img');
+    activeImageContext = {
+        path: imagePath,
+        imgSrc: imgSrc,
+        width: imageElement?.naturalWidth || 0,
+        height: imageElement?.naturalHeight || 0
+    };
     const menu = document.getElementById('imageContextMenu');
     menu.style.display = 'block';
 
@@ -2438,6 +4637,8 @@ async function sendContextImageToCanvas() {
     const payload = {
         src: activeImageContext.imgSrc,
         path: activeImageContext.path || '',
+        width: activeImageContext.width,
+        height: activeImageContext.height,
         name: getImageFileName(activeImageContext.path || activeImageContext.imgSrc),
         promptInfo: promptInfo || null,
         importedAt: Date.now()
@@ -3421,6 +5622,7 @@ async function openPromptViewer() {
 }
 
 function goToRoot() {
+    clearGalleryMultiFolderSelection(false);
     currentPath = getDefaultGalleryPath();
 
     currentSelectedBrand = 'ALL';
@@ -3885,10 +6087,16 @@ function openGalleryCharacterNameQuickEditor(event, names) {
                             <b>${escapeHtml(name)}</b>
                             <small>${escapeHtml(autoName)}</small>
                         </span>
-                        <input type="text"
-                               value="${escapeHtml(customName)}"
-                               placeholder="${escapeHtml(autoName)}"
-                               onkeydown="handleGalleryCharacterQuickInputKey(event)">
+                        <div class="gallery-character-quick-input-actions">
+                            <input type="text"
+                                   value="${escapeHtml(customName)}"
+                                   placeholder="${escapeHtml(autoName)}"
+                                   onkeydown="handleGalleryCharacterQuickInputKey(event)">
+                            <button type="button"
+                                    class="secondary gallery-character-quick-filter-button"
+                                    data-character-name="${escapeHtml(name)}"
+                                    onclick="filterGalleryCharacterFromQuickEditor(event)">필터</button>
+                        </div>
                     </label>
                 `;
             }).join('')}
@@ -3918,6 +6126,25 @@ function openGalleryCharacterNameQuickEditor(event, names) {
     setTimeout(() => {
         document.addEventListener('mousedown', closeGalleryCharacterQuickEditorOnOutside, {once: true});
     }, 0);
+}
+
+function filterGalleryCharacterFromQuickEditor(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const name = event.currentTarget?.dataset?.characterName || '';
+    if (!name) return;
+
+    currentSelectedBrand = 'ALL';
+    currentSelectedChar = 'ALL';
+    const brandSelect = document.getElementById('brandSelect');
+    if (brandSelect) brandSelect.value = 'ALL';
+    updateCharChips();
+
+    const searchInput = document.getElementById('folder-search');
+    if (searchInput) searchInput.value = name;
+    handleSearch(name);
+    closeGalleryCharacterNameQuickEditor();
 }
 
 function closeGalleryCharacterQuickEditorOnOutside(event) {
@@ -4254,10 +6481,294 @@ function selectChar(charName) {
     saveGallerySessionState();
 }
 
+function isCombinedGalleryNode(node) {
+    return Boolean(node?.isCombinedGalleryNode);
+}
+
+function getGalleryImageParentInfo(item, fallbackNode = null) {
+    const imagePath = normalizeGalleryPathKey(item?.path || '');
+    const parentPath = normalizeGalleryPathKey(
+        item?.galleryParentPath || imagePath.split('/').slice(0, -1).join('/') || fallbackNode?.path || ''
+    );
+    const parentName = item?.galleryParentName || parentPath.split('/').pop() || fallbackNode?.name || '';
+
+    return { path: parentPath, name: parentName };
+}
+
+function collectGalleryFolderImages(folder, output, seenPaths) {
+    if (!folder) return;
+
+    (folder.images || []).forEach((item) => {
+        const imagePath = normalizeGalleryPathKey(item?.path || '');
+        if (!imagePath || seenPaths.has(imagePath)) return;
+
+        seenPaths.add(imagePath);
+        const parent = getGalleryImageParentInfo(item, folder);
+        output.push({
+            ...item,
+            galleryParentPath: parent.path,
+            galleryParentName: parent.name,
+            // 가상 폴더에서 캐릭터별 카드를 만들 때도 원본 Duo/Group의
+            // 줄바꿈 이름과 다키 여부를 그대로 재사용한다.
+            galleryParentCharNames: Array.isArray(folder.char_names) && folder.char_names.length
+                ? folder.char_names.slice()
+                : [parent.name],
+            galleryParentIsDakimakura: isGalleryDakimakuraFolder(folder)
+        });
+    });
+
+    (folder.folders || []).forEach((child) => collectGalleryFolderImages(child, output, seenPaths));
+}
+
+function isGalleryDateGroupNode(node) {
+    return Boolean(node?.isGalleryDateGroup);
+}
+
+function getGalleryMultiFolderKey(folder) {
+    if (isGalleryDateGroupNode(folder)) {
+        return normalizeGalleryPathKey(folder?.path || folder?.name || '');
+    }
+
+    return getGalleryBulkDeleteFolderKey(folder);
+}
+
+function getGalleryIsoWeekInfo(date) {
+    // ISO 주차는 로컬 날짜를 기준으로 계산하되, UTC 자정으로 변환해 DST 영향을 피한다.
+    const localDateUtc = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+    const mondayIndex = (new Date(localDateUtc).getUTCDay() + 6) % 7;
+    const thursdayUtc = localDateUtc + (3 - mondayIndex) * 86400000;
+    const isoYear = new Date(thursdayUtc).getUTCFullYear();
+    const jan4Utc = Date.UTC(isoYear, 0, 4);
+    const jan4MondayIndex = (new Date(jan4Utc).getUTCDay() + 6) % 7;
+    const firstWeekMondayUtc = jan4Utc - jan4MondayIndex * 86400000;
+    const week = 1 + Math.round((thursdayUtc - firstWeekMondayUtc) / 604800000);
+
+    return {year: isoYear, week};
+}
+
+function getGalleryDateGroupDescriptor(mtime, grouping = 'month') {
+    const timestamp = Number(mtime);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+
+    const date = new Date(timestamp * 1000);
+    if (Number.isNaN(date.getTime())) return null;
+
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+
+    if (grouping === 'day') {
+        return {
+            key: `${year}-${month}-${day}`,
+            label: `${year}-${month}-${day}`,
+            timestamp,
+            date
+        };
+    }
+
+    if (grouping === 'week') {
+        const isoWeek = getGalleryIsoWeekInfo(date);
+        const week = String(isoWeek.week).padStart(2, '0');
+        return {
+            key: `${isoWeek.year}-W${week}`,
+            label: `${isoWeek.year}년 ${isoWeek.week}주`,
+            timestamp,
+            date
+        };
+    }
+
+    return {
+        key: `${year}-${month}`,
+        label: `${year}년 ${date.getMonth() + 1}월`,
+        timestamp,
+        date
+    };
+}
+
+function buildGalleryDateGroups(sourceNode, grouping = 'month') {
+    const images = [];
+    const seenPaths = new Set();
+    collectGalleryFolderImages(sourceNode, images, seenPaths);
+
+    const groups = new Map();
+    images.forEach((item) => {
+        const descriptor = getGalleryDateGroupDescriptor(item?.mtime, grouping);
+        if (!descriptor) return;
+
+        let group = groups.get(descriptor.key);
+        if (!group) {
+            const sourcePath = normalizeGalleryPathKey(sourceNode?.path || sourceNode?.name || 'root');
+            group = {
+                name: descriptor.label,
+                path: `__gallery_date__/${sourcePath}/${grouping}/${descriptor.key}`,
+                folders: [],
+                images: [],
+                thumb: null,
+                total_images: 0,
+                latestMtime: descriptor.timestamp,
+                char_names: [descriptor.label],
+                isGalleryDateGroup: true,
+                virtualDateGroup: true,
+                dateGrouping: grouping,
+                dateGroupKey: descriptor.key,
+                sourcePath
+            };
+            groups.set(descriptor.key, group);
+        }
+
+        const itemMtime = Number(item.mtime) || 0;
+        group.images.push(item);
+        group.total_images += 1;
+        group.latestMtime = Math.max(group.latestMtime, itemMtime);
+        if (!group.thumb) group.thumb = item.path;
+    });
+
+    return [...groups.values()]
+        .map((group) => {
+            group.images.sort((a, b) => {
+                const mtimeDiff = (Number(b.mtime) || 0) - (Number(a.mtime) || 0);
+                return mtimeDiff || String(a.name || '').localeCompare(String(b.name || ''));
+            });
+            group.thumb = group.images[0]?.path || group.thumb || null;
+            return group;
+        })
+        .sort((a, b) => {
+            const latestDiff = (Number(b.latestMtime) || 0) - (Number(a.latestMtime) || 0);
+            return latestDiff || String(a.name || '').localeCompare(String(b.name || ''));
+        });
+}
+
+function getGalleryDateGroupDisplayImages(group) {
+    return (group?.images || []).filter((item) => {
+        return passesGalleryDakiFilter(item, false) &&
+            galleryPromptSearchMatchesImage(item) &&
+            imageMatchesGalleryTagFilter(item);
+    });
+}
+
+function buildGalleryDateDisplayGroups(sourceNode, grouping = 'month') {
+    return buildGalleryDateGroups(sourceNode, grouping)
+        .map((group) => {
+            const images = getGalleryDateGroupDisplayImages(group);
+            return {
+                ...group,
+                // 카드 수/대표 이미지는 현재 필터 결과를 쓰되, 진입 시 다른 이미지 필터를
+                // 다시 적용할 수 있도록 가상 폴더의 원본 이미지 목록은 보존한다.
+                images: group.images,
+                total_images: images.length,
+                thumb: images[0]?.path || group.thumb || null,
+                displayImages: images,
+                sourceTotalImages: group.total_images
+            };
+        })
+        .filter((group) => group.displayImages.length > 0);
+}
+
+function buildCombinedGalleryNode(folders) {
+    const images = [];
+    const seenPaths = new Set();
+
+    folders.forEach((folder) => collectGalleryFolderImages(folder, images, seenPaths));
+
+    return {
+        name: `통합 보기 (${folders.length}개 폴더)`,
+        path: '',
+        folders: [],
+        images,
+        total_images: images.length,
+        sourcePaths: [...new Set(
+            folders
+                .flatMap((folder) => {
+                    if (!isGalleryDateGroupNode(folder)) {
+                        return [getGalleryBulkDeleteFolderKey(folder)];
+                    }
+
+                    return (folder.images || [])
+                        .map((item) => getGalleryImageParentInfo(item, folder).path);
+                })
+                .filter(Boolean)
+        )],
+        isCombinedGalleryNode: true
+    };
+}
+
+function enterGalleryFolder(child) {
+    clearGalleryMultiFolderSelection(false);
+    currentPath.push(child);
+
+    // 폴더 안으로 들어갈 때는 현재 선택한 브랜드/캐릭터를 유지한다.
+    currentSelectedGalleryArtStyle = 'ALL';
+    searchText = '';
+
+    const searchInput = document.getElementById('folder-search');
+    if (searchInput) searchInput.value = '';
+
+    if (Array.isArray(child.folders) && child.folders.length > 0) {
+        buildFilterDropdowns(child);
+    }
+
+    renderView();
+    saveGallerySessionState();
+    window.scrollTo(0, 0);
+}
+
+function openSelectedGalleryFolders() {
+    const folders = [...galleryMultiFolderSelection.values()];
+    if (!folders.length) return;
+
+    const combinedNode = buildCombinedGalleryNode(folders);
+    const originPath = currentPath.slice();
+
+    closeGalleryMultiFolderContextMenu();
+    clearGalleryMultiFolderSelection(false);
+    currentPath = [...originPath, combinedNode];
+    currentSelectedGalleryArtStyle = 'ALL';
+    currentGalleryTagFilter = 'ALL';
+    searchText = '';
+
+    const searchInput = document.getElementById('folder-search');
+    if (searchInput) searchInput.value = '';
+
+    renderView();
+    saveGallerySessionState();
+    window.scrollTo(0, 0);
+}
+
 function renderView() {
+    galleryVirtualRenderGeneration += 1;
+    galleryVirtualSummaryObservers.forEach(observer => observer.disconnect());
+    galleryVirtualSummaryObservers.clear();
+    galleryImageRenderSessions.forEach(session => session.cleanup?.());
+    galleryImageRenderSessions.clear();
     const currentNode = currentPath[currentPath.length - 1];
     const cont = document.getElementById('content');
     cont.innerHTML = '';
+    // renderImageGrid가 실제 이미지 화면임을 확정하기 전에는
+    // 폴더 정렬 옵션을 보여 준다. 혼합 화면도 폴더 정렬을 우선한다.
+    syncGallerySortControls('folder');
+
+    if (getGalleryViewMode() === 'virtual') {
+        const navTabs = document.getElementById('nav-tabs');
+        if (navTabs) navTabs.innerHTML = '';
+        const brandBar = document.getElementById('brand-filter-bar');
+        if (brandBar) brandBar.style.display = 'none';
+        const chips = document.getElementById('char-chip-container');
+        if (chips) chips.style.display = 'none';
+        const artStyle = document.getElementById('galleryArtStyleSelect');
+        if (artStyle) artStyle.style.display = 'none';
+        const tagBar = document.getElementById('galleryTagFilterBar');
+        if (tagBar) tagBar.style.display = 'none';
+        const loading = document.getElementById('galleryFilterLoading');
+        if (loading) loading.style.display = 'none';
+        const label = document.getElementById('main-filter-label');
+        if (label) { label.textContent = '🗂️ 가상 폴더'; label.style.color = '#a78bfa'; }
+        renderGalleryVirtualView(cont);
+        return;
+    }
+    const brandBar = document.getElementById('brand-filter-bar');
+    if (brandBar) brandBar.style.display = '';
+    const tagBar = document.getElementById('galleryTagFilterBar');
+    if (tagBar) tagBar.style.display = '';
 
     const isFinalFolder = isFinalImageFolder(currentNode);
     updateGalleryFilterUi(currentNode);
@@ -4272,6 +6783,7 @@ function renderView() {
         btn.className = `nav-btn ${isActive ? 'active' : ''}`;
         btn.innerText = catNode.name.replace(/^\d+_/, '');
         btn.onclick = () => {
+            clearGalleryMultiFolderSelection(false);
             const previousTopNode = currentPath[1] || null;
             const isSameTopCategory = previousTopNode && previousTopNode.name === catNode.name;
 
@@ -4311,6 +6823,7 @@ function renderView() {
 
         span.innerHTML = ` <span style="color:var(--accent)">❯</span> <span style="cursor:pointer; color:${idx === currentPath.length - 1 ? '#fff' : '#888'}">${displayName}</span>`;
         span.onclick = () => {
+            clearGalleryMultiFolderSelection(false);
             const previousTopNode = currentPath[1] || null;
             const nextPath = currentPath.slice(0, idx + 1);
             const nextTopNode = nextPath[1] || null;
@@ -4343,61 +6856,80 @@ function renderView() {
         bcPath.appendChild(span);
     });
 
-    let displayFolders = currentNode.folders.filter(f => {
-        if (!passesGalleryDakiFilter(f, true)) return false;
-        if (!galleryPromptSearchMatchesFolder(f)) return false;
+    const isDateMode = getGalleryViewMode() === 'date';
+    const isDateOverview = isDateMode &&
+        currentPath.length <= 2 &&
+        Boolean(currentPath[1]) &&
+        !isGalleryDateGroupNode(currentNode);
 
-        const folderNameText = String(f.name || '').replace(/_/g, ' ').toLowerCase();
-        const charNameText = getGalleryFolderCharacterNames(f)
-            .map(name => name.toLowerCase())
-            .join(' ');
-        const charNameKrText = getGalleryFolderCharacterNames(f)
-            .map(getGalleryCharacterKoreanDisplayName)
-            .join(' ')
-            .toLowerCase();
+    let displayFolders = [];
+    let displayImages = [];
 
-        const matchesSearch = !searchText ||
-            folderNameText.includes(searchText) ||
-            charNameText.includes(searchText) ||
-            charNameKrText.includes(searchText);
+    if (isDateOverview) {
+        displayFolders = buildGalleryDateDisplayGroups(currentPath[1], getGalleryDateGrouping())
+            .filter((group) => {
+                if (!searchText) return true;
+                return String(group.name || '').toLowerCase().includes(searchText);
+            });
+    } else {
+        displayFolders = (currentNode.folders || []).filter(f => {
+            if (!passesGalleryDakiFilter(f, true)) return false;
+            if (!galleryPromptSearchMatchesFolder(f)) return false;
 
-        if (!matchesSearch) return false;
+            const folderNameText = String(f.name || '').replace(/_/g, ' ').toLowerCase();
+            const charNameText = getGalleryFolderCharacterNames(f)
+                .map(name => name.toLowerCase())
+                .join(' ');
+            const charNameKrText = getGalleryFolderCharacterNames(f)
+                .map(getGalleryCharacterKoreanDisplayName)
+                .join(' ')
+                .toLowerCase();
 
-        if (currentSelectedBrand === 'ALL') return true;
+            const matchesSearch = !searchText ||
+                folderNameText.includes(searchText) ||
+                charNameText.includes(searchText) ||
+                charNameKrText.includes(searchText);
 
-        const names = getGalleryFolderCharacterNames(f);
+            if (!matchesSearch) return false;
 
-        const hasSelectedBrand = names.some(n => {
-            const brand = getGalleryBrandForCharacterName(n);
-            return brand === currentSelectedBrand;
+            if (currentSelectedBrand === 'ALL') return true;
+
+            const names = getGalleryFolderCharacterNames(f);
+
+            const hasSelectedBrand = names.some(n => {
+                const brand = getGalleryBrandForCharacterName(n);
+                return brand === currentSelectedBrand;
+            });
+
+            if (!hasSelectedBrand) return false;
+
+            if (currentSelectedChar !== 'ALL') {
+                const normalizedNames = names.map(normalizeGalleryCharacterName);
+                if (!normalizedNames.includes(currentSelectedChar)) return false;
+            }
+
+            return true;
         });
 
-        if (!hasSelectedBrand) return false;
+        displayImages = (currentNode.images || []).filter(item => {
+            return passesGalleryDakiFilter(item, false) && galleryPromptSearchMatchesImage(item);
+        });
 
-        if (currentSelectedChar !== 'ALL') {
-            const normalizedNames = names.map(normalizeGalleryCharacterName);
-            if (!normalizedNames.includes(currentSelectedChar)) return false;
+        if (isFinalFolder) {
+            const promptTerms = splitGalleryPromptTerms(searchText);
+            displayImages = displayImages.filter(item => {
+                return imageMatchesGalleryPromptFilter(item, promptTerms) &&
+                    imageMatchesGalleryArtStyleFilter(item) &&
+                    imageMatchesGalleryTagFilter(item);
+            });
+        } else if (currentGalleryTagFilter !== 'ALL') {
+            displayImages = displayImages.filter(item => imageMatchesGalleryTagFilter(item));
         }
-
-        return true;
-    });
-
-    let displayImages = (currentNode.images || []).filter(item => {
-        return passesGalleryDakiFilter(item, false) && galleryPromptSearchMatchesImage(item);
-    });
-
-    if (isFinalFolder) {
-        const promptTerms = splitGalleryPromptTerms(searchText);
-        displayImages = displayImages.filter(item => {
-            return imageMatchesGalleryPromptFilter(item, promptTerms) &&
-                imageMatchesGalleryArtStyleFilter(item) &&
-                imageMatchesGalleryTagFilter(item);
-        });
-    } else if (currentGalleryTagFilter !== 'ALL') {
-        displayImages = displayImages.filter(item => imageMatchesGalleryTagFilter(item));
     }
 
-    const isSearchFiltering = isFinalFolder
+    const isSearchFiltering = isDateOverview
+        ? (currentGalleryTagFilter !== 'ALL' || searchText !== '' || galleryPromptSearchActive || dakiFilter !== 'all')
+        : isFinalFolder
         ? (currentSelectedGalleryArtStyle !== 'ALL' || currentGalleryTagFilter !== 'ALL' || searchText !== '' || galleryPromptSearchActive)
         : (currentSelectedBrand !== 'ALL' || currentGalleryTagFilter !== 'ALL' || searchText !== '' || galleryPromptSearchActive);
 
@@ -4407,11 +6939,13 @@ function renderView() {
 
     const defaultState = (hasImages && !isSearchFiltering && !isFinalFolder) ? 'closed' : '';
 
-    if (majorFolders.length > 0) {
+    if (isDateOverview && displayFolders.length > 0) {
+        renderCollapsibleGrid(cont, "date-groups", "📅 날짜별 그룹", displayFolders, "#00f2ff", defaultState);
+    } else if (majorFolders.length > 0) {
         renderCollapsibleGrid(cont, "major", "👑 메이저 그룹", majorFolders, "#00ff88", defaultState);
     }
 
-    if (minorFolders.length > 0) {
+    if (!isDateOverview && minorFolders.length > 0) {
         renderCollapsibleGrid(cont, "minor", "🌱 마이너 그룹", minorFolders, "#888", defaultState);
     }
 
@@ -4434,6 +6968,7 @@ function renderView() {
     applyGalleryCollapsedState();
     syncReasonVisibility();
     saveGallerySessionState();
+    scheduleGalleryScrollNavigationUpdate();
 }
 
 function renderCollapsibleGrid(container, id, title, folders, borderColor, defaultState) {
@@ -4460,19 +6995,62 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
     });
     folders.forEach((child, idx) => {
         const card = document.createElement('div');
-        const bulkFolderKey = getGalleryBulkDeleteFolderKey(child);
+        const isDateGroup = isGalleryDateGroupNode(child);
+        const bulkFolderKey = isDateGroup ? '' : getGalleryBulkDeleteFolderKey(child);
+        const multiFolderKey = getGalleryMultiFolderKey(child);
         const visibleCount = getGalleryPromptMatchedFolderCount(child);
 
-        card.className = `card gallery-bulk-delete-selectable ${galleryBulkDeleteFolders.has(bulkFolderKey) ? 'bulk-delete-selected' : ''}`;
-        card.dataset.bulkDeleteType = 'folder';
-        card.dataset.bulkDeletePath = bulkFolderKey;
-        card.dataset.bulkDeleteName = child.name || bulkFolderKey;
+        card.className = `card ${isDateGroup ? 'gallery-multi-folder-selectable' : 'gallery-bulk-delete-selectable gallery-multi-folder-selectable'} ${!isDateGroup && galleryBulkDeleteFolders.has(bulkFolderKey) ? 'bulk-delete-selected' : ''} ${galleryMultiFolderSelection.has(multiFolderKey) ? 'multi-folder-selected' : ''}`;
+        if (!isDateGroup) {
+            card.dataset.bulkDeleteType = 'folder';
+            card.dataset.bulkDeletePath = bulkFolderKey;
+            card.dataset.bulkDeleteName = child.name || bulkFolderKey;
+        }
+        card.dataset.multiFolderPath = multiFolderKey;
+        card.galleryMultiFolderNode = child;
         card.oncontextmenu = (event) => {
-            if (isGalleryBulkDeleteMode) return;
+            if (isGalleryBulkDeleteMode) {
+                if (isDateGroup) event.preventDefault();
+                return;
+            }
+
+            if (galleryMultiFolderSelection.has(multiFolderKey)) {
+                openGalleryMultiFolderContextMenu(event);
+                return;
+            }
+
+            if (isDateGroup) {
+                event.preventDefault();
+                return;
+            }
+
             openGalleryCharacterNameQuickEditor(event, getGalleryFolderCharacterNames(child));
         };
 
         card.onclick = (event) => {
+            if (isDateGroup) {
+                if (isGalleryBulkDeleteMode || !galleryDesignSettings.multiFolderSelectionEnabled) {
+                    enterGalleryFolder(child);
+                    return;
+                }
+
+                if (galleryMultiFolderSuppressNextClick) return;
+
+                if (galleryMultiFolderSelection.size > 0) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    toggleGalleryMultiFolder(child, card);
+                    return;
+                }
+
+                if (galleryFolderOpenTimer) clearTimeout(galleryFolderOpenTimer);
+                galleryFolderOpenTimer = setTimeout(() => {
+                    galleryFolderOpenTimer = null;
+                    enterGalleryFolder(child);
+                }, 220);
+                return;
+            }
+
             if (isGalleryBulkDeleteMode) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -4485,31 +7063,47 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
                 return;
             }
 
-            currentPath.push(child);
-
-            // 폴더 안으로 들어갈 때는 현재 선택한 브랜드/캐릭터를 유지한다.
-            // 최종 이미지 폴더에서는 브랜드 필터 UI가 숨겨지므로 드롭다운 재구성이 필요 없다.
-            currentSelectedGalleryArtStyle = 'ALL';
-
-            // 폴더 내부에서는 검색어가 프롬프트 필터로 바뀔 수 있으므로 검색어만 비운다.
-            searchText = '';
-
-            const searchInput = document.getElementById('folder-search');
-            if (searchInput) searchInput.value = '';
-
-            if (Array.isArray(child.folders) && child.folders.length > 0) {
-                buildFilterDropdowns(child);
+            if (!galleryDesignSettings.multiFolderSelectionEnabled) {
+                enterGalleryFolder(child);
+                return;
             }
 
-            renderView();
-            saveGallerySessionState();
-            window.scrollTo(0, 0);
+            if (galleryMultiFolderSuppressNextClick) return;
+
+            if (galleryMultiFolderSelection.size > 0) {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleGalleryMultiFolder(child, card);
+                return;
+            }
+
+            if (galleryFolderOpenTimer) clearTimeout(galleryFolderOpenTimer);
+            galleryFolderOpenTimer = setTimeout(() => {
+                galleryFolderOpenTimer = null;
+                enterGalleryFolder(child);
+            }, 220);
+        };
+
+        card.ondblclick = (event) => {
+            if (!galleryDesignSettings.multiFolderSelectionEnabled || isGalleryBulkDeleteMode) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (galleryFolderOpenTimer) {
+                clearTimeout(galleryFolderOpenTimer);
+                galleryFolderOpenTimer = null;
+            }
+
+            toggleGalleryMultiFolder(child, card);
         };
 
         const isDaki = isGalleryDakimakuraFolder(child);
         const imgSrc = child.thumb ? `/image/${encodeURIComponent(child.thumb)}` : '';
         // 🌟 사람 아이콘 원상 복구 및 정확한 줄바꿈 분리
-        const nameRows = (child.char_names || [child.name])
+        const nameRows = isDateGroup
+            ? `<div class="char-row"><span class="user-icon">📅</span><span class="char-name">${escapeHtml(child.name || '')}</span></div>`
+            : (child.char_names || [child.name])
             .flatMap(splitGalleryCharacterNameParts)
             .map(n => {
                 const rawName = normalizeGalleryCharacterName(n);
@@ -4531,9 +7125,13 @@ function renderCollapsibleGrid(container, id, title, folders, borderColor, defau
 }
 
 function renderImageGrid(container, title, images, parentNode) {
+    const hasFolderCards = Boolean(container?.querySelector(
+        '.gallery-multi-folder-selectable, .gallery-virtual-folder-card-item'
+    ));
+    syncGallerySortControls(hasFolderCards ? 'folder' : 'image');
     const modeInput = document.querySelector('input[name="viewMode"]:checked');
-    const isTrashMode = modeInput && modeInput.value === 'trash';
-    const folderId = parentNode.name;
+    const isTrashMode = getGalleryViewMode() !== 'virtual' && modeInput && modeInput.value === 'trash';
+    const isCombinedView = isCombinedGalleryNode(parentNode);
 
     const sec = document.createElement('div');
     sec.className = 'section-title';
@@ -4544,10 +7142,14 @@ function renderImageGrid(container, title, images, parentNode) {
     sec.style.alignItems = 'center';
 
     let titleHtml = `<span>${title}</span>`;
-    if (isTrashMode) {
-        titleHtml += `<button onclick="emptyTrashFolder('${folderId}')" style="background:#f44; color:#fff; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; font-size:13px; box-shadow: 0 0 10px rgba(255,68,68,0.4); transition: 0.2s;">🔥 이 폴더 영구 비우기</button>`;
+    if (isTrashMode && !isCombinedView) {
+        if (!isGalleryDateGroupNode(parentNode)) {
+            titleHtml += `<button onclick="emptyTrashFolder('${parentNode.name}')" style="background:#f44; color:#fff; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; font-size:13px; box-shadow: 0 0 10px rgba(255,68,68,0.4); transition: 0.2s;">🔥 이 폴더 영구 비우기</button>`;
+        }
     }
-    sec.innerHTML = titleHtml;
+    const titleLabel = document.createElement('div');
+    titleLabel.innerHTML = titleHtml;
+    sec.appendChild(titleLabel);
     container.appendChild(sec);
 
     const useFixedSizeGrid = Boolean(galleryDesignSettings.fixedSizeMode);
@@ -4568,9 +7170,18 @@ function renderImageGrid(container, title, images, parentNode) {
             return col;
         });
 
-    const fk = parentNode.path;
-
-    images.forEach((item, idx) => {
+    const orderedImages = [...(images || [])].sort((a, b) => {
+        const mtimeDiff = galleryImageOrder === 'oldest'
+            ? (Number(a?.mtime) || 0) - (Number(b?.mtime) || 0)
+            : (Number(b?.mtime) || 0) - (Number(a?.mtime) || 0);
+        return mtimeDiff || String(a?.path || a?.name || '').localeCompare(String(b?.path || b?.name || ''));
+    });
+    const appendImageBatch = (startIndex, endIndex) => {
+        orderedImages.slice(startIndex, endIndex).forEach((item, offset) => {
+        const idx = startIndex + offset;
+        const imageParent = getGalleryImageParentInfo(item, parentNode);
+        const folderId = imageParent.name;
+        const fk = imageParent.path;
         const p = item.path;
         const imgSrc = getGalleryImageSrc(p);
         const galleryTagId = item.gallery_tag || getGalleryImageTagId(p);
@@ -4677,8 +7288,59 @@ function renderImageGrid(container, title, images, parentNode) {
         } else {
             cols[idx % colCount].appendChild(wrapper.firstElementChild);
         }
-    });
+        });
+    };
     container.appendChild(g);
+
+    const totalImages = orderedImages.length;
+    const batchSize = clampGalleryNumber(galleryDesignSettings.imageRenderBatchSize, 1000, 100, 10000);
+    let renderedCount = 0;
+    let session = null;
+    const progress = document.createElement('div');
+    progress.className = 'gallery-image-render-progress';
+    progress.textContent = `표시 0 / 전체 ${totalImages.toLocaleString()}`;
+    const sentinel = document.createElement('div');
+    sentinel.className = 'gallery-image-render-sentinel';
+    const finish = () => {
+        if (!session) return;
+        session.observer?.disconnect();
+        session.observer = null;
+        sentinel.remove();
+        session.fallback?.remove();
+        galleryImageRenderSessions.delete(session);
+        progress.textContent = `전체 ${totalImages.toLocaleString()}장 표시 완료`;
+    };
+    const appendNextBatch = () => {
+        if (renderedCount >= totalImages) return;
+        const nextCount = Math.min(totalImages, renderedCount + batchSize);
+        appendImageBatch(renderedCount, nextCount);
+        renderedCount = nextCount;
+        progress.textContent = renderedCount >= totalImages
+            ? `전체 ${totalImages.toLocaleString()}장 표시 완료`
+            : `표시 ${renderedCount.toLocaleString()} / 전체 ${totalImages.toLocaleString()}`;
+        if (renderedCount >= totalImages) finish();
+    };
+    container.appendChild(progress);
+    appendNextBatch();
+    if (renderedCount < totalImages) {
+        session = {observer: null, fallback: null, cleanup: () => { session.observer?.disconnect(); sentinel.remove(); session.fallback?.remove(); progress.remove(); }};
+        galleryImageRenderSessions.add(session);
+        if (typeof IntersectionObserver !== 'undefined') {
+            session.observer = new IntersectionObserver(entries => {
+                if (entries.some(entry => entry.isIntersecting)) appendNextBatch();
+            }, {rootMargin: '600px'});
+            session.observer.observe(sentinel);
+        } else {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'gallery-image-render-more';
+            button.textContent = '다음 이미지 표시';
+            button.onclick = appendNextBatch;
+            session.fallback = button;
+            container.appendChild(button);
+        }
+        container.appendChild(sentinel);
+    }
 }
 
 function openZoom(src) { document.getElementById('zoomImg').src = src; document.getElementById('zoomLayer').style.display = 'flex'; }
@@ -4704,6 +7366,183 @@ function showToast(msg) {
     setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 2000);
 }
 
+function updateGalleryMultiFolderSelectionUi() {
+    const count = galleryMultiFolderSelection.size;
+    const imageCount = [...galleryMultiFolderSelection.values()].reduce((sum, folder) => {
+        const value = Number(folder?.total_images);
+        return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+    document.body.classList.toggle('gallery-multi-folder-selection-mode', count > 0);
+
+    const countText = document.getElementById('galleryMultiFolderSelectionCount');
+    if (countText) countText.innerText = `${count}개 폴더 · 그림 ${imageCount}장 선택됨`;
+
+    document.querySelectorAll('.gallery-multi-folder-selectable').forEach((card) => {
+        const key = normalizeGalleryPathKey(card.dataset.multiFolderPath || '');
+        card.classList.toggle('multi-folder-selected', galleryMultiFolderSelection.has(key));
+    });
+}
+
+function clearGalleryMultiFolderSelection(updateUi = true) {
+    if (galleryFolderOpenTimer) {
+        clearTimeout(galleryFolderOpenTimer);
+        galleryFolderOpenTimer = null;
+    }
+
+    galleryMultiFolderSelection.clear();
+    cancelGalleryMultiFolderBoxSelection();
+    closeGalleryMultiFolderContextMenu();
+
+    if (updateUi) updateGalleryMultiFolderSelectionUi();
+    else document.body.classList.remove('gallery-multi-folder-selection-mode');
+}
+
+function toggleGalleryMultiFolder(folder, element = null) {
+    const key = getGalleryMultiFolderKey(folder);
+    if (!key) return;
+
+    if (galleryMultiFolderSelection.has(key)) {
+        galleryMultiFolderSelection.delete(key);
+    } else {
+        galleryMultiFolderSelection.set(key, folder);
+    }
+
+    if (element) {
+        element.classList.toggle('multi-folder-selected', galleryMultiFolderSelection.has(key));
+    }
+
+    closeGalleryMultiFolderContextMenu();
+    updateGalleryMultiFolderSelectionUi();
+}
+
+function selectGalleryMultiFolderElement(node) {
+    const key = normalizeGalleryPathKey(node?.dataset?.multiFolderPath || '');
+    if (!key || galleryMultiFolderSelection.has(key)) return;
+
+    const currentNode = currentPath[currentPath.length - 1];
+    const folder = node?.galleryMultiFolderNode ||
+        (currentNode?.folders || []).find((item) => getGalleryMultiFolderKey(item) === key);
+    if (!folder) return;
+
+    galleryMultiFolderSelection.set(key, folder);
+    node.classList.add('multi-folder-selected');
+}
+
+function selectAllGalleryMultiFolderElements() {
+    if (!galleryDesignSettings.multiFolderSelectionEnabled || isGalleryBulkDeleteMode || isGalleryTagAssignmentMode) return;
+
+    const nodes = document.querySelectorAll('.gallery-multi-folder-selectable');
+    if (!nodes.length) return;
+
+    nodes.forEach((node) => selectGalleryMultiFolderElement(node));
+    updateGalleryMultiFolderSelectionUi();
+}
+
+function beginGalleryMultiFolderBoxSelection(event) {
+    if (!galleryDesignSettings.multiFolderSelectionEnabled || isGalleryBulkDeleteMode || isGalleryTagAssignmentMode) return;
+    if (event.button !== 0 || !event.target.closest?.('#content')) return;
+    if (!document.querySelector('.gallery-multi-folder-selectable')) return;
+    if (event.target.closest('button, input, select, textarea, a, .gallery-multi-folder-selection-bar')) return;
+
+    galleryMultiFolderSelectionBoxState = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        currentX: event.clientX,
+        currentY: event.clientY,
+        moved: false,
+        box: null
+    };
+}
+
+function updateGalleryMultiFolderBoxSelection(event) {
+    const state = galleryMultiFolderSelectionBoxState;
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+    if (!state.moved && Math.hypot(dx, dy) < 6) return;
+
+    if (!state.box) {
+        state.box = document.createElement('div');
+        state.box.className = 'gallery-multi-folder-selection-box';
+        document.body.appendChild(state.box);
+    }
+
+    state.moved = true;
+    state.currentX = event.clientX;
+    state.currentY = event.clientY;
+
+    const left = Math.min(state.startX, state.currentX);
+    const top = Math.min(state.startY, state.currentY);
+    const width = Math.abs(state.currentX - state.startX);
+    const height = Math.abs(state.currentY - state.startY);
+
+    state.box.style.left = `${left}px`;
+    state.box.style.top = `${top}px`;
+    state.box.style.width = `${width}px`;
+    state.box.style.height = `${height}px`;
+
+    const boxRect = state.box.getBoundingClientRect();
+    document.querySelectorAll('.gallery-multi-folder-selectable').forEach((node) => {
+        const rect = node.getBoundingClientRect();
+        const hit = !(
+            rect.right < boxRect.left ||
+            rect.left > boxRect.right ||
+            rect.bottom < boxRect.top ||
+            rect.top > boxRect.bottom
+        );
+
+        if (hit) selectGalleryMultiFolderElement(node);
+    });
+
+    updateGalleryMultiFolderSelectionUi();
+    event.preventDefault();
+}
+
+function finishGalleryMultiFolderBoxSelection(event) {
+    const state = galleryMultiFolderSelectionBoxState;
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    state.box?.remove();
+    if (state.moved) {
+        galleryMultiFolderSuppressNextClick = true;
+        setTimeout(() => {
+            galleryMultiFolderSuppressNextClick = false;
+        }, 160);
+    }
+
+    galleryMultiFolderSelectionBoxState = null;
+}
+
+function cancelGalleryMultiFolderBoxSelection() {
+    galleryMultiFolderSelectionBoxState?.box?.remove();
+    galleryMultiFolderSelectionBoxState = null;
+}
+
+function openGalleryMultiFolderContextMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const menu = document.getElementById('galleryMultiFolderContextMenu');
+    if (!menu || !galleryMultiFolderSelection.size) return;
+
+    const button = document.getElementById('galleryMultiFolderOpenBtn');
+    if (button) button.innerText = `📂 선택한 ${galleryMultiFolderSelection.size}개 폴더 열기`;
+
+    menu.style.display = 'block';
+    const margin = 12;
+    const menuWidth = menu.offsetWidth || 240;
+    const menuHeight = menu.offsetHeight || 48;
+    menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - menuWidth - margin))}px`;
+    menu.style.top = `${Math.max(margin, Math.min(event.clientY, window.innerHeight - menuHeight - margin))}px`;
+}
+
+function closeGalleryMultiFolderContextMenu() {
+    const menu = document.getElementById('galleryMultiFolderContextMenu');
+    if (menu) menu.style.display = 'none';
+}
+
 function getGalleryBulkDeleteFolderKey(folder) {
     return normalizeGalleryPathKey(folder?.path || folder?.name || '');
 }
@@ -4724,6 +7563,10 @@ function updateGalleryBulkDeleteModeUi() {
 
 function toggleGalleryBulkDeleteMode() {
     isGalleryBulkDeleteMode = !isGalleryBulkDeleteMode;
+
+    if (isGalleryBulkDeleteMode) {
+        clearGalleryMultiFolderSelection();
+    }
 
     if (isGalleryBulkDeleteMode && isGalleryTagAssignmentMode) {
         isGalleryTagAssignmentMode = false;
@@ -4814,6 +7657,10 @@ function toggleGalleryBulkDeleteImage(imagePath, folderId, folderKey, fileName, 
 }
 
 function handleGalleryImageCardClick(event, imagePath, folderId, folderKey, fileName, boxId, imgSrc) {
+    if (event.defaultPrevented || consumeGalleryRadialTagClick(event)) {
+        return;
+    }
+
     if (isGalleryBulkDeleteMode) {
         event.preventDefault();
         event.stopPropagation();

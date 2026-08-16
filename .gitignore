@@ -27,12 +27,17 @@ data/tag_categories_ko.json
 
 # Generated/imported output and user image library
 docs/
+!NAI_Image_Manager_2.0/docs/
+!NAI_Image_Manager_2.0/docs/**
 tests/
+!tests/
+!tests/*.py
 patch_notes/
 canvas_imports/
 daki_generated_temp/
 output/
 TOTAL_CLASSIFIED/
+tools/downloads/
 
 # OS/editor noise
 .DS_Store

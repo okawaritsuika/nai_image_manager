@@ -43,6 +43,8 @@ let contextImageLayerId = null;
 let isLayerMoveMode = false;
 let activeLayerDrag = null;
 let draggedLayerId = null;
+let pendingCanvasHotLayerIds = new Set();
+let canvasHotGeometryFrame = null;
 
 let activeSelectionDrag = null;
 
@@ -57,6 +59,7 @@ const LATEST_NAI_IMAGE_MODEL = 'nai-diffusion-4-5-full';
 let activeClipMaskTool = 'brush';
 let clipMaskBrushSize = 96;
 let isClipMaskPainting = false;
+const clipMaskPersistRevisions = new WeakMap();
 let clipOutputInternalClipboard = null;
 
 const CLIP_MASK_BRUSH_MIN = 8;
@@ -362,6 +365,7 @@ function showToast(message) {
 
 const CANVAS_STATE_KEY = 'naia_canvas_state_v1';
 const CANVAS_PENDING_IMPORT_KEY = 'naia_canvas_pending_import';
+const CANVAS_DISPLAY_PREVIEW_MAX_SIDE = 4096;
 const CANVAS_IMPORT_SESSION_ID = `canvas_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 const CANVAS_IMPORT_CLEANUP_DELAY = 2500;
 
@@ -495,6 +499,7 @@ window.addEventListener('load', async () => {
         closeCanvasImageLayerContextMenu();
         closeCanvasSelectionContextMenu();
         closeClipOutputClipboardContextMenu();
+        refreshActiveCanvasDragCoordinateCache();
     }, true);
 
     bindExternalCanvasImageDropAndPaste();
@@ -715,7 +720,6 @@ function createCanvasFromDialog() {
 
     renderCanvas(width, height);
     renderLayerList();
-    renderCanvasLayersOnSurface();
     saveCanvasState();
     closeCanvasDialog();
 }
@@ -1258,7 +1262,7 @@ function renderLayerTree(layers, container, depth) {
                     ? `<div class="layer-thumb layer-folder-thumb">📁</div>`
                     : isSelection
                         ? `<div class="layer-thumb layer-selection-thumb"></div>`
-                        : `<div class="layer-thumb">${layer.src ? `<img src="${escapeHtml(layer.src)}" alt="">` : ''}</div>`
+                        : `<div class="layer-thumb">${layer.src ? `<img src="${escapeHtml(getCanvasLayerDisplaySrc(layer))}" alt="">` : ''}</div>`
             }
 
             <div class="layer-info">
@@ -1323,7 +1327,7 @@ function renderLayerTree(layers, container, depth) {
         deleteBtn.oncontextmenu = (event) => event.stopPropagation();
 
         // 이미지 레이어 우클릭 메뉴 유지
-        if (isImage) {
+        if (isImageLike) {
             item.oncontextmenu = (event) => {
                 openCanvasImageLayerContextMenu(event, layer.id);
             };
@@ -1428,6 +1432,39 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+function getCanvasDisplayImageSrc(src, width, height) {
+    const source = String(src || '').trim();
+    const maxSide = Math.max(Number(width) || 0, Number(height) || 0);
+
+    if (!source || maxSide <= CANVAS_DISPLAY_PREVIEW_MAX_SIDE) {
+        return source;
+    }
+
+    try {
+        const url = new URL(source, window.location.origin);
+        const isLocalCanvasImage = url.origin === window.location.origin && (
+            url.pathname.startsWith('/image/') ||
+            url.pathname.startsWith('/canvas-imports/')
+        );
+
+        if (!isLocalCanvasImage) return source;
+
+        url.searchParams.set('preview', String(CANVAS_DISPLAY_PREVIEW_MAX_SIDE));
+        return `${url.pathname}${url.search}`;
+    } catch (error) {
+        return source;
+    }
+}
+
+function getCanvasLayerDisplaySrc(layer) {
+    if (!layer) return '';
+    return getCanvasDisplayImageSrc(
+        layer.src,
+        layer.imageWidth || layer.layerWidth,
+        layer.imageHeight || layer.layerHeight
+    );
 }
 
 function saveCanvasState() {
@@ -2020,7 +2057,7 @@ function renderCanvasImportManagerList() {
         row.type = 'button';
         row.className = `canvas-import-manager-item${item.ref === selectedCanvasImportManagerRef ? ' active' : ''}`;
         row.innerHTML = `
-            <img src="${escapeHtml(item.src)}" alt="">
+            <img src="${escapeHtml(getCanvasDisplayImageSrc(item.src, item.width, item.height))}" alt="">
             <span class="canvas-import-manager-item-info">
                 <strong>${escapeHtml(item.name || '외부 이미지')}</strong>
                 <span class="canvas-import-manager-status ${status.key}">${escapeHtml(status.label)}</span>
@@ -2057,7 +2094,7 @@ function renderCanvasImportManagerPreview() {
 
     const imageWrap = document.createElement('div');
     imageWrap.className = 'canvas-import-manager-image-wrap';
-    imageWrap.innerHTML = `<img src="${escapeHtml(item.src)}" alt="">`;
+    imageWrap.innerHTML = `<img src="${escapeHtml(getCanvasDisplayImageSrc(item.src, item.width, item.height))}" alt="">`;
 
     const details = document.createElement('div');
     details.className = 'canvas-import-manager-details';
@@ -2099,6 +2136,8 @@ function importCanvasImportManagerItem(ref) {
     showPendingCanvasImportModal({
         src: item.src,
         path: item.src,
+        width: item.width,
+        height: item.height,
         name: item.name || '외부 이미지',
         promptInfo: item.promptInfo || null,
         hasPromptInfo: Boolean(item.hasPromptInfo),
@@ -2208,6 +2247,8 @@ async function importExternalCanvasImageFile(file) {
         const payload = {
             src: data.src,
             path: data.path || data.src || '',
+            width: data.width,
+            height: data.height,
             name: data.name || file.name || '외부 이미지',
             promptInfo: data.promptInfo || null,
             hasPromptInfo: Boolean(data.hasPromptInfo),
@@ -2378,7 +2419,11 @@ function loadImageInfo(src) {
 }
 
 async function importImageLayer(payload) {
-    const info = await loadImageInfo(payload.src);
+    const payloadWidth = Math.round(Number(payload.width) || 0);
+    const payloadHeight = Math.round(Number(payload.height) || 0);
+    const info = payloadWidth > 0 && payloadHeight > 0
+        ? { width: payloadWidth, height: payloadHeight }
+        : await loadImageInfo(payload.src);
 
     // 캔버스가 없으면 가져온 이미지 크기로 새 캔버스 생성
     if (!currentCanvasWidth || !currentCanvasHeight) {
@@ -2386,10 +2431,11 @@ async function importImageLayer(payload) {
         currentCanvasHeight = info.height;
         canvasLayers = [];
         layerIdSeq = 1;
-        renderCanvas(currentCanvasWidth, currentCanvasHeight);
     }
 
-    const initialGeometry = getInitialImageLayerGeometry(info.width, info.height);
+    const initialGeometry = getInitialImageLayerGeometry(info.width, info.height, {
+        allowUpscale: true
+    });
 
     let promptInfo = normalizePromptInfo(payload.promptInfo);
 
@@ -2424,7 +2470,6 @@ async function importImageLayer(payload) {
 
     renderCanvas(currentCanvasWidth, currentCanvasHeight);
     renderLayerList();
-    renderCanvasLayersOnSurface();
     saveCanvasState();
 }
 
@@ -2432,6 +2477,11 @@ function renderCanvasLayersOnSurface() {
     const surface = el('canvasSurface');
     if (!surface) return;
 
+    if (canvasHotGeometryFrame !== null) {
+        cancelAnimationFrame(canvasHotGeometryFrame);
+        canvasHotGeometryFrame = null;
+    }
+    pendingCanvasHotLayerIds.clear();
     surface.innerHTML = '';
 
     const displayScale = getCanvasDisplayScale();
@@ -2443,6 +2493,135 @@ function renderCanvasLayersOnSurface() {
     renderPinnedReferencePanel();
     renderCanvasResizeHandles(surface, displayScale);
     renderCanvasResizeSpacingGuides(surface, displayScale);
+}
+
+function setCanvasLayerNodePosition(node, x, y, displayScale) {
+    if (!node) return;
+
+    node.style.left = '0px';
+    node.style.top = '0px';
+    node.style.transform = `translate3d(${x * displayScale}px, ${y * displayScale}px, 0)`;
+}
+
+function updateCanvasLayerNodeGeometry(layer, displayScale = getCanvasDisplayScale()) {
+    if (!layer || layer.visible === false) return false;
+
+    const node = document.querySelector(`.canvas-render-layer[data-layer-id="${Number(layer.id)}"]`);
+    if (!node) return false;
+
+    if (layer.type === 'selection') {
+        normalizeSelectionAreaGeometry(layer);
+    } else if (layer.type === 'image') {
+        normalizeImageLayerGeometry(layer);
+    }
+
+    const x = Number(layer.x || 0);
+    const y = Number(layer.y || 0);
+    const width = Number(layer.layerWidth || layer.imageWidth || 1);
+    const height = Number(layer.layerHeight || layer.imageHeight || 1);
+
+    setCanvasLayerNodePosition(node, x, y, displayScale);
+    node.style.width = `${width * displayScale}px`;
+    node.style.height = `${height * displayScale}px`;
+    return true;
+}
+
+function updateCanvasHotMultiLayerOverlay(surface, displayScale) {
+    const box = surface.querySelector('.multi-layer-transform-box');
+    if (!box) return;
+
+    const layers = getSelectedTransformLayers();
+    const bounds = layers.length >= 2 ? getTransformLayerBounds(layers) : null;
+
+    if (!bounds) {
+        box.remove();
+        return;
+    }
+
+    box.style.left = `${bounds.x * displayScale}px`;
+    box.style.top = `${bounds.y * displayScale}px`;
+    box.style.width = `${bounds.width * displayScale}px`;
+    box.style.height = `${bounds.height * displayScale}px`;
+}
+
+function syncCanvasSurfaceSelectionState() {
+    const surface = el('canvasSurface');
+    if (!surface) return;
+
+    surface.querySelectorAll('.canvas-render-layer[data-layer-id]').forEach((node) => {
+        const id = Number(node.dataset.layerId);
+        node.classList.toggle('multi-selected', isLayerMultiSelected(id));
+        node.classList.toggle(
+            'is-active-moving',
+            Boolean(activeLayerDrag && activeLayerDrag.mode !== 'multi' && Number(activeLayerId) === id)
+        );
+
+        if (node.classList.contains('selection-area-layer')) {
+            node.classList.toggle('active-selection', Number(activeLayerId) === id);
+        }
+    });
+
+    surface.querySelector('.multi-layer-transform-box')?.remove();
+    renderMultiLayerTransformOverlay(surface, getCanvasDisplayScale());
+}
+
+function updateCanvasHotResizeControls(surface, displayScale) {
+    if (!isImageResizeMode) return;
+    surface.querySelectorAll('.image-resize-clamped-handle').forEach((node) => node.remove());
+    renderClampedImageResizeHandles(surface, displayScale);
+}
+
+function updateCanvasHotLayerGeometry(targets) {
+    const addTarget = (target) => {
+        if (target == null) return;
+        if (typeof target === 'object' && target.id != null) {
+            pendingCanvasHotLayerIds.add(Number(target.id));
+            return;
+        }
+        pendingCanvasHotLayerIds.add(Number(target));
+    };
+
+    if (Array.isArray(targets)) {
+        targets.forEach(addTarget);
+    } else {
+        addTarget(targets);
+    }
+
+    if (canvasHotGeometryFrame !== null) return;
+
+    canvasHotGeometryFrame = requestAnimationFrame(() => {
+        canvasHotGeometryFrame = null;
+        flushPendingCanvasHotLayerGeometry();
+    });
+}
+
+function flushPendingCanvasHotLayerGeometry() {
+    if (canvasHotGeometryFrame !== null) {
+        cancelAnimationFrame(canvasHotGeometryFrame);
+        canvasHotGeometryFrame = null;
+    }
+
+    if (!pendingCanvasHotLayerIds.size) return;
+
+    const ids = [...pendingCanvasHotLayerIds];
+    pendingCanvasHotLayerIds.clear();
+    flushCanvasHotLayerGeometry(ids);
+}
+
+function flushCanvasHotLayerGeometry(ids) {
+    const surface = el('canvasSurface');
+    if (!surface) return;
+
+    const displayScale = getCanvasDisplayScale();
+
+    (ids || []).forEach((id) => {
+        if (!Number.isFinite(id)) return;
+        const layer = findCanvasLayer(id)?.layer;
+        updateCanvasLayerNodeGeometry(layer, displayScale);
+    });
+
+    updateCanvasHotMultiLayerOverlay(surface, displayScale);
+    updateCanvasHotResizeControls(surface, displayScale);
 }
 
 function renderCanvasResizeHandles(surface, displayScale) {
@@ -2561,9 +2740,9 @@ function renderCanvasResizeSpacingGuides(surface, displayScale) {
 }
 
 function getResizeBoundsForLayer(layer) {
-    if (!layer || layer.type !== 'image') return null;
+    if (!isResizableCanvasLayer(layer)) return null;
 
-    normalizeImageLayerGeometry(layer);
+    normalizeResizableLayerGeometry(layer);
 
     return {
         x: Number(layer.x || 0),
@@ -2664,7 +2843,7 @@ function renderClampedImageResizeHandles(surface, displayScale) {
     }
 
     const layer = getActiveTransformLayerOrNull();
-    if (!layer || layer.type !== 'image') return;
+    if (!isResizableCanvasLayer(layer)) return;
 
     appendClampedResizeHandles(
         surface,
@@ -2773,7 +2952,7 @@ function renderPinnedReferencePanel() {
             <div class="canvas-pinned-reference-image-wrap"
                  data-layer-id="${layer.id}"
                  style="width:${width}px; height:${height}px;">
-                <img src="${escapeHtml(layer.src)}" draggable="false" alt="pinned reference">
+                <img src="${escapeHtml(getCanvasLayerDisplaySrc(layer))}" draggable="false" alt="pinned reference">
             </div>
         </div>
 
@@ -3176,8 +3355,7 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
 
             selectionEl.dataset.layerId = String(layer.id);
 
-            selectionEl.style.left = `${layer.x * displayScale}px`;
-            selectionEl.style.top = `${layer.y * displayScale}px`;
+            setCanvasLayerNodePosition(selectionEl, layer.x, layer.y, displayScale);
             selectionEl.style.width = `${layer.layerWidth * displayScale}px`;
             selectionEl.style.height = `${layer.layerHeight * displayScale}px`;
 
@@ -3217,23 +3395,47 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
             layerEl.className = 'canvas-render-layer image-layer';
             layerEl.dataset.layerId = String(layer.id);
 
-            layerEl.style.left = `${layer.x * displayScale}px`;
-            layerEl.style.top = `${layer.y * displayScale}px`;
+            setCanvasLayerNodePosition(layerEl, layer.x, layer.y, displayScale);
             layerEl.style.width = `${layer.layerWidth * displayScale}px`;
             layerEl.style.height = `${layer.layerHeight * displayScale}px`;
 
             layerEl.onmousedown = (event) => {
+                if (isImageResizeMode) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    selectedLayerIds.clear();
+                    selectedLayerIds.add(Number(layer.id));
+                    activeLayerId = layer.id;
+                    renderLayerList();
+                    renderCanvasLayersOnSurface();
+                    return;
+                }
+
                 if (parentSelection) {
                     startSelectionMoveFromCanvasEvent(event, parentSelection);
                 }
             };
 
+            layerEl.oncontextmenu = (event) => {
+                openCanvasImageLayerContextMenu(event, layer.id);
+            };
+
             const img = document.createElement('img');
-            img.src = layer.src;
+            img.src = getCanvasLayerDisplaySrc(layer);
             img.alt = layer.name || 'inpaint result';
             img.draggable = false;
 
             layerEl.appendChild(img);
+
+            if (isLayerMultiSelected(layer.id)) {
+                layerEl.classList.add('multi-selected');
+            }
+
+            if (isImageResizeMode && Number(layer.id) === Number(activeLayerId)) {
+                layerEl.classList.add('resize-active');
+                appendImageResizeHandles(layerEl, layer.id);
+            }
+
             surface.appendChild(layerEl);
             return;
         }
@@ -3259,8 +3461,7 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
                 layerEl.classList.add('is-active-moving');
             }
 
-            layerEl.style.left = `${layer.x * displayScale}px`;
-            layerEl.style.top = `${layer.y * displayScale}px`;
+            setCanvasLayerNodePosition(layerEl, layer.x, layer.y, displayScale);
             layerEl.style.width = `${layer.layerWidth * displayScale}px`;
             layerEl.style.height = `${layer.layerHeight * displayScale}px`;
 
@@ -3284,7 +3485,7 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
             };
 
             const img = document.createElement('img');
-            img.src = layer.src;
+            img.src = getCanvasLayerDisplaySrc(layer);
             img.alt = layer.name || 'canvas layer';
             img.draggable = false;
 
@@ -3385,6 +3586,91 @@ async function fitCanvasSizeToContextImageLayer() {
     }
 
     fitCanvasSizeToImageLayer(layer, width, height);
+}
+
+function canUseLayerAsDetailSource(layer) {
+    return Boolean(layer && (layer.type === 'image' || layer.type === 'clip') && layer.src);
+}
+
+async function getLayerDetailSource(layer) {
+    if (!canUseLayerAsDetailSource(layer)) {
+        return null;
+    }
+
+    let width = parseInt(layer.imageWidth || layer.layerWidth, 10);
+    let height = parseInt(layer.imageHeight || layer.layerHeight, 10);
+
+    if (!width || !height) {
+        const info = await loadImageInfo(layer.src);
+        width = info.width;
+        height = info.height;
+        layer.imageWidth = width;
+        layer.imageHeight = height;
+    }
+
+    if (!width || !height) {
+        return null;
+    }
+
+    return {
+        src: layer.src,
+        width,
+        height,
+        promptInfo: normalizeReferenceGenPromptInfo(layer.promptInfo || {}),
+        sourceLayerId: layer.id,
+        sourceLayerName: layer.name || '',
+        sourceLayerType: layer.type
+    };
+}
+
+async function openOriginalLayerDetailEditor() {
+    closeCanvasImageLayerContextMenu();
+
+    const found = findCanvasLayer(contextImageLayerId);
+    const layer = found?.layer;
+
+    if (!canUseLayerAsDetailSource(layer)) {
+        alert('디테일을 적용할 이미지 또는 클립 레이어를 찾을 수 없습니다.');
+        return;
+    }
+
+    try {
+        const detailSource = await getLayerDetailSource(layer);
+
+        if (!detailSource) {
+            alert('디테일을 적용할 이미지 크기를 읽을 수 없습니다.');
+            return;
+        }
+
+        referenceGenSession = {
+            width: detailSource.width,
+            height: detailSource.height,
+            originalSrc: detailSource.src,
+            currentSrc: detailSource.src,
+            detailSourceSrc: detailSource.src,
+            resultSrc: '',
+            promptInfo: detailSource.promptInfo,
+            maskDataUrl: '',
+            sourceLayerId: detailSource.sourceLayerId,
+            sourceLayerName: detailSource.sourceLayerName,
+            sourceLayerType: layer.type,
+            mode: 'original-detail',
+            createdAt: Date.now()
+        };
+
+        referenceGenTool = 'brush';
+        referenceGenBrushSize = 96;
+        referenceGenMaskVisible = true;
+        referenceGenPainting = false;
+        referenceGenLastPoint = null;
+        referenceGenLastPointerEvent = null;
+
+        openReferenceGenLayer();
+        showReferenceGenToast('원본 이미지에서 디테일 영역을 선택할 수 있습니다.');
+
+    } catch (error) {
+        alert(`원본 디테일 편집을 열 수 없습니다: ${error.message || error}`);
+    }
 }
 
 function forEachCanvasLayerDeep(layers, callback) {
@@ -3652,7 +3938,6 @@ function fitCanvasSizeToImageLayer(layer, width, height) {
 
     renderCanvas(width, height);
     renderLayerList();
-    renderCanvasLayersOnSurface();
     updateCanvasRatioInfo();
     saveCanvasState();
 }
@@ -3845,17 +4130,16 @@ function getCanvasDisplayScale() {
     return displayWidth / currentCanvasWidth;
 }
 
-function getInitialImageLayerGeometry(imageWidth, imageHeight) {
+function getInitialImageLayerGeometry(imageWidth, imageHeight, options = null) {
     const canvasWidth = currentCanvasWidth || imageWidth || 960;
     const canvasHeight = currentCanvasHeight || imageHeight || 3072;
+    const allowUpscale = options?.allowUpscale === true;
 
-    // 기본은 원본 크기 유지.
-    // 단, 캔버스보다 너무 크면 캔버스 안에 들어오도록 축소.
-    const fitScale = Math.min(
+    const containScale = Math.min(
         canvasWidth / imageWidth,
-        canvasHeight / imageHeight,
-        1
+        canvasHeight / imageHeight
     );
+    const fitScale = allowUpscale ? containScale : Math.min(containScale, 1);
 
     const width = Math.max(1, Math.round(imageWidth * fitScale));
     const height = Math.max(1, Math.round(imageHeight * fitScale));
@@ -3889,15 +4173,40 @@ function normalizeImageLayerGeometry(layer) {
     }
 }
 
+function isResizableCanvasLayer(layer) {
+    return Boolean(
+        layer &&
+        layer.visible !== false &&
+        !layer.pinnedReference &&
+        (layer.type === 'image' || (layer.type === 'clip' && layer.renderOnCanvas && layer.src))
+    );
+}
+
+function normalizeResizableLayerGeometry(layer) {
+    if (!isResizableCanvasLayer(layer)) return;
+
+    if (layer.type === 'image') {
+        normalizeImageLayerGeometry(layer);
+        return;
+    }
+
+    const fallbackWidth = parseInt(layer.imageWidth, 10) || currentCanvasWidth || 1;
+    const fallbackHeight = parseInt(layer.imageHeight, 10) || currentCanvasHeight || 1;
+    layer.layerWidth = Math.max(1, Number(layer.layerWidth) || fallbackWidth);
+    layer.layerHeight = Math.max(1, Number(layer.layerHeight) || fallbackHeight);
+    layer.x = Number.isFinite(Number(layer.x)) ? Number(layer.x) : 0;
+    layer.y = Number.isFinite(Number(layer.y)) ? Number(layer.y) : 0;
+}
+
 function getActiveImageLayerForResize() {
     const found = findCanvasLayer(activeLayerId);
     const layer = found?.layer;
 
-    if (!layer || layer.type !== 'image') {
+    if (!isResizableCanvasLayer(layer)) {
         return null;
     }
 
-    normalizeImageLayerGeometry(layer);
+    normalizeResizableLayerGeometry(layer);
     return layer;
 }
 
@@ -3918,7 +4227,8 @@ function updateImageResizePanel() {
 
     panel.style.display = 'flex';
 
-    nameNode.innerText = `${layer.name || '이미지 레이어'} · 원본 ${layer.imageWidth || '?'} × ${layer.imageHeight || '?'}px`;
+    const layerLabel = layer.type === 'clip' ? '인페인팅 결과' : '이미지 레이어';
+    nameNode.innerText = `${layer.name || layerLabel} · 원본 ${layer.imageWidth || '?'} × ${layer.imageHeight || '?'}px`;
 
     isSyncingImageResizeInputs = true;
     widthInput.value = Math.round(layer.layerWidth || layer.imageWidth || 1);
@@ -3993,7 +4303,8 @@ function fitActiveImageLayerToCanvas() {
 
     const geometry = getInitialImageLayerGeometry(
         layer.imageWidth || layer.layerWidth || 1,
-        layer.imageHeight || layer.layerHeight || 1
+        layer.imageHeight || layer.layerHeight || 1,
+        { allowUpscale: true }
     );
 
     layer.layerWidth = geometry.width;
@@ -4045,6 +4356,9 @@ function startLayerMoveDrag(event, layerId) {
         grabOffsetY,
         layerWidth: layer.layerWidth,
         layerHeight: layer.layerHeight,
+        displayScale,
+        surfaceLeft: surfaceRect.left,
+        surfaceTop: surfaceRect.top,
         stuckX: null,
         stuckY: null
     };
@@ -4052,7 +4366,7 @@ function startLayerMoveDrag(event, layerId) {
     if (surface) surface.classList.add('dragging');
 
     renderLayerList();
-    renderCanvasLayersOnSurface();
+    syncCanvasSurfaceSelectionState();
 }
 
 function startMultiLayerMoveDrag(event) {
@@ -4073,6 +4387,9 @@ function startMultiLayerMoveDrag(event) {
         layerIds: layers.map((layer) => Number(layer.id)),
         startPointerX: pointer.x,
         startPointerY: pointer.y,
+        displayScale: pointer.displayScale,
+        surfaceLeft: pointer.surfaceLeft,
+        surfaceTop: pointer.surfaceTop,
         startBoundsX: bounds.x,
         startBoundsY: bounds.y,
         boundsWidth: bounds.width,
@@ -4090,7 +4407,7 @@ function startMultiLayerMoveDrag(event) {
     if (surface) surface.classList.add('dragging');
 
     renderLayerList();
-    renderCanvasLayersOnSurface();
+    syncCanvasSurfaceSelectionState();
 }
 
 function isSelectionChildMovableLayer(layer) {
@@ -4178,15 +4495,13 @@ function handleLayerMoveMouseMove(event) {
     const layer = found?.layer;
     if (!layer) return;
 
-    const displayScale = getCanvasDisplayScale();
+    const displayScale = activeLayerDrag.displayScale || getCanvasDisplayScale();
     const surface = el('canvasSurface');
     if (!surface) return;
 
-    const surfaceRect = surface.getBoundingClientRect();
-
     // 현재 마우스 위치를 캔버스 실제 좌표로 변환
-    const pointerCanvasX = (event.clientX - surfaceRect.left) / displayScale;
-    const pointerCanvasY = (event.clientY - surfaceRect.top) / displayScale;
+    const pointerCanvasX = (event.clientX - activeLayerDrag.surfaceLeft) / displayScale;
+    const pointerCanvasY = (event.clientY - activeLayerDrag.surfaceTop) / displayScale;
 
     // 중요:
     // 마우스 기준이 아니라,
@@ -4218,15 +4533,15 @@ function handleLayerMoveMouseMove(event) {
     activeLayerDrag.stuckX = resolvedX.stuckState;
     activeLayerDrag.stuckY = resolvedY.stuckState;
 
-    renderCanvasLayersOnSurface();
+    updateCanvasHotLayerGeometry(layer.id);
 }
 
 function handleMultiLayerMoveMouseMove(event) {
     const drag = activeLayerDrag;
     if (!drag || drag.mode !== 'multi') return;
 
-    const pointer = getCanvasPointerPosition(event);
-    const displayScale = getCanvasDisplayScale();
+    const pointer = getCanvasPointerPositionForDrag(event, drag);
+    const displayScale = pointer.displayScale;
 
     const dx = pointer.x - drag.startPointerX;
     const dy = pointer.y - drag.startPointerY;
@@ -4276,7 +4591,10 @@ function handleMultiLayerMoveMouseMove(event) {
         layer.y = snapCanvasMovePosition(start.y + finalDy);
     });
 
-    renderCanvasLayersOnSurface();
+    updateCanvasHotLayerGeometry([
+        ...drag.starts.map((start) => start.id),
+        ...(drag.childStarts || []).map((start) => start.id)
+    ]);
 }
 
 function handleLayerMoveMouseUp() {
@@ -4300,24 +4618,26 @@ function handleLayerMoveMouseUp() {
             layer.y = Math.round(layer.y || 0);
         });
 
+        flushPendingCanvasHotLayerGeometry();
         activeLayerDrag = null;
 
         const surface = el('canvasSurface');
         if (surface) surface.classList.remove('dragging');
 
         renderLayerList();
-        renderCanvasLayersOnSurface();
+        syncCanvasSurfaceSelectionState();
         saveCanvasState();
         return;
     }
 
+    flushPendingCanvasHotLayerGeometry();
     activeLayerDrag = null;
 
     const surface = el('canvasSurface');
     if (surface) surface.classList.remove('dragging');
 
     renderLayerList();
-    renderCanvasLayersOnSurface();
+    syncCanvasSurfaceSelectionState();
     saveCanvasState();
 }
 
@@ -4548,7 +4868,7 @@ function isMultiTransformLayer(layer) {
         layer &&
         layer.visible !== false &&
         (
-            (layer.type === 'image' && !layer.pinnedReference) ||
+            isResizableCanvasLayer(layer) ||
             layer.type === 'selection'
         )
     );
@@ -4557,8 +4877,8 @@ function isMultiTransformLayer(layer) {
 function normalizeTransformLayerGeometry(layer) {
     if (!layer) return;
 
-    if (layer.type === 'image') {
-        normalizeImageLayerGeometry(layer);
+    if (isResizableCanvasLayer(layer)) {
+        normalizeResizableLayerGeometry(layer);
         return;
     }
 
@@ -4955,7 +5275,7 @@ function getCanvasPointerPosition(event) {
     const displayScale = getCanvasDisplayScale();
 
     if (!surface) {
-        return { x: 0, y: 0, displayScale };
+        return { x: 0, y: 0, displayScale, surfaceLeft: 0, surfaceTop: 0 };
     }
 
     const rect = surface.getBoundingClientRect();
@@ -4963,8 +5283,31 @@ function getCanvasPointerPosition(event) {
     return {
         x: (event.clientX - rect.left) / displayScale,
         y: (event.clientY - rect.top) / displayScale,
-        displayScale
+        displayScale,
+        surfaceLeft: rect.left,
+        surfaceTop: rect.top
     };
+}
+
+function getCanvasPointerPositionForDrag(event, drag) {
+    const displayScale = Number(drag?.displayScale);
+    const surfaceLeft = Number(drag?.surfaceLeft);
+    const surfaceTop = Number(drag?.surfaceTop);
+
+    if (
+        Number.isFinite(displayScale) && displayScale > 0 &&
+        Number.isFinite(surfaceLeft) && Number.isFinite(surfaceTop)
+    ) {
+        return {
+            x: (event.clientX - surfaceLeft) / displayScale,
+            y: (event.clientY - surfaceTop) / displayScale,
+            displayScale,
+            surfaceLeft,
+            surfaceTop
+        };
+    }
+
+    return getCanvasPointerPosition(event);
 }
 
 function startSelectionMoveDrag(event, layerId) {
@@ -5006,6 +5349,9 @@ function startSelectionMoveDrag(event, layerId) {
         layerId: layer.id,
         grabOffsetX: pointer.x - layer.x,
         grabOffsetY: pointer.y - layer.y,
+        displayScale: pointer.displayScale,
+        surfaceLeft: pointer.surfaceLeft,
+        surfaceTop: pointer.surfaceTop,
         startX: layer.x,
         startY: layer.y,
         startWidth: layer.layerWidth,
@@ -5059,6 +5405,9 @@ function startSelectionResizeDrag(event, layerId, handle) {
         handle,
         startPointerX: pointer.x,
         startPointerY: pointer.y,
+        displayScale: pointer.displayScale,
+        surfaceLeft: pointer.surfaceLeft,
+        surfaceTop: pointer.surfaceTop,
         startX: layer.x,
         startY: layer.y,
         startWidth: layer.layerWidth,
@@ -5092,7 +5441,7 @@ function handleSelectionMouseMove(event) {
 }
 
 function handleSelectionMove(event, layer) {
-    const pointer = getCanvasPointerPosition(event);
+    const pointer = getCanvasPointerPositionForDrag(event, activeSelectionDrag);
     const displayScale = pointer.displayScale;
 
     const proposedX = pointer.x - activeSelectionDrag.grabOffsetX;
@@ -5134,11 +5483,14 @@ function handleSelectionMove(event, layer) {
     activeSelectionDrag.stuckX = resolvedX.stuckState;
     activeSelectionDrag.stuckY = resolvedY.stuckState;
 
-    renderCanvasLayersOnSurface();
+    updateCanvasHotLayerGeometry([
+        layer.id,
+        ...(activeSelectionDrag.childStarts || []).map((start) => start.id)
+    ]);
 }
 
 function handleSelectionResize(event, layer) {
-    const pointer = getCanvasPointerPosition(event);
+    const pointer = getCanvasPointerPositionForDrag(event, activeSelectionDrag);
     const handle = activeSelectionDrag.handle;
 
     let nextX = activeSelectionDrag.startX;
@@ -5255,7 +5607,7 @@ function handleSelectionResize(event, layer) {
     layer.layerHeight = nextHeight;
 
     updateSelectionSizeTooltip(event.clientX, event.clientY, nextWidth, nextHeight);
-    renderCanvasLayersOnSurface();
+    updateCanvasHotLayerGeometry(layer.id);
 }
 
 function resolveSelectionFarEdgeStick({
@@ -5315,6 +5667,7 @@ function handleSelectionMouseUp(event) {
         child.y = Math.round(Number(child.y || 0) + selectionSnapDy);
     });
 
+    flushPendingCanvasHotLayerGeometry();
     activeSelectionDrag = null;
 
     const surface = el('canvasSurface');
@@ -5326,7 +5679,7 @@ function handleSelectionMouseUp(event) {
     hideSelectionSizeTooltip();
 
     renderLayerList();
-    renderCanvasLayersOnSurface();
+    syncCanvasSurfaceSelectionState();
     updateSelectionHoverCursor(event);
     saveCanvasState();
 }
@@ -5582,7 +5935,6 @@ function handleCanvasResizeMouseUp(event) {
         renderCanvas(next.width, next.height);
     }
     renderLayerList();
-    renderCanvasLayersOnSurface();
     saveCanvasState();
 }
 
@@ -6955,7 +7307,7 @@ async function requestClipInpainting(clipId) {
         return;
     }
 
-    const mask = clip.maskSrc || clip.maskDataUrl || '';
+    const mask = clip.maskDataUrl || clip.maskSrc || '';
     if (!mask) {
         alert('인페인팅 마스크를 먼저 칠해 주세요.');
         return;
@@ -7104,7 +7456,9 @@ function closeClipMaskSizePopover() {
     if (!openClipMaskSizeTool) return;
 
     openClipMaskSizeTool = null;
-    renderClipOutputPanel();
+    document.querySelectorAll('.clip-mask-tool-control.open').forEach((control) => {
+        control.classList.remove('open');
+    });
 }
 
 function setClipMaskBrushSize(value) {
@@ -7275,7 +7629,7 @@ function bindClipMaskEditor(panel, clip) {
     overlayCanvas.style.display = 'block';
 
     const loadExistingMask = async () => {
-        const maskSrc = clip.maskSrc || clip.maskDataUrl || '';
+        const maskSrc = clip.maskDataUrl || clip.maskSrc || '';
         const currentLoadToken = ++maskLoadToken;
 
         if (!maskSrc) {
@@ -7770,15 +8124,20 @@ async function persistClipMask(clip, maskCanvas) {
     if (!clip || !maskCanvas) return;
 
     const maskDataUrl = maskCanvas.toDataURL('image/png');
+    const revision = (clipMaskPersistRevisions.get(clip) || 0) + 1;
+    clipMaskPersistRevisions.set(clip, revision);
 
     clip.maskWidth = maskCanvas.width;
     clip.maskHeight = maskCanvas.height;
+    clip.maskDataUrl = maskDataUrl;
 
     try {
         const savedSrc = await saveClipDataUrlToServer(maskDataUrl);
+        if (clipMaskPersistRevisions.get(clip) !== revision) return;
         clip.maskSrc = savedSrc;
         delete clip.maskDataUrl;
     } catch (error) {
+        if (clipMaskPersistRevisions.get(clip) !== revision) return;
         // 서버 저장 실패 시 임시로 dataUrl 보관
         console.warn('Mask save failed, fallback to local dataUrl:', error);
         clip.maskDataUrl = maskDataUrl;
@@ -10616,6 +10975,38 @@ function getWheelZoomFactor(event) {
     return event.deltaY < 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP;
 }
 
+function hasActiveCanvasGeometryDrag() {
+    return Boolean(
+        activeLayerDrag ||
+        activeSelectionDrag ||
+        activeImageResizeDrag ||
+        activeCanvasResizeDrag
+    );
+}
+
+function refreshActiveCanvasDragCoordinateCache() {
+    if (!hasActiveCanvasGeometryDrag()) return;
+
+    const surface = el('canvasSurface');
+    if (!surface) return;
+
+    const rect = surface.getBoundingClientRect();
+    const displayScale = getCanvasDisplayScale();
+
+    [activeLayerDrag, activeSelectionDrag, activeImageResizeDrag]
+        .filter(Boolean)
+        .forEach((drag) => {
+            drag.surfaceLeft = rect.left;
+            drag.surfaceTop = rect.top;
+            drag.displayScale = displayScale;
+        });
+
+    if (activeCanvasResizeDrag) {
+        activeCanvasResizeDrag.surfaceLeft = rect.left;
+        activeCanvasResizeDrag.surfaceTop = rect.top;
+    }
+}
+
 function bindCanvasWheelZoom() {
     const surface = el('canvasSurface');
     if (!surface || surface.dataset.zoomWheelBound === '1') return;
@@ -10666,6 +11057,7 @@ function isCanvasWorkspacePanTarget(event) {
 }
 
 function startCanvasWorkspacePanDrag(event) {
+    if (hasActiveCanvasGeometryDrag()) return;
     if (event.button !== 0 || !isCanvasWorkspacePanTarget(event)) return;
 
     const workspace = document.querySelector('.canvas-workspace');
@@ -10715,6 +11107,12 @@ function stopCanvasWorkspacePanDrag(event) {
 
 function handleCanvasWheelZoom(event) {
     if (!currentCanvasWidth || !currentCanvasHeight) return;
+
+    if (hasActiveCanvasGeometryDrag()) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+    }
 
     const surface = el('canvasSurface');
     const workspace = document.querySelector('.canvas-workspace');
@@ -11384,7 +11782,6 @@ function applyCanvasStateSnapshot(state) {
     if (currentCanvasWidth && currentCanvasHeight) {
         renderCanvas(currentCanvasWidth, currentCanvasHeight);
         renderLayerList();
-        renderCanvasLayersOnSurface();
     } else {
         renderLayerList();
     }
@@ -12004,14 +12401,14 @@ function startImageResizeDrag(event, layerId, handle) {
     const found = findCanvasLayer(layerId);
     const layer = found?.layer;
 
-    if (!layer || layer.type !== 'image' || !layer.visible) return;
+    if (!isResizableCanvasLayer(layer)) return;
     if (!isImageResizeMode) return;
 
     event.preventDefault();
     event.stopPropagation();
 
     activeLayerId = layer.id;
-    normalizeImageLayerGeometry(layer);
+    normalizeResizableLayerGeometry(layer);
 
     const pointer = getCanvasPointerPosition(event);
 
@@ -12021,6 +12418,9 @@ function startImageResizeDrag(event, layerId, handle) {
 
         startPointerX: pointer.x,
         startPointerY: pointer.y,
+        displayScale: pointer.displayScale,
+        surfaceLeft: pointer.surfaceLeft,
+        surfaceTop: pointer.surfaceTop,
 
         // 세밀 조절용 화면 좌표
         startClientX: event.clientX,
@@ -12062,7 +12462,7 @@ function handleImageResizeMouseMove(event) {
 
     if (!isMultiTransformLayer(layer)) return;
 
-    const pointer = getCanvasPointerPosition(event);
+    const pointer = getCanvasPointerPositionForDrag(event, activeImageResizeDrag);
     const handle = activeImageResizeDrag.handle;
 
     const fineMode = Boolean(el('imageResizeFineMode')?.checked) || event.altKey;
@@ -12180,7 +12580,7 @@ function handleImageResizeMouseMove(event) {
         Math.round(layer.layerHeight)
     );
 
-    renderCanvasLayersOnSurface();
+    updateCanvasHotLayerGeometry(layer.id);
     updateActiveImageResizeGuideOverlay();
 }
 
@@ -12222,7 +12622,7 @@ function handleImageResizeMouseUp() {
     const found = findCanvasLayer(activeImageResizeDrag.layerId);
     const layer = found?.layer;
 
-    if (layer && layer.type === 'image') {
+    if (isResizableCanvasLayer(layer)) {
         // 저장할 때는 정수화
         layer.x = Math.round(layer.x || 0);
         layer.y = Math.round(layer.y || 0);
@@ -12230,7 +12630,7 @@ function handleImageResizeMouseUp() {
         layer.layerHeight = Math.round(layer.layerHeight || 1);
     }
 
-    if (layer.type === 'selection') {
+    if (layer?.type === 'selection') {
         layer.layerWidth = snapToSelectionStep(layer.layerWidth);
         layer.layerHeight = snapToSelectionStep(layer.layerHeight);
     }
@@ -12294,16 +12694,14 @@ function fitActiveImageLayerToCanvasAndCenter() {
     const imageWidth = Number(layer.imageWidth || layer.layerWidth || 1);
     const imageHeight = Number(layer.imageHeight || layer.layerHeight || 1);
 
-    const fitScale = Math.min(
-        currentCanvasWidth / imageWidth,
-        currentCanvasHeight / imageHeight,
-        1
-    );
+    const geometry = getInitialImageLayerGeometry(imageWidth, imageHeight, {
+        allowUpscale: true
+    });
 
-    layer.layerWidth = Math.max(1, Math.round(imageWidth * fitScale));
-    layer.layerHeight = Math.max(1, Math.round(imageHeight * fitScale));
-    layer.x = Math.round((currentCanvasWidth - layer.layerWidth) / 2);
-    layer.y = Math.round((currentCanvasHeight - layer.layerHeight) / 2);
+    layer.layerWidth = geometry.width;
+    layer.layerHeight = geometry.height;
+    layer.x = geometry.x;
+    layer.y = geometry.y;
 
     renderCanvasLayersOnSurface();
     renderLayerList();
@@ -12449,7 +12847,6 @@ function resetCurrentCanvasAfterSave() {
 
     renderCanvas(width, height);
     renderLayerList();
-    renderCanvasLayersOnSurface();
     updateCanvasRatioInfo();
     saveCanvasState();
 }
@@ -12550,6 +12947,9 @@ function startMultiImageResizeDrag(event, handle) {
         handle,
         startPointerX: pointer.x,
         startPointerY: pointer.y,
+        displayScale: pointer.displayScale,
+        surfaceLeft: pointer.surfaceLeft,
+        surfaceTop: pointer.surfaceTop,
         startClientX: event.clientX,
         startClientY: event.clientY,
 
@@ -12578,7 +12978,7 @@ function handleMultiImageResizeMouseMove(event) {
     const drag = activeImageResizeDrag;
     if (!drag || drag.mode !== 'multi') return;
 
-    const pointer = getCanvasPointerPosition(event);
+    const pointer = getCanvasPointerPositionForDrag(event, drag);
     const handle = drag.handle;
 
     const fineMode = Boolean(el('imageResizeFineMode')?.checked) || event.altKey;
@@ -12699,7 +13099,7 @@ function handleMultiImageResizeMouseMove(event) {
         Math.round(nextHeight)
     );
 
-    renderCanvasLayersOnSurface();
+    updateCanvasHotLayerGeometry(drag.starts.map((start) => start.id));
     updateActiveImageResizeGuideOverlay();
 }
 
@@ -12716,6 +13116,10 @@ function handleMultiImageResizeMouseMove(event) {
 let referenceGenSession = null;
 let referenceGenTool = 'brush';
 let referenceGenBrushSize = 96;
+const REFERENCE_GEN_MASK_OVERLAY_ALPHA = 0.34;
+let referenceGenZoom = 1;
+const REFERENCE_GEN_ZOOM_MIN = 0.25;
+const REFERENCE_GEN_ZOOM_MAX = 8;
 let referenceGenPainting = false;
 let referenceGenLastPoint = null;
 let referenceGenLastPointerEvent = null;
@@ -12757,6 +13161,16 @@ window.addEventListener('load', () => {
                 wrap.classList.remove('open');
             });
         }
+
+        const detailMenu = el('referenceGenDetailChoiceMenu');
+        if (
+            detailMenu &&
+            detailMenu.style.display === 'block' &&
+            !detailMenu.contains(event.target) &&
+            !event.target.closest?.('[data-reference-gen-detail-choice]')
+        ) {
+            closeReferenceGenDetailChoice();
+        }
     });
 
     document.addEventListener('keydown', (event) => {
@@ -12765,11 +13179,13 @@ window.addEventListener('load', () => {
         closeCanvasSurfaceContextMenu();
         closeReferenceGenClipboardContextMenu();
         closeReferenceGenUpscaleExportModal();
+        closeReferenceGenDetailChoice();
     });
 
     document.addEventListener('scroll', () => {
         closeCanvasSurfaceContextMenu();
         closeReferenceGenClipboardContextMenu();
+        closeReferenceGenDetailChoice();
     }, true);
 
     window.addEventListener('resize', () => {
@@ -12924,6 +13340,40 @@ async function getImageSizeFromDataUrl(dataUrl) {
     };
 }
 
+async function resizeReferenceGenImageToSessionSize(src, targetWidth, targetHeight) {
+    const image = await loadReferenceGenImage(src);
+    const sourceWidth = Math.max(1, image.naturalWidth || image.width || 1);
+    const sourceHeight = Math.max(1, image.naturalHeight || image.height || 1);
+    const width = Math.max(1, Math.round(Number(targetWidth) || 1));
+    const height = Math.max(1, Math.round(Number(targetHeight) || 1));
+
+    if (sourceWidth === width && sourceHeight === height) {
+        return { src, sourceWidth, sourceHeight, width, height, resized: false };
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    const scale = Math.max(width / sourceWidth, height / sourceHeight);
+    const drawWidth = sourceWidth * scale;
+    const drawHeight = sourceHeight * scale;
+    const drawX = (width - drawWidth) / 2;
+    const drawY = (height - drawHeight) / 2;
+    ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+
+    return {
+        src: canvas.toDataURL('image/png'),
+        sourceWidth,
+        sourceHeight,
+        width,
+        height,
+        resized: true
+    };
+}
+
 async function pasteClipboardToReferenceGenImage() {
     closeReferenceGenClipboardContextMenu();
 
@@ -12960,14 +13410,22 @@ async function pasteClipboardToReferenceGenImage() {
             return false;
         }
 
-        const pastedSrc = String(clipboard.src).startsWith('data:')
-            ? await saveClipDataUrlToServer(clipboard.src)
-            : clipboard.src;
+        const targetWidth = Math.max(1, Math.round(Number(referenceGenSession.width) || 1));
+        const targetHeight = Math.max(1, Math.round(Number(referenceGenSession.height) || 1));
+        const fittedImage = await resizeReferenceGenImageToSessionSize(
+            clipboard.src,
+            targetWidth,
+            targetHeight
+        );
+        const pastedSrc = String(fittedImage.src).startsWith('data:')
+            ? await saveClipDataUrlToServer(fittedImage.src)
+            : fittedImage.src;
 
-        referenceGenSession.width = Math.max(1, Math.round(Number(clipboard.width) || referenceGenSession.width || 1));
-        referenceGenSession.height = Math.max(1, Math.round(Number(clipboard.height) || referenceGenSession.height || 1));
+        referenceGenSession.width = targetWidth;
+        referenceGenSession.height = targetHeight;
         referenceGenSession.currentSrc = pastedSrc;
         referenceGenSession.originalSrc = pastedSrc;
+        referenceGenSession.detailSourceSrc = pastedSrc;
         referenceGenSession.resultSrc = '';
         referenceGenSession.promptInfo = normalizeReferenceGenPromptInfo(
             clipboard.promptInfo || referenceGenSession.promptInfo
@@ -12975,7 +13433,10 @@ async function pasteClipboardToReferenceGenImage() {
         referenceGenSession.maskDataUrl = '';
 
         openReferenceGenLayer();
-        showReferenceGenToast('클립보드 이미지를 참조 이미지로 가져왔습니다.');
+        const resizeText = fittedImage.resized
+            ? ` (${fittedImage.sourceWidth}×${fittedImage.sourceHeight} → ${targetWidth}×${targetHeight} 비율 유지·중앙 조절)`
+            : '';
+        showReferenceGenToast(`클립보드 이미지를 참조 이미지로 가져왔습니다${resizeText}.`);
         return true;
     } catch (error) {
         alert(`참조 이미지 가져오기 실패: ${error.message || error}`);
@@ -13130,6 +13591,7 @@ async function createReferenceGenSessionFromDialog() {
             height,
             originalSrc: savedSrc,
             currentSrc: savedSrc,
+            detailSourceSrc: savedSrc,
             resultSrc: '',
             promptInfo,
             maskDataUrl: '',
@@ -13210,6 +13672,8 @@ function openReferenceGenLayer() {
         meta.innerText = `${referenceGenSession.width} × ${referenceGenSession.height}px`;
     }
 
+    referenceGenZoom = 1;
+
     img.onload = () => {
         setupReferenceGenOverlay();
         clearReferenceGenMask();
@@ -13252,6 +13716,7 @@ function setupReferenceGenOverlay() {
 
     syncReferenceGenOverlayDisplaySize();
     redrawReferenceGenMaskOverlay();
+    bindReferenceGenWheelZoom();
 
     if (overlay.dataset.referenceGenBound !== '1') {
         overlay.dataset.referenceGenBound = '1';
@@ -13289,18 +13754,92 @@ function setupReferenceGenOverlay() {
 }
 
 function syncReferenceGenOverlayDisplaySize() {
+    applyReferenceGenZoom();
+}
+
+function getReferenceGenBaseDisplaySize() {
+    const imageWidth = Math.max(1, Number(referenceGenSession?.width) || 1);
+    const imageHeight = Math.max(1, Number(referenceGenSession?.height) || 1);
+    const maxViewportWidth = Math.min(900, Math.max(320, window.innerWidth * 0.86));
+    const maxViewportHeight = Math.min(Math.max(360, window.innerHeight * 0.72), 9000);
+    const fitScale = Math.min(
+        1,
+        maxViewportWidth / imageWidth,
+        maxViewportHeight / imageHeight
+    );
+
+    return {
+        width: Math.max(1, Math.round(imageWidth * fitScale)),
+        height: Math.max(1, Math.round(imageHeight * fitScale)),
+        maxViewportWidth,
+        maxViewportHeight
+    };
+}
+
+function applyReferenceGenZoom() {
     const img = el('referenceGenImage');
     const overlay = el('referenceGenOverlay');
+    const wrap = el('referenceGenImageWrap');
 
-    if (!img || !overlay) return;
+    if (!img || !overlay || !wrap || !referenceGenSession) return;
 
-    const displayWidth = img.clientWidth || img.getBoundingClientRect().width;
-    const displayHeight = img.clientHeight || img.getBoundingClientRect().height;
+    const baseSize = getReferenceGenBaseDisplaySize();
+    const displayWidth = Math.max(1, Math.round(baseSize.width * referenceGenZoom));
+    const displayHeight = Math.max(1, Math.round(baseSize.height * referenceGenZoom));
+    const viewportWidth = Math.min(displayWidth, baseSize.maxViewportWidth);
+    const viewportHeight = Math.min(displayHeight, baseSize.maxViewportHeight);
 
-    if (!displayWidth || !displayHeight) return;
+    wrap.style.width = `${Math.max(1, Math.round(viewportWidth))}px`;
+    wrap.style.height = `${Math.max(1, Math.round(viewportHeight))}px`;
+    wrap.style.maxWidth = 'min(900px, 86vw)';
+    wrap.style.maxHeight = '72vh';
+    wrap.style.overflow = 'auto';
+
+    img.style.width = `${displayWidth}px`;
+    img.style.height = `${displayHeight}px`;
+    img.style.maxWidth = 'none';
+    img.style.maxHeight = 'none';
 
     overlay.style.width = `${displayWidth}px`;
     overlay.style.height = `${displayHeight}px`;
+}
+
+function bindReferenceGenWheelZoom() {
+    const wrap = el('referenceGenImageWrap');
+    if (!wrap || wrap.dataset.referenceGenZoomWheelBound === '1') return;
+
+    wrap.dataset.referenceGenZoomWheelBound = '1';
+    wrap.addEventListener('wheel', handleReferenceGenWheelZoom, { passive: false });
+}
+
+function handleReferenceGenWheelZoom(event) {
+    const wrap = el('referenceGenImageWrap');
+    if (!wrap || !referenceGenSession) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const rect = wrap.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left + wrap.scrollLeft;
+    const pointerY = event.clientY - rect.top + wrap.scrollTop;
+    const oldZoom = referenceGenZoom;
+
+    referenceGenZoom = clampZoom(
+        referenceGenZoom * getWheelZoomFactor(event),
+        REFERENCE_GEN_ZOOM_MIN,
+        REFERENCE_GEN_ZOOM_MAX
+    );
+
+    if (referenceGenZoom === oldZoom) return;
+
+    const ratio = referenceGenZoom / oldZoom;
+    applyReferenceGenZoom();
+
+    requestAnimationFrame(() => {
+        wrap.scrollLeft = pointerX * ratio - (event.clientX - rect.left);
+        wrap.scrollTop = pointerY * ratio - (event.clientY - rect.top);
+        updateReferenceGenBrushCursor(referenceGenLastPointerEvent);
+    });
 }
 
 function getReferenceGenPointer(event) {
@@ -13332,7 +13871,6 @@ function startReferenceGenMaskPaint(event) {
     referenceGenLastPoint = point;
 
     drawReferenceGenMaskPoint(point);
-    updateReferenceGenMaskDataUrl();
     updateReferenceGenBrushCursorFromPoint(point);
 }
 
@@ -13358,7 +13896,6 @@ function moveReferenceGenMaskPaint(event) {
     }
 
     referenceGenLastPoint = point;
-    updateReferenceGenMaskDataUrl();
 }
 
 function stopReferenceGenMaskPaint(event) {
@@ -13397,7 +13934,7 @@ function drawReferenceGenMaskPoint(point) {
     referenceGenMaskCtx.fill();
 
     referenceGenMaskCtx.restore();
-    redrawReferenceGenMaskOverlay();
+    drawReferenceGenMaskOverlayPoint(point);
 }
 
 function drawReferenceGenMaskLine(from, to) {
@@ -13426,7 +13963,17 @@ function drawReferenceGenMaskLine(from, to) {
     referenceGenMaskCtx.stroke();
 
     referenceGenMaskCtx.restore();
-    redrawReferenceGenMaskOverlay();
+    drawReferenceGenMaskOverlayLine(from, to);
+}
+
+function clearReferenceGenOverlayPath(ctx, drawPath) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 1)';
+    drawPath(ctx);
+    ctx.restore();
 }
 
 function redrawReferenceGenMaskOverlay() {
@@ -13441,9 +13988,75 @@ function redrawReferenceGenMaskOverlay() {
     // 갤러리 인페인팅과 같은 방식:
     // 실제 마스크는 불투명, 화면 표시만 반투명.
     ctx.save();
-    ctx.globalAlpha = 0.45;
+    ctx.globalAlpha = REFERENCE_GEN_MASK_OVERLAY_ALPHA;
     ctx.drawImage(referenceGenMaskCanvas, 0, 0, overlay.width, overlay.height);
     ctx.restore();
+
+    applyReferenceGenMaskVisibility();
+}
+
+function drawReferenceGenMaskOverlayPoint(point) {
+    const overlay = el('referenceGenOverlay');
+    if (!overlay) return;
+
+    const ctx = overlay.getContext('2d');
+    const drawPath = (targetCtx) => {
+        targetCtx.beginPath();
+        targetCtx.arc(point.x, point.y, referenceGenBrushSize / 2, 0, Math.PI * 2);
+        targetCtx.fill();
+    };
+
+    if (referenceGenTool === 'eraser') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+        drawPath(ctx);
+        ctx.restore();
+    } else {
+        clearReferenceGenOverlayPath(ctx, drawPath);
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = REFERENCE_GEN_MASK_OVERLAY_ALPHA;
+        ctx.fillStyle = 'rgba(0, 210, 255, 1)';
+        drawPath(ctx);
+        ctx.restore();
+    }
+
+    applyReferenceGenMaskVisibility();
+}
+
+function drawReferenceGenMaskOverlayLine(from, to) {
+    const overlay = el('referenceGenOverlay');
+    if (!overlay) return;
+
+    const ctx = overlay.getContext('2d');
+    const drawPath = (targetCtx) => {
+        targetCtx.lineWidth = referenceGenBrushSize;
+        targetCtx.lineCap = 'round';
+        targetCtx.lineJoin = 'round';
+        targetCtx.beginPath();
+        targetCtx.moveTo(from.x, from.y);
+        targetCtx.lineTo(to.x, to.y);
+        targetCtx.stroke();
+    };
+
+    if (referenceGenTool === 'eraser') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 1)';
+        drawPath(ctx);
+        ctx.restore();
+    } else {
+        clearReferenceGenOverlayPath(ctx, drawPath);
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = REFERENCE_GEN_MASK_OVERLAY_ALPHA;
+        ctx.strokeStyle = 'rgba(0, 210, 255, 1)';
+        drawPath(ctx);
+        ctx.restore();
+    }
 
     applyReferenceGenMaskVisibility();
 }
@@ -13483,22 +14096,7 @@ function updateReferenceGenMaskDataUrl() {
 }
 
 function isReferenceGenMaskEmpty() {
-    if (!referenceGenMaskCanvas || !referenceGenMaskCtx) return true;
-
-    const data = referenceGenMaskCtx.getImageData(
-        0,
-        0,
-        referenceGenMaskCanvas.width,
-        referenceGenMaskCanvas.height
-    ).data;
-
-    for (let i = 3; i < data.length; i += 4) {
-        if (data[i] > 8) {
-            return false;
-        }
-    }
-
-    return true;
+    return !getReferenceGenMaskBounds();
 }
 
 function setReferenceGenTool(tool, button = null) {
@@ -13885,6 +14483,254 @@ async function requestReferenceGenInpaint() {
     }
 }
 
+const REFERENCE_GEN_DETAIL_OPTIONS = [
+    { strength: 'gpt-prompt', label: 'GPT 원본 유지', hint: '현재 그림의 눈색·화풍 유지' },
+    { strength: 'gpt-reference-prompt', label: 'GPT + 참조 이미지', hint: '2번째 그림의 캐릭터·눈동자 참조' }
+];
+
+function getReferenceGenMaskBounds() {
+    if (!referenceGenMaskCanvas) return null;
+
+    const sourceWidth = Math.max(1, referenceGenMaskCanvas.width);
+    const sourceHeight = Math.max(1, referenceGenMaskCanvas.height);
+    const probeScale = Math.min(1, 512 / Math.max(sourceWidth, sourceHeight));
+    const probeWidth = Math.max(1, Math.round(sourceWidth * probeScale));
+    const probeHeight = Math.max(1, Math.round(sourceHeight * probeScale));
+    const probeCanvas = document.createElement('canvas');
+    probeCanvas.width = probeWidth;
+    probeCanvas.height = probeHeight;
+
+    const probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true });
+    probeCtx.drawImage(referenceGenMaskCanvas, 0, 0, probeWidth, probeHeight);
+    const data = probeCtx.getImageData(0, 0, probeWidth, probeHeight).data;
+    let minX = probeWidth;
+    let minY = probeHeight;
+    let maxX = -1;
+    let maxY = -1;
+
+    for (let y = 0; y < probeHeight; y += 1) {
+        for (let x = 0; x < probeWidth; x += 1) {
+            if (data[(y * probeWidth + x) * 4 + 3] <= 8) continue;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+    }
+
+    if (maxX < minX || maxY < minY) return null;
+
+    return {
+        left: Math.max(0, Math.floor(minX * sourceWidth / probeWidth)),
+        top: Math.max(0, Math.floor(minY * sourceHeight / probeHeight)),
+        right: Math.min(sourceWidth, Math.ceil((maxX + 1) * sourceWidth / probeWidth)),
+        bottom: Math.min(sourceHeight, Math.ceil((maxY + 1) * sourceHeight / probeHeight))
+    };
+}
+
+function formatCanvasAspectRatio(width, height) {
+    let a = Math.max(1, Math.round(Number(width) || 1));
+    let b = Math.max(1, Math.round(Number(height) || 1));
+    const originalWidth = a;
+    const originalHeight = b;
+
+    while (b) {
+        const remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+
+    const divisor = Math.max(1, a);
+    return `${originalWidth / divisor}:${originalHeight / divisor}`;
+}
+
+function buildGptDetailPrompt(mode, bounds = null, useCharacterReference = false) {
+    const width = Math.max(1, Math.round(Number(referenceGenSession?.width) || 1));
+    const height = Math.max(1, Math.round(Number(referenceGenSession?.height) || 1));
+    const aspectRatio = formatCanvasAspectRatio(width, height);
+    const detailMode = mode === 'eye' ? 'eye' : 'face';
+    const subject = detailMode === 'eye' ? 'the eye and iris geometry' : 'the face and eye details';
+    let targetInstruction = detailMode === 'eye'
+        ? 'Target all visible eyes and irises in the first image. Do not modify the rest of the face or image.'
+        : 'Target the entire visible face and its eyes in the first image. Do not modify hair, body, clothing, background, or composition.';
+
+    if (bounds) {
+        const boxWidth = Math.max(1, bounds.right - bounds.left);
+        const boxHeight = Math.max(1, bounds.bottom - bounds.top);
+        const leftPercent = (bounds.left / width * 100).toFixed(2);
+        const topPercent = (bounds.top / height * 100).toFixed(2);
+        const rightPercent = (bounds.right / width * 100).toFixed(2);
+        const bottomPercent = (bounds.bottom / height * 100).toFixed(2);
+        targetInstruction = `Target: ${subject} inside x=${bounds.left}..${bounds.right}, y=${bounds.top}..${bounds.bottom} (box ${boxWidth} x ${boxHeight}; ${leftPercent}%..${rightPercent}% from the left, ${topPercent}%..${bottomPercent}% from the top).`;
+    }
+
+    const redrawInstruction = detailMode === 'eye'
+        ? 'Redraw only malformed eyelid, iris, pupil, eyelash, and highlight lines in the target. Make every curve smooth, clean, attractive, and coherent.'
+        : 'Refine only malformed facial and eye lines in the target. Preserve the same expression, proportions, skin tone, and pose.';
+    const colorInstruction = useCharacterReference
+        ? 'The second attached image is the character reference. Match the character identity and drawing style from it. Change the iris color, iris pattern, pupil appearance, and catchlight design in the first image to match the second image. Changes to iris color and internal eye design are explicitly allowed, but do not recolor skin, hair, clothing, background, or lighting.'
+        : 'Preserve the original character identity and original iris color from the first image. Do not borrow colors or identity from any other image.';
+    const outsideTarget = bounds
+        ? 'Outside the target box, preserve the source pixels, composition, and linework exactly.'
+        : detailMode === 'eye'
+            ? 'Outside the visible eye and iris regions, preserve the source pixels, face, composition, and linework exactly.'
+            : 'Outside the visible face and eye regions, preserve the source pixels, composition, and linework exactly.';
+
+    return [
+        'Edit the first attached anime/illustration image with strict local changes only.',
+        `The source canvas is ${width} x ${height} pixels with a ${aspectRatio} aspect ratio.`,
+        targetInstruction,
+        redrawInstruction,
+        colorInstruction,
+        `Request an output of exactly ${width} x ${height} pixels and preserve the ${aspectRatio} aspect ratio exactly. If that exact pixel size is unavailable, use the nearest supported resolution with the same ${aspectRatio} aspect ratio. Do not crop, rotate, or reframe it.`,
+        `${outsideTarget} Keep the top, bottom, left, and right surrounding regions unchanged so the result can be placed directly over the original image.`,
+        'Do not change the overall palette, skin tone, brightness, contrast, saturation, color temperature, lighting, pose, expression, line weight, or rendering style.',
+        'Do not apply a global redraw, global denoise, global sharpening, relighting, or style transfer.',
+        'Blend the repaired lines naturally at the target boundary without a rectangular seam, halo, blur, darkening, or color shift.',
+        useCharacterReference
+            ? 'Use the second image only as the character and eye reference. Keep the first image as the exact layout, pose, composition, and pixel-alignment source.'
+            : 'Use only the first image as the visual source.',
+        'Return one edited image only.'
+    ].join('\n');
+}
+
+function openGptDetailPrompt(mode = 'eye', useCharacterReference = false) {
+    if (!referenceGenSession) {
+        alert('참조 이미지 세션이 없습니다.');
+        return;
+    }
+
+    const bounds = getReferenceGenMaskBounds();
+    const detailMode = mode === 'eye' ? 'eye' : 'face';
+    const promptText = el('gptDetailPromptText');
+    const meta = el('gptDetailPromptMeta');
+    const layer = el('gptDetailPromptLayer');
+
+    if (promptText) {
+        promptText.value = buildGptDetailPrompt(detailMode, bounds, useCharacterReference);
+    }
+    if (meta) {
+        const targetText = bounds
+            ? `x ${bounds.left}-${bounds.right}, y ${bounds.top}-${bounds.bottom}`
+            : `${detailMode === 'eye' ? '눈 전체' : '얼굴 전체'} 자동`;
+        const referenceText = useCharacterReference ? ' · 2번째 그림 참조' : '';
+        meta.innerText = `${referenceGenSession.width} × ${referenceGenSession.height}px · ${targetText}${referenceText}`;
+    }
+    if (layer) layer.style.display = 'flex';
+}
+
+function closeGptDetailPrompt() {
+    const layer = el('gptDetailPromptLayer');
+    if (layer) layer.style.display = 'none';
+}
+
+async function copyGptDetailPrompt() {
+    const promptText = el('gptDetailPromptText');
+    const value = String(promptText?.value || '').trim();
+    if (!value) return;
+
+    try {
+        await navigator.clipboard.writeText(value);
+    } catch (error) {
+        promptText.focus();
+        promptText.select();
+        if (!document.execCommand('copy')) {
+            alert('프롬프트를 복사할 수 없습니다. 텍스트를 직접 선택해 주세요.');
+            return;
+        }
+    }
+
+    showReferenceGenToast('ChatGPT용 프롬프트를 복사했습니다.');
+}
+
+function getReferenceGenDetailChoiceMenu() {
+    let menu = el('referenceGenDetailChoiceMenu');
+    if (menu) return menu;
+
+    menu = document.createElement('div');
+    menu.id = 'referenceGenDetailChoiceMenu';
+    menu.style.cssText = `
+        position: fixed;
+        display: none;
+        min-width: 170px;
+        padding: 6px;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background: var(--card-bg, #181824);
+        color: var(--text-main, #f5f5f7);
+        box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42);
+        z-index: 99999;
+    `;
+    document.body.appendChild(menu);
+    return menu;
+}
+
+function closeReferenceGenDetailChoice() {
+    const menu = el('referenceGenDetailChoiceMenu');
+    if (menu) menu.style.display = 'none';
+}
+
+function toggleReferenceGenDetailChoice(mode = 'face', anchor = null) {
+    const detailMode = mode === 'eye' ? 'eye' : 'face';
+    const menu = getReferenceGenDetailChoiceMenu();
+
+    if (menu.style.display === 'block' && menu.dataset.mode === detailMode) {
+        closeReferenceGenDetailChoice();
+        return;
+    }
+
+    menu.dataset.mode = detailMode;
+    menu.innerHTML = '';
+
+    REFERENCE_GEN_DETAIL_OPTIONS.forEach((option) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.referenceGenDetailChoiceItem = option.strength;
+        button.style.cssText = `
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 9px 10px;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-main, #f5f5f7);
+            font-size: 13px;
+            font-weight: 800;
+            cursor: pointer;
+            text-align: left;
+        `;
+        button.innerHTML = `<span>${option.label}</span><span style="font-size:11px; color:var(--text-muted, #a7a7b5); font-weight:700;">${option.hint}</span>`;
+        button.onmouseenter = () => {
+            button.style.background = 'rgba(255, 255, 255, 0.10)';
+        };
+        button.onmouseleave = () => {
+            button.style.background = 'transparent';
+        };
+        button.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            closeReferenceGenDetailChoice();
+            openGptDetailPrompt(detailMode, option.strength === 'gpt-reference-prompt');
+        };
+        menu.appendChild(button);
+    });
+
+    const rect = anchor?.getBoundingClientRect?.() || { left: 16, bottom: 16 };
+    const margin = 10;
+    menu.style.display = 'block';
+
+    const width = menu.offsetWidth || 170;
+    const height = menu.offsetHeight || 120;
+    const left = Math.min(Math.max(margin, rect.left), window.innerWidth - width - margin);
+    const top = Math.min(Math.max(margin, rect.bottom + 6), window.innerHeight - height - margin);
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+}
+
 function getReferenceGenExportCoverSize(width = null, height = null) {
     const imageWidth = Math.max(1, Number(width || referenceGenSession?.width) || 1);
     const imageHeight = Math.max(1, Number(height || referenceGenSession?.height) || 1);
@@ -13905,6 +14751,27 @@ function getReferenceGenExportCoverSize(width = null, height = null) {
         width: Math.max(1, Math.round(imageWidth * scale)),
         height: Math.max(1, Math.round(imageHeight * scale))
     };
+}
+
+function getReferenceGenSourceLayer() {
+    if (!referenceGenSession?.sourceLayerId) return null;
+    return findCanvasLayer(referenceGenSession.sourceLayerId)?.layer || null;
+}
+
+function isReferenceGenSourceClipSession() {
+    const sourceLayer = getReferenceGenSourceLayer();
+    return Boolean(referenceGenSession?.sourceLayerType === 'clip' && sourceLayer?.type === 'clip' && sourceLayer.src);
+}
+
+function getReferenceGenDefaultUpscaleSize() {
+    if (isReferenceGenSourceClipSession()) {
+        return {
+            width: Math.max(1, Math.round(Number(referenceGenSession?.width) || 1)),
+            height: Math.max(1, Math.round(Number(referenceGenSession?.height) || 1))
+        };
+    }
+
+    return getReferenceGenExportCoverSize();
 }
 
 function getReferenceGenUpscaleInputSize() {
@@ -13930,7 +14797,7 @@ function applyReferenceGenUpscalePreset(width, height) {
 }
 
 function applyReferenceGenUpscaleExportSizePreset() {
-    const size = getReferenceGenExportCoverSize();
+    const size = getReferenceGenDefaultUpscaleSize();
     applyReferenceGenUpscalePreset(size.width, size.height);
 }
 
@@ -14001,7 +14868,7 @@ function openReferenceGenUpscaleExportModal() {
 
     const meta = el('referenceGenUpscaleMeta');
     if (meta) {
-        const exportSize = getReferenceGenExportCoverSize();
+        const exportSize = getReferenceGenDefaultUpscaleSize();
         meta.innerText = `원본 ${referenceGenSession.width} × ${referenceGenSession.height}px · 내보내기 기준 ${exportSize.width} × ${exportSize.height}px`;
     }
 
@@ -14049,6 +14916,7 @@ async function startReferenceGenUpscaleExport() {
                 target_height: size.height,
                 engine,
                 quality,
+                tempCategory: isReferenceGenSourceClipSession() ? 'canvas_inpaint' : 'canvas',
                 sessionId: CANVAS_IMPORT_SESSION_ID
             })
         });
@@ -14059,10 +14927,12 @@ async function startReferenceGenUpscaleExport() {
             throw new Error(data.message || '참조 이미지 업스케일링 실패');
         }
 
-        await addReferenceGenImageLayerCoverCanvas({
+        await addReferenceGenResultToCanvas({
             src: data.src,
             name: `참조 이미지 업스케일 ${data.width || size.width}×${data.height || size.height}`,
-            promptInfo: referenceGenSession.promptInfo
+            promptInfo: referenceGenSession.promptInfo,
+            width: data.width || size.width,
+            height: data.height || size.height
         });
 
         closeReferenceGen();
@@ -14086,43 +14956,38 @@ async function exportReferenceGenToCanvas() {
     }
 
     try {
-        await addReferenceGenImageLayerCoverCanvas({
+        const clipSession = isReferenceGenSourceClipSession();
+
+        await addReferenceGenResultToCanvas({
             src: referenceGenSession.currentSrc,
             name: `참조 이미지 ${referenceGenSession.width}×${referenceGenSession.height}`,
-            promptInfo: referenceGenSession.promptInfo
+            promptInfo: referenceGenSession.promptInfo,
+            width: referenceGenSession.width,
+            height: referenceGenSession.height
         });
 
         closeReferenceGen();
-        showReferenceGenToast('참조 이미지를 캔버스 크기에 맞춰 크게 내보냈습니다.');
+        showReferenceGenToast(
+            clipSession
+                ? '디테일 결과를 선택 영역 클립으로 내보냈습니다.'
+                : '참조 이미지를 비율 유지·중앙 맞춤으로 내보냈습니다.'
+        );
 
     } catch (error) {
         alert(`내보내기 실패: ${error.message || error}`);
     }
 }
 
-async function addReferenceGenImageLayerCoverCanvas({ src, name, promptInfo }) {
+async function addReferenceGenImageLayerFitCanvas(options) {
+    const { src, name, promptInfo } = options || {};
     const info = await loadImageInfo(src);
 
     const imageWidth = info.width || referenceGenSession?.width || 512;
     const imageHeight = info.height || referenceGenSession?.height || 1664;
 
-    /*
-        내보내기 배치 규칙:
-        - 비율 유지
-        - 가로 또는 세로 중 하나는 현재 캔버스와 정확히 같게
-        - 나머지 한 축은 캔버스보다 크거나 같게
-        - 즉 contain이 아니라 cover 방식
-    */
-    const scale = Math.max(
-        currentCanvasWidth / imageWidth,
-        currentCanvasHeight / imageHeight
-    );
-
-    const layerWidth = Math.round(imageWidth * scale);
-    const layerHeight = Math.round(imageHeight * scale);
-
-    const layerX = Math.round((currentCanvasWidth - layerWidth) / 2);
-    const layerY = Math.round((currentCanvasHeight - layerHeight) / 2);
+    const geometry = getInitialImageLayerGeometry(imageWidth, imageHeight, {
+        allowUpscale: true
+    });
 
     const newLayerId = layerIdSeq++;
 
@@ -14138,10 +15003,10 @@ async function addReferenceGenImageLayerCoverCanvas({ src, name, promptInfo }) {
         promptControlGroups: [],
         imageWidth,
         imageHeight,
-        x: layerX,
-        y: layerY,
-        layerWidth,
-        layerHeight
+        x: geometry.x,
+        y: geometry.y,
+        layerWidth: geometry.width,
+        layerHeight: geometry.height
     };
 
     canvasLayers.unshift(layer);
@@ -14152,7 +15017,73 @@ async function addReferenceGenImageLayerCoverCanvas({ src, name, promptInfo }) {
 
     renderCanvas(currentCanvasWidth, currentCanvasHeight);
     renderLayerList();
+    saveCanvasState();
+}
+
+async function addReferenceGenResultToCanvas({ src, name, promptInfo, width, height }) {
+    if (isReferenceGenSourceClipSession()) {
+        return addReferenceGenClipToSourceSelection({ src, name, promptInfo, width, height });
+    }
+
+    return addReferenceGenImageLayerFitCanvas({ src, name, promptInfo });
+}
+
+async function addReferenceGenClipToSourceSelection({ src, name, promptInfo, width, height }) {
+    const sourceClip = getReferenceGenSourceLayer();
+    const selection = findSelectionParentForLayerId(sourceClip?.id);
+
+    if (!sourceClip || sourceClip.type !== 'clip' || !selection) {
+        return addReferenceGenImageLayerFitCanvas({ src, name, promptInfo });
+    }
+
+    const inpaintFolder = getOrCreateSelectionInpaintFolder(selection);
+    const imageWidth = Math.max(1, Math.round(Number(width || sourceClip.imageWidth || sourceClip.layerWidth || 1)));
+    const imageHeight = Math.max(1, Math.round(Number(height || sourceClip.imageHeight || sourceClip.layerHeight || 1)));
+
+    const resultClip = {
+        id: layerIdSeq++,
+        name: name || `업스케일 ${inpaintFolder.children.filter((child) => child.type === 'clip').length + 1}`,
+        visible: true,
+        type: 'clip',
+        renderOnCanvas: true,
+        src: withCacheBuster(src),
+        sourceSelectionId: selection.id,
+        sourcePath: sourceClip.sourcePath || '',
+        promptOwnerId: sourceClip.promptOwnerId || sourceClip.id,
+        promptInfo: normalizePromptInfoForReferenceGenExport(promptInfo || sourceClip.promptInfo || {}),
+        promptControlGroups: Array.isArray(sourceClip.promptControlGroups)
+            ? structuredClone(sourceClip.promptControlGroups)
+            : [],
+        imageWidth,
+        imageHeight,
+        x: sourceClip.x ?? selection.x,
+        y: sourceClip.y ?? selection.y,
+        sourceSelectionX: sourceClip.sourceSelectionX ?? sourceClip.x ?? selection.x,
+        sourceSelectionY: sourceClip.sourceSelectionY ?? sourceClip.y ?? selection.y,
+        layerWidth: sourceClip.layerWidth || sourceClip.imageWidth || selection.layerWidth,
+        layerHeight: sourceClip.layerHeight || sourceClip.imageHeight || selection.layerHeight,
+        createdAt: Date.now(),
+        sourceReferenceGenClipId: sourceClip.id
+    };
+
+    inpaintFolder.children.unshift(resultClip);
+    selection.expanded = true;
+
+    clearClipMergedSourcePreviewCache();
+    clipMergedSourcePreviewSeq += 1;
+    migrateAllSelectionClipsToSharedPromptOwner(resultClip.id);
+
+    activeLayerId = resultClip.id;
+    activeClipSelectionId = selection.id;
+    checkedSelectionId = selection.id;
+    isClipInpaintPreviewMode = true;
+
+    selectedLayerIds.clear();
+    selectedLayerIds.add(Number(resultClip.id));
+
+    renderLayerList();
     renderCanvasLayersOnSurface();
+    renderClipOutputPanel();
     saveCanvasState();
 }
 

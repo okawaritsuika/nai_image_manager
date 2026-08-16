@@ -622,7 +622,6 @@ class NaiaHyperExecutor:
                                   borderwidth=1)
         self.btn_open.pack(fill="x", ipady=5)
 
-
         # 로그창 세팅
         self.log_area = scrolledtext.ScrolledText(self.log_sidebar, bg="#050508", fg="#d1d1d1", font=("Consolas", 9),
                                                   border=0, padx=10, pady=10)

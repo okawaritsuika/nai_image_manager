@@ -207,6 +207,10 @@
         <button class="canvas-layer-context-item" onclick="matchClipPromptToContextImageLayer()">
             프롬프트 맞춤
         </button>
+
+        <button class="canvas-layer-context-item" onclick="openOriginalLayerDetailEditor()">
+            원본 디테일 편집
+        </button>
     </div>
 
     <div id="canvasSurfaceContextMenu" class="canvas-layer-context-menu">
@@ -341,6 +345,18 @@
                 </button>
 
                 <button class="reference-gen-tool-btn success"
+                        data-reference-gen-detail-choice="face"
+                        onclick="toggleReferenceGenDetailChoice('face', this)">
+                    얼굴 디테일 · GPT
+                </button>
+
+                <button class="reference-gen-tool-btn success"
+                        data-reference-gen-detail-choice="eye"
+                        onclick="toggleReferenceGenDetailChoice('eye', this)">
+                    눈 디테일 · GPT
+                </button>
+
+                <button class="reference-gen-tool-btn success"
                         onclick="exportReferenceGenToCanvas()">
                     내보내기
                 </button>
@@ -364,6 +380,27 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="gptDetailPromptLayer" class="reference-gen-prompt-layer">
+        <div class="reference-gen-prompt-card gpt-detail-prompt-card">
+            <div class="canvas-modal-header">
+                <div>
+                    <h3>ChatGPT 이미지 수정 프롬프트</h3>
+                    <div id="gptDetailPromptMeta" class="reference-gen-meta">-</div>
+                </div>
+                <button class="icon-btn danger" onclick="closeGptDetailPrompt()">×</button>
+            </div>
+
+            <div class="clip-prompt-field">
+                <textarea id="gptDetailPromptText" rows="18" spellcheck="false"></textarea>
+            </div>
+
+            <div class="canvas-modal-actions">
+                <button class="secondary" onclick="closeGptDetailPrompt()">닫기</button>
+                <button class="success" onclick="copyGptDetailPrompt()">프롬프트 복사</button>
             </div>
         </div>
     </div>
@@ -420,10 +457,11 @@
                 <label for="referenceGenUpscaleEngine">엔진</label>
                 <select id="referenceGenUpscaleEngine">
                     <option value="realcugan" selected>Real-CUGAN / 애니 그림 추천</option>
+                    <option value="waifu2x">Waifu2x CUNet / 선화 보존·노이즈 억제</option>
                     <option value="lanczos">Lanczos / 빠른 리사이즈</option>
                 </select>
                 <div class="reference-gen-upscale-help">
-                    Real-CUGAN은 setup의 3단계 업스케일 엔진 설치 후 사용할 수 있습니다.
+                    두 AI 엔진 모두 별도 서버 없이 앱에서 바로 실행됩니다.
                 </div>
             </div>
 
