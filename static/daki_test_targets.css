@@ -1,0 +1,25 @@
+.daki-test-dialog .daki-test-target-fields { grid-column: 1 / -1; display: block; border: 0; padding: 0; margin: 0; min-width: 0; }
+.daki-test-targets { padding-bottom: 18px; border-bottom: 1px solid #ffffff20; }
+.daki-test-target-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.daki-test-target-mode-row { display: flex; min-width: 0; align-items: end; flex-wrap: wrap; gap: 8px; }
+.daki-test-target-mode-row > label { width: min(350px, 100%); flex: 0 1 350px; }
+.daki-test-target-mode-row > button { min-height: 38px; flex: 0 0 auto; }
+.daki-test-target-panel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.daki-test-dialog .daki-test-targets label { display: block; min-width: 0; margin: 0; }
+.daki-test-target-panel [hidden], .daki-test-targets > [hidden], .daki-test-target-controls > [hidden] { display: none !important; }
+.daki-test-target-test, .daki-test-target-note { grid-column: 1 / -1; }
+.daki-test-target-tag-field { grid-column: 1 / -1; min-width: 0; }
+.daki-test-target-tag-label { color: #c7c9d0; font-size: 12px; font-weight: 600; }
+.daki-test-target-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.daki-test-dialog .daki-test-target-tags .gallery-tag-filter-chip { height: 36px; min-width: 36px; padding: 0 8px; border-radius: 999px; font-size: 12px; }
+.daki-test-dialog .daki-test-target-tags .gallery-tag-filter-chip.active { border-color: #2dd4bf; color: #2dd4bf; }
+.daki-test-targets select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.daki-test-dialog .daki-test-target-count { margin: 14px 0 0; color: var(--text); font-size: 14px; font-weight: 600; }
+.daki-test-dialog .daki-test-target-status { margin: 6px 0 0; color: var(--thumb); line-height: 1.6; overflow-wrap: anywhere; }
+.daki-test-target-status:empty { display: none; }
+.daki-test-targets .daki-test-target-note { margin: 0; line-height: 1.6; }
+.daki-test-targets > button { margin-top: 10px; }
+@media (max-width: 600px) {
+    .daki-test-target-panel { grid-template-columns: minmax(0, 1fr); }
+    .daki-test-target-mode-row > label { width: auto; flex: 1 1 200px; }
+}

@@ -1,3 +1,4 @@
+from tests.frontend_sources import read_page_scripts
 import pathlib
 import unittest
 
@@ -23,14 +24,14 @@ def extract_js_function(source, name):
 
 class CanvasFrontendStaticTests(unittest.TestCase):
     def test_reference_gen_mask_overlay_uses_fixed_alpha_helpers(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
 
         self.assertIn("const REFERENCE_GEN_MASK_OVERLAY_ALPHA = 0.34;", source)
         self.assertIn("function clearReferenceGenOverlayPath", source)
         self.assertGreaterEqual(source.count("REFERENCE_GEN_MASK_OVERLAY_ALPHA"), 3)
 
     def test_reference_gen_detail_keeps_original_layer_unchanged(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
 
         self.assertIn("mode: 'original-detail'", source)
         self.assertIn("referenceGenSession.currentSrc = pastedSrc;", source)
@@ -38,7 +39,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertNotIn("sourceLayer.src = pastedSrc;", source)
 
     def test_reference_gen_detail_can_open_image_or_clip_layers(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
 
         self.assertIn("function canUseLayerAsDetailSource(layer)", source)
         self.assertIn("return Boolean(layer && (layer.type === 'image' || layer.type === 'clip') && layer.src);", source)
@@ -46,7 +47,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("sourceLayerType: layer.type", source)
 
     def test_reference_gen_clipboard_import_resizes_to_original_session_size(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         body = extract_js_function(source, "pasteClipboardToReferenceGenImage")
         resize_body = extract_js_function(source, "resizeReferenceGenImageToSessionSize")
 
@@ -64,7 +65,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertNotIn("ctx.drawImage(image, 0, 0, width, height);", resize_body)
 
     def test_inpaint_clip_layers_can_use_image_resize_controls(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         render_body = extract_js_function(source, "renderCanvasLayerStack")
         start_body = extract_js_function(source, "startImageResizeDrag")
 
@@ -74,7 +75,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("isResizableCanvasLayer(layer)", start_body)
 
     def test_gpt_detail_prompt_prioritizes_source_aspect_ratio(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         body = extract_js_function(source, "buildGptDetailPrompt")
 
         self.assertIn("function formatCanvasAspectRatio", source)
@@ -83,7 +84,8 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("aspect ratio exactly", body)
 
     def test_reference_gen_upscale_keeps_clip_results_in_selection(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
+        body = extract_js_function(source, "startReferenceGenUpscaleExport")
         app = (ROOT / "app.py").read_text(encoding="utf-8")
         html = (ROOT / "canvas.html").read_text(encoding="utf-8")
 
@@ -92,14 +94,15 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("await addReferenceGenResultToCanvas", source)
         self.assertIn("sourceSelectionId: selection.id", source)
         self.assertIn("layerWidth: sourceClip.layerWidth", source)
-        self.assertIn("tempCategory: isReferenceGenSourceClipSession() ? 'canvas_inpaint' : 'canvas'", source)
+        self.assertIn("const tempCategory = isReferenceGenSourceClipSession() ? 'canvas_inpaint' : 'canvas';", body)
+        self.assertIn("tempCategory,", body)
         self.assertIn('save_category = data.get("tempCategory") or data.get("temp_category") or "canvas"', app)
         self.assertIn("category=save_category", app)
         self.assertIn('value="waifu2x"', html)
         self.assertNotIn('value="comfyui', html.lower())
 
     def test_reference_gen_detail_export_keeps_clip_results_in_selection(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         body = extract_js_function(source, "exportReferenceGenToCanvas")
 
         self.assertIn("await addReferenceGenResultToCanvas", body)
@@ -107,8 +110,22 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("function addReferenceGenClipToSourceSelection", source)
         self.assertIn("sourceReferenceGenClipId: sourceClip.id", source)
 
+    def test_canvas_inpaint_results_preserve_server_prompt_metadata(self):
+        source = read_page_scripts(ROOT, "canvas.html")
+        clip_body = extract_js_function(source, "requestClipInpaint")
+        reference_body = extract_js_function(source, "requestReferenceGenInpaint")
+
+        self.assertIn(
+            "promptInfo: normalizePromptInfo(data.promptInfo || requestPromptInfo || clip.promptInfo)",
+            clip_body,
+        )
+        self.assertIn(
+            "referenceGenSession.promptInfo = normalizeReferenceGenPromptInfo(data.promptInfo);",
+            reference_body,
+        )
+
     def test_reference_gen_detail_uses_gpt_prompt_only(self):
-        js = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        js = read_page_scripts(ROOT, "canvas.html")
         html = (ROOT / "canvas.html").read_text(encoding="utf-8")
         app = (ROOT / "app.py").read_text(encoding="utf-8")
 
@@ -142,7 +159,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("toggleReferenceGenDetailChoice('eye', this)", html)
 
     def test_reference_gen_detail_choice_menu_has_opaque_background(self):
-        js = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        js = read_page_scripts(ROOT, "canvas.html")
 
         self.assertIn("background: var(--card-bg, #181824);", js)
         self.assertIn("color: var(--text-main, #f5f5f7);", js)
@@ -150,7 +167,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertNotIn("background: var(--panel-bg);", js)
 
     def test_canvas_drag_hot_paths_do_not_rerender_entire_surface(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         hot_paths = [
             "handleLayerMoveMouseMove",
             "handleMultiLayerMoveMouseMove",
@@ -167,7 +184,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
             self.assertIn("updateCanvasHotLayerGeometry", body, function_name)
 
     def test_closing_clip_mask_size_popover_keeps_live_mask_editor(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         body = extract_js_function(source, "closeClipMaskSizePopover")
 
         self.assertIn("openClipMaskSizeTool = null;", body)
@@ -175,7 +192,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertNotIn("renderClipOutputPanel()", body)
 
     def test_clip_mask_persistence_keeps_latest_stroke_while_saving(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         body = extract_js_function(source, "persistClipMask")
 
         self.assertIn("const clipMaskPersistRevisions = new WeakMap();", source)
@@ -190,7 +207,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertGreaterEqual(source.count("clip.maskDataUrl || clip.maskSrc"), 2)
 
     def test_large_canvas_layers_use_bounded_display_previews(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         app = (ROOT / "app.py").read_text(encoding="utf-8")
         render_body = extract_js_function(source, "renderCanvasLayerStack")
         merge_body = extract_js_function(source, "renderMergedCanvasToDataUrl")
@@ -206,11 +223,11 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn('request.args.get("preview")', app)
         self.assertIn("def serve_image_preview", app)
         self.assertIn("preview.thumbnail(", app)
-        self.assertIn("CANVAS_DISPLAY_PREVIEW_BUILD_LOCK", app)
+        self.assertIn("IMAGE_PREVIEW_CACHE.get(", app)
         self.assertIn("response.set_etag", app)
 
     def test_canvas_hot_geometry_updates_are_frame_coalesced_and_composited(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         body = extract_js_function(source, "updateCanvasHotLayerGeometry")
         position_body = extract_js_function(source, "setCanvasLayerNodePosition")
 
@@ -219,7 +236,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("translate3d", position_body)
 
     def test_canvas_geometry_drag_keeps_cached_pointer_space_stable(self):
-        source = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        source = read_page_scripts(ROOT, "canvas.html")
         refresh_body = extract_js_function(source, "refreshActiveCanvasDragCoordinateCache")
         wheel_body = extract_js_function(source, "handleCanvasWheelZoom")
         pan_body = extract_js_function(source, "startCanvasWorkspacePanDrag")
@@ -230,7 +247,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("hasActiveCanvasGeometryDrag()", pan_body)
 
     def test_image_import_preserves_ratio_and_centers_with_contain_fit(self):
-        js = (ROOT / "static" / "canvas.js").read_text(encoding="utf-8")
+        js = read_page_scripts(ROOT, "canvas.html")
         geometry = extract_js_function(js, "getInitialImageLayerGeometry")
         importer = extract_js_function(js, "importImageLayer")
         result_importer = extract_js_function(js, "addReferenceGenImageLayerFitCanvas")

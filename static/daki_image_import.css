@@ -1,0 +1,222 @@
+.daki-image-import-dialog {
+    box-sizing: border-box;
+    display: none;
+    flex-direction: column;
+    width: min(980px, calc(100vw - 40px));
+    max-width: 980px;
+    max-height: calc(100dvh - 40px);
+    margin: auto;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid #ffffff24;
+    border-radius: 18px;
+    background: linear-gradient(145deg, #171721, #101015 70%);
+    color: var(--text, #fff);
+    box-shadow: 0 28px 100px #000b, 0 0 0 1px #b299e51a;
+}
+.daki-image-import-dialog[open] { display: flex; }
+.daki-image-import-dialog *,
+.daki-image-import-dialog *::before,
+.daki-image-import-dialog *::after { box-sizing: border-box; }
+.daki-image-import-dialog::backdrop { background: #050509d9; backdrop-filter: blur(5px); }
+.daki-image-import-dialog button,
+.daki-image-import-dialog input,
+.daki-image-import-dialog textarea,
+.daki-image-import-dialog select { font: inherit; }
+.daki-image-import-dialog button { cursor: pointer; flex-shrink: 0; }
+.daki-image-import-dialog button:disabled { cursor: wait; }
+.daki-image-import-header {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex: 0 0 auto;
+    min-width: 0;
+    padding: 22px 26px 18px;
+    border-bottom: 1px solid #ffffff16;
+}
+.daki-image-import-heading { min-width: 0; }
+.daki-image-import-eyebrow { display: block; margin-bottom: 3px; color: #c7b4f1; font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+.daki-image-import-header h2 { margin: 0; color: #fff; font-size: 22px; line-height: 1.35; }
+.daki-image-import-dialog p.daki-image-import-project { min-width: 0; flex: 1; margin: 0; color: #a9a9b6; font-size: 12px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daki-image-import-dialog button.daki-image-import-close {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 1px solid #ffffff24;
+    border-radius: 10px;
+    background: #ffffff08;
+    color: #ddd;
+    font-size: 24px !important;
+    line-height: 1;
+}
+.daki-image-import-body {
+    display: grid;
+    grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+    align-items: start;
+    flex: 1 1 auto;
+    gap: 24px;
+    min-height: 0;
+    padding: 24px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+.daki-image-import-file-panel, .daki-image-import-settings { min-width: 0; }
+.daki-image-import-file-panel > h3,
+.daki-image-import-settings-heading h3 { margin: 0; color: #f2eff9; font-size: 14px; font-weight: 700; line-height: 1.5; }
+.daki-image-import-dropzone {
+    display: flex;
+    min-height: 240px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 22px;
+    border: 1px dashed #b299e57a;
+    border-radius: 15px;
+    background: radial-gradient(ellipse at 50% 0%, #b299e514, transparent 68%), #ffffff03;
+    color: #e8e3f2;
+    text-align: center;
+    transition: border-color .16s ease, background-color .16s ease, transform .16s ease;
+}
+.daki-image-import-dropzone.is-dragging { border-color: #d0b9ff; background-color: #b299e51c; transform: scale(1.01); }
+.daki-image-import-dropzone.has-file {
+    min-height: 64px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 10px;
+    text-align: left;
+}
+.daki-image-import-dropzone.has-file .daki-image-import-upload-icon,
+.daki-image-import-dropzone.has-file > strong { display: none; }
+.daki-image-import-dropzone.has-file .daki-image-import-drop-help { flex: 1 1 150px; }
+.daki-image-import-upload-icon { display: grid; place-items: center; width: 46px; height: 46px; border: 1px solid #b299e558; border-radius: 14px; background: #b299e512; color: #d5c3f7; font-size: 27px; line-height: 1; }
+.daki-image-import-dropzone strong { max-width: 100%; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.daki-image-import-drop-help { color: #92919f; font-size: 11px; line-height: 1.5; }
+.daki-image-import-file-input { display: none; }
+.daki-image-import-dialog button.daki-image-import-secondary,
+.daki-image-import-dialog button.daki-image-import-primary {
+    min-height: 38px;
+    max-width: 100%;
+    padding: 8px 13px;
+    border: 1px solid #ffffff2a;
+    border-radius: 9px;
+    background: #ffffff08;
+    color: #e9e7ef;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.daki-image-import-dialog button.daki-image-import-secondary:hover,
+.daki-image-import-dialog button.daki-image-import-close:hover { border-color: #b299e5; background: #b299e510; }
+.daki-image-import-dialog button.daki-image-import-secondary:disabled { cursor: not-allowed; opacity: .45; }
+.daki-image-import-dialog button.daki-image-import-primary { border-color: #b299e5; background: #b299e5; color: #191321; }
+.daki-image-import-dialog button.daki-image-import-primary:hover:not(:disabled) { border-color: #cbb8f1; background: #cbb8f1; }
+.daki-image-import-dialog button.daki-image-import-primary:disabled { border-color: #716a7b; background: #716a7b; color: #28252d; opacity: .6; }
+.daki-image-import-preview-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid #ffffff1c;
+    border-radius: 13px;
+    background: #ffffff05;
+}
+.daki-image-import-preview { display: block; width: auto; height: auto; max-width: 42%; max-height: 360px; flex: 0 1 auto; object-fit: contain; border-radius: 7px; background: #09090d; }
+.daki-image-import-file-details { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 8px; }
+.daki-image-import-file-name { display: block; width: 100%; color: #eeedf3; font-size: 12px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daki-image-import-file-info { color: #9695a1; font-size: 11px; overflow-wrap: anywhere; }
+.daki-image-import-dialog p.daki-image-import-status { min-height: 20px; margin: 10px 2px 0; color: #aaa8b5; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-image-import-dialog p.daki-image-import-status[hidden] { display: none; }
+.daki-image-import-dialog p.daki-image-import-status.is-error { color: #ffc18e; }
+.daki-image-import-settings-heading { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; min-width: 0; }
+.daki-image-import-prompt-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 4px 8px; border: 1px solid #b299e547; border-radius: 999px; background: #b299e50d; color: #cbb8ef; font-size: 10px; line-height: 1.3; }
+.daki-image-import-side { display: flex; min-width: 0; gap: 8px; margin: 14px 0 0; padding: 0; border: 0; }
+.daki-image-import-side legend { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.daki-image-import-dialog label.daki-image-import-side-option { display: flex; min-width: 0; flex: 1; align-items: center; justify-content: center; gap: 8px; min-height: 40px; margin: 0 !important; padding: 8px 12px; border: 1px solid #ffffff21; border-radius: 9px; background: #ffffff05; color: #c9c7d1; font-size: 12px; cursor: pointer; }
+.daki-image-import-dialog label.daki-image-import-side-option:has(input:checked) { border-color: #b299e5; background: #b299e518; color: #eee8f9; }
+.daki-image-import-side-option input { width: 15px; height: 15px; flex: 0 0 auto; margin: 0; accent-color: #b299e5; }
+.daki-image-import-missing-prompt { margin-top: 15px; padding: 14px; border: 1px solid #ffffff1c; border-radius: 12px; background: #ffffff04; }
+.daki-image-import-missing-prompt > strong { color: #f0eaf9; font-size: 12px; }
+.daki-image-import-missing-prompt > p { margin: 5px 0 12px; color: #a7a4b2; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-image-import-choice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.daki-image-import-prompt-editor { display: grid; gap: 15px; min-width: 0; margin-top: 16px; }
+.daki-image-import-dialog label.daki-image-import-field { display: grid; gap: 6px; min-width: 0; margin: 0 !important; color: #d4d1dc; font-size: 11px; font-weight: 600; }
+.daki-image-import-label { display: block; }
+.daki-image-import-dialog textarea.daki-image-import-textarea,
+.daki-image-import-dialog select.daki-image-import-select {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 10px 11px;
+    border: 1px solid #ffffff24;
+    border-radius: 9px;
+    background: #09090e;
+    color: #efedf4;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.55;
+}
+.daki-image-import-dialog textarea.daki-image-import-textarea { resize: vertical; overflow-wrap: anywhere; }
+.daki-image-import-dialog textarea.daki-image-import-textarea { max-height: 160px; overflow-y: auto; }
+.daki-image-import-dialog textarea.daki-image-import-textarea:focus,
+.daki-image-import-dialog select.daki-image-import-select:focus { border-color: #b299e5; outline: none; }
+.daki-image-import-dialog p.daki-image-import-hint { display: block; margin: 0; color: #9694a1; font-size: 10px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-image-import-prompt-group { display: grid; gap: 8px; min-width: 0; padding-top: 2px; }
+.daki-image-import-prompt-group h3 { margin: 0; color: #d4d0df; font-size: 12px; line-height: 1.5; }
+.daki-image-import-character-list, .daki-image-import-region-list { display: grid; gap: 8px; min-width: 0; }
+.daki-image-import-character-list,
+.daki-image-import-region-list {
+    max-height: min(260px, 32dvh);
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
+}
+.daki-image-import-region-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.daki-image-import-dialog p.daki-image-import-classification-status { flex: 1 1 180px; min-width: 0; margin: 0; color: #aaa8b5; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.daki-image-import-region-source { grid-column: 1 / -1; min-width: 0; color: #cbb8ef; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.daki-image-import-character-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; min-width: 0; }
+.daki-image-import-region-row { display: grid; grid-template-columns: minmax(92px, .35fr) minmax(0, 1fr) auto; align-items: start; gap: 8px; min-width: 0; max-width: 100%; }
+.daki-image-import-region-row > * { min-width: 0; max-width: 100%; }
+.daki-image-import-dialog button.daki-image-import-icon-button { min-height: 35px; padding: 6px 9px; border: 1px solid #ffffff24; border-radius: 8px; background: #ffffff05; color: #b5b1c0; font-size: 10px; }
+.daki-image-import-dialog button.daki-image-import-icon-button:hover { border-color: #d68f8f; color: #ffbbbb; }
+.daki-image-import-footer { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 10px; min-width: 0; padding: 16px 24px; border-top: 1px solid #ffffff16; background: #121219; }
+.daki-image-import-footer button { min-width: 104px; }
+.daki-image-import-dialog :focus-visible { outline: 2px solid #c4a8f5; outline-offset: 3px; }
+.daki-image-import-dialog [hidden] { display: none !important; }
+
+@media (max-width: 900px) {
+    .daki-image-import-body { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+    .daki-image-import-dropzone { min-height: 220px; }
+    .daki-image-import-preview { max-height: 200px; }
+}
+
+@media (max-width: 560px) {
+    .daki-image-import-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); border-radius: 14px; }
+    .daki-image-import-header { gap: 10px; padding: 16px; }
+    .daki-image-import-header h2 { font-size: 19px; }
+    .daki-image-import-dialog p.daki-image-import-project { font-size: 10px; }
+    .daki-image-import-dialog button.daki-image-import-close { width: 32px; height: 32px; }
+    .daki-image-import-body { gap: 20px; padding: 16px; }
+    .daki-image-import-dropzone { min-height: 200px; padding: 17px; }
+    .daki-image-import-region-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .daki-image-import-region-row select { grid-column: 1 / -1; grid-row: 2; }
+    .daki-image-import-region-row textarea { grid-column: 1; grid-row: 3; }
+    .daki-image-import-region-row button { grid-column: 2; grid-row: 3; }
+    .daki-image-import-footer { padding: 13px 16px; }
+    .daki-image-import-dialog .daki-image-import-footer button { min-width: 0; flex: 1 1 0; }
+}

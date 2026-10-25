@@ -23,6 +23,9 @@
 }
 
 /* --- [2] Base & Resets --- */
+/* Fallback only: preserve component cursors for dragging and busy states. */
+:where(select:enabled, summary, input[type="button"]:enabled,
+    input[type="submit"]:enabled, input[type="reset"]:enabled) { cursor: pointer; }
 body { 
     font-family: var(--font-family); 
     padding: 20px; 

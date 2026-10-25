@@ -1,15 +1,19 @@
+from naim.storage.json_files import json_lock
+from naim.novelai import generated_image_archive
+from naim.generation_settings import normalize_inpaint_settings, apply_inpaint_model_constraints
 # -*- coding: utf-8 -*-
 import shutil
 import re
 import json
-import queue
 import threading
 from flask import Flask, jsonify, send_file, request
 import image_logic
+from naim.images.comics import decorate_comic_node
 import upscale_logic
 import subprocess
 import sys
 import utils
+from naim.storage.json_files import read_json, write_json, merge_json_object, json_lock
 import time
 import os
 from PIL import Image, ImageOps
@@ -24,17 +28,37 @@ import random
 import sqlite3
 import atexit
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+from naim.jobs.batches import iter_completed
+from naim.images.previews import PreviewCache, get_display_oriented_image_size
+from naim.images.canvas_export import save_project_canvas_export, save_project_candidate_image
+from naim.images.project_results import validate_project_image_context, process_project_upscale_job
+from naim.storage.legacy_archive import list_archive_images, resolve_archive_image
+from naim.storage.webp_conversion import resolve_converted_gallery_path
 from functools import lru_cache
 from urllib.parse import urlsplit, unquote, quote
 
-def get_app_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+from naim.paths import get_app_dir, get_file_creation_time
+from naim.web.daki import register_daki_routes
+from naim.web.canvas_detail_presets import register_canvas_detail_preset_routes
+from naim.web.daki_image_import import register_daki_image_import_routes
+from naim.web.daki_styles import register_daki_style_routes
+from naim.web.daki_style_sync import register_daki_style_sync_routes
+from naim.web.daki_personal_styles import register_daki_personal_style_routes
+from naim.storage.daki_personal_styles import DakiPersonalStyles
+from naim.storage.daki_projects import DakiNotFoundError
+from naim.storage.daki_tag_examples import DakiTagExamples
+from naim.storage.daki_worldcups import DakiWorldCups
+from naim.web.daki_worldcups import register_daki_worldcup_routes
+from naim.web.daki_drafts import register_daki_draft_routes
+from naim.web.daki_tag_catalog import register_daki_tag_catalog_routes
+from naim.web.novelai_account import register_novelai_account_routes
+from naim.novelai_account import AccountLookupError, fetch_subscription
+from naim.daki_image_refs import resolve_daki_image_reference, daki_image_prompt_fallback, parse_daki_image_reference
 
 
 app = Flask(__name__)
+NOVELAI_ACCOUNT = register_novelai_account_routes(app, lambda: CONFIG_FILE)
 
 GALLERY_INDEX_REBUILD_LOCK = threading.Lock()
 GALLERY_INDEX_DB_LOCK = threading.Lock()
@@ -63,7 +87,7 @@ GALLERY_PROMPT_INDEX_JOB = {
 }
 GALLERY_PROMPT_SEARCH_LOCK = threading.Lock()
 GALLERY_PROMPT_SEARCH_JOBS = {}
-GALLERY_PROMPT_INDEX_WORKERS = min(12, max(4, (os.cpu_count() or 4)))
+GALLERY_PROMPT_INDEX_WORKERS = min(4, max(1, (os.cpu_count() or 4)))
 
 # 경로 설정
 CURRENT_DIR = get_app_dir()
@@ -150,82 +174,126 @@ def get_gallery_data_status_snapshot():
 UPSCALE_OUTPUT_FOLDER_NAME = "_upscaled"
 UPSCALE_IGNORE_FILE_NAME = ".ignore"
 CANVAS_SETUPS_FILE = os.path.join(CURRENT_DIR, "canvas_saved_setups.json")
+DAKI_PROJECTS_FILE = os.path.join(CURRENT_DIR, "daki_projects.json")
+DAKI_PROJECTS = register_daki_routes(
+    app, lambda: DAKI_PROJECTS_FILE,
+    lambda path: resolve_daki_image_path(path),
+    clean_path=lambda path: clean_gallery_rel_path(path),
+    deletion_references=lambda paths: (
+        DAKI_PERSONAL_STYLES.references(paths=paths) + DAKI_TAG_EXAMPLES.references(paths=paths)
+    ),
+    image_deleted=lambda source, relative: project_image_deleted(source, relative),
+)
+register_canvas_detail_preset_routes(app, DAKI_PROJECTS)
+DAKI_SHARED_STYLES_DIR = os.path.join(os.path.dirname(CURRENT_DIR), 'dakiMaker', 'research', 'style-catalog')
+register_daki_image_import_routes(
+    app, DAKI_PROJECTS,
+    lambda: os.path.join(CANVAS_IMPORT_DIR, 'project_exports'),
+    lambda upload: extract_prompt_info_from_image_filelike(upload),
+)
+DAKI_STYLE_TESTS_DIR = os.path.join(CURRENT_DIR, 'daki_style_tests')
+DAKI_IMPORTED_STYLES_DIR = os.path.join(CURRENT_DIR, 'daki_imported_styles')
+DAKI_WORLDCUPS = DakiWorldCups(lambda: os.path.join(CURRENT_DIR, 'daki_worldcups'))
+register_daki_worldcup_routes(app, DAKI_WORLDCUPS)
+DAKI_PERSONAL_STYLES = DakiPersonalStyles(
+    lambda: os.path.join(CURRENT_DIR, 'daki_personal_styles'),
+    lambda path: resolve_daki_image_path('/image/' + quote(path, safe='/')),
+    lambda path: merge_prompt_info_with_fallback(load_prompt_sidecar(path), extract_prompt_info_from_image(path)),
+    prompt_fallback=lambda reference: daki_image_prompt_fallback(reference, DAKI_STYLE_TESTS),
+)
+register_daki_personal_style_routes(app, DAKI_PERSONAL_STYLES)
+DAKI_STYLE_TESTS = register_daki_style_routes(
+    app, lambda: DAKI_SHARED_STYLES_DIR, lambda: DAKI_STYLE_TESTS_DIR,
+    lambda: str(load_lab_config_data().get('key') or '').strip(),
+    imported_root_provider=lambda: DAKI_IMPORTED_STYLES_DIR,
+    personal_catalog=DAKI_PERSONAL_STYLES,
+)
+DAKI_DRAFTS_DIR = os.path.join(CURRENT_DIR, 'daki_drafts')
+DAKI_STYLE_SYNC = register_daki_style_sync_routes(
+    app, lambda: DAKI_IMPORTED_STYLES_DIR, DAKI_STYLE_TESTS.catalog,
+)
 
 
-def normalize_canvas_saved_setup_item(item):
-    if not isinstance(item, dict):
+def validate_draft_project(project_id):
+    try:
+        DAKI_PROJECTS.get_project(project_id)
+    except LookupError as error:
+        raise ValueError('시안을 만들 프로젝트를 찾을 수 없습니다.') from error
+
+
+DAKI_DRAFTS = register_daki_draft_routes(
+    app, lambda: DAKI_DRAFTS_DIR, lambda: str(load_lab_config_data().get('key') or '').strip(),
+    project_validator=validate_draft_project,
+    excluded_draft_ids_provider=lambda: {
+        match.group(1)
+        for example in DAKI_TAG_EXAMPLES.list_examples()
+        if (match := re.fullmatch(r'__daki_drafts__/([a-f0-9]{32})\.png', example['path']))
+    },
+    references_provider=lambda paths: (
+        DAKI_PROJECTS.references(paths=paths)
+        + DAKI_PERSONAL_STYLES.references(paths=paths)
+        + DAKI_TAG_EXAMPLES.references(paths=paths)
+    ),
+)
+DAKI_TAG_CATALOG_DIR = os.path.join(os.path.dirname(CURRENT_DIR), 'dakiMaker', 'research', 'tag-catalog')
+DAKI_TAG_EXAMPLES = DakiTagExamples(
+    lambda: os.path.join(CURRENT_DIR, 'daki_tag_examples'),
+    lambda path: resolve_daki_image_path('/image/' + quote(path, safe='/')),
+)
+DAKI_TAG_CATALOG = register_daki_tag_catalog_routes(
+    app, lambda: DAKI_TAG_CATALOG_DIR,
+    candidate_provider=lambda tag: iter_daki_tag_candidate_rows(tag),
+    candidate_context=lambda: (os.path.realpath(CLASSIFIED_DIR), os.path.realpath(DAKI_DRAFTS_DIR),
+                               os.path.realpath(DAKI_STYLE_TESTS_DIR)),
+    examples_store=DAKI_TAG_EXAMPLES,
+    example_preview=lambda path: serve_image_preview(str(path), 512),
+)
+
+
+def daki_delete_warning(data, paths=None, folders=None):
+    if data.get("confirm_daki") is True:
         return None
+    references = DAKI_PROJECTS.references(paths=paths or [], folders=folders or [])
+    references += DAKI_PERSONAL_STYLES.references(paths=paths or [], folders=folders or [])
+    references += DAKI_TAG_EXAMPLES.references(paths=paths or [], folders=folders or [])
+    if references:
+        return jsonify({
+            "status": "error", "code": "daki_references", "references": references,
+            "message": "daki 후보, 개인 그림체의 대표 그림 또는 태그사전 예시로 연결되어 있습니다. 삭제하면 원본 연결이 끊길 수 있습니다.",
+        }), 409
+    return None
 
-    state = item.get("state")
-    if not isinstance(state, dict):
-        return None
 
-    setup_id = str(item.get("id") or "").strip()
-    if not setup_id:
-        setup_id = f"canvas_setup_server_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
-
-    name = str(item.get("name") or "이름 없는 캔버스").strip() or "이름 없는 캔버스"
-
+def project_image_deleted(source, relative):
+    """Refresh gallery records only when the deleted source belongs to it."""
+    if source is not None:
+        if not utils.is_subpath(os.path.realpath(source), os.path.realpath(CLASSIFIED_DIR)):
+            return
+        relative = os.path.relpath(source, CLASSIFIED_DIR).replace('\\', '/')
+    elif parse_daki_image_reference(relative) is not None:
+        return
+    db = utils.HistoryDB()
     try:
-        saved_at = int(item.get("savedAt") or item.get("saved_at") or int(time.time() * 1000))
-    except Exception:
-        saved_at = int(time.time() * 1000)
-
-    try:
-        width = int(item.get("width") or state.get("width") or 0)
-    except Exception:
-        width = 0
-
-    try:
-        height = int(item.get("height") or state.get("height") or 0)
-    except Exception:
-        height = 0
-
-    try:
-        layer_count = int(item.get("layerCount") or item.get("layer_count") or 0)
-    except Exception:
-        layer_count = 0
-
-    save_mode = str(item.get("saveMode") or item.get("save_mode") or "normal").strip() or "normal"
-
-    normalized = dict(item)
-    normalized.update({
-        "id": setup_id,
-        "name": name,
-        "savedAt": saved_at,
-        "width": width,
-        "height": height,
-        "layerCount": layer_count,
-        "saveMode": save_mode,
-        "state": state
-    })
-
-    return normalized
+        with GALLERY_INDEX_DB_LOCK:
+            db.remove_all_file_records(relative)
+            if not db.remove_gallery_image_record(relative):
+                raise OSError('갤러리 색인을 갱신하지 못했습니다.')
+            if db.has_full_gallery_index():
+                db.refresh_gallery_folder_summaries([os.path.dirname(relative).replace('\\', '/')])
+            else:
+                db.rebuild_gallery_folder_summaries()
+    finally:
+        db.close()
 
 
-def normalize_canvas_saved_setups(setups):
-    if not isinstance(setups, list):
-        return []
+from naim.images.canvas_setups import (
+    apply_canvas_saved_setup_patch,
+    normalize_canvas_saved_setup_item,
+    normalize_canvas_saved_setups,
+)
 
-    result = []
-    seen_ids = set()
 
-    for item in setups:
-        normalized = normalize_canvas_saved_setup_item(item)
-        if not normalized:
-            continue
-
-        setup_id = normalized["id"]
-
-        if setup_id in seen_ids:
-            normalized["id"] = f"{setup_id}_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
-            setup_id = normalized["id"]
-
-        seen_ids.add(setup_id)
-        result.append(normalized)
-
-    result.sort(key=lambda item: int(item.get("savedAt") or 0), reverse=True)
-    return result
+CANVAS_SETUPS_LOCK = threading.RLock()
 
 
 def load_canvas_saved_setups():
@@ -233,8 +301,7 @@ def load_canvas_saved_setups():
         return []
 
     try:
-        with open(CANVAS_SETUPS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f) or []
+        data = read_json(CANVAS_SETUPS_FILE, list, expected_type=list, indent=2)
         return normalize_canvas_saved_setups(data)
     except Exception as e:
         print(f"⚠️ 캔버스 저장본 로드 실패: {e}")
@@ -243,18 +310,14 @@ def load_canvas_saved_setups():
 
 def save_canvas_saved_setups(setups):
     setups = normalize_canvas_saved_setups(setups)
-    tmp_path = CANVAS_SETUPS_FILE + ".tmp"
-
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(setups, f, ensure_ascii=False, indent=2)
-
-    os.replace(tmp_path, CANVAS_SETUPS_FILE)
+    write_json(CANVAS_SETUPS_FILE, setups, indent=2)
     return setups
 
 
 @app.route("/api/canvas/setups", methods=["GET"])
 def get_canvas_saved_setups():
-    setups = load_canvas_saved_setups()
+    with CANVAS_SETUPS_LOCK:
+        setups = load_canvas_saved_setups()
     return jsonify({
         "status": "success",
         "setups": setups,
@@ -264,17 +327,42 @@ def get_canvas_saved_setups():
 
 
 @app.route("/api/canvas/setups", methods=["POST"])
+@app.route("/api/canvas/setups/patch", methods=["POST"])
 def set_canvas_saved_setups():
-    data = request.json or {}
-    setups = data.get("setups", [])
+    data = request.get_json(silent=True)
+    error_response = jsonify({
+        "status": "error",
+        "message": "캔버스 저장본 목록 형식이 올바르지 않습니다."
+    }), 400
 
-    if not isinstance(setups, list):
-        return jsonify({
-            "status": "error",
-            "message": "캔버스 저장본 목록 형식이 올바르지 않습니다."
-        }), 400
+    if not isinstance(data, dict):
+        return error_response
 
-    saved = save_canvas_saved_setups(setups)
+    has_patch = "upserts" in data or "removeIds" in data
+    has_full_list = "setups" in data
+    if has_patch and has_full_list:
+        return error_response
+
+    if has_patch:
+        try:
+            with CANVAS_SETUPS_LOCK:
+                existing = load_canvas_saved_setups()
+                merged = apply_canvas_saved_setup_patch(
+                    existing,
+                    data.get("upserts", []),
+                    data.get("removeIds", [])
+                )
+                saved = save_canvas_saved_setups(merged)
+        except ValueError:
+            return error_response
+    else:
+        setups = data.get("setups", [])
+
+        if not isinstance(setups, list):
+            return error_response
+
+        with CANVAS_SETUPS_LOCK:
+            saved = save_canvas_saved_setups(setups)
 
     return jsonify({
         "status": "success",
@@ -432,24 +520,23 @@ def normalize_gallery_image_tag_config(data):
 
 
 def load_gallery_image_tags_config():
-    if not os.path.exists(GALLERY_IMAGE_TAGS_FILE):
-        config = default_gallery_image_tags_config()
-        save_gallery_image_tags_config(config)
-        return config
+    with json_lock(GALLERY_IMAGE_TAGS_FILE):
+        if not os.path.exists(GALLERY_IMAGE_TAGS_FILE):
+            config = default_gallery_image_tags_config()
+            save_gallery_image_tags_config(config)
+            return config
 
-    try:
-        with open(GALLERY_IMAGE_TAGS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f) or {}
-        return normalize_gallery_image_tag_config(data)
-    except Exception as e:
-        print(f"⚠️ 폴더 매핑 로드 실패: {e}")
-        return default_gallery_image_tags_config()
+        try:
+            data = read_json(GALLERY_IMAGE_TAGS_FILE, default_gallery_image_tags_config, expected_type=dict, indent=2)
+            return normalize_gallery_image_tag_config(data)
+        except Exception as e:
+            print(f"⚠️ 폴더 매핑 로드 실패: {e}")
+            return default_gallery_image_tags_config()
 
 
 def save_gallery_image_tags_config(config):
     config = normalize_gallery_image_tag_config(config)
-    with open(GALLERY_IMAGE_TAGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+    write_json(GALLERY_IMAGE_TAGS_FILE, config, indent=2)
     return config
 
 
@@ -459,16 +546,17 @@ def get_gallery_image_tag_for_path(config, rel_path):
 
 
 def move_gallery_image_tag_path(old_path, new_path):
-    config = load_gallery_image_tags_config()
-    image_tags = config.get("image_tags") or {}
+    with json_lock(GALLERY_IMAGE_TAGS_FILE):
+        config = load_gallery_image_tags_config()
+        image_tags = config.get("image_tags") or {}
 
-    old_key = clean_gallery_rel_path(old_path)
-    new_key = clean_gallery_rel_path(new_path)
+        old_key = clean_gallery_rel_path(old_path)
+        new_key = clean_gallery_rel_path(new_path)
 
-    if old_key and new_key and old_key in image_tags:
-        image_tags[new_key] = image_tags.pop(old_key)
-        config["image_tags"] = image_tags
-        save_gallery_image_tags_config(config)
+        if old_key and new_key and old_key in image_tags:
+            image_tags[new_key] = image_tags.pop(old_key)
+            config["image_tags"] = image_tags
+            save_gallery_image_tags_config(config)
 
 def normalize_brand_lookup_key(value):
     text = str(value or "").strip()
@@ -557,373 +645,66 @@ def load_folder_display_names(db, verbose=False):
     return folder_names_map
 
 
-def decode_exif_user_comment(user_comment):
-    if isinstance(user_comment, bytes):
-        if user_comment.startswith(b"UNICODE\x00"):
-            payload = user_comment[8:]
-            for encoding in ("utf-16-be", "utf-16-le", "utf-16"):
-                try:
-                    return payload.decode(encoding, errors="strict").replace("\x00", "").strip()
-                except UnicodeDecodeError:
-                    continue
-
-        if user_comment.startswith(b"ASCII\x00\x00\x00"):
-            return user_comment[8:].decode("utf-8", errors="ignore").replace("\x00", "").strip()
-
-        return user_comment.decode("utf-8", errors="ignore").replace("\x00", "").strip()
-
-    text = str(user_comment or "")
-    if text.startswith("UNICODE") or text.startswith("ASCII"):
-        text = text[8:]
-    return text.replace("\x00", "").strip()
-
-
-def extract_prompt_info_from_image(file_path):
-    with Image.open(file_path) as img:
-        raw_meta = ""
-        stealth_data = image_logic.read_stealth_info(img)
-        if stealth_data:
-            raw_meta = stealth_data
-        else:
-            if "parameters" in img.info:
-                raw_meta = img.info["parameters"]
-            elif "Comment" in img.info:
-                raw_meta = img.info["Comment"]
-                if isinstance(raw_meta, bytes):
-                    raw_meta = raw_meta.decode('utf-8', 'ignore')
-            elif hasattr(img, 'getexif'):
-                exif = img.getexif()
-                if exif and 37510 in exif:
-                    raw_meta = decode_exif_user_comment(exif[37510])
-
-        raw_meta = str(raw_meta or "").strip()
-        meta = {}
-
-        if raw_meta.startswith('{'):
-            try:
-                meta = json.loads(raw_meta)
-                if "Comment" in meta and isinstance(meta["Comment"], str) and meta["Comment"].strip().startswith('{'):
-                    meta = json.loads(meta["Comment"])
-            except json.JSONDecodeError:
-                meta = {}
-
-        if meta:
-            v4_prompt = meta.get("v4_prompt", {})
-            caption = v4_prompt.get("caption", {}) if isinstance(v4_prompt, dict) else {}
-
-            base_caption = str(caption.get("base_caption", "") or "").strip()
-
-            prompt = str(
-                base_caption
-                or meta.get("prompt", "")
-                or meta.get("basePrompt", "")
-                or ""
-            ).strip()
-
-            v4_negative_prompt = meta.get("v4_negative_prompt", {})
-            negative_caption = v4_negative_prompt.get("caption", {}) if isinstance(v4_negative_prompt, dict) else {}
-
-            negative_prompt = str(
-                negative_caption.get("base_caption", "")
-                or meta.get("negative_prompt", "")
-                or meta.get("negativePrompt", "")
-                or meta.get("uc", "")
-                or meta.get("uncond", "")
-                or meta.get("unconditional_prompt", "")
-                or ""
-            ).strip()
-
-            char_prompts = []
-
-            char_captions = caption.get("char_captions", [])
-            if isinstance(char_captions, list):
-                for item in char_captions:
-                    if isinstance(item, dict):
-                        char_prompt = str(item.get("char_caption", "")).strip()
-                        if char_prompt:
-                            char_prompts.append(char_prompt)
-
-            return {
-                "basePrompt": prompt,
-                "baseCaption": base_caption,
-                "negativePrompt": negative_prompt,
-                "negative_prompt": negative_prompt,
-                "uc": negative_prompt,
-                "charPrompts": char_prompts,
-                "metaType": "json"
-            }
-
-        prompt_part = raw_meta
-        negative_prompt = ""
-        if "Negative prompt:" in raw_meta:
-            prompt_part, negative_prompt = raw_meta.split("Negative prompt:", 1)
-            negative_prompt = negative_prompt.strip()
-        if "\n" in prompt_part:
-            prompt_part = prompt_part.split("\n")[0]
-
-        return {
-            "basePrompt": prompt_part.strip(),
-            "baseCaption": "",
-            "negativePrompt": negative_prompt,
-            "negative_prompt": negative_prompt,
-            "uc": negative_prompt,
-            "charPrompts": [],
-            "metaType": "text"
-        }
-
-def normalize_prompt_info_for_sidecar(prompt_info):
-    prompt_info = prompt_info or {}
-
-    char_prompts = normalize_char_prompts(prompt_info)
-    char_prompt_text = ", ".join(char_prompts)
-
-    negative_prompt = str(
-        prompt_info.get("negativePrompt")
-        or prompt_info.get("negative_prompt")
-        or prompt_info.get("uc")
-        or ""
-    ).strip()
-
-    base_caption = str(
-        prompt_info.get("baseCaption")
-        or prompt_info.get("base_caption")
-        or ""
-    ).strip()
-
-    base_prompt = str(
-        prompt_info.get("basePrompt")
-        or prompt_info.get("prompt")
-        or prompt_info.get("base_prompt")
-        or base_caption
-        or ""
-    ).strip()
-
-    return {
-        "basePrompt": base_prompt,
-        "baseCaption": base_caption or base_prompt,
-        "negativePrompt": negative_prompt,
-        "negative_prompt": negative_prompt,
-        "uc": negative_prompt,
-        "charPrompt": char_prompt_text,
-        "charPrompts": char_prompts,
-        "strength": prompt_info.get("strength", ""),
-        "noise": prompt_info.get("noise", ""),
-        "sampler": prompt_info.get("sampler", ""),
-        "steps": prompt_info.get("steps", ""),
-        "cfg": prompt_info.get("cfg", prompt_info.get("scale", "")),
-        "seed": prompt_info.get("seed", ""),
-        "metaType": "sidecar"
-    }
-
-def has_prompt_info_text(prompt_info):
-    prompt_info = prompt_info or {}
-    return bool(
-        str(prompt_info.get("basePrompt") or prompt_info.get("prompt") or "").strip()
-        or str(prompt_info.get("negativePrompt") or prompt_info.get("negative_prompt") or prompt_info.get("uc") or "").strip()
-        or str(prompt_info.get("charPrompt") or "").strip()
-        or any(str(p).strip() for p in prompt_info.get("charPrompts", []) if isinstance(prompt_info.get("charPrompts", []), list))
-    )
-
-
-def get_prompt_sidecar_path(image_path):
-    return os.path.splitext(image_path)[0] + ".json"
-
-
-def load_prompt_sidecar(image_path):
-    sidecar_path = get_prompt_sidecar_path(image_path)
-
-    if not os.path.exists(sidecar_path):
-        return None
-
-    try:
-        with open(sidecar_path, "r", encoding="utf-8") as f:
-            data = json.load(f) or {}
-
-        # 기존 다키 저장 json 호환
-        if "base_prompt" in data or "char_prompt" in data or "negative_prompt" in data:
-            data = {
-                "basePrompt": data.get("base_prompt", ""),
-                "baseCaption": data.get("base_caption", "") or data.get("basePrompt", "") or data.get("base_prompt", ""),
-                "charPrompt": data.get("char_prompt", ""),
-                "charPrompts": data.get("char_prompts") or data.get("charPrompts") or [],
-                "negativePrompt": data.get("negative_prompt", "")
-            }
-
-        info = normalize_prompt_info_for_sidecar(data)
-        return info if has_prompt_info_text(info) else None
-
-    except Exception as e:
-        print(f"⚠️ 프롬프트 사이드카 로드 실패: {sidecar_path} | {e}")
-        return None
-
-def build_fast_upscale_badge_info_from_rel_path(rel_path):
-    filename = os.path.basename(str(rel_path or "")).lower()
-    match = re.search(r"_upscale_(\d+)x(\d+)_([^.]*)", filename)
-
-    if not match:
-        return {"is_upscaled": False}
-
-    return {
-        "is_upscaled": True,
-        "target_width": int(match.group(1) or 0),
-        "target_height": int(match.group(2) or 0),
-        "engine": match.group(3) or "",
-        "quality": "",
-        "source_path": ""
-    }
-
-def load_upscale_badge_info(image_path):
-    sidecar_path = get_prompt_sidecar_path(image_path)
-
-    info = {
-        "is_upscaled": False,
-        "engine": "",
-        "quality": "",
-        "target_width": 0,
-        "target_height": 0,
-        "source_path": ""
-    }
-
-    try:
-        if os.path.exists(sidecar_path):
-            with open(sidecar_path, "r", encoding="utf-8") as f:
-                data = json.load(f) or {}
-
-            upscale = data.get("upscale")
-            if isinstance(upscale, dict):
-                info.update({
-                    "is_upscaled": True,
-                    "engine": str(upscale.get("engine") or "").strip(),
-                    "quality": str(upscale.get("quality") or "").strip(),
-                    "target_width": int(upscale.get("target_width") or 0),
-                    "target_height": int(upscale.get("target_height") or 0),
-                    "source_path": str(upscale.get("source_path") or "").strip()
-                })
-                return info
-    except Exception:
-        pass
-
-    # sidecar가 없거나 예전 업스케일 파일이면 파일명으로 최소 표시
-    filename = os.path.basename(str(image_path or "")).lower()
-    match = re.search(r"_upscale_(\d+)x(\d+)_([^.]*)", filename)
-
-    if match:
-        info.update({
-            "is_upscaled": True,
-            "target_width": int(match.group(1) or 0),
-            "target_height": int(match.group(2) or 0),
-            "engine": match.group(3) or ""
-        })
-
-    return info
-
-def save_prompt_sidecar(image_path, prompt_info):
-    info = normalize_prompt_info_for_sidecar(prompt_info)
-
-    if not has_prompt_info_text(info):
-        return False
-
-    sidecar_path = get_prompt_sidecar_path(image_path)
-
-    with open(sidecar_path, "w", encoding="utf-8") as f:
-        json.dump(info, f, ensure_ascii=False, indent=2)
-
-    return True
-
-def build_embedded_prompt_payload(prompt_info):
-    info = normalize_prompt_info_for_sidecar(prompt_info or {})
-
-    base_prompt = str(
-        info.get("basePrompt")
-        or info.get("baseCaption")
-        or info.get("prompt")
-        or ""
-    ).strip()
-
-    negative_prompt = str(
-        info.get("negativePrompt")
-        or info.get("negative_prompt")
-        or info.get("uc")
-        or ""
-    ).strip()
-
-    char_prompts = info.get("charPrompts") or []
-    if not isinstance(char_prompts, list):
-        char_prompts = []
-
-    char_prompts = [
-        str(item or "").strip()
-        for item in char_prompts
-        if str(item or "").strip()
-    ]
-
-    single_char_prompt = str(info.get("charPrompt") or "").strip()
-    if single_char_prompt:
-        for part in single_char_prompt.split(","):
-            part = part.strip()
-            if part:
-                char_prompts.append(part)
-
-    merged_prompt_parts = [base_prompt] + char_prompts
-    merged_prompt = ", ".join(part for part in merged_prompt_parts if part).strip()
-
-    payload = {
-        "prompt": merged_prompt or base_prompt,
-        "negative_prompt": negative_prompt,
-        "v4_prompt": {
-            "caption": {
-                "base_caption": base_prompt,
-                "char_captions": [
-                    {"char_caption": item}
-                    for item in char_prompts
-                ]
-            }
-        },
-        "v4_negative_prompt": {
-            "caption": {
-                "base_caption": negative_prompt
-            }
-        }
-    }
-
-    return payload, merged_prompt or base_prompt, negative_prompt
-
-
-def save_png_with_prompt_metadata(image_obj, save_path, prompt_info, source_label="NAI Image Manager"):
-    """
-    PNG 내부에 Comment / parameters 메타데이터를 저장한다.
-    main_executor -> image_logic 기존 분류 로직이 이 메타를 읽을 수 있게 하기 위한 함수.
-    """
-    info = normalize_prompt_info_for_sidecar(prompt_info or {})
-
-    if not has_prompt_info_text(info):
-        image_obj.save(save_path, "PNG")
-        return False
-
-    payload, prompt_text, negative_prompt = build_embedded_prompt_payload(info)
-    raw_json = json.dumps(payload, ensure_ascii=False)
-
-    pnginfo = PngInfo()
-    pnginfo.add_text("Comment", raw_json)
-    pnginfo.add_text("comment", raw_json)
-
-    parameters_text = prompt_text or ""
-    if negative_prompt:
-        if parameters_text:
-            parameters_text += f"\nNegative prompt: {negative_prompt}"
-        else:
-            parameters_text = f"Negative prompt: {negative_prompt}"
-
-    if parameters_text:
-        pnginfo.add_text("parameters", parameters_text)
-
-    pnginfo.add_text("Software", source_label)
-
-    image_obj.save(save_path, "PNG", pnginfo=pnginfo)
-    return True
+from naim.images.prompt_metadata import (
+    decode_exif_user_comment,
+    _decode_prompt_metadata_dict,
+    _parse_prompt_metadata,
+    _iter_prompt_metadata_dicts,
+    _prompt_metadata_field,
+    _image_info_value_casefold,
+    _normalize_extracted_generation_metadata,
+    extract_prompt_info_from_image,
+    normalize_prompt_info_for_sidecar,
+    has_prompt_info_text,
+    has_prompt_info_payload,
+    get_prompt_sidecar_path,
+    load_prompt_sidecar,
+    merge_prompt_info_with_fallback,
+    build_fast_upscale_badge_info_from_rel_path,
+    load_upscale_badge_info,
+    save_prompt_sidecar,
+    build_embedded_prompt_payload,
+    save_png_with_prompt_metadata,
+    normalize_char_prompts,
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 @app.route('/')
 def index():
+    return send_file('index.html')
+
+
+@app.route('/daki')
+def daki_library():
     return send_file('index.html')
 
 
@@ -975,7 +756,8 @@ def install_ai():
         return jsonify({"status": "error", "message": str(e)})
 
 
-def build_gallery_data_payload_from_scan(mode, sort_by):
+def build_gallery_data_payload_from_scan(mode, sort_by, model_family="all"):
+    model_family = image_logic.normalize_model_family_filter(model_family)
     if not os.path.exists(CLASSIFIED_DIR):
         update_gallery_data_status(
             running=False,
@@ -1073,6 +855,9 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                                             continue
 
                                         rel_img = os.path.relpath(up_entry.path, CLASSIFIED_DIR).replace('\\', '/')
+                                        model_family_value = image_logic.extract_model_family_from_file(up_entry.path)
+                                        if not image_logic.model_family_matches(model_family, model_family_value):
+                                            continue
                                         scan_progress["images"] += 1
                                         maybe_update_scan_status()
                                         mtime = os.path.getmtime(up_entry.path)
@@ -1104,8 +889,10 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                                             "w": img_w,
                                             "h": img_h,
                                             "mtime": mtime,
+                                            "ctime": get_file_creation_time(up_entry.path, mtime),
                                             "reason": reason_text,
                                             "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_img),
+                                            "model_family": model_family_value,
                                             "is_upscaled": True
                                         })
                                         virtual_node["total_images"] += 1
@@ -1132,6 +919,9 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
 
                     elif entry.is_file() and entry.name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
                         rel_img = os.path.relpath(entry.path, CLASSIFIED_DIR).replace('\\', '/')
+                        model_family_value = image_logic.extract_model_family_from_file(entry.path)
+                        if not image_logic.model_family_matches(model_family, model_family_value):
+                            continue
                         scan_progress["images"] += 1
                         maybe_update_scan_status()
                         mtime = os.path.getmtime(entry.path)
@@ -1161,8 +951,10 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
                         virtual_node["images"].append({
                             "name": entry.name, "path": rel_img, "w": img_w, "h": img_h,
                             "mtime": mtime,
+                            "ctime": get_file_creation_time(entry.path, mtime),
                             "reason": reason_text,
-                            "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_img)
+                            "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_img),
+                            "model_family": model_family_value
                         })
                         virtual_node["total_images"] += 1
         except Exception as scan_err:
@@ -1210,6 +1002,7 @@ def build_gallery_data_payload_from_scan(mode, sort_by):
 
         node["folders"] = folder_list
         node["images"].sort(key=lambda x: (-float(x.get("mtime") or 0), x["name"]))
+        decorate_comic_node(node, CLASSIFIED_DIR)
 
         # 메타데이터 없는 폴더명 패턴은 뒤쪽으로 정렬
         main_img = next((img["path"] for img in node["images"] if img["name"].startswith("000_MAIN_")), None)
@@ -1308,46 +1101,19 @@ def build_gallery_brand_payload(db, tree_dict):
     return brand_map, brand_visibility
 
 
-def build_gallery_data_payload_from_index(mode, sort_by):
+def build_gallery_data_payload_from_index(mode, sort_by, model_family="all", summary_only=False):
+    model_family = image_logic.normalize_model_family_filter(model_family)
     db = utils.HistoryDB()
     try:
+        if not summary_only:
+            db.ensure_gallery_image_creation_times(CLASSIFIED_DIR)
         gallery_tag_config = load_gallery_image_tags_config()
         tree = {"name": "ROOT", "path": "", "folders": {}, "images": [], "thumb": None, "total_images": 0}
         folder_nodes = {"": tree}
         cursor = db.conn.cursor()
 
-        select_cols = "SELECT rel_path, folder_path, file_name, width, height, mtime, reason, gallery_tag FROM gallery_images"
-
-        if mode == "general":
-            cursor.execute(f"""
-                {select_cols}
-                WHERE rel_path NOT LIKE '_R-18/%'
-                  AND rel_path NOT LIKE '_R-15/%'
-                  AND rel_path NOT LIKE '_TRASH/%'
-            """)
-        elif mode == "r18":
-            cursor.execute(f"""
-                {select_cols}
-                WHERE rel_path LIKE '_R-18/%'
-                   OR rel_path LIKE '_R-15/%'
-                   OR (mode = 'r18' AND rel_path NOT LIKE '_TRASH/%')
-            """)
-        elif mode == "trash":
-            cursor.execute(f"""
-                {select_cols}
-                WHERE rel_path LIKE '_TRASH/%'
-                   OR mode = 'trash'
-            """)
-        else:
-            cursor.execute(f"""
-                {select_cols}
-                WHERE rel_path NOT LIKE '_TRASH/%'
-                  AND (
-                        mode IN ('general', 'r18')
-                        OR rel_path LIKE '_R-18/%'
-                        OR rel_path LIKE '_R-15/%'
-                  )
-            """)
+        from naim.gallery.catalog import gallery_rows
+        rows = gallery_rows(db.conn, mode, model_family, summary=summary_only)
 
         def get_node(folder_path):
             folder_path = str(folder_path or "").replace("\\", "/").strip("/")
@@ -1357,21 +1123,40 @@ def build_gallery_data_payload_from_index(mode, sort_by):
             parent = get_node(parent_path)
             name = os.path.basename(folder_path)
             node = {"name": name, "path": folder_path, "folders": {}, "images": [], "thumb": None, "total_images": 0}
+            if name.lower() == "comic":
+                node["is_comic_group"] = True
+                node["char_names"] = []
             parent["folders"][name] = node
             folder_nodes[folder_path] = node
             return node
 
-        for rel_path, folder_path, file_name, width, height, mtime, reason, gallery_tag in cursor.fetchall():
+        for row in rows:
+            rel_path, folder_path, file_name, width, height, mtime, reason, gallery_tag, row_model_family, ctime = row[:10]
             display_folder_path = normalize_gallery_display_folder_path(folder_path)
             node = get_node(display_folder_path)
+            if not node["images"] and not node.get('_images_pending'):
+                decorate_comic_node(node, CLASSIFIED_DIR, folder_path)
+            if summary_only:
+                node['_images_pending'] = node.get('_images_pending', 0) + row[10]
+                node.setdefault('_image_sources', []).append(folder_path)
+                if node.get('is_comic'):
+                    rel_path = row[11]
+                    file_name = os.path.basename(rel_path)
+                thumb_key = (not file_name.startswith('000_MAIN_'), 0 if node.get('is_comic') else -float(mtime or 0), file_name)
+                if '_own_thumb_key' not in node or thumb_key < node['_own_thumb_key']:
+                    node['_own_thumb_key'] = thumb_key
+                    node['_own_thumb'] = rel_path
+                continue
             node["images"].append({
                 "name": file_name,
                 "path": rel_path,
                 "w": width,
                 "h": height,
                 "mtime": mtime,
+                "ctime": ctime,
                 "reason": reason or "",
-                "gallery_tag": gallery_tag or get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
+                "gallery_tag": gallery_tag or get_gallery_image_tag_for_path(gallery_tag_config, rel_path),
+                "model_family": image_logic.normalize_model_family(row_model_family)
             })
 
         def finalize_tree(node, depth=0):
@@ -1381,11 +1166,17 @@ def build_gallery_data_payload_from_index(mode, sort_by):
                 node["total_images"] += child["total_images"]
                 if not node["thumb"] and child.get("thumb"):
                     node["thumb"] = child["thumb"]
-            node["total_images"] += len(node["images"])
+            node["total_images"] += len(node["images"]) + node.get("_images_pending", 0)
             node["images"].sort(key=lambda x: (-float(x.get("mtime") or 0), x["name"]))
+            if node.get("is_comic"):
+                node["images"].sort(key=lambda x: x["name"])
             main_img = next((img["path"] for img in node["images"] if img["name"].startswith("000_MAIN_")), None)
             if not node["thumb"] and node["images"]:
                 node["thumb"] = main_img if main_img else node["images"][0]["path"]
+            node.pop("_own_thumb_key", None)
+            own_thumb = node.pop("_own_thumb", None)
+            if not node["thumb"] and own_thumb:
+                node["thumb"] = own_thumb
             folder_list = [f for f in folder_list if f["total_images"] > 0]
             if depth == 0:
                 order_map = {"1_Solo": 1, "2_Duo": 2, "3_Group": 3, "No_Metadata": 99}
@@ -1402,6 +1193,7 @@ def build_gallery_data_payload_from_index(mode, sort_by):
         brand_map, brand_visibility = build_gallery_brand_payload(db, tree)
         return {
             "tree": tree,
+            "catalog_mode": bool(summary_only),
             "baseDir": "TOTAL_CLASSIFIED",
             "brand_map": brand_map,
             "brand_visibility": brand_visibility,
@@ -1411,6 +1203,40 @@ def build_gallery_data_payload_from_index(mode, sort_by):
                 "image_tags": gallery_tag_config.get("image_tags", {})
             }
         }
+    finally:
+        db.close()
+
+
+@app.route('/api/gallery/images', methods=['POST'])
+def get_gallery_image_page():
+    from naim.gallery.catalog import gallery_image_page
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify(status='error', message='잘못된 조회 요청입니다.'), 400
+    db = utils.HistoryDB()
+    try:
+        if not db.has_full_gallery_index():
+            return jsonify(status='error', message='인덱스를 갱신한 뒤 다시 시도해 주세요.'), 409
+        rows, next_cursor = gallery_image_page(db.conn, data.get('mode', 'general'),
+            image_logic.normalize_model_family_filter(data.get('model_family', 'all')),
+            data.get('folders'), data.get('after', ''), data.get('limit', 512), paths=data.get('paths'))
+        # Migrate missing creation times only for this page, not the whole library.
+        updates = []
+        for index, row in enumerate(rows):
+            if row[9] is None:
+                created = get_file_creation_time(os.path.join(CLASSIFIED_DIR, row[0]), row[5])
+                rows[index] = (*row[:9], created)
+                updates.append((created, row[0]))
+        if updates:
+            with db.conn:
+                db.conn.executemany('UPDATE gallery_images SET ctime = ? WHERE rel_path = ? AND ctime IS NULL', updates)
+        tags = load_gallery_image_tags_config()
+        images = [{'path': r[0], 'name': r[2], 'w': r[3], 'h': r[4], 'mtime': r[5],
+                   'reason': r[6] or '', 'gallery_tag': r[7] or get_gallery_image_tag_for_path(tags, r[0]),
+                   'model_family': image_logic.normalize_model_family(r[8]), 'ctime': r[9]} for r in rows]
+        return jsonify(status='success', images=images, next_cursor=next_cursor)
+    except (ValueError, TypeError):
+        return jsonify(status='error', message='잘못된 페이지 조회 조건입니다.'), 400
     finally:
         db.close()
 
@@ -1427,6 +1253,7 @@ def get_gallery_data_status():
 def get_data():
     mode = request.args.get('mode', 'general')
     sort_by = request.args.get('sort', 'name')
+    model_family = image_logic.normalize_model_family_filter(request.args.get('model_family', 'all'))
     allow_scan = request.args.get('allow_scan', '0') == '1'
     index_mode = "scan_fallback"
     data_started_perf = time.perf_counter()
@@ -1446,7 +1273,7 @@ def get_data():
         index_mode="scan_fallback",
         error=""
     )
-    print(f"[갤러리] /api/data 시작: mode={mode}, sort={sort_by}")
+    print(f"[갤러리] /api/data 시작: mode={mode}, sort={sort_by}, model_family={model_family}")
 
     try:
         db = utils.HistoryDB()
@@ -1462,7 +1289,7 @@ def get_data():
                 message="갤러리 인덱스에서 데이터를 불러오는 중입니다.",
                 index_mode="full_index"
             )
-            payload = build_gallery_data_payload_from_index(mode, sort_by)
+            payload = build_gallery_data_payload_from_index(mode, sort_by, model_family, summary_only=request.args.get("catalog") == "1")
             index_mode = "full_index"
         except Exception as e:
             print(f"gallery index fallback: {e}")
@@ -1500,7 +1327,7 @@ def get_data():
                     "server_session_id": GALLERY_SERVER_SESSION_ID,
                     "gallery_tags": load_gallery_image_tags_config()
                 })
-            payload = build_gallery_data_payload_from_scan(mode, sort_by)
+            payload = build_gallery_data_payload_from_scan(mode, sort_by, model_family)
     else:
         if not allow_scan:
             auto_started, rebuild_running = start_gallery_index_rebuild_background(auto=True)
@@ -1543,7 +1370,7 @@ def get_data():
             message="사용자 요청으로 기존 전체 스캔 방식으로 불러오는 중입니다.",
             index_mode="scan_fallback"
         )
-        payload = build_gallery_data_payload_from_scan(mode, sort_by)
+        payload = build_gallery_data_payload_from_scan(mode, sort_by, model_family)
 
     elapsed = time.perf_counter() - data_started_perf
     status_snapshot = get_gallery_data_status_snapshot()
@@ -1560,7 +1387,7 @@ def get_data():
     )
 
     print(
-        f"[갤러리] /api/data 완료: mode={mode}, sort={sort_by}, index_mode={index_mode}, "
+        f"[갤러리] /api/data 완료: mode={mode}, sort={sort_by}, model_family={model_family}, index_mode={index_mode}, "
         f"folders={status_snapshot.get('folders', 0)}, images={status_snapshot.get('images', 0)}, elapsed={elapsed:.1f}s"
     )
 
@@ -1647,7 +1474,10 @@ def should_skip_gallery_index_child_directory(root, dirname):
 def gallery_index_rebuild_worker():
     batch = []
     batch_size = 2000
+    last_progress_at = 0
     db = None
+    staging_db = None
+    staging_directory = None
     try:
         with GALLERY_INDEX_REBUILD_LOCK:
             GALLERY_INDEX_REBUILD_JOB.update({
@@ -1662,9 +1492,13 @@ def gallery_index_rebuild_worker():
             })
 
         db = utils.HistoryDB()
+        staging_directory = tempfile.TemporaryDirectory(prefix="naim-gallery-index-")
+        staging_db = utils.HistoryDB(os.path.join(staging_directory.name, "gallery_index.db"))
 
         with GALLERY_INDEX_DB_LOCK:
-            db.clear_gallery_index()
+            # Keep the live index readable while serializing gallery writers
+            # as before. Only the completed temporary index is published.
+            staging_db.capture_gallery_index_baseline(db.db_path)
 
             image_paths = []
             for root, dirs, files in os.walk(CLASSIFIED_DIR):
@@ -1701,6 +1535,7 @@ def gallery_index_rebuild_worker():
                 width = cached[0] if cached and cached[2] == mtime else None
                 height = cached[1] if cached and cached[2] == mtime else None
                 reason_text = load_gallery_reason_text_for_image(full_path)
+                model_family = image_logic.extract_model_family_from_file(full_path)
 
                 batch.append({
                     "rel_path": rel_path,
@@ -1708,29 +1543,43 @@ def gallery_index_rebuild_worker():
                     "file_name": file_name,
                     "mode": infer_gallery_mode_from_rel_path(rel_path),
                     "mtime": mtime,
+                    "ctime": get_file_creation_time(full_path, mtime),
                     "width": width,
                     "height": height,
                     "reason": reason_text,
-                    "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_path)
+                    "gallery_tag": get_gallery_image_tag_for_path(gallery_tag_config, rel_path),
+                    "model_family": model_family
                 })
 
                 if len(batch) >= batch_size:
-                    db.upsert_gallery_image_records(batch)
+                    staging_db.upsert_gallery_image_records(batch)
                     batch = []
 
-                if index % 500 == 0 or index == len(image_paths):
+                now = time.time()
+                if now - last_progress_at >= 0.35 or index == len(image_paths):
+                    last_progress_at = now
                     with GALLERY_INDEX_REBUILD_LOCK:
                         GALLERY_INDEX_REBUILD_JOB["processed"] = index
 
             if batch:
-                db.upsert_gallery_image_records(batch)
+                staging_db.upsert_gallery_image_records(batch)
 
             with GALLERY_INDEX_REBUILD_LOCK:
                 GALLERY_INDEX_REBUILD_JOB["message"] = "폴더 요약 생성 중..."
                 GALLERY_INDEX_REBUILD_JOB["processed"] = len(image_paths)
 
-            db.rebuild_gallery_folder_summaries()
-            db.set_gallery_index_state("full_index_built", "1")
+            staging_db.rebuild_gallery_folder_summaries()
+            latest_gallery_tag_config = load_gallery_image_tags_config()
+            if latest_gallery_tag_config != gallery_tag_config:
+                # Image tags are saved independently of the image DB. Refresh
+                # the scan's snapshot before publishing a long-running rebuild.
+                with staging_db.conn:
+                    staging_db.conn.executemany(
+                        "UPDATE gallery_images SET gallery_tag = ? WHERE rel_path = ?",
+                        ((get_gallery_image_tag_for_path(latest_gallery_tag_config, row[0]), row[0])
+                         for row in staging_db.conn.execute("SELECT rel_path FROM gallery_images"))
+                    )
+            db.replace_gallery_index_from(staging_db)
 
         with GALLERY_INDEX_REBUILD_LOCK:
             GALLERY_INDEX_REBUILD_JOB.update({
@@ -1740,11 +1589,6 @@ def gallery_index_rebuild_worker():
                 "finished_at": time.time()
             })
     except Exception as e:
-        try:
-            if db:
-                db.set_gallery_index_state("full_index_built", "0")
-        except Exception:
-            pass
         with GALLERY_INDEX_REBUILD_LOCK:
             GALLERY_INDEX_REBUILD_JOB.update({
                 "running": False,
@@ -1754,6 +1598,10 @@ def gallery_index_rebuild_worker():
                 "finished_at": time.time()
             })
     finally:
+        if staging_db:
+            staging_db.close()
+        if staging_directory:
+            staging_directory.cleanup()
         if db:
             db.close()
 
@@ -1815,6 +1663,15 @@ def refresh_gallery_index_for_file_change(file_path, rel_path=None, old_rel_path
             result["index_full_built"] = bool(index_full_built)
 
             if index_full_built:
+                changed_folders = []
+                for previous_path in {clean_rel_path, old_rel_path, *stale_rel_paths}:
+                    if previous_path:
+                        previous = db.conn.execute(
+                            "SELECT folder_path FROM gallery_images WHERE rel_path = ?",
+                            (db.normalize_gallery_rel_path(previous_path),),
+                        ).fetchone()
+                        if previous:
+                            changed_folders.append(previous[0])
                 if old_rel_path:
                     db.remove_gallery_image_record(old_rel_path)
                 for stale_rel_path in stale_rel_paths:
@@ -1831,7 +1688,7 @@ def refresh_gallery_index_for_file_change(file_path, rel_path=None, old_rel_path
                     classified_root=CLASSIFIED_DIR,
                     **next_overrides
                 )
-                db.rebuild_gallery_folder_summaries()
+                db.refresh_gallery_folder_summaries(changed_folders + [gallery_record["folder_path"]])
 
                 index_verified = db.gallery_image_record_exists(gallery_record["rel_path"])
                 result["index_verified"] = bool(index_verified)
@@ -1926,7 +1783,7 @@ def gallery_prompt_mode_matches(rel_path, mode):
     return file_mode != "trash" or mode == "trash"
 
 
-def iter_gallery_prompt_index_files(scope_path="", mode="all"):
+def iter_gallery_prompt_index_files(scope_path="", mode="all", stop_check=None):
     scope_paths = normalize_gallery_prompt_scope_paths(scope_path)
 
     if not scope_paths:
@@ -1935,6 +1792,8 @@ def iter_gallery_prompt_index_files(scope_path="", mode="all"):
     roots = []
 
     for scope in scope_paths:
+        if stop_check and stop_check():
+            return []
         try:
             root = utils.resolve_safe_path(
                 CLASSIFIED_DIR,
@@ -1954,7 +1813,11 @@ def iter_gallery_prompt_index_files(scope_path="", mode="all"):
     seen_paths = set()
 
     for root in roots:
+        if stop_check and stop_check():
+            return []
         for scan_root, dirs, files in os.walk(root):
+            if stop_check and stop_check():
+                return []
             dirs[:] = [
                 d for d in dirs
                 if not should_skip_gallery_index_child_directory(scan_root, d)
@@ -1965,6 +1828,8 @@ def iter_gallery_prompt_index_files(scope_path="", mode="all"):
                 continue
 
             for file_name in files:
+                if stop_check and stop_check():
+                    return []
                 if not file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
                     continue
 
@@ -2003,6 +1868,7 @@ def build_gallery_prompt_index_record(full_path):
 
     prompt_info = load_prompt_sidecar(full_path) or extract_prompt_info_from_image(full_path) or {}
     prompt_text = build_gallery_prompt_filter_text(prompt_info)
+    positive_prompt_text = build_gallery_positive_prompt_filter_text(prompt_info)
 
     return {
         "rel_path": rel_path,
@@ -2011,7 +1877,9 @@ def build_gallery_prompt_index_record(full_path):
         "mode": infer_gallery_mode_from_rel_path(rel_path),
         "mtime": mtime,
         "prompt_text": prompt_text,
-        "normalized_text": normalize_gallery_prompt_search_text(prompt_text)
+        "normalized_text": normalize_gallery_prompt_search_text(prompt_text),
+        "positive_prompt_text": positive_prompt_text,
+        "positive_normalized_text": normalize_gallery_prompt_search_text(positive_prompt_text)
     }
 
 
@@ -2028,18 +1896,18 @@ def build_gallery_prompt_index_profile_name(scope_paths, mode):
     return f"{mode_label} · {len(scope_paths)}개 필터 폴더"
 
 
-def filter_gallery_prompt_missing_files(db, image_paths):
+def filter_gallery_prompt_index_files(db, image_paths, missing_only=False):
     rel_paths = [
         os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
         for full_path in image_paths
     ]
     indexed_mtimes = db.get_gallery_prompt_index_mtimes(rel_paths)
-
-    return [
-        full_path
-        for full_path, rel_path in zip(image_paths, rel_paths)
-        if rel_path not in indexed_mtimes
-    ]
+    return utils.select_gallery_prompt_index_paths(
+        image_paths,
+        indexed_mtimes,
+        CLASSIFIED_DIR,
+        missing_only=missing_only,
+    )
 
 
 def gallery_prompt_index_worker(scope_path="", mode="all", rebuild=False, missing_only=False):
@@ -2048,7 +1916,8 @@ def gallery_prompt_index_worker(scope_path="", mode="all", rebuild=False, missin
     try:
         clean_scopes = normalize_gallery_prompt_scope_paths(scope_path)
         scope_label = clean_scopes[0] if len(clean_scopes) == 1 else f"{len(clean_scopes)} scopes"
-        image_paths = iter_gallery_prompt_index_files(clean_scopes, mode)
+        all_image_paths = iter_gallery_prompt_index_files(clean_scopes, mode)
+        image_paths = all_image_paths
         profile_name = build_gallery_prompt_index_profile_name(clean_scopes, mode)
 
         with GALLERY_PROMPT_INDEX_LOCK:
@@ -2073,26 +1942,32 @@ def gallery_prompt_index_worker(scope_path="", mode="all", rebuild=False, missin
             if not clean_scopes:
                 db.clear_gallery_prompt_index("")
         elif missing_only:
-            image_paths = filter_gallery_prompt_missing_files(db, image_paths)
-            with GALLERY_PROMPT_INDEX_LOCK:
-                GALLERY_PROMPT_INDEX_JOB.update({
-                    "processed": 0,
-                    "total": len(image_paths),
-                    "message": "프롬프트 인덱스 새 파일 추가 중..."
-                })
+            image_paths = filter_gallery_prompt_index_files(
+                db, image_paths, missing_only=True
+            )
+        else:
+            image_paths = filter_gallery_prompt_index_files(db, image_paths)
+
+        with GALLERY_PROMPT_INDEX_LOCK:
+            GALLERY_PROMPT_INDEX_JOB.update({
+                "processed": 0,
+                "total": len(image_paths),
+                "message": (
+                    "프롬프트 인덱스 재생성 중..." if rebuild else
+                    "프롬프트 인덱스 새 파일 추가 중..." if missing_only else
+                    "프롬프트 인덱스 갱신 중..."
+                )
+            })
 
         batch = []
         processed = 0
         last_progress_at = 0
 
         with ThreadPoolExecutor(max_workers=GALLERY_PROMPT_INDEX_WORKERS) as executor:
-            future_map = {
-                executor.submit(build_gallery_prompt_index_record, full_path): full_path
-                for full_path in image_paths
-            }
-
-            for future in as_completed(future_map):
-                full_path = future_map[future]
+            for full_path, future in iter_completed(
+                executor, build_gallery_prompt_index_record, image_paths,
+                GALLERY_PROMPT_INDEX_WORKERS * 2,
+            ):
                 processed += 1
 
                 try:
@@ -2115,7 +1990,7 @@ def gallery_prompt_index_worker(scope_path="", mode="all", rebuild=False, missin
 
         rel_paths = [
             os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
-            for full_path in image_paths
+            for full_path in all_image_paths
         ]
         status = db.get_gallery_prompt_index_status(clean_scopes, mode)
         profile = db.upsert_gallery_prompt_index_profile(
@@ -2176,13 +2051,17 @@ def build_gallery_prompt_search_payload(rows):
     }
 
 
-def search_gallery_prompts_without_index(query, scope_path="", mode="all", progress=None):
+def search_gallery_prompts_without_index(query, scope_path="", mode="all", progress=None, positive_only=False, cancel_event=None):
     groups = split_gallery_prompt_search_terms(query)
     if not groups:
         return []
 
+    stop_check = cancel_event.is_set if cancel_event is not None else None
     rows = []
-    image_paths = iter_gallery_prompt_index_files(scope_path, mode)
+    image_paths = iter_gallery_prompt_index_files(scope_path, mode, stop_check=stop_check)
+
+    if stop_check and stop_check():
+        return []
 
     if progress:
         progress(total=len(image_paths), processed=0, message="인덱스 없이 프롬프트 파일을 읽는 중...")
@@ -2190,39 +2069,126 @@ def search_gallery_prompts_without_index(query, scope_path="", mode="all", progr
     processed = 0
     last_progress_at = 0
 
+    def read_record(full_path):
+        if stop_check and stop_check():
+            return None
+        return build_gallery_prompt_index_record(full_path)
+
     with ThreadPoolExecutor(max_workers=GALLERY_PROMPT_INDEX_WORKERS) as executor:
-        future_map = {
-            executor.submit(build_gallery_prompt_index_record, full_path): full_path
-            for full_path in image_paths
-        }
+        results = iter_completed(
+            executor, read_record, image_paths, GALLERY_PROMPT_INDEX_WORKERS * 2,
+            stop_check=stop_check,
+        )
+        try:
+            for full_path, future in results:
+                if stop_check and stop_check():
+                    break
+                rel_path = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
+                processed += 1
 
-        for future in as_completed(future_map):
-            full_path = future_map[future]
-            rel_path = os.path.relpath(full_path, CLASSIFIED_DIR).replace("\\", "/")
-            processed += 1
+                try:
+                    record = future.result()
+                    if record is None:
+                        continue
 
-            try:
-                record = future.result()
+                    prompt_text_key = "positive_prompt_text" if positive_only else "prompt_text"
+                    normalized_text_key = "positive_normalized_text" if positive_only else "normalized_text"
+                    if utils.gallery_prompt_search_matches(
+                        record.get(prompt_text_key),
+                        groups,
+                        record.get(normalized_text_key),
+                    ):
+                        rows.append({
+                            "rel_path": rel_path,
+                            "folder_path": record.get("folder_path") or os.path.dirname(rel_path).replace("\\", "/"),
+                            "file_name": os.path.basename(rel_path)
+                        })
+                except Exception as e:
+                    print(f"[WARN] gallery prompt fallback search failed: {rel_path} | {e}")
 
-                if utils.gallery_prompt_search_matches(
-                    record.get("prompt_text"),
-                    groups,
-                    record.get("normalized_text"),
-                ):
-                    rows.append({
-                        "rel_path": rel_path,
-                        "folder_path": record.get("folder_path") or os.path.dirname(rel_path).replace("\\", "/"),
-                        "file_name": os.path.basename(rel_path)
-                    })
-            except Exception as e:
-                print(f"[WARN] gallery prompt fallback search failed: {rel_path} | {e}")
+                now = time.time()
+                if progress and (processed % 25 == 0 or now - last_progress_at >= 0.35 or processed == len(image_paths)):
+                    last_progress_at = now
+                    progress(total=len(image_paths), processed=processed, message="인덱스 없이 프롬프트 파일을 읽는 중...")
+        finally:
+            results.close()
 
-            now = time.time()
-            if progress and (processed % 25 == 0 or now - last_progress_at >= 0.35 or processed == len(image_paths)):
-                last_progress_at = now
-                progress(total=len(image_paths), processed=processed, message="인덱스 없이 프롬프트 파일을 읽는 중...")
+    if progress:
+        progress(total=len(image_paths), processed=processed, message="인덱스 없이 프롬프트 파일을 읽는 중...")
 
     return rows
+
+
+def iter_daki_tag_candidate_rows(tag):
+    """Read gallery candidates sequentially; supplement stale/partial indexes."""
+    db = get_gallery_history_db()
+    seen = set()
+
+    def read_candidate(relative):
+        try:
+            path, actual = resolve_daki_image_path('/image/' + quote(relative, safe='/'))
+            if actual.startswith('_TRASH/') or not path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                return None
+            if actual in seen:
+                return None
+            seen.add(actual)
+            with Image.open(path) as image:
+                if image.format not in {'PNG', 'JPEG', 'WEBP'}:
+                    return None
+            info = merge_prompt_info_with_fallback(load_prompt_sidecar(path), extract_prompt_info_from_image(path))
+            return {'path': actual, 'name': os.path.basename(actual), 'prompt_info': info}
+        except (OSError, ValueError, SyntaxError):
+            return None
+
+    def read_unindexed(paths):
+        cached = db.get_gallery_prompt_index_mtimes([relative for _, relative in paths])
+        for path, relative in paths:
+            if relative in seen:
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+                sidecar = os.path.splitext(path)[0] + '.json'
+                has_sidecar = os.path.isfile(sidecar)
+            except OSError:
+                continue
+            # A sidecar can change independently of image mtime. Older prompt
+            # indexes also let a model-only sidecar hide the PNG's prompt.
+            if cached.get(relative) != mtime or has_sidecar:
+                row = read_candidate(relative)
+                if row is not None:
+                    yield row
+
+    try:
+        # Streaming index matches are broad candidates. The tag search module
+        # checks complete positive tokens, so "hair" cannot match "long hair".
+        terms = [[{'text': tag, 'partial': False}]]
+        for record in db._iter_gallery_prompt_index_matches(terms, mode='all', positive_only=True):
+            row = read_candidate(record[0])
+            if row is not None:
+                yield row
+        paths = []
+        for scan_root, directories, files in os.walk(CLASSIFIED_DIR):
+            directories[:] = sorted(d for d in directories
+                if not should_skip_gallery_index_child_directory(scan_root, d)
+                and not (scan_root == CLASSIFIED_DIR and d == '_TRASH'))
+            if should_skip_gallery_index_directory(scan_root):
+                directories[:] = []
+                continue
+            for name in sorted(files):
+                if not name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                    continue
+                path = os.path.join(scan_root, name)
+                relative = os.path.relpath(path, CLASSIFIED_DIR).replace('\\', '/')
+                paths.append((path, relative))
+                if len(paths) == 256:
+                    yield from read_unindexed(paths)
+                    paths.clear()
+        if paths:
+            yield from read_unindexed(paths)
+    finally:
+        db.close()
+    yield from DAKI_DRAFTS.iter_completed_prompt_images()
+    yield from DAKI_STYLE_TESTS.iter_completed_prompt_images()
 
 
 def public_gallery_prompt_search_job(job):
@@ -2231,6 +2197,8 @@ def public_gallery_prompt_search_job(job):
         "id": job.get("id", ""),
         "running": bool(job.get("running")),
         "done": bool(job.get("done")),
+        "cancel_requested": bool(job.get("cancel_requested")),
+        "cancelled": bool(job.get("cancelled")),
         "processed": int(job.get("processed") or 0),
         "total": int(job.get("total") or 0),
         "message": job.get("message", ""),
@@ -2245,8 +2213,28 @@ def public_gallery_prompt_search_job(job):
 def update_gallery_prompt_search_job(job_id, **kwargs):
     with GALLERY_PROMPT_SEARCH_LOCK:
         job = GALLERY_PROMPT_SEARCH_JOBS.get(job_id)
-        if not job:
+        if not job or job.get("done"):
             return
+        cancel_event = job.get("_cancel_event")
+        if cancel_event is not None and cancel_event.is_set():
+            if not kwargs.get("done"):
+                return
+            # Cancellation and completion share this lock; keep collected matches
+            # even when cancellation arrives while the final payload is built.
+            result = kwargs.get("result") or {
+                "image_paths": [], "folder_counts": {}, "total_matches": 0, "indexed": False
+            }
+            kwargs = {
+                "running": False,
+                "done": True,
+                "cancelled": True,
+                "cancel_requested": True,
+                "message": "프롬프트 검색을 취소했습니다.",
+                "error": "",
+                "result": {**result, "partial": True},
+                "processed": kwargs.get("processed", job.get("processed", 0)),
+                "finished_at": time.time(),
+            }
         job.update(kwargs)
         job["updated_at"] = time.time()
 
@@ -2257,8 +2245,15 @@ def gallery_prompt_search_worker(job_id, query, scope_paths, mode):
         profile_id = ""
 
         with GALLERY_PROMPT_SEARCH_LOCK:
-            job = GALLERY_PROMPT_SEARCH_JOBS.get(job_id) or {}
+            job = GALLERY_PROMPT_SEARCH_JOBS.get(job_id)
+            if not job:
+                return
             profile_id = str(job.get("profile_id") or "")
+            cancel_event = job.get("_cancel_event")
+
+        if cancel_event is not None and cancel_event.is_set():
+            update_gallery_prompt_search_job(job_id, done=True)
+            return
 
         if not terms:
             payload = {"image_paths": [], "folder_counts": {}, "total_matches": 0, "indexed": True}
@@ -2295,6 +2290,13 @@ def gallery_prompt_search_worker(job_id, query, scope_paths, mode):
 
         indexed = indexed_total > 0
 
+        if cancel_event is not None and cancel_event.is_set():
+            update_gallery_prompt_search_job(
+                job_id, done=True, processed=indexed_total,
+                result={**build_gallery_prompt_search_payload(rows), "indexed": indexed},
+            )
+            return
+
         if indexed:
             processed = indexed_total
         else:
@@ -2309,7 +2311,9 @@ def gallery_prompt_search_worker(job_id, query, scope_paths, mode):
                     message=message
                 )
 
-            rows = search_gallery_prompts_without_index(query, scope_paths, mode, progress=progress)
+            rows = search_gallery_prompts_without_index(
+                query, scope_paths, mode, progress=progress, cancel_event=cancel_event
+            )
             processed = processed_holder["value"]
 
         payload = build_gallery_prompt_search_payload(rows)
@@ -2335,6 +2339,11 @@ def gallery_prompt_search_worker(job_id, query, scope_paths, mode):
 
 @app.route('/api/gallery/prompt_index/status')
 def gallery_prompt_index_status():
+    if request.args.get("job_only") == "1":
+        with GALLERY_PROMPT_INDEX_LOCK:
+            job = dict(GALLERY_PROMPT_INDEX_JOB)
+        return jsonify({"status": "success", "job": job})
+
     scope_paths = normalize_gallery_prompt_scope_paths(request.args.getlist("scope_path") or request.args.get("scope_path") or "")
     mode = request.args.get("mode", "all")
     target_files = iter_gallery_prompt_index_files(scope_paths, mode)
@@ -2343,7 +2352,9 @@ def gallery_prompt_index_status():
     try:
         status = db.get_gallery_prompt_index_status(scope_paths, mode)
         profiles = db.list_gallery_prompt_index_profiles()
-        missing_count = len(filter_gallery_prompt_missing_files(db, target_files))
+        missing_count = len(
+            filter_gallery_prompt_index_files(db, target_files, missing_only=True)
+        )
     finally:
         db.close()
 
@@ -2377,6 +2388,9 @@ def gallery_prompt_search_start():
             "id": job_id,
             "running": True,
             "done": False,
+            "cancel_requested": False,
+            "cancelled": False,
+            "_cancel_event": threading.Event(),
             "processed": 0,
             "total": 0,
             "message": "프롬프트 검색 준비 중...",
@@ -2418,11 +2432,28 @@ def gallery_prompt_index_profile_delete(profile_id):
 def gallery_prompt_search_status(job_id):
     with GALLERY_PROMPT_SEARCH_LOCK:
         job = GALLERY_PROMPT_SEARCH_JOBS.get(job_id)
+        payload = public_gallery_prompt_search_job(job) if job else None
 
-    if not job:
+    if payload is None:
         return jsonify({"status": "error", "message": "검색 작업을 찾을 수 없습니다."}), 404
 
-    return jsonify({"status": "success", "job": public_gallery_prompt_search_job(job)})
+    return jsonify({"status": "success", "job": payload})
+
+
+@app.route('/api/gallery/prompt_search/cancel/<job_id>', methods=['POST'])
+def gallery_prompt_search_cancel(job_id):
+    with GALLERY_PROMPT_SEARCH_LOCK:
+        job = GALLERY_PROMPT_SEARCH_JOBS.get(job_id)
+        if not job:
+            return jsonify({"status": "error", "message": "검색 작업을 찾을 수 없습니다."}), 404
+        if not job.get("done"):
+            job["_cancel_event"].set()
+            job["cancel_requested"] = True
+            job["message"] = "프롬프트 검색 취소 중..."
+            job["updated_at"] = time.time()
+        payload = public_gallery_prompt_search_job(job)
+
+    return jsonify({"status": "success", "job": payload})
 
 
 @app.route('/api/gallery/prompt_index/rebuild', methods=['POST'])
@@ -2581,7 +2612,9 @@ def virtual_folder_payload(db, folder, summary=False):
             payload["thumb"] = None
         return payload
 
-    index_status = db.get_gallery_prompt_index_status(scope_paths, mode)
+    index_status = db.get_gallery_prompt_index_status(
+        scope_paths, mode, positive_only=True
+    )
     indexed = int(index_status.get("indexed_images") or 0) > 0
     prompt_revision = db.get_gallery_index_state("prompt_index_updated_at")
 
@@ -2609,9 +2642,13 @@ def virtual_folder_payload(db, folder, summary=False):
         }
 
     if indexed:
-        rows = db.search_gallery_prompt_index(terms, scope_paths, mode)
+        rows = db.search_gallery_prompt_index(
+            terms, scope_paths, mode, positive_only=True
+        )
     else:
-        rows = search_gallery_prompts_without_index(query, scope_paths, mode)
+        rows = search_gallery_prompts_without_index(
+            query, scope_paths, mode, positive_only=True
+        )
 
     if summary:
         thumb = None
@@ -2789,7 +2826,8 @@ def gallery_virtual_folder_uncategorized_summary(owner_id=None):
 
     db = get_gallery_history_db()
     try:
-        result = db.summarize_gallery_virtual_uncategorized(clean_owner)
+        result = db.summarize_gallery_virtual_uncategorized(
+            clean_owner, include_paths=request.args.get('include_paths') == '1')
     except ValueError as error:
         return virtual_folder_error(str(error), 404)
     finally:
@@ -2826,8 +2864,10 @@ def gallery_prompt_index_autocomplete():
 
     scope_path = clean_gallery_rel_path(request.args.get("scope_path") or "")
     mode = request.args.get("mode") or "all"
+    positive_only = (request.args.get("source") or "all").strip().lower() == "virtual_folder"
     db = utils.HistoryDB()
-    clauses = ["normalized_text LIKE ?"]
+    text_column = "positive_normalized_text" if positive_only else "normalized_text"
+    clauses = [f"{text_column} LIKE ?"]
     params = [f"%{prefix}%"]
 
     if scope_path:
@@ -2846,7 +2886,7 @@ def gallery_prompt_index_autocomplete():
         cur = db.conn.cursor()
         cur.execute(
             f"""
-            SELECT normalized_text
+            SELECT {text_column}
             FROM gallery_prompt_index
             WHERE {' AND '.join(clauses)}
             LIMIT 200
@@ -2884,67 +2924,56 @@ def get_gallery_tags():
 
 @app.route('/api/gallery/tags', methods=['POST'])
 def save_gallery_tags():
-    data = request.json or {}
-    tags = data.get("tags", [])
+    with json_lock(GALLERY_IMAGE_TAGS_FILE):
+        data = request.json or {}
+        tags = data.get("tags", [])
 
-    current = load_gallery_image_tags_config()
-    current["tags"] = tags
-    saved = save_gallery_image_tags_config(current)
+        current = load_gallery_image_tags_config()
+        current["tags"] = tags
+        saved = save_gallery_image_tags_config(current)
 
-    return jsonify({
-        "status": "success",
-        "tags": saved.get("tags", []),
-        "image_tags": saved.get("image_tags", {})
-    })
+        return jsonify({
+            "status": "success",
+            "tags": saved.get("tags", []),
+            "image_tags": saved.get("image_tags", {})
+        })
 
 
 @app.route('/api/gallery/image_tag', methods=['POST'])
 def set_gallery_image_tag():
-    data = request.json or {}
-    rel_path = clean_gallery_rel_path(data.get("path", ""))
-    tag_id = str(data.get("tag_id") or "").strip()
+    with json_lock(GALLERY_IMAGE_TAGS_FILE):
+        data = request.json or {}
+        rel_path = clean_gallery_rel_path(data.get("path", ""))
+        tag_id = str(data.get("tag_id") or "").strip()
 
-    if not rel_path:
-        return jsonify({"status": "error", "message": "이미지 경로가 없습니다."}), 400
+        if not rel_path:
+            return jsonify({"status": "error", "message": "이미지 경로가 없습니다."}), 400
 
-    config = load_gallery_image_tags_config()
-    valid_ids = {tag.get("id") for tag in config.get("tags", [])}
-    image_tags = config.get("image_tags") or {}
+        config = load_gallery_image_tags_config()
+        valid_ids = {tag.get("id") for tag in config.get("tags", [])}
+        image_tags = config.get("image_tags") or {}
 
-    if tag_id:
-        if tag_id not in valid_ids:
-            return jsonify({"status": "error", "message": "존재하지 않는 태그입니다."}), 400
-        image_tags[rel_path] = tag_id
-    else:
-        image_tags.pop(rel_path, None)
+        if tag_id:
+            if tag_id not in valid_ids:
+                return jsonify({"status": "error", "message": "존재하지 않는 태그입니다."}), 400
+            image_tags[rel_path] = tag_id
+        else:
+            image_tags.pop(rel_path, None)
 
-    config["image_tags"] = image_tags
-    saved = save_gallery_image_tags_config(config)
+        config["image_tags"] = image_tags
+        saved = save_gallery_image_tags_config(config)
 
-    return jsonify({
-        "status": "success",
-        "path": rel_path,
-        "tag_id": image_tags.get(rel_path, ""),
-        "tags": saved.get("tags", []),
-        "image_tags": saved.get("image_tags", {})
-    })
+        return jsonify({
+            "status": "success",
+            "path": rel_path,
+            "tag_id": image_tags.get(rel_path, ""),
+            "tags": saved.get("tags", []),
+            "image_tags": saved.get("image_tags", {})
+        })
 
 
 CANVAS_DISPLAY_PREVIEW_MAX_SIDE = 4096
-CANVAS_DISPLAY_PREVIEW_BUILD_LOCK = threading.Lock()
-
-
-def get_display_oriented_image_size(image):
-    width, height = image.size
-
-    try:
-        orientation = image.getexif().get(274, 1)
-    except Exception:
-        orientation = 1
-
-    if orientation in (5, 6, 7, 8):
-        return height, width
-    return width, height
+IMAGE_PREVIEW_CACHE = PreviewCache()
 
 
 def get_requested_image_preview_max_side():
@@ -2962,10 +2991,9 @@ def get_requested_image_preview_max_side():
 
 @lru_cache(maxsize=8)
 def build_cached_image_preview(file_path, mtime_ns, file_size, max_side):
-    del mtime_ns, file_size
-
-    with CANVAS_DISPLAY_PREVIEW_BUILD_LOCK:
-        return build_image_preview_bytes(file_path, max_side)
+    return IMAGE_PREVIEW_CACHE.get(
+        file_path, mtime_ns, file_size, max_side, build_image_preview_bytes
+    )
 
 
 def build_image_preview_bytes(file_path, max_side):
@@ -3009,17 +3037,73 @@ def serve_image_preview(file_path, max_side):
     return response.make_conditional(request)
 
 
+def resolve_gallery_file_path(relative):
+    path = utils.resolve_safe_path(CLASSIFIED_DIR, relative, strip_prefix="TOTAL_CLASSIFIED/")
+    if os.path.exists(path):
+        return path
+    old_relative = os.path.relpath(path, CLASSIFIED_DIR).replace('\\', '/')
+    return resolve_converted_gallery_path(
+        CLASSIFIED_DIR, old_relative, os.path.join(CLASSIFIED_DIR, 'naia_history.db')
+    ) or path
+
+
+def resolve_daki_image_path(raw_path):
+    # A saved candidate refers to one location. Rating-folder fallbacks could
+    # silently replace a missing candidate with a different image of that name.
+    relative = clean_gallery_rel_path(raw_path)
+    from naim.daki_image_refs import is_daki_image_reference, resolve_daki_image_reference
+    if is_daki_image_reference(relative):
+        return resolve_daki_image_reference(relative, DAKI_STYLE_TESTS, DAKI_DRAFTS,
+                                            project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+    full_path = resolve_gallery_file_path(relative)
+    if not utils.is_subpath(os.path.realpath(full_path), os.path.realpath(CLASSIFIED_DIR)):
+        raise ValueError('갤러리 안의 이미지 경로를 사용해 주세요.')
+    if not os.path.isfile(full_path):
+        raise FileNotFoundError('후보의 원본 이미지를 찾을 수 없습니다.')
+    return full_path, os.path.relpath(full_path, CLASSIFIED_DIR).replace('\\', '/')
+
+
+from naim.images.gallery_conversion import gallery_image_processor
+from naim.jobs.image_conversion import ImageConversionJobs
+from naim.web.image_conversion import register_image_conversion_routes
+
+IMAGE_CONVERSION_JOBS = ImageConversionJobs(gallery_image_processor(
+    resolve_daki_image_path, lambda: CLASSIFIED_DIR, lambda: GALLERY_IMAGE_TAGS_FILE,
+))
+register_image_conversion_routes(app, IMAGE_CONVERSION_JOBS, resolve_daki_image_path)
+atexit.register(IMAGE_CONVERSION_JOBS.shutdown)
+
+
 @app.route('/image/<path:filename>')
 def serve_image(filename):
     try:
-        file_path = utils.resolve_safe_path(CLASSIFIED_DIR, filename, strip_prefix="TOTAL_CLASSIFIED/")
+        reference = resolve_daki_image_reference(clean_gallery_rel_path(filename), DAKI_STYLE_TESTS, DAKI_DRAFTS,
+                                                 project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+        file_path = reference[0] if reference is not None else resolve_gallery_file_path(filename)
     except ValueError:
         return "Invalid path", 400
+    except FileNotFoundError:
+        return "Not found", 404
     if os.path.exists(file_path):
         preview_max_side = get_requested_image_preview_max_side()
         if preview_max_side:
             return serve_image_preview(file_path, preview_max_side)
-        return send_file(file_path)
+        download_name = None
+        if reference is not None:
+            parsed = parse_daki_image_reference(reference[1])
+            if parsed and parsed[0] == 'export':
+                try:
+                    project = DAKI_PROJECTS.get_project(parsed[1])
+                    for candidates in project['candidates'].values():
+                        candidate = next((item for item in candidates if item['path'] == reference[1]), None)
+                        if candidate and isinstance(candidate.get('name'), str):
+                            download_name = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]', '_',
+                                                   candidate['name']).rstrip(' .') or None
+                            break
+                except DakiNotFoundError:
+                    pass
+        return send_file(file_path, download_name=download_name,
+                         mimetype='image/webp' if file_path.lower().endswith('.webp') else None)
     return "Not found", 404
 
 _last_reveal_request = {
@@ -3083,11 +3167,7 @@ def resolve_gallery_image_path(raw_path):
         seen.add(candidate)
 
         try:
-            full_path = utils.resolve_safe_path(
-                CLASSIFIED_DIR,
-                candidate,
-                strip_prefix="TOTAL_CLASSIFIED/"
-            )
+            full_path = resolve_gallery_file_path(candidate)
         except Exception:
             continue
 
@@ -3115,6 +3195,15 @@ def resolve_gallery_image_path(raw_path):
 
     raise FileNotFoundError("파일을 찾을 수 없습니다. 이미 이동되었거나 새로고침이 필요합니다.")
 
+
+def resolve_readable_gallery_image_path(raw_path):
+    # Daki source folders are readable by gallery tools, but must never flow
+    # through the gallery's move, delete, upscale or overwrite resolvers.
+    relative = clean_gallery_rel_path(raw_path)
+    reference = resolve_daki_image_reference(relative, DAKI_STYLE_TESTS, DAKI_DRAFTS,
+                                             project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+    return reference if reference is not None else resolve_gallery_image_path(raw_path)
+
 def build_gallery_prompt_filter_text(prompt_info):
     prompt_info = prompt_info or {}
     parts = []
@@ -3129,6 +3218,30 @@ def build_gallery_prompt_filter_text(prompt_info):
         "uc",
         "charPrompt",
         "characterPrompt"
+    ):
+        value = prompt_info.get(key)
+        if value:
+            parts.append(str(value))
+
+    char_prompts = prompt_info.get("charPrompts") or prompt_info.get("char_prompts") or []
+    if isinstance(char_prompts, list):
+        parts.extend(str(item) for item in char_prompts if item)
+
+    return " ".join(parts).lower()
+
+
+def build_gallery_positive_prompt_filter_text(prompt_info):
+    """Return only base/character prompt text for virtual-folder searches."""
+    prompt_info = prompt_info or {}
+    parts = []
+
+    for key in (
+        "basePrompt",
+        "baseCaption",
+        "prompt",
+        "base_prompt",
+        "charPrompt",
+        "characterPrompt",
     ):
         value = prompt_info.get(key)
         if value:
@@ -3390,47 +3503,59 @@ def build_gallery_filter_lookup_path_variants(rel_path):
 # 갤러리 업스케일 백그라운드 작업 큐
 # ==========================================================
 
-UPSCALE_JOBS = {}
-UPSCALE_QUEUE = queue.Queue()
-UPSCALE_LOCK = threading.Lock()
+from naim.jobs.upscale import UpscaleJobs, now_iso, public_upscale_job
+from naim.web.upscale import UpscaleAPI
+from naim.web.lifecycle import register_job_shutdown
+from naim.upscale_assets import UPSCALE_ASSETS
+from naim.web.upscale_models import register_upscale_model_routes
+
+
+def get_upscale_nai_key():
+    key = read_json(CONFIG_FILE, expected_type=dict).get('key')
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError('설정에서 NovelAI API 키를 등록해 주세요.')
+    return key.strip()
+
+UPSCALE_SERVICE = UpscaleJobs(lambda job, progress: process_gallery_upscale_job(job, progress))
+UPSCALE_API = UpscaleAPI(
+    UPSCALE_SERVICE, lambda path: clean_gallery_rel_path(path),
+    lambda path: resolve_gallery_image_path(path),
+    validate_project_context=lambda context, source_path: validate_project_image_context(
+        DAKI_PROJECTS, context, source_path,
+    ),
+    authorize_nai=get_upscale_nai_key,
+)
+register_upscale_model_routes(app, UPSCALE_ASSETS, busy=UPSCALE_SERVICE.is_busy)
+# Legacy internal handles remain aliases; the service owns all mutation.
+UPSCALE_JOBS = UPSCALE_SERVICE.jobs
+UPSCALE_QUEUE = UPSCALE_SERVICE.queue
+UPSCALE_LOCK = UPSCALE_SERVICE.lock
 UPSCALE_WORKER_THREAD = None
+atexit.register(UPSCALE_SERVICE.shutdown)
+atexit.register(UPSCALE_ASSETS.shutdown)
+register_job_shutdown(app, UPSCALE_SERVICE, os.environ.get('NAIM_SERVER_CONTROL_TOKEN', ''),
+                      additional_jobs=(IMAGE_CONVERSION_JOBS, UPSCALE_ASSETS, DAKI_STYLE_TESTS.test_packs))
 
 
-def now_iso():
-    return datetime.datetime.now().isoformat(timespec="seconds")
+@app.route('/api/upscale/nai/preview', methods=['POST'])
+def preview_nai_upscale():
+    from naim.images.nai_upscale import plan_nai_upscale
+    data = request.get_json(silent=True)
+    try:
+        if not isinstance(data, dict):
+            raise ValueError('이미지 크기를 확인해 주세요.')
+        plan = plan_nai_upscale(data.get('width'), data.get('height'))
+        return jsonify({'status': 'success', 'plan': plan})
+    except ValueError as error:
+        return jsonify({'status': 'error', 'message': str(error)}), 400
 
 
-def public_upscale_job(job):
-    if not job:
-        return None
 
-    return {
-        "id": job.get("id", ""),
-        "status": job.get("status", "queued"),
-        "progress": int(job.get("progress", 0) or 0),
-        "message": job.get("message", ""),
-        "source_path": job.get("source_path", ""),
-        "source_name": job.get("source_name", ""),
-        "target_width": job.get("target_width", 0),
-        "target_height": job.get("target_height", 0),
-        "engine": job.get("engine", "realcugan"),
-        "quality": job.get("quality", "standard"),
-        "result_path": job.get("result_path", ""),
-        "result_src": job.get("result_src", ""),
-        "error": job.get("error", ""),
-        "created_at": job.get("created_at", ""),
-        "updated_at": job.get("updated_at", ""),
-    }
+
 
 
 def update_upscale_job(job_id, **patch):
-    with UPSCALE_LOCK:
-        job = UPSCALE_JOBS.get(job_id)
-        if not job:
-            return
-
-        job.update(patch)
-        job["updated_at"] = now_iso()
+    UPSCALE_SERVICE.update(job_id, **patch)
 
 
 def add_upscale_sidecar_info(image_path, prompt_info, upscale_info):
@@ -3446,8 +3571,7 @@ def add_upscale_sidecar_info(image_path, prompt_info, upscale_info):
 
     data["upscale"] = upscale_info
 
-    with open(sidecar_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json(sidecar_path, data, indent=2)
 
 def ensure_upscale_output_dir(source_full_path):
     source_dir = os.path.dirname(source_full_path)
@@ -3475,288 +3599,131 @@ def build_upscale_output_path(source_full_path, target_width, target_height, eng
     return upscale_logic.make_unique_output_path(os.path.join(target_dir, filename))
 
 
-def run_upscale_worker_loop():
-    while True:
-        job_id = UPSCALE_QUEUE.get()
+def process_gallery_upscale_job(job, progress_callback):
+    if job.get('projectContext') is not None:
+        return process_project_upscale_job(
+            job,
+            progress_callback,
+            store=DAKI_PROJECTS,
+            export_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'),
+            prompt_info_loader=lambda path: (
+                load_prompt_sidecar(path) or extract_prompt_info_from_image(path)
+            ),
+            created_at=now_iso,
+            **({'nai_api_key': get_upscale_nai_key()} if job.get('engine') == 'nai' else {}),
+        )
 
+    cancel_event = job.get("_cancel_event")
+    source_path = job.get("source_path", "")
+    source_full_path, real_source_rel = resolve_gallery_image_path(source_path)
+
+    target_width = int(job.get("target_width") or 2500)
+    target_height = int(job.get("target_height") or 8000)
+    engine = str(job.get("engine") or "realcugan").strip().lower()
+    quality = str(job.get("quality") or "standard").strip().lower()
+
+    target_full_path = build_upscale_output_path(
+        source_full_path,
+        target_width,
+        target_height,
+        engine
+    )
+
+    original_prompt_info = {}
+    try:
+        original_prompt_info = load_prompt_sidecar(source_full_path) or extract_prompt_info_from_image(source_full_path)
+    except Exception:
+        original_prompt_info = {}
+
+
+    result = upscale_logic.run_upscale(
+        source_path=source_full_path,
+        target_path=target_full_path,
+        target_width=target_width,
+        target_height=target_height,
+        engine=engine,
+        quality=quality,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+        **({'nai_api_key': get_upscale_nai_key()} if engine == 'nai' else {}),
+        **({'fit_5_16': True} if job.get('fit_5_16') is True and engine != 'nai' else {}),
+    )
+
+    if cancel_event and cancel_event.is_set():
         try:
-            with UPSCALE_LOCK:
-                job = UPSCALE_JOBS.get(job_id)
+            if os.path.exists(target_full_path):
+                os.remove(target_full_path)
+        except Exception:
+            pass
 
-            if not job:
-                continue
+        raise upscale_logic.UpscaleCancelled()
 
-            cancel_event = job.get("_cancel_event")
+    result_rel_path = os.path.relpath(target_full_path, CLASSIFIED_DIR).replace("\\", "/")
+    result_src = "/image/" + quote(result_rel_path)
 
-            if cancel_event and cancel_event.is_set():
-                update_upscale_job(
-                    job_id,
-                    status="cancelled",
-                    progress=100,
-                    message="취소됨"
-                )
-                continue
+    upscale_info = {
+        "engine": engine,
+        "quality": quality,
+        "target_width": target_width,
+        "target_height": target_height,
+        "source_path": real_source_rel,
+        "created_at": now_iso(),
+        "result": result
+    }
 
-            update_upscale_job(
-                job_id,
-                status="running",
-                progress=2,
-                message="업스케일 준비 중..."
-            )
+    embedded_metadata_saved = False
 
-            source_path = job.get("source_path", "")
-            source_full_path, real_source_rel = resolve_gallery_image_path(source_path)
-
-            target_width = int(job.get("target_width") or 2500)
-            target_height = int(job.get("target_height") or 8000)
-            engine = str(job.get("engine") or "realcugan").strip().lower()
-            quality = str(job.get("quality") or "standard").strip().lower()
-
-            target_full_path = build_upscale_output_path(
-                source_full_path,
-                target_width,
-                target_height,
-                engine
-            )
-
-            original_prompt_info = {}
-            try:
-                original_prompt_info = load_prompt_sidecar(source_full_path) or extract_prompt_info_from_image(source_full_path)
-            except Exception:
-                original_prompt_info = {}
-
-            def progress_callback(progress, message):
-                update_upscale_job(
-                    job_id,
-                    progress=max(0, min(99, int(progress))),
-                    message=message
-                )
-
-            result = upscale_logic.run_upscale(
-                source_path=source_full_path,
-                target_path=target_full_path,
-                target_width=target_width,
-                target_height=target_height,
-                engine=engine,
-                quality=quality,
-                progress_callback=progress_callback,
-                cancel_event=cancel_event
-            )
-
-            if cancel_event and cancel_event.is_set():
-                try:
-                    if os.path.exists(target_full_path):
-                        os.remove(target_full_path)
-                except Exception:
-                    pass
-
-                update_upscale_job(
-                    job_id,
-                    status="cancelled",
-                    progress=100,
-                    message="취소됨"
-                )
-                continue
-
-            result_rel_path = os.path.relpath(target_full_path, CLASSIFIED_DIR).replace("\\", "/")
-            result_src = "/image/" + quote(result_rel_path)
-
-            upscale_info = {
-                "engine": engine,
-                "quality": quality,
-                "target_width": target_width,
-                "target_height": target_height,
-                "source_path": real_source_rel,
-                "created_at": now_iso(),
-                "result": result
-            }
-
-            embedded_metadata_saved = False
-
-            try:
-                with Image.open(target_full_path) as out_img:
-                    out_img = out_img.convert("RGBA")
-                    embedded_metadata_saved = save_png_with_prompt_metadata(
-                        out_img,
-                        target_full_path,
-                        original_prompt_info,
-                        source_label="NAI Image Manager Gallery Upscale"
-                    )
-            except Exception as meta_err:
-                print(f"⚠️ 업스케일 결과 PNG 메타데이터 저장 실패: {target_full_path} | {meta_err}")
-
-            add_upscale_sidecar_info(target_full_path, original_prompt_info, upscale_info)
-            sync_gallery_prompt_art_styles_for_path(result_rel_path, original_prompt_info)
-            refresh_gallery_index_for_file_change(
+    try:
+        with Image.open(target_full_path) as out_img:
+            out_img = out_img.convert("RGBA")
+            embedded_metadata_saved = save_png_with_prompt_metadata(
+                out_img,
                 target_full_path,
-                rel_path=result_rel_path,
-                mode=infer_gallery_mode_from_rel_path(result_rel_path)
+                original_prompt_info,
+                source_label="NAI Image Manager Gallery Upscale"
             )
+    except Exception as meta_err:
+        print(f"⚠️ 업스케일 결과 PNG 메타데이터 저장 실패: {target_full_path} | {meta_err}")
 
-            update_upscale_job(
-                job_id,
-                status="done",
-                progress=100,
-                message="업스케일 완료",
-                result_path=result_rel_path,
-                result_src=result_src,
-                embedded_metadata_saved=embedded_metadata_saved
-            )
+    add_upscale_sidecar_info(target_full_path, original_prompt_info, upscale_info)
+    sync_gallery_prompt_art_styles_for_path(result_rel_path, original_prompt_info)
+    refresh_gallery_index_for_file_change(
+        target_full_path,
+        rel_path=result_rel_path,
+        mode=infer_gallery_mode_from_rel_path(result_rel_path)
+    )
 
-        except upscale_logic.UpscaleCancelled:
-            update_upscale_job(
-                job_id,
-                status="cancelled",
-                progress=100,
-                message="취소됨"
-            )
+    return {"result_path": result_rel_path, "result_src": result_src,
+            "embedded_metadata_saved": embedded_metadata_saved}
 
-        except Exception as e:
-            update_upscale_job(
-                job_id,
-                status="error",
-                progress=100,
-                message="업스케일 실패",
-                error=str(e)
-            )
 
-        finally:
-            UPSCALE_QUEUE.task_done()
+def run_upscale_worker_loop():
+    return UPSCALE_SERVICE.run()
 
 
 def ensure_upscale_worker_started():
     global UPSCALE_WORKER_THREAD
-
-    if UPSCALE_WORKER_THREAD and UPSCALE_WORKER_THREAD.is_alive():
-        return
-
-    UPSCALE_WORKER_THREAD = threading.Thread(
-        target=run_upscale_worker_loop,
-        daemon=True
-    )
-    UPSCALE_WORKER_THREAD.start()
+    UPSCALE_WORKER_THREAD = UPSCALE_SERVICE.ensure_started()
 
 
 @app.route('/api/gallery/upscale/start', methods=['POST'])
 def start_gallery_upscale():
-    try:
-        data = request.json or {}
-
-        source_path = clean_gallery_rel_path(data.get("source_path", ""))
-        if not source_path:
-            return jsonify({"status": "error", "message": "업스케일할 이미지 경로가 없습니다."}), 400
-
-        # 존재 확인과 실제 경로 보정
-        source_full_path, real_source_rel = resolve_gallery_image_path(source_path)
-
-        target_width, target_height = upscale_logic.validate_target_size(
-            data.get("target_width", 2500),
-            data.get("target_height", 8000)
-        )
-
-        engine = upscale_logic.normalize_upscale_engine(data.get("engine") or "realcugan")
-
-        quality = str(data.get("quality") or "standard").strip().lower()
-        if quality not in ("fast", "standard", "high"):
-            quality = "standard"
-
-        job_id = f"upscale_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
-        cancel_event = threading.Event()
-
-        job = {
-            "id": job_id,
-            "status": "queued",
-            "progress": 0,
-            "message": "대기 중...",
-            "source_path": real_source_rel,
-            "source_name": os.path.basename(source_full_path),
-            "target_width": target_width,
-            "target_height": target_height,
-            "engine": engine,
-            "quality": quality,
-            "result_path": "",
-            "result_src": "",
-            "error": "",
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-            "_cancel_event": cancel_event
-        }
-
-        with UPSCALE_LOCK:
-            UPSCALE_JOBS[job_id] = job
-
-        ensure_upscale_worker_started()
-        UPSCALE_QUEUE.put(job_id)
-
-        return jsonify({
-            "status": "started",
-            "job": public_upscale_job(job),
-            "job_id": job_id
-        })
-
-    except FileNotFoundError as e:
-        return jsonify({"status": "error", "message": str(e)}), 404
-
-    except ValueError as e:
-        return jsonify({"status": "error", "message": str(e)}), 400
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    return UPSCALE_API.start()
 
 
 @app.route('/api/gallery/upscale/status/<job_id>')
 def get_gallery_upscale_status(job_id):
-    with UPSCALE_LOCK:
-        job = UPSCALE_JOBS.get(job_id)
-
-    if not job:
-        return jsonify({"status": "error", "message": "작업을 찾을 수 없습니다."}), 404
-
-    return jsonify({
-        "status": "success",
-        "job": public_upscale_job(job)
-    })
+    return UPSCALE_API.status(job_id)
 
 
 @app.route('/api/gallery/upscale/jobs')
 def list_gallery_upscale_jobs():
-    with UPSCALE_LOCK:
-        jobs = [public_upscale_job(job) for job in UPSCALE_JOBS.values()]
-
-    jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-
-    return jsonify({
-        "status": "success",
-        "jobs": jobs
-    })
+    return UPSCALE_API.list()
 
 
 @app.route('/api/gallery/upscale/cancel/<job_id>', methods=['POST'])
 def cancel_gallery_upscale(job_id):
-    with UPSCALE_LOCK:
-        job = UPSCALE_JOBS.get(job_id)
-
-        if not job:
-            return jsonify({"status": "error", "message": "작업을 찾을 수 없습니다."}), 404
-
-        if job.get("status") in ("done", "error", "cancelled"):
-            return jsonify({
-                "status": "success",
-                "job": public_upscale_job(job)
-            })
-
-        cancel_event = job.get("_cancel_event")
-        if cancel_event:
-            cancel_event.set()
-
-        job["status"] = "cancelled" if job.get("status") == "queued" else job.get("status", "running")
-        job["message"] = "취소 요청됨"
-        job["updated_at"] = now_iso()
-
-    return jsonify({
-        "status": "success",
-        "job": public_upscale_job(job)
-    })
+    return UPSCALE_API.cancel(job_id)
 
 @app.route('/api/gallery/image_filter_meta', methods=['POST'])
 def gallery_image_filter_meta():
@@ -3934,7 +3901,7 @@ def reveal_in_explorer():
         raw_path = data.get('path', '')
         mode = str(data.get('mode', 'select') or 'select').strip()
 
-        full_path, rel_path = resolve_gallery_image_path(raw_path)
+        full_path, rel_path = resolve_readable_gallery_image_path(raw_path)
 
         message = reveal_path_in_explorer(full_path, mode=mode)
 
@@ -3969,17 +3936,21 @@ def get_prompt_info():
         raw_path = data.get('path', '')
         rel_path = clean_gallery_rel_path(raw_path)
 
-        full_path, real_rel = resolve_gallery_image_path(rel_path)
+        full_path, real_rel = resolve_readable_gallery_image_path(rel_path)
 
         if not os.path.exists(full_path):
             return jsonify({"status": "error", "message": "이미지 파일을 찾을 수 없습니다."})
 
-        prompt_info = load_prompt_sidecar(full_path)
+        sidecar_info = load_prompt_sidecar(full_path)
+        embedded_info = extract_prompt_info_from_image(full_path)
+        prompt_info = (
+            merge_prompt_info_with_fallback(sidecar_info, embedded_info)
+            if sidecar_info
+            else embedded_info
+        )
 
-        if not prompt_info:
-            prompt_info = extract_prompt_info_from_image(full_path)
-
-        prompt_info = prompt_info or {}
+        fallback = daki_image_prompt_fallback(real_rel, DAKI_STYLE_TESTS)
+        prompt_info = merge_prompt_info_with_fallback(prompt_info, fallback) if fallback else prompt_info or {}
         prompt_info["fileName"] = os.path.basename(full_path)
         prompt_info["path"] = real_rel
 
@@ -4089,6 +4060,9 @@ def toggle_nsfw():
 def apply_changes():
     data = request.json
     try:
+        warning = daki_delete_warning(data, paths=data.get('deletes'), folders=data.get('delete_folders'))
+        if warning is not None:
+            return warning
         image_logic.handle_integrated_tasks(CLASSIFIED_DIR, data)
         return jsonify({"status": "success", "message": "적용 완료"})
     except Exception as e:
@@ -4103,12 +4077,38 @@ def apply_changes():
 
         return jsonify({"status": "error", "message": ko_msg})
 
+@app.route('/api/gallery/trash_image', methods=['POST'])
+def trash_gallery_image():
+    data = request.json or {}
+    try:
+        relative = str(data.get('path') or '').replace('\\', '/')
+        full_path = resolve_gallery_file_path(relative)
+        if utils.is_subpath(full_path, os.path.join(CLASSIFIED_DIR, '_TRASH')):
+            return jsonify({'status': 'error', 'message': '이미 휴지통에 있는 그림입니다.'}), 400
+        if not full_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')) or not os.path.isfile(full_path):
+            return jsonify({'status': 'error', 'message': '이동할 그림을 찾을 수 없습니다.'}), 404
+        relative = os.path.relpath(full_path, CLASSIFIED_DIR).replace('\\', '/')
+        warning = daki_delete_warning(data, paths=[relative])
+        if warning is not None:
+            return warning
+        image_logic.handle_integrated_tasks(CLASSIFIED_DIR, {'deletes': [relative]}, log_func=lambda _message: None)
+        # The legacy batch handler logs individual failures instead of raising.
+        if os.path.exists(full_path):
+            return jsonify({'status': 'error', 'message': '휴지통으로 보내지 못했습니다. 파일 사용 상태를 확인하고 다시 시도하세요.'}), 409
+        return jsonify({'status': 'success', 'path': relative})
+    except ValueError:
+        return jsonify({'status': 'error', 'message': '허용되지 않은 이미지 경로입니다.'}), 400
+    except Exception:
+        return jsonify({'status': 'error', 'message': '휴지통 이동 중 오류가 발생했습니다.'}), 500
+
+
 @app.route('/api/restore', methods=['POST'])
 def restore_file():
     data = request.json
     rel_path = data.get('path', '').replace('\\', '/')
     try:
-        trash_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, rel_path)
+        trash_full_path = resolve_gallery_file_path(rel_path)
+        rel_path = os.path.relpath(trash_full_path, CLASSIFIED_DIR).replace('\\', '/')
     except ValueError as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -4167,6 +4167,9 @@ def empty_trash_folder():
     if not os.path.isdir(target_dir):
         return jsonify({"status": "error", "message": "잘못된 경로이거나 이미 삭제되었습니다."})
 
+    warning = daki_delete_warning(data, folders=[os.path.relpath(target_dir, CLASSIFIED_DIR).replace('\\', '/')])
+    if warning is not None:
+        return warning
     db = utils.HistoryDB()
     try:
         shutil.rmtree(target_dir) # 폴더 내의 모든 파일 통째로 삭제
@@ -4364,730 +4367,53 @@ def bulk_update_brands():
         with db.conn:
             for item in data:
                 db.conn.execute("""
-                    UPDATE known_characters 
-                    SET brand_kr = ?, is_visible = ? 
+                    UPDATE known_characters
+                    SET brand_kr = ?, is_visible = ?
                     WHERE brand = ?
                 """, (item['brand_kr'], item['is_visible'], item['raw_name']))
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-def clean_route_prompt_text(value):
-    text = str(value or "").strip()
-    return re.sub(r"\s+", " ", text)
-
-
-def route_prompt_dedupe_key(value):
-    text = clean_route_prompt_text(value).lower().replace("_", " ")
-    text = re.sub(r"\s+", " ", text).strip()
-    compact = re.sub(r"[\s_]+", "", text)
-    return compact or text
-
-
-def dedupe_route_prompts(items):
-    deduped = []
-    seen = set()
-
-    for item in items or []:
-        text = clean_route_prompt_text(item)
-        if not text:
-            continue
-
-        key = route_prompt_dedupe_key(text)
-        if not key or key in seen:
-            continue
-
-        seen.add(key)
-        deduped.append(text)
-
-    return deduped
-
-
-def parse_route_tags_single(raw):
-    if isinstance(raw, str):
-        items = re.split(r"[,\n]+", raw)
-    elif isinstance(raw, list):
-        items = raw
-    else:
-        items = []
-
-    return dedupe_route_prompts(items)
-
-
-def parse_route_tag_groups(raw):
-    groups = []
-
-    if isinstance(raw, str):
-        for line in raw.splitlines():
-            groups.append(re.split(r",+", line))
-    elif isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, list):
-                groups.append(item)
-            elif isinstance(item, str):
-                groups.append(re.split(r",+", item))
-            else:
-                groups.append([item])
-
-    normalized = []
-    seen_groups = set()
-
-    for group in groups:
-        tags = dedupe_route_prompts(group)
-        if not tags:
-            continue
-
-        group_key = tuple(route_prompt_dedupe_key(tag) for tag in tags)
-        if group_key in seen_groups:
-            continue
-
-        seen_groups.add(group_key)
-        normalized.append(tags)
-
-    return normalized
-
-
-def route_prompt_text_from_rule(rule, tags=None, tag_groups=None, prompt_mode="single"):
-    raw = rule.get("prompt_text")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-
-    if prompt_mode == "group" and tag_groups:
-        return "\n".join(", ".join(group) for group in tag_groups if group)
-
-    if tags:
-        return "\n".join(tags)
-
-    return ""
-
-
-def normalize_custom_route_rules(rules, depth=0):
-    if not isinstance(rules, list) or depth > 5:
-        return []
-
-    normalized = []
-
-    for rule in rules:
-        if not isinstance(rule, dict):
-            continue
-
-        rule_type = str(rule.get("type") or "custom").strip()
-
-        if rule_type == "default":
-            normalized.append({
-                "type": "default",
-                "folder": "Solo / Duo / Group"
-            })
-            continue
-
-        folder = str(rule.get("folder") or "").strip()
-        tags = parse_route_tags_single(rule.get("tags") or [])
-        prompt_mode = "group" if rule.get("prompt_mode") == "group" else "single"
-        tag_groups = parse_route_tag_groups(rule.get("tag_groups") or [])
-        prompt_text = route_prompt_text_from_rule(rule, tags, tag_groups, prompt_mode)
-
-        if prompt_text:
-            tags_from_text = parse_route_tags_single(prompt_text)
-            groups_from_text = parse_route_tag_groups(prompt_text)
-
-            if tags_from_text:
-                tags = tags_from_text
-            if groups_from_text:
-                tag_groups = groups_from_text
-
-        if prompt_mode == "group" and not tag_groups and tags:
-            tag_groups = [[tag] for tag in tags]
-
-        if not folder or (not prompt_text and not tags and not tag_groups):
-            continue
-
-        condition = str(rule.get("condition") or "any").strip().lower()
-        if condition not in ("any", "all"):
-            condition = "any"
-
-        try:
-            match_count = int(rule.get("match_count") or 1)
-        except Exception:
-            match_count = 1
-
-        match_count = max(1, match_count)
-
-        children = (
-            rule.get("children")
-            or rule.get("sub_rules")
-            or rule.get("rules")
-            or []
-        )
-
-        normalized.append({
-            "type": "custom",
-            "folder": folder,
-            "prompt_text": prompt_text,
-            "tags": tags,
-            "prompt_mode": prompt_mode,
-            "tag_groups": tag_groups,
-            "condition": condition,
-            "match_count": match_count,
-            "children": normalize_custom_route_rules(children, depth + 1)
-        })
-
-    return normalized
-
-
-def route_test_clean_prompt_text(value):
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    return re.sub(r"[ \t\f\v]+", " ", text)
-
-
-def route_test_match_keys(value):
-    text = route_test_clean_prompt_text(value).lower()
-    if not text:
-        return set()
-
-    space_text = re.sub(r"\s+", " ", text.replace("_", " ")).strip()
-    underscore_text = re.sub(r"\s+", "_", space_text)
-    compact_text = re.sub(r"[\s_]+", "", space_text)
-    return {key for key in (text, space_text, underscore_text, compact_text) if key}
-
-
-def route_test_prompt_tokens_from_text(text):
-    tokens = []
-    seen = set()
-
-    for item in re.split(r"[,\n]+", str(text or "")):
-        token = route_test_clean_prompt_text(item)
-        if not token:
-            continue
-        key = next(iter(sorted(route_test_match_keys(token))), "")
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        tokens.append(token)
-
-    return tokens
-
-
-def route_test_prompt_tokens_from_prompt_info(prompt_info):
-    prompt_info = prompt_info or {}
-    parts = []
-
-    for key in (
-        "basePrompt", "baseCaption", "prompt", "base_prompt",
-        "negativePrompt", "negative_prompt", "uc",
-        "charPrompt", "characterPrompt"
-    ):
-        value = prompt_info.get(key)
-        if isinstance(value, str) and value.strip():
-            parts.append(value)
-
-    for key in ("charPrompts", "char_prompts"):
-        value = prompt_info.get(key)
-        if isinstance(value, list):
-            parts.extend(str(item) for item in value if str(item or "").strip())
-        elif isinstance(value, str) and value.strip():
-            parts.append(value)
-
-    return route_test_prompt_tokens_from_text("\n".join(parts))
-
-
-def route_test_build_key_set(tokens):
-    key_set = set()
-    for token in tokens or []:
-        key_set.update(route_test_match_keys(token))
-    return key_set
-
-def route_test_build_match_context(tokens):
-    token_keys = route_test_build_key_set(tokens)
-    full_prompt_text = route_test_clean_prompt_text(" ".join(str(token or "") for token in (tokens or [])))
-    full_keys = route_test_match_keys(full_prompt_text)
-
-    return {
-        "token_keys": token_keys,
-        "full_keys": full_keys
-    }
-
-
-def route_test_is_like_prompt(pattern):
-    text = route_test_clean_prompt_text(pattern)
-    return len(text) >= 3 and text.startswith("%") and text.endswith("%")
-
-
-def route_test_like_prompt_inner(pattern):
-    return route_test_clean_prompt_text(pattern)[1:-1].strip()
-
-def route_test_rule_prompt_matches(prompt, match_context):
-    if not isinstance(match_context, dict):
-        match_context = {
-            "token_keys": match_context or set(),
-            "full_keys": set()
-        }
-
-    if route_test_is_like_prompt(prompt):
-        needle = route_test_like_prompt_inner(prompt)
-        if not needle:
-            return False
-
-        needle_keys = route_test_match_keys(needle)
-        full_keys = match_context.get("full_keys") or set()
-
-        return any(
-            needle_key in full_key
-            for needle_key in needle_keys
-            for full_key in full_keys
-        )
-
-    token_keys = match_context.get("token_keys") or set()
-    return any(key in token_keys for key in route_test_match_keys(prompt))
-
-
-def route_test_unique_prompts(items):
-    prompts = []
-    seen = set()
-    for item in items or []:
-        prompt = route_test_clean_prompt_text(item)
-        if not prompt:
-            continue
-        key = next(iter(sorted(route_test_match_keys(prompt))), "")
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        prompts.append(prompt)
-    return prompts
-
-
-def route_test_rule_matches(rule, match_context):
-    if not isinstance(rule, dict) or rule.get("type") == "default":
-        return {"matched": False, "mode": "default", "matched_tags": [], "missing_tags": [], "message": "기본 분류 규칙은 직접 매칭하지 않습니다."}
-
-    prompt_mode = "group" if rule.get("prompt_mode") == "group" else "single"
-
-    if prompt_mode == "group":
-        tag_groups = parse_route_tag_groups(rule.get("tag_groups") or [])
-        tags = route_test_unique_prompts(rule.get("tags") or [])
-        if not tag_groups and tags:
-            tag_groups = [[tag] for tag in tags]
-
-        group_details = []
-        for index, group in enumerate(tag_groups):
-            needed = route_test_unique_prompts(group)
-            found = [tag for tag in needed if route_test_rule_prompt_matches(tag, match_context)]
-            missing = [tag for tag in needed if tag not in found]
-            passed = bool(needed) and not missing
-            group_details.append({
-                "group_index": index + 1,
-                "needed_tags": needed,
-                "matched_tags": found,
-                "missing_tags": missing,
-                "matched": passed
-            })
-            if passed:
-                return {
-                    "matched": True,
-                    "mode": "group",
-                    "matched_tags": found,
-                    "missing_tags": [],
-                    "passed_group_index": index + 1,
-                    "groups": group_details,
-                    "message": f"묶음 조건 {index + 1}번이 통과했습니다."
-                }
-
-        missing_all = []
-        for detail in group_details:
-            missing_all.extend(detail.get("missing_tags", []))
-        return {
-            "matched": False,
-            "mode": "group",
-            "matched_tags": [],
-            "missing_tags": route_test_unique_prompts(missing_all),
-            "passed_group_index": None,
-            "groups": group_details,
-            "message": "통과한 묶음 조건이 없습니다."
-        }
-
-    tags = route_test_unique_prompts(rule.get("tags") or [])
-    condition = "all" if rule.get("condition") == "all" else "any"
-    try:
-        match_count = int(rule.get("match_count") or 1)
-    except Exception:
-        match_count = 1
-    match_count = max(1, match_count)
-
-    matched_tags = [tag for tag in tags if route_test_rule_prompt_matches(tag, match_context)]
-    missing_tags = [tag for tag in tags if tag not in matched_tags]
-    required_count = len(tags) if condition == "all" else min(match_count, len(tags))
-    matched = bool(tags) and (not missing_tags if condition == "all" else len(matched_tags) >= match_count)
-
-    return {
-        "matched": matched,
-        "mode": "single",
-        "condition": condition,
-        "match_count": match_count,
-        "required_count": required_count,
-        "matched_tags": matched_tags,
-        "missing_tags": missing_tags,
-        "message": "개별 조건이 통과했습니다." if matched else f"필요한 {required_count}개 중 {len(matched_tags)}개만 찾았습니다."
-    }
-
-
-def route_test_get_rule_by_path(rules, path):
-    current = rules
-    rule = None
-    try:
-        for raw_index in path or []:
-            index = int(raw_index)
-            if not isinstance(current, list) or index < 0 or index >= len(current):
-                return None
-            rule = current[index]
-            current = rule.get("children") or []
-        return rule if isinstance(rule, dict) else None
-    except Exception:
-        return None
-
-
-def route_test_get_rule_paths(data):
-    raw_paths = data.get("rule_paths")
-    if isinstance(raw_paths, str):
-        try:
-            raw_paths = json.loads(raw_paths)
-        except Exception:
-            raw_paths = []
-
-    if isinstance(raw_paths, list) and raw_paths and all(isinstance(p, list) for p in raw_paths):
-        return raw_paths
-
-    one = data.get("rule_path")
-    if isinstance(one, str):
-        try:
-            one = json.loads(one)
-        except Exception:
-            one = []
-
-    return [one] if isinstance(one, list) and one else []
-
-
-def route_test_path_key(path):
-    return json.dumps(path or [], ensure_ascii=False)
-
-
-def route_test_is_ancestor_path(parent, child):
-    return (
-        isinstance(parent, list) and
-        isinstance(child, list) and
-        len(parent) < len(child) and
-        child[:len(parent)] == parent
-    )
-
-
-def route_test_selected_path_jobs(rule_paths):
-    paths = [path for path in rule_paths if isinstance(path, list)]
-    unique = []
-    seen = set()
-
-    for path in paths:
-        key = route_test_path_key(path)
-        if key in seen:
-            continue
-        unique.append(path)
-        seen.add(key)
-
-    jobs = []
-
-    for path in unique:
-        selected_ancestors = [
-            other for other in unique
-            if route_test_is_ancestor_path(other, path)
-        ]
-        selected_descendants = [
-            other for other in unique
-            if route_test_is_ancestor_path(path, other)
-        ]
-
-        if selected_ancestors:
-            ancestor = max(selected_ancestors, key=len)
-            jobs.append({"type": "chain", "paths": [ancestor, path]})
-            continue
-
-        if selected_descendants:
-            continue
-
-        jobs.append({"type": "single", "paths": [path]})
-
-    return jobs
-
-
-def route_test_rule_label_by_path(rules, path):
-    labels = []
-    current = rules
-    try:
-        for raw_index in path or []:
-            index = int(raw_index)
-            if not isinstance(current, list) or index < 0 or index >= len(current):
-                return "알 수 없는 규칙"
-            rule = current[index]
-            labels.append(str(rule.get("folder") or "(폴더명 없음)").strip() or "(폴더명 없음)")
-            current = rule.get("children") or []
-    except Exception:
-        return "알 수 없는 규칙"
-
-    return " > ".join(labels) if labels else "알 수 없는 규칙"
-
-
-def route_test_match_rule_chain(rules, match_context, paths):
-    details = []
-    labels = []
-    all_matched = True
-
-    for path in paths:
-        rule = route_test_get_rule_by_path(rules, path)
-        if not rule:
-            all_matched = False
-            details.append({
-                "matched": False,
-                "rule_path": path,
-                "message": "선택한 규칙을 찾을 수 없습니다."
-            })
-            continue
-
-        result = route_test_match_single_rule(rule, match_context)
-        result["rule_path"] = path
-        result["rule_label"] = route_test_rule_label_by_path(rules, path)
-        labels.append(result["rule_label"])
-        details.append(result)
-
-        if not result.get("matched"):
-            all_matched = False
-
-    return {
-        "matched": all_matched,
-        "type": "chain",
-        "rule_label": " > ".join([label.split(" > ")[-1] for label in labels if label]),
-        "details": details,
-        "message": "선택한 상위/하위 규칙 조합을 순서대로 검사했습니다."
-    }
-
-
-def route_test_match_selected_rules(rules, match_context, rule_paths):  
-    jobs = route_test_selected_path_jobs(rule_paths)
-    selected_results = []
-
-    for job in jobs:
-        paths = job.get("paths") or []
-
-        if job.get("type") == "chain":
-            selected_results.append(route_test_match_rule_chain(rules, match_context, paths))
-            continue
-
-        path = paths[0] if paths else []
-        rule = route_test_get_rule_by_path(rules, path)
-
-        if not rule:
-            selected_results.append({
-                "matched": False,
-                "type": "single",
-                "rule_path": path,
-                "rule_label": "알 수 없는 규칙",
-                "message": "선택한 규칙을 찾을 수 없습니다."
-            })
-            continue
-
-        result = route_test_match_single_rule(rule, match_context)
-        result["type"] = "single"
-        result["rule_path"] = path
-        result["rule_label"] = route_test_rule_label_by_path(rules, path)
-        selected_results.append(result)
-
-    return {
-        "matched": any(item.get("matched") for item in selected_results),
-        "scope": "single",
-        "selected_rule_count": len([path for path in rule_paths if isinstance(path, list)]),
-        "job_count": len(selected_results),
-        "selected_results": selected_results,
-        "message": "선택한 규칙을 검사했습니다."
-    }
-
-
-def route_test_flatten_rules(rules, parent_label="", parent_path=None):
-    parent_path = parent_path or []
-    flat = []
-
-    for index, rule in enumerate(rules or []):
-        if not isinstance(rule, dict) or rule.get("type") == "default":
-            continue
-        folder = str(rule.get("folder") or "").strip() or "(폴더명 없음)"
-        label = f"{parent_label} > {folder}" if parent_label else folder
-        path = parent_path + [index]
-        flat.append({"path": path, "label": label, "folder": folder, "rule": rule})
-        flat.extend(route_test_flatten_rules(rule.get("children") or [], label, path))
-
-    return flat
-
-
-def route_test_find_matching_route(rules, match_context):
-    details = []
-
-    def walk(rule_list, chain=None):
-        chain = chain or []
-        for rule in rule_list or []:
-            if not isinstance(rule, dict):
-                continue
-            if rule.get("type") == "default":
-                return {"matched": False, "default_reached": True, "final_folder": "Solo / Duo / Group", "rule_chain": chain, "details": details}
-
-            folder = str(rule.get("folder") or "").strip()
-            match_detail = route_test_rule_matches(rule, match_context)
-            details.append({"folder": folder, "label": " > ".join(chain + [folder]) if folder else "", **match_detail})
-            if not match_detail.get("matched"):
-                continue
-
-            next_chain = chain + ([folder] if folder else [])
-            child_result = walk(rule.get("children") or [], next_chain)
-            if child_result and child_result.get("matched"):
-                return child_result
-            return {"matched": True, "default_reached": False, "final_folder": "/".join(next_chain), "rule_chain": next_chain, "details": details}
-
-        return {"matched": False, "default_reached": False, "final_folder": "", "rule_chain": chain, "details": details}
-
-    return walk(rules)
-
-
-def route_test_match_single_rule(rule, match_context):
-    if not rule or rule.get("type") == "default":
-        return {"matched": False, "final_folder": "", "rule_chain": [], "details": [], "message": "선택한 규칙을 찾을 수 없습니다."}
-
-    detail = route_test_rule_matches(rule, match_context)
-    folder = str(rule.get("folder") or "").strip()
-    return {
-        "matched": bool(detail.get("matched")),
-        "default_reached": False,
-        "final_folder": folder if detail.get("matched") else "",
-        "rule_chain": [folder] if folder and detail.get("matched") else [],
-        "details": [{"folder": folder, "label": folder, **detail}],
-        "message": detail.get("message", "")
-    }
-
-
-def route_test_build_prompt_rule(data):
-    text = str(data.get("prompt_rule_text") or "").strip()
-    mode = "group" if data.get("prompt_rule_mode") == "group" else "single"
-
-    if not text:
-        return None
-
-    return {
-        "type": "custom",
-        "folder": "임시 프롬프트 규칙",
-        "prompt_text": text,
-        "tags": parse_route_tags_single(text),
-        "prompt_mode": mode,
-        "tag_groups": parse_route_tag_groups(text),
-        "condition": "any",
-        "match_count": 1,
-        "children": []
-    }
-
-
-def route_test_run_payload(data, tokens):
-    rules = normalize_custom_route_rules(data.get("rules", []))
-    match_context = route_test_build_match_context(tokens)
-
-    target_mode = data.get("target_mode") or data.get("scope") or "all"
-
-    if target_mode == "prompt":
-        temp_rule = route_test_build_prompt_rule(data)
-        if not temp_rule:
-            return {
-                "matched": False,
-                "scope": "prompt",
-                "rule_label": "임시 프롬프트 규칙",
-                "message": "임시 감지 규칙이 비어 있습니다.",
-                "details": []
-            }
-
-        result = route_test_match_single_rule(temp_rule, match_context)
-        result["scope"] = "prompt"
-        result["type"] = "single"
-        result["rule_label"] = "임시 프롬프트 규칙"
-        return result
-
-    if target_mode == "single" or data.get("scope") == "single":
-        return route_test_match_selected_rules(rules, match_context, route_test_get_rule_paths(data))
-
-    return route_test_find_matching_route(rules, match_context)
-
-
-def route_test_prompt_preview_from_tokens(tokens, limit=30):
-    tokens = tokens or []
-    preview = ", ".join(tokens[:limit])
-    if len(tokens) > limit:
-        preview += f" ... plus {len(tokens) - limit} more"
-    return preview
-
-
-def route_test_prompt_text_from_prompt_info(prompt_info):
-    prompt_info = prompt_info or {}
-    parts = []
-
-    base_prompt = str(
-        prompt_info.get("basePrompt")
-        or prompt_info.get("baseCaption")
-        or prompt_info.get("prompt")
-        or prompt_info.get("base_prompt")
-        or ""
-    ).strip()
-
-    char_prompts = prompt_info.get("charPrompts") or prompt_info.get("char_prompts") or []
-    if not isinstance(char_prompts, list):
-        char_prompts = []
-
-    char_prompt = str(
-        prompt_info.get("charPrompt")
-        or prompt_info.get("characterPrompt")
-        or ""
-    ).strip()
-
-    negative_prompt = str(
-        prompt_info.get("negativePrompt")
-        or prompt_info.get("negative_prompt")
-        or prompt_info.get("uc")
-        or ""
-    ).strip()
-
-    if base_prompt:
-        parts.append("[Base Prompt]\n" + base_prompt)
-
-    clean_char_prompts = [str(item or "").strip() for item in char_prompts if str(item or "").strip()]
-    if char_prompt:
-        clean_char_prompts.append(char_prompt)
-
-    if clean_char_prompts:
-        parts.append("[Character Prompt]\n" + "\n".join(clean_char_prompts))
-
-    if negative_prompt:
-        parts.append("[Negative Prompt]\n" + negative_prompt)
-
-    return "\n\n".join(parts).strip()
-
-
 ROUTE_TEST_JOBS = {}
 ROUTE_TEST_LOCK = threading.Lock()
 
-
-def public_route_test_job(job):
-    if not job:
-        return None
-    return {
-        "job_id": job.get("job_id", ""),
-        "state": job.get("state", "queued"),
-        "processed_count": int(job.get("processed_count", 0) or 0),
-        "total_count": int(job.get("total_count", 0) or 0),
-        "matched_count": int(job.get("matched_count", 0) or 0),
-        "unmatched_count": int(job.get("unmatched_count", 0) or 0),
-        "error_count": int(job.get("error_count", 0) or 0),
-        "message": job.get("message", ""),
-        "results": job.get("results", []),
-        "target_mode": job.get("target_mode", "all"),
-        "warning": job.get("warning", "")
-    }
+from naim.gallery.rules import (
+    clean_route_prompt_text,
+    route_prompt_dedupe_key,
+    dedupe_route_prompts,
+    parse_route_tags_single,
+    parse_route_tag_groups,
+    route_prompt_text_from_rule,
+    normalize_custom_route_rules,
+    route_test_clean_prompt_text,
+    route_test_match_keys,
+    route_test_prompt_tokens_from_text,
+    route_test_prompt_tokens_from_prompt_info,
+    route_test_build_key_set,
+    route_test_build_match_context,
+    route_test_is_like_prompt,
+    route_test_like_prompt_inner,
+    route_test_rule_prompt_matches,
+    route_test_unique_prompts,
+    route_test_rule_matches,
+    route_test_get_rule_by_path,
+    route_test_get_rule_paths,
+    route_test_path_key,
+    route_test_is_ancestor_path,
+    route_test_selected_path_jobs,
+    route_test_rule_label_by_path,
+    route_test_match_rule_chain,
+    route_test_match_selected_rules,
+    route_test_flatten_rules,
+    route_test_find_matching_route,
+    route_test_match_single_rule,
+    route_test_build_prompt_rule,
+    route_test_run_payload,
+    route_test_prompt_preview_from_tokens,
+    route_test_prompt_text_from_prompt_info,
+    public_route_test_job,
+)
 
 
 def extract_prompt_info_from_image_filelike(file_storage):
@@ -5110,14 +4436,12 @@ def extract_prompt_info_from_image_filelike(file_storage):
         raw_meta = str(raw_meta or "").strip()
         meta = {}
         if raw_meta.startswith("{"):
-            try:
-                meta = json.loads(raw_meta)
-                if "Comment" in meta and isinstance(meta["Comment"], str) and meta["Comment"].strip().startswith("{"):
-                    meta = json.loads(meta["Comment"])
-            except Exception:
-                meta = {}
+            meta = _parse_prompt_metadata(raw_meta)
+        if not meta:
+            meta = _parse_prompt_metadata(_image_info_value_casefold(img, "Comment"))
 
         if meta:
+            generation_metadata = _normalize_extracted_generation_metadata(meta, img)
             v4_prompt = meta.get("v4_prompt", {})
             caption = v4_prompt.get("caption", {}) if isinstance(v4_prompt, dict) else {}
             base_caption = str(caption.get("base_caption", "") or "").strip()
@@ -5131,7 +4455,9 @@ def extract_prompt_info_from_image_filelike(file_storage):
                 "basePrompt": base_caption or meta.get("prompt", "") or meta.get("basePrompt", ""),
                 "baseCaption": base_caption,
                 "negativePrompt": negative_caption.get("base_caption", "") or meta.get("negative_prompt", "") or meta.get("negativePrompt", "") or meta.get("uc", ""),
-                "charPrompts": char_prompts
+                "charPrompts": char_prompts,
+                **({'promptRegions': meta['promptRegions']} if 'promptRegions' in meta else {}),
+                **generation_metadata
             })
 
         prompt_part = raw_meta
@@ -5143,7 +4469,8 @@ def extract_prompt_info_from_image_filelike(file_storage):
         return normalize_prompt_info_for_sidecar({
             "basePrompt": prompt_part.strip(),
             "negativePrompt": negative_prompt.strip(),
-            "charPrompts": []
+            "charPrompts": [],
+            **_normalize_extracted_generation_metadata({}, img)
         })
 
 
@@ -5649,170 +4976,14 @@ def daki_art_style_sources():
     return jsonify(result)
 
 
-def format_artist_style_prompt_for_daki(artist_name):
-    text = str(artist_name or '').strip()
-
-    if not text:
-        return ""
-
-    # 이미 가중치 문법이면 그대로 사용
-    if "::" in text:
-        return text
-
-    # 이미 artist: 형식이면 그대로 가중치 문법으로 감싼다.
-    if text.startswith("artist:"):
-        return f"1.0::{text}::"
-
-    # DB의 artist 원본 키를 NovelAI 가중치 문법으로 변환
-    return f"1.0::artist:{text}::"
-
-def is_weighted_order_style_prompt(text):
-    text = str(text or "").strip()
-    if not text:
-        return False
-
-    # ART STYLE MANAGER의 그림체 값을 다키 프롬프트에 맞게 변환
-    if text.startswith("[가중치]"):
-        return True
-
-    # 0.30::artist:xxx:: 같은 NovelAI 가중치 문법 포함
-    if "::artist:" in text or re.search(r'\d+(?:\.\d+)?::\s*artist:', text):
-        return True
-
-    return False
-
-
-def cleanup_weighted_order_style_prompt(text):
-    text = str(text or "").strip()
-
-    # 표시용 접두어 제거
-    text = re.sub(r'^\[가중치]\s*', '', text).strip()
-
-    return text
-
-def normalize_style_lab_artist_name_from_manager(value):
-    text = str(value or "").strip()
-    text = text.replace("\\\\n", " ").replace("\\n", " ").replace("\n", " ")
-    text = re.sub(r'^\[(?:가중치|조합형)\]\s*', '', text).strip()
-    text = re.sub(r'^[-+]?\d+(?:\.\d+)?::\s*', '', text).strip()
-
-    if text.lower().startswith("artist:"):
-        text = text[7:].strip()
-
-    text = re.sub(r'\s*::$', '', text).strip()
-    text = text.strip(" ,[]{}()")
-    text = re.sub(r'\s+', '_', text)
-
-    blocked = {
-        "",
-        "1",
-        "3",
-        "none",
-        "collaboration",
-        "artist_collaboration",
-        "artist:collaboration",
-        "multiple_artists",
-        "solo_artist",
-        "artist_request",
-    }
-
-    if text.lower() in blocked:
-        return ""
-
-    return text
-
-
-def parse_art_style_manager_prompt_to_style_tags(raw_text):
-    text = str(raw_text or "").strip()
-    text = text.replace("\\\\n", "\n").replace("\\n", "\n")
-    text = re.sub(r'^\[(?:가중치|조합형)\]\s*', '', text).strip()
-
-    result = []
-    seen = set()
-
-    def add_artist(name, weight=1.0):
-        name = normalize_style_lab_artist_name_from_manager(name)
-        if not name:
-            return
-
-        key = name.lower()
-        if key in seen:
-            return
-
-        seen.add(key)
-        result.append({
-            "weight": float(weight),
-            "name": name
-        })
-
-    # 1. 가중치 artist 토큰 먼저 수집
-    # 예: 1.25::artist:foo::, -0.2::artist:bar::
-    weighted_pattern = re.compile(
-        r'([-+]?\d+(?:\.\d+)?)::\s*artist:\s*(.*?)(?=::)',
-        re.IGNORECASE | re.DOTALL
-    )
-
-    weighted_spans = []
-
-    for match in weighted_pattern.finditer(text):
-        try:
-            weight = float(match.group(1))
-        except Exception:
-            weight = 1.0
-
-        add_artist(match.group(2), weight)
-        weighted_spans.append(match.span())
-
-    # 2. 가중치 토큰을 공백으로 지운 뒤, 남은 일반 artist 태그도 수집
-    # 예: artist:foo, artist:bar
-    remainder_parts = []
-    last = 0
-
-    for start, end in weighted_spans:
-        remainder_parts.append(text[last:start])
-        remainder_parts.append(" ")
-        last = end
-
-    remainder_parts.append(text[last:])
-    remainder = "".join(remainder_parts)
-
-    plain_artist_pattern = re.compile(
-        r'artist:\s*([^,\]\}\|\n\r\t\\:]+)',
-        re.IGNORECASE
-    )
-
-    for match in plain_artist_pattern.finditer(remainder):
-        add_artist(match.group(1), 1.0)
-
-    # 3. artist: 없이 단일 작가명만 저장된 오래된 항목 폴백
-    if not result and "artist:" not in text.lower() and "," not in text:
-        add_artist(text, 1.0)
-
-    return result
-
-def make_unique_style_lab_style_name(base_name, styles_data, artists_data):
-    base_name = str(base_name or "").strip()
-    base_name = base_name.replace("\\\\n", " ").replace("\\n", " ").replace("\n", " ")
-    base_name = re.sub(r'^\[(?:가중치|조합형)\]\s*', '', base_name).strip()
-    base_name = re.sub(r'\s+', ' ', base_name).strip()
-
-    if len(base_name) > 80:
-        base_name = base_name[:77].rstrip() + "..."
-
-    if not base_name:
-        base_name = "ART STYLE MANAGER"
-
-    used = set(styles_data.keys()) | set(artists_data.keys())
-
-    if base_name not in used:
-        return base_name
-
-    for index in range(2, 10000):
-        candidate = f"{base_name} ({index})"
-        if candidate not in used:
-            return candidate
-
-    return f"{base_name} {int(time.time())}"
+from naim.gallery.art_styles import (
+    format_artist_style_prompt_for_daki,
+    is_weighted_order_style_prompt,
+    cleanup_weighted_order_style_prompt,
+    normalize_style_lab_artist_name_from_manager,
+    parse_art_style_manager_prompt_to_style_tags,
+    make_unique_style_lab_style_name,
+)
 
 
 @app.route('/api/art_style_to_lab', methods=['POST'])
@@ -5867,11 +5038,9 @@ def art_style_to_lab():
         "qualityTags": ""
     }, ensure_ascii=False)
 
-    with open(ARTISTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(artists_data, f, ensure_ascii=False, indent=4)
+    write_json(ARTISTS_FILE, artists_data, indent=4)
 
-    with open(STYLES_FILE, "w", encoding="utf-8") as f:
-        json.dump(styles_data, f, ensure_ascii=False, indent=4)
+    write_json(STYLES_FILE, styles_data, indent=4)
 
     return jsonify({
         "status": "success",
@@ -5936,9 +5105,18 @@ DAKI_GENERATED_TEMP_DIR = os.path.join(CURRENT_DIR, "daki_generated_temp")
 os.makedirs(CANVAS_IMPORT_DIR, exist_ok=True)
 os.makedirs(DAKI_GENERATED_TEMP_DIR, exist_ok=True)
 NAI_IMAGE_MODEL = "nai-diffusion-4-5-full"
-NAI_INPAINT_MODEL = "nai-diffusion-4-5-full-inpainting"
+NAI_INPAINT_MODEL = "nai-diffusion-5-full-inpainting"
 CANVAS_IMPORT_CLEANUP_CATEGORIES = {"canvas", "canvas_inpaint"}
 CANVAS_IMPORT_ALLOWED_CATEGORIES = CANVAS_IMPORT_CLEANUP_CATEGORIES | {"gallery_inpaint"}
+
+
+def build_inpaint_prompt_info(prompt_info):
+    """Validate and attach the selected inpainting generation metadata."""
+    info = dict(prompt_info or {})
+    info.update(normalize_inpaint_settings(info))
+    info["modelName"] = info["model"]
+    info["model_name"] = info["model"]
+    return normalize_prompt_info_for_sidecar(info)
 
 
 def safe_canvas_import_token(value, fallback):
@@ -6029,13 +5207,40 @@ def cleanup_canvas_import_session(category, session_id):
     if not os.path.isdir(session_dir):
         return 0
 
+    retained = project_canvas_import_refs()
     deleted = 0
-    for _, _, files in os.walk(session_dir):
-        deleted += len(files)
-
-    shutil.rmtree(session_dir, ignore_errors=True)
+    for root, _, files in os.walk(session_dir):
+        for filename in files:
+            full_path = os.path.join(root, filename)
+            relative = os.path.relpath(full_path, CANVAS_IMPORT_DIR).replace('\\', '/')
+            if relative in retained:
+                continue
+            try:
+                os.remove(full_path)
+                deleted += 1
+            except OSError:
+                pass
     remove_empty_canvas_import_dirs()
     return deleted
+
+
+def project_canvas_import_refs():
+    """Protect assets of every linked workspace, including canvases in other tabs."""
+    refs = set()
+    pending = list(DAKI_PROJECTS.canvas_states())
+    pending.extend(project.get('canvasSettings', {}).get('inpaintReference')
+                   for project in DAKI_PROJECTS.list_projects())
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str):
+            ref = extract_canvas_import_ref(value)
+            if ref:
+                refs.add(ref)
+    return refs
 
 
 def canvas_import_ref_is_active_session(rel_path, active_session_ids):
@@ -6053,6 +5258,7 @@ def cleanup_unreferenced_canvas_imports(retained_refs, active_session_ids=None):
         for ref in (retained_refs or [])
         if canvas_import_relative_path(ref)
     }
+    retained.update(project_canvas_import_refs())
     active_sessions = {
         safe_canvas_import_token(session_id, "")
         for session_id in (active_session_ids or [])
@@ -6096,6 +5302,7 @@ def cleanup_canvas_import_refs(refs, retained_refs):
         for ref in (retained_refs or [])
         if canvas_import_relative_path(ref)
     }
+    retained.update(project_canvas_import_refs())
     target_refs = {
         canvas_import_relative_path(ref)
         for ref in (refs or [])
@@ -6292,8 +5499,11 @@ def canvas_upload_image():
 
     try:
         with Image.open(io.BytesIO(raw)) as img:
-            width, height = get_display_oriented_image_size(img)
             img.verify()
+        # PNG EXIF inspection may load/close the decoder. Verify on a fresh
+        # image first, then inspect orientation using a separate decoder.
+        with Image.open(io.BytesIO(raw)) as img:
+            width, height = get_display_oriented_image_size(img)
     except Exception:
         return jsonify({"status": "error", "message": "이미지 파일을 읽을 수 없습니다."}), 400
 
@@ -6361,69 +5571,23 @@ def read_canvas_image_bytes(image_ref):
 
     if parsed_path.startswith("/image/"):
         rel_path = unquote(parsed_path[len("/image/"):])
-        file_path = utils.resolve_safe_path(CLASSIFIED_DIR, rel_path, strip_prefix="TOTAL_CLASSIFIED/")
+        reference = resolve_daki_image_reference(rel_path, DAKI_STYLE_TESTS, DAKI_DRAFTS,
+                                                 project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+        file_path = reference[0] if reference is not None else resolve_gallery_file_path(rel_path)
         with open(file_path, "rb") as f:
             return f.read()
 
     raise ValueError("캔버스 이미지 경로를 읽을 수 없습니다.")
 
 
-def prepare_inpaint_mask_bytes(mask_bytes):
-    with Image.open(io.BytesIO(mask_bytes)) as mask_img:
-        mask_img = mask_img.convert("RGBA")
-        gray = mask_img.convert("L")
-        binary = gray.point(lambda px: 255 if px > 32 else 0, "L")
-        alpha = mask_img.getchannel("A").point(lambda px: 255 if px >= 16 else 0, "L")
-        black = Image.new("L", mask_img.size, 0)
-        binary = Image.composite(binary, black, alpha)
-
-        width, height = binary.size
-        grid = 8
-        small_w = max(1, (width + grid - 1) // grid)
-        small_h = max(1, (height + grid - 1) // grid)
-        small = Image.new("L", (small_w, small_h), 0)
-
-        for gy in range(small_h):
-            top = gy * grid
-            bottom = min(height, top + grid)
-            for gx in range(small_w):
-                left = gx * grid
-                right = min(width, left + grid)
-                if binary.crop((left, top, right, bottom)).getbbox():
-                    small.putpixel((gx, gy), 255)
-
-        binary = small.resize((small_w * grid, small_h * grid), Image.Resampling.NEAREST).crop((0, 0, width, height))
-
-        output = io.BytesIO()
-        binary.convert("RGB").save(output, format="PNG", compress_level=0, optimize=False)
-        return output.getvalue()
-
-
-def image_to_png_bytes(image):
-    output = io.BytesIO()
-    image.save(output, format="PNG")
-    return output.getvalue()
-
-
-def blend_canvas_inpaint_result_with_source(source_bytes, generated_bytes, mask_bytes, feather=0):
-    with Image.open(io.BytesIO(source_bytes)) as source_img:
-        source_rgb = source_img.convert("RGB")
-    with Image.open(io.BytesIO(generated_bytes)) as generated_img:
-        generated_rgb = generated_img.convert("RGB")
-    with Image.open(io.BytesIO(mask_bytes)) as mask_img:
-        mask_l = mask_img.convert("L")
-
-    if generated_rgb.size != source_rgb.size:
-        generated_rgb = generated_rgb.resize(source_rgb.size, Image.Resampling.LANCZOS)
-    if mask_l.size != source_rgb.size:
-        mask_l = mask_l.resize(source_rgb.size, Image.Resampling.NEAREST)
-
-    feather = max(0, int(feather or 0))
-    if feather:
-        from PIL import ImageFilter
-        mask_l = mask_l.filter(ImageFilter.GaussianBlur(radius=feather))
-
-    return Image.composite(generated_rgb, source_rgb, mask_l)
+from naim.images.inpaint import (
+    prepare_inpaint_mask_bytes,
+    image_to_png_bytes,
+    blend_canvas_inpaint_result_with_source,
+)
+from naim.images.inpaint_reference import (
+    normalize_reference, prepare_reference_input, crop_reference_result, inject_split_screen,
+)
 
 
 def save_canvas_generated_image(raw_bytes, prefix="canvas_inpaint", category=None, session_id=None):
@@ -6438,6 +5602,13 @@ def save_canvas_generated_image(raw_bytes, prefix="canvas_inpaint", category=Non
     return canvas_import_public_src(rel_name), rel_name
 
 
+from naim.web.canvas_retouch import register_canvas_retouch_routes
+
+CANVAS_RETOUCH = register_canvas_retouch_routes(
+    app, read_canvas_image_bytes, save_canvas_generated_image,
+)
+
+
 @app.route('/api/canvas/reference_upscale', methods=['POST'])
 def canvas_reference_upscale():
     try:
@@ -6447,23 +5618,33 @@ def canvas_reference_upscale():
         if not image_ref:
             return jsonify({"status": "error", "message": "업스케일할 참조 이미지가 없습니다."}), 400
 
+        engine = upscale_logic.normalize_upscale_engine(data.get("engine") or "realcugan")
+        fit_5_16 = data.get('fit_5_16') is True and engine != 'nai'
         target_width, target_height = upscale_logic.validate_target_size(
             data.get("target_width", 2500),
             data.get("target_height", 8000)
         )
-
-        engine = upscale_logic.normalize_upscale_engine(data.get("engine") or "realcugan")
 
         quality = str(data.get("quality") or "standard").strip().lower()
         if quality not in ("fast", "standard", "high"):
             quality = "standard"
 
         source_bytes = read_canvas_image_bytes(image_ref)
+        nai_options = {}
+        if engine == 'nai':
+            from naim.images.nai_upscale import plan_nai_upscale
+            if data.get('nai_confirmed') is not True:
+                raise ValueError('NAI 자동 맞춤 크기와 Anlas 사용 안내를 확인해 주세요.')
+            with Image.open(io.BytesIO(source_bytes)) as source:
+                plan = plan_nai_upscale(*source.size)
+            if (target_width, target_height) != (plan['output_width'], plan['output_height']):
+                raise ValueError('NAI 맞춤 크기를 업스케일 창에서 다시 확인해 주세요.')
+            nai_options['nai_api_key'] = get_upscale_nai_key()
         session_id = data.get("sessionId") or None
         save_category = data.get("tempCategory") or data.get("temp_category") or "canvas"
         save_prefix = "canvas_inpaint_upscale" if save_category == "canvas_inpaint" else "canvas_reference_upscale"
 
-        with tempfile.TemporaryDirectory(prefix="naia_reference_upscale_") as temp_dir:
+        with UPSCALE_SERVICE.direct_operation() as cancel_event, tempfile.TemporaryDirectory(prefix="naia_reference_upscale_") as temp_dir:
             source_path = os.path.join(temp_dir, "source.png")
             target_path = os.path.join(temp_dir, "upscaled.png")
 
@@ -6476,25 +5657,31 @@ def canvas_reference_upscale():
                 target_width=target_width,
                 target_height=target_height,
                 engine=engine,
-                quality=quality
+                quality=quality,
+                cancel_event=cancel_event,
+                **nai_options,
+                **({'fit_5_16': True} if fit_5_16 else {}),
             )
+
+            if cancel_event.is_set():
+                raise upscale_logic.UpscaleCancelled()
 
             with open(target_path, "rb") as f:
                 result_bytes = f.read()
 
-        src, rel_name = save_canvas_generated_image(
-            result_bytes,
-            prefix=save_prefix,
-            category=save_category,
-            session_id=session_id
-        )
+            src, rel_name = save_canvas_generated_image(
+                result_bytes,
+                prefix=save_prefix,
+                category=save_category,
+                session_id=session_id
+            )
 
         return jsonify({
             "status": "success",
             "src": src,
             "name": rel_name,
-            "width": target_width,
-            "height": target_height,
+            "width": result.get("final_width", target_width),
+            "height": result.get("final_height", target_height),
             "engine": engine,
             "quality": quality,
             "result": result
@@ -6569,7 +5756,23 @@ def cleanup_canvas_import_session_route():
 @app.route('/api/canvas/inpaint', methods=['POST'])
 def canvas_inpaint():
     data = request.json or {}
-    prompt_info = data.get("promptInfo") or {}
+    project_context = None
+    if 'projectContext' in data:
+        try:
+            project_context = validate_project_image_context(
+                DAKI_PROJECTS,
+                data.get('projectContext'),
+                data.get('source_path'),
+            )['projectContext']
+        except (DakiNotFoundError, FileNotFoundError) as error:
+            return jsonify({"status": "error", "message": str(error)}), 404
+        except (ValueError, TypeError) as error:
+            return jsonify({"status": "error", "message": str(error)}), 400
+
+    try:
+        prompt_info = build_inpaint_prompt_info(data.get("promptInfo") or {})
+    except (ValueError, TypeError) as error:
+        return jsonify({"status": "error", "message": str(error)}), 400
 
     api_key = str(data.get("key") or "").strip()
     if not api_key and os.path.exists(CONFIG_FILE):
@@ -6584,6 +5787,7 @@ def canvas_inpaint():
     try:
         image_bytes = read_canvas_image_bytes(data.get("image"))
         mask_bytes = prepare_inpaint_mask_bytes(read_canvas_image_bytes(data.get("mask")))
+        reference = normalize_reference(data.get("reference"))
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
@@ -6596,12 +5800,31 @@ def canvas_inpaint():
         except Exception:
             return jsonify({"status": "error", "message": "이미지 크기를 확인할 수 없습니다."}), 400
 
+    source_size = (width, height)
+    request_image_bytes, request_mask_bytes = image_bytes, mask_bytes
+    if reference is not None:
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as source_image:
+                if source_image.size != source_size:
+                    raise ValueError('작업 영역 크기와 원본 이미지 크기가 일치하지 않습니다.')
+            combined = prepare_reference_input(
+                image_bytes, mask_bytes, read_canvas_image_bytes(reference['src']), reference,
+            )
+            request_image_bytes, request_mask_bytes = combined['image'], combined['mask']
+            width, height = combined['width'], combined['height']
+        except (ValueError, OSError, TypeError) as error:
+            return jsonify({"status": "error", "message": str(error)}), 400
+
     base_prompt = str(prompt_info.get("basePrompt") or data.get("base_prompt") or "").strip()
+    if reference is not None:
+        # This tag describes the temporary request layout, not the user's saved prompt.
+        base_prompt = inject_split_screen(base_prompt)
     char_prompt = str(prompt_info.get("charPrompt") or data.get("char_prompt") or "").strip()
     negative_prompt = str(prompt_info.get("negativePrompt") or data.get("negative_prompt") or "").strip()
     seed = int(prompt_info.get("seed") if prompt_info.get("seed") not in (None, "") else -1)
     if seed < 0:
         seed = random.randint(1, 4294967295)
+    prompt_info["seed"] = seed
 
     strength = float(prompt_info.get("strength") if prompt_info.get("strength") not in (None, "") else 1.0)
     strength = max(0.01, min(1.0, strength))
@@ -6614,7 +5837,7 @@ def canvas_inpaint():
 
     payload = {
         "input": base_prompt,
-        "model": "nai-diffusion-4-5-full-inpainting",
+        "model": prompt_info["model"],
         "action": "infill",
         "parameters": {
             "width": width,
@@ -6624,18 +5847,18 @@ def canvas_inpaint():
             "extra_noise_seed": seed,
             "sampler": prompt_info.get("sampler") or "k_euler_ancestral",
             "steps": int(prompt_info.get("steps") or 28),
-            "scale": float(prompt_info.get("cfg") or prompt_info.get("scale") or 6),
+            "scale": prompt_info["cfg"],
             "negative_prompt": negative_prompt,
-            "cfg_rescale": float(prompt_info.get("cfg_rescale") or 0.4),
-            "noise_schedule": "native",
+            "cfg_rescale": prompt_info["cfg_rescale"],
+            "noise_schedule": prompt_info["noise_schedule"],
             "params_version": 3,
             "legacy": False,
             "legacy_v3_extend": False,
             "add_original_image": True,
             "prefer_brownian": True,
             "use_coords": False,
-            "image": base64.b64encode(image_bytes).decode("utf-8"),
-            "mask": base64.b64encode(mask_bytes).decode("utf-8"),
+            "image": base64.b64encode(request_image_bytes).decode("utf-8"),
+            "mask": base64.b64encode(request_mask_bytes).decode("utf-8"),
             "inpaintImg2ImgStrength": strength,
             "request_type": "NativeInfillingRequest",
             "deliberate_euler_ancestral_bug": False,
@@ -6659,46 +5882,86 @@ def canvas_inpaint():
         }
     }
 
-    req = urllib.request.Request("https://image.novelai.net/ai/generate-image", method="POST")
-    req.add_header("Authorization", f"Bearer {api_key}")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "Mozilla/5.0")
+
+    apply_inpaint_model_constraints(payload, prompt_info)
 
     try:
-        with urllib.request.urlopen(req, data=json.dumps(payload).encode('utf-8')) as response:
-            zip_data = response.read()
-            with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
-                for filename in z.namelist():
-                    if filename.endswith('.png'):
-                        generated_data = z.read(filename)
-                        inpainted = blend_canvas_inpaint_result_with_source(
-                            image_bytes,
-                            generated_data,
-                            mask_bytes,
-                            feather=int(prompt_info.get("feather") or prompt_info.get("mask_blur") or 0)
-                        )
-                        img_data = image_to_png_bytes(inpainted)
-                        image_data_url = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}"
+        with generated_image_archive(api_key, payload) as z:
+            for filename in z.namelist():
+                if filename.endswith('.png'):
+                    generated_data = z.read(filename)
+                    if reference is not None:
+                        generated_data = crop_reference_result(generated_data, source_size, reference['width'])
+                    inpainted = blend_canvas_inpaint_result_with_source(
+                        image_bytes,
+                        generated_data,
+                        mask_bytes,
+                        feather=int(prompt_info.get("feather") or prompt_info.get("mask_blur") or 0)
+                    )
+                    img_data = image_to_png_bytes(inpainted, prompt_info)
+                    image_data_url = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}"
 
-                        if data.get("persistResult") is False:
-                            return jsonify({
-                                "status": "success",
-                                "src": image_data_url,
-                                "name": "",
-                                "image": image_data_url
-                            })
-
-                        src, saved_name = save_canvas_generated_image(
-                            img_data,
-                            category=data.get("tempCategory") or "canvas_inpaint",
-                            session_id=data.get("tempSessionId")
+                    if project_context is not None:
+                        try:
+                            validated = validate_project_image_context(
+                                DAKI_PROJECTS,
+                                project_context,
+                                data.get('source_path'),
+                            )
+                        except (DakiNotFoundError, FileNotFoundError) as error:
+                            return jsonify({"status": "error", "message": str(error)}), 404
+                        except (ValueError, TypeError) as error:
+                            return jsonify({"status": "error", "message": str(error)}), 400
+                        saved = save_project_candidate_image(
+                            DAKI_PROJECTS,
+                            os.path.join(CANVAS_IMPORT_DIR, 'project_exports'),
+                            project_context['projectId'],
+                            validated['side'],
+                            inpainted,
+                            prompt_info,
+                            source_label='NAI Image Manager Daki Project Inpaint',
                         )
                         return jsonify({
                             "status": "success",
-                            "src": src,
-                            "name": saved_name,
-                            "image": image_data_url
+                            "src": saved['src'],
+                            "name": os.path.basename(saved['path']),
+                            "image": image_data_url,
+                            "promptInfo": prompt_info,
+                            "model": prompt_info["model"],
+                            "sampler": prompt_info.get("sampler"),
+                            "steps": prompt_info.get("steps"),
+                            "destination": "project",
+                            "path": saved['path'],
+                            "projectId": project_context['projectId'],
+                            "projectName": saved['projectName'],
+                            "side": validated['side'],
+                            "projectContext": project_context,
                         })
+
+                    if data.get("persistResult") is False:
+                        return jsonify({
+                            "status": "success",
+                            "src": image_data_url,
+                            "name": "",
+                            "image": image_data_url,
+                            "promptInfo": prompt_info
+                        })
+
+                    src, saved_name = save_canvas_generated_image(
+                        img_data,
+                        category=data.get("tempCategory") or "canvas_inpaint",
+                        session_id=data.get("tempSessionId")
+                    )
+                    return jsonify({
+                        "status": "success",
+                        "src": src,
+                        "name": saved_name,
+                        "image": image_data_url,
+                        "promptInfo": prompt_info,
+                        "model": prompt_info["model"],
+                        "sampler": prompt_info.get("sampler"),
+                        "steps": prompt_info.get("steps")
+                    })
             return jsonify({"status": "error", "message": "압축 파일에서 이미지를 찾을 수 없습니다."}), 500
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8', errors='ignore')
@@ -6720,8 +5983,7 @@ def cleanup_daki_generated_temp_dir():
         print(f"⚠️ 다키 임시 목록 로드 실패: {e}")
 
 
-cleanup_daki_generated_temp_dir()
-atexit.register(cleanup_daki_generated_temp_dir)
+# Keep imported/generated drafts across restarts; the list UI deletes them explicitly.
 
 
 def safe_daki_generated_id(value=None):
@@ -6775,8 +6037,7 @@ def save_daki_generated_temp_image(img_bytes, prompt_info):
     with open(image_path, "wb") as f:
         f.write(img_bytes)
 
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(prompt_info or {}, f, ensure_ascii=False, indent=2)
+    write_json(meta_path, prompt_info or {}, indent=2)
 
     return {
         "id": temp_id,
@@ -7068,7 +6329,7 @@ def overwrite_gallery_image():
         if not source_image or not target_path:
             return jsonify({"status": "error", "message": "필수 값이 없습니다."}), 400
 
-        target_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, target_path, strip_prefix="TOTAL_CLASSIFIED/")
+        target_full_path = resolve_gallery_file_path(target_path)
         os.makedirs(os.path.dirname(target_full_path), exist_ok=True)
 
         source_bytes = read_canvas_image_bytes(source_image)
@@ -7081,21 +6342,19 @@ def overwrite_gallery_image():
             except Exception:
                 original_prompt_info = {}
 
-        final_prompt_info = prompt_info if has_prompt_info_text(prompt_info) else original_prompt_info
-        target_ext = os.path.splitext(target_full_path)[1].lower() or ".png"
-        temp_path = target_full_path + ".tmp" + target_ext
-
-        with Image.open(io.BytesIO(source_bytes)) as img:
-            img = img.convert("RGBA")
-            embedded_metadata_saved = save_pil_image_with_prompt_metadata_preserve_extension(
-                img,
-                temp_path,
-                final_prompt_info,
-                source_label="NAI Image Manager Gallery Inpaint Overwrite"
-            )
-            os.replace(temp_path, target_full_path)
-
-        sidecar_saved = save_prompt_sidecar(target_full_path, final_prompt_info)
+        source_prompt_info = prompt_info if has_prompt_info_payload(prompt_info) else original_prompt_info
+        final_prompt_info = build_inpaint_prompt_info(source_prompt_info)
+        from naim.storage.image_files import staged_image_bundle
+        with staged_image_bundle(target_full_path) as temp_path:
+            with Image.open(io.BytesIO(source_bytes)) as img:
+                img = img.convert("RGBA")
+                embedded_metadata_saved = save_pil_image_with_prompt_metadata_preserve_extension(
+                    img,
+                    temp_path,
+                    final_prompt_info,
+                    source_label="NAI Image Manager Gallery Inpaint Overwrite"
+                )
+            sidecar_saved = save_prompt_sidecar(temp_path, final_prompt_info)
         target_rel_path = os.path.relpath(target_full_path, CLASSIFIED_DIR).replace("\\", "/")
         sync_gallery_prompt_art_styles_for_path(target_rel_path, final_prompt_info)
         refresh_gallery_index_for_file_change(
@@ -7130,7 +6389,7 @@ def save_gallery_inpaint_as_new():
         source_bytes = read_canvas_image_bytes(source_image)
 
         if source_path:
-            source_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, source_path, strip_prefix="TOTAL_CLASSIFIED/")
+            source_full_path = resolve_gallery_file_path(source_path)
             target_dir = os.path.dirname(source_full_path)
             base_name = os.path.splitext(os.path.basename(source_full_path))[0]
         else:
@@ -7146,11 +6405,12 @@ def save_gallery_inpaint_as_new():
 
         if source_path:
             try:
-                source_full_path = utils.resolve_safe_path(CLASSIFIED_DIR, source_path, strip_prefix="TOTAL_CLASSIFIED/")
+                source_full_path = resolve_gallery_file_path(source_path)
                 original_prompt_info = load_prompt_sidecar(source_full_path) or extract_prompt_info_from_image(source_full_path)
             except Exception:
                 original_prompt_info = {}
-        final_prompt_info = prompt_info if has_prompt_info_text(prompt_info) else original_prompt_info
+        source_prompt_info = prompt_info if has_prompt_info_payload(prompt_info) else original_prompt_info
+        final_prompt_info = build_inpaint_prompt_info(source_prompt_info)
 
         with Image.open(io.BytesIO(source_bytes)) as img:
             img = img.convert("RGBA")
@@ -7260,11 +6520,11 @@ def normalize_canvas_export_character_token(value):
     text = re.sub(r"[{}()[\]]", " ", text)
     text = re.sub(r"\s+", " ", text).strip().lower()
 
+    if image_logic.is_generic_character_name(text):
+        return ""
+
     blocked = {
         "",
-        "1girl",
-        "1boy",
-        "solo",
         "portrait",
         "standing",
         "sitting",
@@ -7285,69 +6545,94 @@ def normalize_canvas_export_character_token(value):
     return text
 
 
-def iter_canvas_export_character_tokens(prompt_info):
+def _iter_canvas_export_character_token_keys(prompt_info):
     prompt_info = normalize_prompt_info_for_sidecar(prompt_info or {})
 
     raw_parts = []
 
+    # normalize_prompt_info_for_sidecar() exposes charPrompt as a joined alias
+    # of charPrompts. Use the list as the source so the same prompt is not
+    # counted twice merely because both aliases are present.
     char_prompts = prompt_info.get("charPrompts") or []
     if isinstance(char_prompts, list):
         raw_parts.extend(str(item or "") for item in char_prompts if str(item or "").strip())
 
-    char_prompt = str(prompt_info.get("charPrompt") or "").strip()
-    if char_prompt:
-        raw_parts.append(char_prompt)
+    # basePrompt/baseCaption can also be aliases after normalization. Keep
+    # distinct prompt text, but avoid counting the same normalized value twice.
+    seen_base_parts = set()
+    for key in ("basePrompt", "baseCaption", "prompt"):
+        value = str(prompt_info.get(key) or "").strip()
+        if value and value not in seen_base_parts:
+            raw_parts.append(value)
+            seen_base_parts.add(value)
 
-    # charPrompt가 없는 예전 메타데이터만 basePrompt를 fallback으로 사용
-    if not raw_parts:
-        for key in ("basePrompt", "baseCaption", "prompt"):
-            value = str(prompt_info.get(key) or "").strip()
-            if value:
-                raw_parts.append(value)
-
-    tokens = set()
+    token_keys = []
 
     for part in raw_parts:
         for token in re.split(r"[,;\n]+", str(part or "")):
             key = normalize_canvas_export_character_token(token)
             if key:
-                tokens.add(key)
+                token_keys.append(key)
 
-    return tokens
+    return token_keys
+
+
+def iter_canvas_export_character_tokens(prompt_info):
+    return set(_iter_canvas_export_character_token_keys(prompt_info))
+
+
+def _count_canvas_export_character_matches(token, character_key):
+    if not token or not character_key:
+        return 0
+
+    # Short ASCII aliases are common words or abbreviations (for example
+    # "ta" and "holo"). Only accept them when the whole comma-delimited
+    # token is the alias; longer names retain boundary-aware LIKE matching.
+    if re.fullmatch(r"[a-z0-9]{1,4}", character_key):
+        return 1 if token == character_key else 0
+
+    # Match a known name inside a longer prompt token while keeping names
+    # such as "alice" out of unrelated words such as "malice".
+    pattern = rf"(?<!\w){re.escape(character_key)}(?!\w)"
+    return len(re.findall(pattern, token, flags=re.IGNORECASE))
 
 
 def detect_canvas_export_characters(prompt_info):
-    token_keys = iter_canvas_export_character_tokens(prompt_info)
+    token_keys = _iter_canvas_export_character_token_keys(prompt_info)
 
     if not token_keys:
         return []
 
     found = []
+    character_groups = {}
 
     for item in get_known_character_tags():
-        keys = {
+        clean = str(item.get("clean", "") or "").strip()
+        if not clean or image_logic.is_generic_character_name(clean):
+            continue
+
+        group_key = clean.lower()
+        group = character_groups.setdefault(group_key, {"item": item, "keys": set()})
+        group["keys"].update({
             normalize_canvas_export_character_token(item.get("clean", "")),
             normalize_canvas_export_character_token(item.get("tag", ""))
-        }
-        keys = {key for key in keys if key}
+        })
 
-        if keys & token_keys:
+    for group in character_groups.values():
+        item = group["item"]
+        keys = {key for key in group["keys"] if key}
+
+        matched = any(
+            _count_canvas_export_character_matches(token, key)
+            for token in token_keys
+            for key in keys
+        )
+        if matched:
             found.append(item)
 
     found.sort(key=lambda item: len(item.get("clean", "")), reverse=True)
 
-    unique = []
-    seen = set()
-
-    for item in found:
-        key = str(item.get("clean", "")).lower()
-        if not key or key in seen:
-            continue
-
-        seen.add(key)
-        unique.append(item)
-
-    return unique
+    return found
 
 def build_canvas_export_folder(chars, is_dakimakura):
     if not chars:
@@ -7390,15 +6675,44 @@ def decode_canvas_data_url(data_url):
 def export_merged_canvas():
     try:
         data = request.json or {}
+        if not isinstance(data, dict):
+            return jsonify({"status": "error", "message": "요청 내용은 JSON 객체여야 합니다."}), 400
+
+        destination = data.get("destination", "gallery")
+        if destination not in ("gallery", "project"):
+            return jsonify({"status": "error", "message": "내보낼 위치가 올바르지 않습니다."}), 400
 
         image_data = data.get("image", "")
-        prompt_info = data.get("promptInfo") or {}
+        prompt_info = data.get("promptInfo")
+        if prompt_info is None:
+            prompt_info = {}
+        if not isinstance(prompt_info, dict):
+            return jsonify({"status": "error", "message": "프롬프트 정보는 JSON 객체여야 합니다."}), 400
         width = int(data.get("width") or 0)
         height = int(data.get("height") or 0)
         is_dakimakura = bool(data.get("isDakimakura"))
 
         if not image_data:
             return jsonify({"status": "error", "message": "이미지 데이터가 없습니다."}), 400
+
+        if destination == "project":
+            try:
+                img = decode_canvas_data_url(image_data)
+            except (ValueError, TypeError, OSError):
+                return jsonify({"status": "error", "message": "내보낼 이미지 데이터를 읽을 수 없습니다."}), 400
+            try:
+                return jsonify(save_project_canvas_export(
+                    DAKI_PROJECTS, os.path.join(CANVAS_IMPORT_DIR, 'project_exports'),
+                    data.get("projectId"), data.get("canvasId"), img, prompt_info,
+                ))
+            except (DakiNotFoundError, FileNotFoundError) as error:
+                return jsonify({"status": "error", "message": str(error)}), 404
+            except ValueError as error:
+                return jsonify({"status": "error", "message": str(error)}), 400
+            except OSError:
+                return jsonify({"status": "error", "message": "프로젝트에 통합 이미지를 저장하지 못했습니다."}), 500
+            finally:
+                img.close()
 
         # 서버에서도 다키마쿠라 비율 한 번 더 확인
         if width > 0 and height > 0:
@@ -7508,11 +6822,55 @@ def export_merged_canvas():
 
 @app.route('/style-lab')
 def style_lab():
-    return send_file('style_lab.html')
+    return send_file(os.path.join(CURRENT_DIR, 'legacy_generation.html'))
 
 @app.route('/daki-workshop')
 def daki_workshop():
-    return send_file('daki_workshop.html')
+    return send_file(os.path.join(CURRENT_DIR, 'legacy_generation.html'))
+
+
+@app.route('/legacy-generation')
+def legacy_generation_page():
+    return send_file(os.path.join(CURRENT_DIR, 'legacy_generation.html'))
+
+
+def legacy_generation_roots():
+    return {'output': OUTPUT_DIR, 'daki': DAKI_GENERATED_TEMP_DIR}
+
+
+@app.route('/api/legacy-generation/images')
+def legacy_generation_images():
+    source = request.args.get('source', 'output')
+    root = legacy_generation_roots().get(source)
+    if root is None:
+        return jsonify({'status': 'error', 'message': '알 수 없는 자료 위치입니다.'}), 400
+    cursor = request.args.get('cursor', '')
+    if len(cursor) > 4096:
+        return jsonify({'status': 'error', 'message': '페이지 위치가 올바르지 않습니다.'}), 400
+    try:
+        result = list_archive_images(root, cursor, request.args.get('limit', 48))
+    except (TypeError, ValueError):
+        return jsonify({'status': 'error', 'message': '페이지 크기가 올바르지 않습니다.'}), 400
+    for item in result['items']:
+        item['src'] = '/legacy-generation/image/' + source + '/' + quote(item['path'], safe='/')
+    return jsonify({'status': 'success', **result})
+
+
+@app.route('/legacy-generation/image/<source>/<path:filename>')
+def legacy_generation_image(source, filename):
+    root = legacy_generation_roots().get(source)
+    if root is None:
+        return 'Not found', 404
+    try:
+        file_path = resolve_archive_image(root, filename)
+    except FileNotFoundError:
+        return 'Not found', 404
+    except (OSError, ValueError):
+        return 'Invalid path', 400
+    preview_max_side = get_requested_image_preview_max_side()
+    if preview_max_side:
+        return serve_image_preview(file_path, preview_max_side)
+    return send_file(file_path)
 
 @app.route('/canvas')
 def canvas_page():
@@ -7658,8 +7016,7 @@ def save_tag_dictionary_override(tag, ko, group):
         data[group] = {}
     data[group][tag] = {"tag": tag, "ko": ko}
 
-    with open(TAG_CATEGORY_OVERRIDE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json(TAG_CATEGORY_OVERRIDE_FILE, data, indent=2)
 
 
 @app.route('/api/tag_dictionary', methods=['GET'])
@@ -8267,20 +7624,11 @@ def extract_metadata():
         return jsonify({'error': str(e)}), 500
 
 def load_lab_config_data():
-    if not os.path.exists(CONFIG_FILE):
-        return {}
-
-    try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    return read_json(CONFIG_FILE, expected_type=dict)
 
 
 def save_lab_config_data(data):
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data if isinstance(data, dict) else {}, f, ensure_ascii=False, indent=4)
+    write_json(CONFIG_FILE, data if isinstance(data, dict) else {})
 
 
 def normalize_shared_prompt_groups(groups):
@@ -8382,15 +7730,11 @@ def shared_prompt_groups():
     data = request.json or {}
     groups = normalize_shared_prompt_groups(data.get("groups") or [])
 
-    config["shared_prompt_groups"] = groups
-
-    # 프롬프트 그룹 설정을 저장
-    config["daki_prompt_groups"] = groups
-
-    # 다키 프롬프트 그룹 설정을 저장
-    config["clip_prompt_groups"] = groups
-
-    save_lab_config_data(config)
+    merge_json_object(CONFIG_FILE, {
+        "shared_prompt_groups": groups,
+        "daki_prompt_groups": groups,
+        "clip_prompt_groups": groups,
+    })
 
     return jsonify({
         "status": "success",
@@ -8403,40 +7747,27 @@ def handle_lab_config():
     if request.method == 'GET':
         return jsonify(load_lab_config_data())
 
-    existing_data = load_lab_config_data()
-    incoming = request.json or {}
-
-    existing_data.update(incoming)
-    save_lab_config_data(existing_data)
+    incoming = dict(request.json or {})
+    merge_json_object(CONFIG_FILE, incoming)
 
     return jsonify({"status": "success"})
 
 @app.route('/api/artists', methods=['GET', 'POST'])
 def handle_artists():
     if request.method == 'GET':
-        if os.path.exists(ARTISTS_FILE):
-            with open(ARTISTS_FILE, 'r', encoding='utf-8') as f: return jsonify(json.load(f))
-        return jsonify({})
+        return jsonify(read_json(ARTISTS_FILE))
     else:
-        with open(ARTISTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(request.json, f, ensure_ascii=False, indent=4)
+        write_json(ARTISTS_FILE, request.json, indent=4)
         return jsonify({"status": "success"})
 
 @app.route('/api/styles', methods=['GET', 'POST', 'DELETE'])
 def handle_styles():
     if request.method == 'GET':
-        if os.path.exists(STYLES_FILE):
-            with open(STYLES_FILE, 'r', encoding='utf-8') as f: return jsonify(json.load(f))
-        return jsonify({})
+        return jsonify(read_json(STYLES_FILE))
         
     elif request.method == 'POST':
         data = request.json
-        styles_data = {}
-        if os.path.exists(STYLES_FILE):
-            with open(STYLES_FILE, 'r', encoding='utf-8') as f: styles_data = json.load(f)
-        styles_data[data["name"]] = data["prompt"]
-        with open(STYLES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(styles_data, f, ensure_ascii=False, indent=4)
+        merge_json_object(STYLES_FILE, {data["name"]: data["prompt"]})
         return jsonify({"status": "success"})
         
     elif request.method == 'DELETE':
@@ -8444,138 +7775,44 @@ def handle_styles():
         style_name = data.get("name")
         
         # 1. styles.json에서 삭제
-        styles_data = {}
-        if os.path.exists(STYLES_FILE):
-            with open(STYLES_FILE, 'r', encoding='utf-8') as f: styles_data = json.load(f)
-            
-        if style_name in styles_data:
-            del styles_data[style_name]
-            with open(STYLES_FILE, 'w', encoding='utf-8') as f:
-                json.dump(styles_data, f, ensure_ascii=False, indent=4)
+        with json_lock(STYLES_FILE):
+            styles_data = read_json(STYLES_FILE, expected_type=dict)
+            if style_name in styles_data:
+                del styles_data[style_name]
+                write_json(STYLES_FILE, styles_data, indent=4)
         
         # 2. artists.json에서 동일한 이름의 그룹 함께 삭제
-        artists_data = {}
-        if os.path.exists(ARTISTS_FILE):
-            with open(ARTISTS_FILE, 'r', encoding='utf-8') as f: artists_data = json.load(f)
-            
-        if style_name in artists_data:
-            del artists_data[style_name]
-            with open(ARTISTS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(artists_data, f, ensure_ascii=False, indent=4)
+        with json_lock(ARTISTS_FILE):
+            artists_data = read_json(ARTISTS_FILE, expected_type=dict)
+            if style_name in artists_data:
+                del artists_data[style_name]
+                write_json(ARTISTS_FILE, artists_data, indent=4)
                 
         return jsonify({"status": "success"})
 
 
 
-# 🚀 [핵심] NovelAI 이미지 생성 API
+# Retired generation endpoint: cached old pages must not send paid requests.
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
-    data = request.json
-    api_key = data.get('key')
-    if not api_key:
-        return jsonify({"error": "API Key가 없습니다."}), 400
-
-    req = urllib.request.Request("https://image.novelai.net/ai/generate-image", method="POST")
-    req.add_header("Authorization", f"Bearer {api_key}")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "Mozilla/5.0")
-
-    base_prompt = data.get('base_prompt', '')
-    safe_seed = random.randint(1, 4294967295)
-
-    char_prompts = normalize_char_prompts(data)
-
-    char_captions_list = []
-    for char_prompt in char_prompts:
-        char_captions_list.append({
-            "char_caption": char_prompt,
-            "centers": [{"x": 0.5, "y": 0.5}]
-        })
-
-    # NovelAI V4.5 Full 모델 규격에 맞춘 페이로드
-    payload = {
-        "input": base_prompt,
-        "model": "nai-diffusion-4-5-full",
-        "action": "generate",
-        "parameters": {
-            "width": data.get("width"),
-            "height": data.get("height"),
-            "n_samples": 1,
-            "seed": safe_seed,
-            "extra_noise_seed": safe_seed,
-            "sampler": data.get("sampler", "k_euler_ancestral"),
-            "steps": data.get("steps", 28),
-            "scale": data.get("scale", 5.0),
-            "negative_prompt": data.get("negative_prompt", ""),
-            "cfg_rescale": data.get("cfg_rescale", 0.4),
-            "noise_schedule": "native",
-            "params_version": 3,
-            "legacy": False,
-            "legacy_v3_extend": False,
-            "add_original_image": True,
-            "prefer_brownian": True,
-            "use_coords": False,
-            "v4_negative_prompt": {
-                "caption": {
-                    "base_caption": data.get("negative_prompt", ""),
-                    "char_captions": []
-                },
-                "legacy_uc": False
-            },
-            "v4_prompt": {
-                "caption": {
-                    "base_caption": base_prompt,
-                    "char_captions": char_captions_list
-                },
-                "use_coords": False,
-                "use_order": True
-            }
-        }
-    }
-
-    try:
-        with urllib.request.urlopen(req, data=json.dumps(payload).encode('utf-8')) as response:
-            zip_data = response.read()
-            with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
-                for filename in z.namelist():
-                    if filename.endswith('.png'):
-                        img_data = z.read(filename)
-                        b64_img = base64.b64encode(img_data).decode('utf-8')
-                        response_data = {"image": f"data:image/png;base64,{b64_img}"}
-
-                        if data.get("persist_temp"):
-                            prompt_info = build_daki_prompt_info_from_request(data)
-                            temp_item = save_daki_generated_temp_image(img_data, prompt_info)
-                            response_data.update({
-                                "temp_id": temp_item["id"],
-                                "temp_src": temp_item["src"],
-                                "name": temp_item["name"],
-                                "prompt": temp_item["prompt"]
-                            })
-
-                        return jsonify(response_data)
-            return jsonify({"error": "압축 파일에서 이미지를 찾을 수 없습니다."}), 500
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode('utf-8')
-        return jsonify({"error": f"NovelAI 서버 에러(HTTP {e.code}): {error_body}"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    message = '그림체 연구소와 다키 제작소의 생성 기능은 종료되었습니다. 기존 이미지는 이전 생성 자료에서 열 수 있습니다.'
+    return jsonify({'status': 'retired', 'error': message, 'message': message,
+                    'archive_url': '/legacy-generation'}), 410
 
 # 💎 Anlas 잔액 조회 API
 @app.route('/api/anlas', methods=['GET'])
 def api_anlas():
     api_key = request.args.get('key', '').strip()
-    if not api_key: return jsonify({"error": "No API Key"}), 400
-    req = urllib.request.Request("https://api.novelai.net/user/subscription", method="GET")
-    req.add_header("Authorization", f"Bearer {api_key}")
-    req.add_header("User-Agent", "Mozilla/5.0")
     try:
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            t_steps = data.get('trainingStepsLeft', {})
-            return jsonify({"anlas": int(t_steps.get('fixedTrainingStepsLeft', 0)) + int(t_steps.get('purchasedTrainingSteps', 0))})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Keep the legacy response contract; new UI uses the saved-key account API.
+        data = fetch_subscription(api_key) if api_key else NOVELAI_ACCOUNT.get()
+        if data.get('anlas') is None:
+            return jsonify({"error": data.get('message') or 'Anlas 잔액을 확인할 수 없습니다.'}), 502
+        return jsonify({"anlas": data['anlas']})
+    except AccountLookupError as error:
+        return jsonify({"error": str(error)}), 502
+    except OSError:
+        return jsonify({"error": 'NovelAI 키 설정을 읽지 못했습니다.'}), 500
 
 # 💾 로컬 저장 API
 @app.route('/api/save', methods=['POST'])
@@ -8593,16 +7830,13 @@ def api_save():
     with open(os.path.join(OUTPUT_DIR, fname), 'wb') as f:
         f.write(img_bytes)
         
-    with open(os.path.join(OUTPUT_DIR, jname), 'w', encoding='utf-8') as jf:
-        char_prompts = normalize_char_prompts(data)
-
-        json.dump({
-            "api_key": data.get("key"),
-            "base_prompt": data.get("base_prompt"),
-            "char_prompt": data.get("char_prompt"),
-            "char_prompts": char_prompts,
-            "negative_prompt": data.get("negative_prompt")
-        }, jf, ensure_ascii=False, indent=4)
+    char_prompts = normalize_char_prompts(data)
+    write_json(os.path.join(OUTPUT_DIR, jname), {
+        "base_prompt": data.get("base_prompt"),
+        "char_prompt": data.get("char_prompt"),
+        "char_prompts": char_prompts,
+        "negative_prompt": data.get("negative_prompt")
+    })
         
     return jsonify({"status": "saved", "path": os.path.join(OUTPUT_DIR, fname)})
 
@@ -8610,14 +7844,10 @@ def api_save():
 @app.route('/api/lab/quality_presets', methods=['GET', 'POST'])
 def handle_quality_presets():
     if request.method == 'GET':
-        if os.path.exists(QUALITY_PRESETS_FILE):
-            with open(QUALITY_PRESETS_FILE, 'r', encoding='utf-8') as f:
-                return jsonify(json.load(f))
-        return jsonify({}) # 파일 없으면 빈 객체 반환
+        return jsonify(read_json(QUALITY_PRESETS_FILE))
     else:
         # POST: 앱 번역 사전 저장
-        with open(QUALITY_PRESETS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(request.json, f, ensure_ascii=False, indent=4)
+        write_json(QUALITY_PRESETS_FILE, request.json, indent=4)
         return jsonify({"status": "success"})
     
 def load_tag_dictionary_user_overrides():
@@ -8728,8 +7958,7 @@ def merge_user_app_tag_overrides_into_tree(tree, by_key):
     return tree
 
 def save_tag_dictionary_user_overrides(data):
-    with open(TAG_DICTIONARY_USER_OVERRIDES, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json(TAG_DICTIONARY_USER_OVERRIDES, data, indent=2)
 
 
 def parse_tag_translation_input(raw_text):
@@ -8786,27 +8015,6 @@ def save_app_translation():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-def normalize_char_prompts(data):
-    if isinstance(data, list):
-        return [str(item).strip() for item in data if str(item).strip()]
-
-    if isinstance(data, dict):
-        for key in ("char_prompts", "charPrompts", "characterPrompts"):
-            arr = data.get(key)
-            if isinstance(arr, list):
-                cleaned = [str(item).strip() for item in arr if str(item).strip()]
-                if cleaned:
-                    return cleaned
-
-        for key in ("char_prompt", "charPrompt", "characterPrompt"):
-            single = str(data.get(key, "") or "").strip()
-            if single:
-                return [single]
-
-        return []
-
-    single = str(data or "").strip()
-    return [single] if single else []
 
 def run_server():
     app.run(

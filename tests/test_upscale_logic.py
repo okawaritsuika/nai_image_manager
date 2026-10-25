@@ -9,10 +9,10 @@ import upscale_logic
 
 
 class UpscaleLogicTests(unittest.TestCase):
-    def test_supported_engines_use_native_backends_only(self):
+    def test_supported_engines_keep_native_and_add_optional_backends(self):
         self.assertEqual(
             upscale_logic.SUPPORTED_UPSCALE_ENGINES,
-            ("realcugan", "waifu2x", "lanczos"),
+            ("realcugan", "waifu2x", "lanczos", "illustrationjanai", "animesharp", "nai"),
         )
         self.assertEqual(upscale_logic.normalize_upscale_engine("waifu"), "waifu2x")
         self.assertEqual(upscale_logic.normalize_upscale_engine("waifu2x-ncnn-vulkan"), "waifu2x")
@@ -55,6 +55,82 @@ class UpscaleLogicTests(unittest.TestCase):
 
         self.assertEqual(result["engine"], "waifu2x")
         runner.assert_called_once()
+
+    def test_fit_5_16_crops_after_scaling_and_preserves_original_dimensions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source.png")
+            target_path = os.path.join(temp_dir, "target.png")
+            source_image = Image.new("RGBA", (32, 64), (0, 0, 0, 255))
+            for x in range(32):
+                color = (255, 0, 0, 255) if x < 6 else (0, 0, 255, 255) if x < 26 else (0, 255, 0, 255)
+                for y in range(64):
+                    source_image.putpixel((x, y), color)
+            source_image.save(source_path)
+            with open(source_path, "rb") as source_file:
+                original_bytes = source_file.read()
+
+            result = upscale_logic.run_upscale(
+                source_path=source_path,
+                target_path=target_path,
+                target_width=64,
+                target_height=128,
+                engine="lanczos",
+                fit_5_16=True,
+            )
+
+            with Image.open(target_path) as output:
+                self.assertEqual(output.size, (40, 128))
+                self.assertEqual(output.getpixel((20, 64)), (0, 0, 255, 255))
+            self.assertEqual((result["source_width"], result["source_height"]), (32, 64))
+            self.assertEqual((result["final_width"], result["final_height"]), (40, 128))
+            self.assertTrue(result["fit_5_16"])
+            self.assertEqual(result["crop_box"], [12, 0, 52, 128])
+            with open(source_path, "rb") as source_file:
+                self.assertEqual(source_file.read(), original_bytes)
+
+    def test_fit_5_16_uses_maximum_centered_integer_crop_for_tall_image(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source.png")
+            target_path = os.path.join(temp_dir, "target.png")
+            source_image = Image.new("RGBA", (16, 64), (0, 0, 255, 255))
+            for y in range(64):
+                color = (255, 0, 0, 255) if y < 8 else (0, 0, 255, 255) if y < 56 else (0, 255, 0, 255)
+                for x in range(16):
+                    source_image.putpixel((x, y), color)
+            source_image.save(source_path)
+
+            result = upscale_logic.run_upscale(
+                source_path=source_path,
+                target_path=target_path,
+                target_width=64,
+                target_height=256,
+                engine="lanczos",
+                fit_5_16=True,
+            )
+
+            with Image.open(target_path) as output:
+                self.assertEqual(output.size, (60, 192))
+                self.assertEqual(output.getpixel((30, 96)), (0, 0, 255, 255))
+            self.assertEqual(result["crop_box"], [2, 32, 62, 224])
+
+    def test_fit_5_16_keeps_an_already_matching_ratio(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source.png")
+            target_path = os.path.join(temp_dir, "target.png")
+            Image.new("RGBA", (20, 64), (10, 20, 30, 255)).save(source_path)
+
+            result = upscale_logic.run_upscale(
+                source_path=source_path,
+                target_path=target_path,
+                target_width=80,
+                target_height=256,
+                engine="lanczos",
+                fit_5_16=True,
+            )
+
+            with Image.open(target_path) as output:
+                self.assertEqual(output.size, (80, 256))
+            self.assertEqual(result["crop_box"], [0, 0, 80, 256])
 
     def test_waifu2x_command_uses_bundled_cunet_model(self):
         with tempfile.TemporaryDirectory() as temp_dir:

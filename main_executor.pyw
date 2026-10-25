@@ -1,13 +1,16 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import os
 import sys
 import subprocess
+import secrets
+import time
+import math
+from collections import deque
+from queue import Empty, Queue
+from naim.server_control import request_job_shutdown
 
 
-def get_app_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+from naim.paths import get_app_dir
 
 
 # ---------------------------------------------------------
@@ -58,16 +61,24 @@ if sys.prefix == sys.base_prefix:
 # ---------------------------------------------------------
 # .venv 진입 후 또는 시스템 Python 사용 가능 시 일반 패키지 로드
 # ---------------------------------------------------------
+if "--import-data" in sys.argv:
+    from naim.legacy_import_ui import run as run_legacy_import
+    parent_pid = int(sys.argv[sys.argv.index("--import-data") + 1]) if len(sys.argv) > sys.argv.index("--import-data") + 1 else 0
+    run_legacy_import(APP_DIR, parent_pid)
+    sys.exit(0)
+
 run_server_mode_if_requested()
 
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, messagebox
-from threading import Thread
+from tkinter import filedialog, messagebox
+from threading import Event, Lock, Thread
 from datetime import datetime
 import webbrowser
 import sqlite3
 import importlib
 import ctypes
+from naim import desktop_ui
+from naim.storage.json_files import merge_json_object
 
 
 try:
@@ -90,7 +101,7 @@ except ImportError as e:
         "[ 💡 해결 방법 ]\n"
         "1. 동봉된 'naim_setup.py'를 실행하여 [1단계: 가상환경 세팅]을 완료해주세요.\n"
         "2. 수동으로 설치하시려면 터미널(CMD)을 열고 아래 명령어를 입력하세요:\n"
-        "   pip install flask requests pillow\n\n"
+        "   pip install flask requests pillow numpy\n\n"
         "※ .venv가 없거나, 현재 사용 중인 Python 환경에 필수 패키지가 누락된 상태입니다."
     )
 
@@ -98,12 +109,26 @@ except ImportError as e:
     sys.exit(1)
 
 
+from naim import desktop_dialogs as messagebox
+
+
 class NaiaHyperExecutor:
+    LOG_MAX_LINES = 5000
+    LOG_QUEUE_LIMIT = 5000
+    LOG_BATCH_SIZE = 200
+    LOG_FLUSH_MS = 50
+
     def __init__(self, root):
         self.root = root
-        self.root.title("NAI ImageManager MASTER CONTROL")
-        self.root.geometry("750x780")
-        self.root.configure(bg="#1e1e2e")
+        self.root.title("NAI Image Manager · 리모콘")
+        self.root.configure(bg=desktop_ui.BG)
+        icon_path = os.path.join(APP_DIR, "assets", "app_icon.ico")
+        if os.path.isfile(icon_path):
+            try:
+                self.root.iconbitmap(icon_path)
+                self.root.iconbitmap(default=icon_path)
+            except tk.TclError:
+                pass  # Source checkouts on non-Windows Tk may not support ICO.
         self.admin_mode = self.is_admin()
 
         self.config = utils.load_config()
@@ -116,8 +141,33 @@ class NaiaHyperExecutor:
         self.show_alert_var = tk.BooleanVar(value=bool(classify_settings.get("show_alert", True)))
         self.is_fast_mode = tk.BooleanVar(value=bool(classify_settings.get("is_fast_mode", True)))
         self.classify_method_var = tk.StringVar(value=str(classify_settings.get("method", "copy")))
+        self.delete_comic_duplicates_var = tk.BooleanVar(value=bool(classify_settings.get("delete_comic_duplicates", False)))
+        webp_settings = self._normalize_auto_webp_settings(classify_settings)
+        self.auto_webp_var = tk.BooleanVar(value=webp_settings["auto_webp"])
+        self.webp_lossless_var = tk.BooleanVar(value=webp_settings["webp_lossless"])
+        self.webp_quality_var = tk.StringVar(value=str(webp_settings["webp_quality"]))
+        self.auto_open_gallery_var = tk.BooleanVar(value=bool(self.config.get("auto_open_gallery", True)))
+        self.frozen_app = is_frozen_app()
+        self.app_version = exe_update.APP_VERSION
+        self.lite_ai_disabled = self.frozen_app and not image_logic.is_ai_available()
+        self.use_ai_var = tk.BooleanVar(value=bool(classify_settings.get("use_ai", False)) and not self.lite_ai_disabled)
+        self.use_gpu_var = tk.BooleanVar(value=bool(classify_settings.get("use_gpu", False)) and not self.lite_ai_disabled)
+        self.skip_nsfw_var = tk.BooleanVar(value=bool(classify_settings.get("skip_nsfw", False)))
+        self.skip_char_var = tk.BooleanVar(value=bool(classify_settings.get("skip_char", False)))
+        legacy_threads = int(classify_settings.get("thread_count", 4) or 4)
+        self.normal_thread_count_var = tk.IntVar(value=int(classify_settings.get("normal_thread_count", legacy_threads) or legacy_threads))
+        self.ai_thread_count_var = tk.IntVar(value=int(classify_settings.get("ai_thread_count", min(4, legacy_threads)) or min(4, legacy_threads)))
+        self.thread_count_var = self.normal_thread_count_var
+        self.threshold_var = tk.DoubleVar(value=float(classify_settings.get("ai_threshold_percent", 99.980)))
 
         self.stop_requested = False
+        self._active_job = None
+        self._job_token = 0
+        self._active_job_settings = None
+        self._pending_logs = deque(maxlen=self.LOG_QUEUE_LIMIT)
+        self._log_lock = Lock()
+        self._dropped_logs = 0
+        self._log_line_count = 0
         self.log_visible = False
         self.update_in_progress = False
 
@@ -126,11 +176,17 @@ class NaiaHyperExecutor:
         self.server_transitioning = False
         self.server_ready = False
         self.server_monitor_token = 0
+        self._server_start_queue = None
+        self._server_start_cancel = None
+        self._closing = False
 
-        self.server_status_var = tk.StringVar(value="🔴 서버 중지됨")
+        self.server_status_var = tk.StringVar(value="● 서버 중지됨")
         self.is_syncing = False
 
         self.setup_ui()
+        self._refresh_job_controls()
+        desktop_ui.fit_controller_window(self)
+        self.root.after(self.LOG_FLUSH_MS, self._drain_logs)
 
         # 🌟 [신규] 시작하자마자 5000번 포트 좀비 체크
         self.check_port_on_startup()
@@ -184,18 +240,23 @@ class NaiaHyperExecutor:
 
     def _set_server_transition_ui(self, status_text, status_color, button_text):
         self.server_status_var.set(status_text)
-        self.lbl_status.config(fg=status_color)
-        self.btn_server.config(text=button_text, state="disabled", bg="#555", fg="#ffffff")
+        self.lbl_status.config(fg=desktop_ui.WARNING)
+        self.btn_server.config(text="전환 중…", state="disabled", bg=desktop_ui.SOFT, fg=desktop_ui.MUTED)
+        desktop_ui.set_server_loading(self, True)
+        desktop_ui.fit_controller_window(self, show_log=self.log_visible)
 
     def _set_external_server_ui(self):
-        self.server_status_var.set("🟠 기존/외부 서버 감지됨")
-        self.lbl_status.config(fg="#ffb300")
-        self.btn_server.config(text="💀 남은 서버 강제 종료 및 청소", state="normal", bg="#d63031", fg="#fff")
+        desktop_ui.set_server_loading(self, False)
+        self.server_status_var.set("● 외부 서버 감지")
+        self.lbl_status.config(fg=desktop_ui.WARNING)
+        self.btn_server.config(text="외부 서버 정리", state="normal", bg=desktop_ui.PANEL, fg=desktop_ui.ERROR)
+        desktop_ui.fit_controller_window(self, show_log=self.log_visible)
 
     def _terminate_managed_server_process(self, process, wait=False):
         if not process or process.poll() is not None:
             return
 
+        request_job_shutdown(getattr(process, '_naim_control_token', ''), process.pid)
         try:
             process.terminate()
         except Exception:
@@ -287,6 +348,18 @@ class NaiaHyperExecutor:
         Thread(target=_task, daemon=True).start()
 
     def on_closing(self):
+        if self._has_active_webp_job():
+            if not self.stop_requested:
+                self.stop_process()
+            self.root.after(200, self.on_closing)
+            return
+        self._closing = True
+        if self._server_start_queue is not None:
+            # Wait responsively for a launch already inside Popen, so its child
+            # is either cancelled by the worker or owned before shutdown.
+            self._server_start_cancel.set()
+            self.root.after(50, self.on_closing)
+            return
         try:
             self.stop_server(is_shutdown=True)
         except Exception:
@@ -318,17 +391,11 @@ class NaiaHyperExecutor:
     # 서버 제어 로직 (개선됨)
     # ==========================================
     def toggle_server(self):
+        if self._has_active_webp_job():
+            self.log('⏳ WebP 압축이 끝난 뒤 서버를 켤 수 있습니다.')
+            return
         if self.server_transitioning:
             self.log("⏳ 서버 시작/종료 전환 중입니다. 잠시만 기다려주세요.")
-            return
-
-        # 포트가 열려 있는데 관리 프로세스가 없다면 '강제 종료' 모드 수행
-        if self.server_process is None and utils.is_port_active(5000):
-            if messagebox.askyesno("서버 충돌", "5000포트가 이미 사용 중입니다.\n기존 프로세스를 강제로 종료하고 새로 켤까요?"):
-                self.stop_server(
-                    on_complete=lambda: self.log("🧹 서버를 종료했습니다. 이제 다시 켤 수 있습니다."),
-                    force_port_cleanup=True
-                )
             return
 
         if self.server_process is None or self.server_process.poll() is not None:
@@ -336,340 +403,140 @@ class NaiaHyperExecutor:
         else:
             self.stop_server()
 
-    def create_section_header(self, parent, title):
-        # 🌟 구역 간의 세로 여백(pady)을 줄여서 화면을 압축합니다.
-        frame = tk.Frame(parent, bg="#1e1e2e", pady=3)
-        frame.pack(fill="x", padx=10)
-        tk.Label(frame, text=title, font=("Malgun Gothic", 11, "bold"), bg="#1e1e2e", fg="#a29bfe").pack(side="left")
-        tk.Frame(frame, bg="#444", height=1).pack(side="left", fill="x", expand=True, padx=(10, 0))
-        return frame
-
     def setup_ui(self):
-        self.placeholder = "───────── 클릭하여 대상 폴더 경로 표시 ─────────"
-        self.path_var = tk.StringVar(value=self.placeholder)
+        desktop_ui.build_controller_ui(self)
 
-        # ==========================================
-        # 👑 헤더 영역 (780px 높이 내에서 최적화)
-        # ==========================================
-        header = tk.Frame(self.root, bg="#161625", pady=10)
-        header.pack(fill="x")
+    def _can_start_job(self):
+        if self._active_job is not None:
+            self.log("⏳ 진행 중인 작업이 끝난 뒤 실행해 주세요.")
+            return False
+        return True
 
-        # 상단 버튼 라인 (관리자 & 로그 토글을 한 줄에 배치)
-        top_btn_line = tk.Frame(header, bg="#161625")
-        top_btn_line.pack(fill="x", padx=15)
-
-        # [왼쪽] 관리자 권한 버튼/상태
-        admin_frame = tk.Frame(top_btn_line, bg="#161625")
-        admin_frame.pack(side="left")
-
-        if self.admin_mode:
-            tk.Label(admin_frame, text="🛡️ ADMIN MODE", font=("Malgun Gothic", 9, "bold"),
-                     bg="#161625", fg="#39ff14").pack()
-        else:
-            tk.Button(admin_frame, text="🔓 관리자 권한으로 실행", command=self.run_as_admin,
-                      bg="#0984e3", fg="#fff", font=("Malgun Gothic", 8, "bold"),
-                      relief="flat", padx=10, cursor="hand2").pack()
-
-        # [오른쪽] 로그 창 토글 버튼
-        self.btn_log_toggle = tk.Button(top_btn_line, text="📜 로그 창 토글", command=self.toggle_log,
-                                        bg="#3b3b4f", fg="#ffffff", font=("Malgun Gothic", 8, "bold"),
-                                        relief="flat", padx=10, cursor="hand2")
-        self.btn_log_toggle.pack(side="right")
-
-        if is_frozen_app():
-            self.btn_update = tk.Button(
-                top_btn_line,
-                text=f"⬆ 업데이트 확인 (v{exe_update.APP_VERSION})",
-                command=self.check_for_exe_update,
-                bg="#5b67ff",
-                fg="#ffffff",
-                font=("Malgun Gothic", 8, "bold"),
-                relief="flat",
-                padx=10,
-                cursor="hand2",
-            )
-            self.btn_update.pack(side="right", padx=(0, 8))
-
-        # [중앙] 메인 타이틀
-        tk.Label(header, text="👑 NAI ImageManager", font=("Malgun Gothic", 24, "bold"),
-                 bg="#161625", fg="#ff007c").pack(pady=(0, 2))
-
-        # [중앙] 서버 상태 배지
-        self.lbl_status = tk.Label(header, textvariable=self.server_status_var, font=("Malgun Gothic", 11, "bold"),
-                                   bg="#161625", fg="#ff4d4d")
-        self.lbl_status.pack()
-
-        # ==========================================
-        # 메인 컨테이너 (이하 기존과 동일)
-        # ==========================================
-        self.main_container = tk.Frame(self.root, bg="#1e1e2e")
-        self.main_container.pack(fill="both", expand=True)
-
-        self.ctrl_panel = tk.Frame(self.main_container, bg="#1e1e2e", padx=25)
-        self.ctrl_panel.pack(side="left", fill="both", expand=True)
-
-        self.log_sidebar = tk.Frame(self.main_container, bg="#050508", width=380, highlightbackground="#444",
-                                    highlightthickness=1)
-        self.log_sidebar.pack_propagate(False)
-
-        # ==========================================
-        # 📂 구역 1: 기본 경로 및 설정
-        # ==========================================
-        self.create_section_header(self.ctrl_panel, "📂 기본 설정")
-
-        path_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
-        path_frame.pack(fill="x", pady=2)
-
-        self.path_entry = tk.Entry(path_frame, textvariable=self.path_var, font=("Consolas", 10),
-                                   bg="#2a2a35", fg="#888", border=0, justify="center")
-        self.path_entry.pack(side="left", expand=True, fill="x", ipady=6)
-        self.path_entry.bind("<Button-1>", self._on_path_click)
-        self.path_entry.bind("<FocusOut>", self._on_path_blur)
-
-        tk.Button(path_frame, text=" 폴더 선택 ", command=self.browse, bg="#4b4b6b", fg="#ffffff",
-                  font=("Malgun Gothic", 9, "bold"), relief="flat", padx=10).pack(side="right", padx=(10, 0))
-
-        opt_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
-        opt_frame.pack(fill="x", pady=(2, 4))
-
-        option_top_row = tk.Frame(opt_frame, bg="#1e1e2e")
-        option_top_row.pack(fill="x")
-
-        tk.Checkbutton(
-            option_top_row,
-            text="알림창 끄기",
-            variable=self.show_alert_var,
-            onvalue=False,
-            offvalue=True,
-            bg="#1e1e2e",
-            fg="#ccc",
-            selectcolor="#222"
-        ).pack(side="left")
-
-        tk.Checkbutton(
-            option_top_row,
-            text="⚡ 분류 이력 활용 (고속)",
-            variable=self.is_fast_mode,
-            bg="#1e1e2e",
-            fg="#ffb300",
-            selectcolor="#222"
-        ).pack(side="left", padx=5)
-
-        tk.Button(
-            option_top_row,
-            text="분류 설정 저장",
-            command=self.save_classify_settings,
-            bg="#2d3436",
-            fg="#55efc4",
-            font=("Malgun Gothic", 8, "bold"),
-            relief="flat",
-            width=13
-        ).pack(side="right", padx=(6, 0))
-
-        tk.Button(
-            option_top_row,
-            text="이력 초기화",
-            command=self.reset_history,
-            bg="#4a1a1a",
-            fg="#ff6b6b",
-            font=("Malgun Gothic", 8, "bold"),
-            relief="flat",
-            width=11
-        ).pack(side="right", padx=(6, 0))
-
-        method_row = tk.Frame(opt_frame, bg="#1e1e2e")
-        method_row.pack(fill="x", pady=(6, 0))
-
-        method_frame = tk.LabelFrame(
-            method_row,
-            text="새 분류 파일 처리 방식",
-            bg="#1e1e2e",
-            fg="#00f2ff",
-            font=("Malgun Gothic", 8, "bold"),
-            padx=8,
-            pady=4,
-            bd=1,
-            relief="groove"
+    def _has_active_webp_job(self):
+        return self._active_job == "webp" or (
+            self._active_job == "classify" and bool((self._active_job_settings or {}).get("auto_webp"))
         )
-        method_frame.pack(side="left", fill="x", expand=True)
 
-        tk.Radiobutton(
-            method_frame,
-            text="📄 복사: 원본 유지",
-            variable=self.classify_method_var,
-            value="copy",
-            bg="#1e1e2e",
-            fg="#39ff14",
-            selectcolor="#222",
-            activebackground="#1e1e2e",
-            activeforeground="#39ff14",
-            font=("Malgun Gothic", 9, "bold")
-        ).pack(side="left", padx=(4, 18))
+    @staticmethod
+    def _normalize_auto_webp_settings(settings):
+        settings = settings if isinstance(settings, dict) else {}
+        quality = settings.get("webp_quality", 90)
+        try:
+            if isinstance(quality, bool) or not isinstance(quality, (str, int)):
+                raise ValueError()
+            quality = int(quality)
+            if not 1 <= quality <= 100:
+                raise ValueError()
+        except (ValueError, TypeError):
+            quality = 90
+        return {
+            "auto_webp": settings.get("auto_webp") is True,
+            "webp_lossless": settings.get("webp_lossless") is not False,
+            "webp_quality": quality,
+        }
 
-        tk.Radiobutton(
-            method_frame,
-            text="📦 이동: 원본을 분류 폴더로 이동",
-            variable=self.classify_method_var,
-            value="move",
-            bg="#1e1e2e",
-            fg="#ffb300",
-            selectcolor="#222",
-            activebackground="#1e1e2e",
-            activeforeground="#ffb300",
-            font=("Malgun Gothic", 9, "bold")
-        ).pack(side="left", padx=(0, 12))
+    def _update_auto_webp_controls(self):
+        busy = self._active_job is not None
+        enabled = bool(self.auto_webp_var.get()) and not busy
+        self.auto_webp_checkbox.config(state="disabled" if busy else "normal")
+        for button in self.auto_webp_mode_buttons:
+            button.config(state="normal" if enabled else "disabled")
+        self.auto_webp_quality_input.config(
+            state="normal" if enabled and not self.webp_lossless_var.get() else "disabled"
+        )
 
-        tk.Label(
-            method_frame,
-            text="※ 재정렬은 항상 이동 방식",
-            bg="#1e1e2e",
-            fg="#888",
-            font=("Malgun Gothic", 8)
-        ).pack(side="right", padx=(8, 2))
+    def _refresh_job_controls(self):
+        busy = self._active_job is not None
+        actions = (
+            (self.btn_run, "classify", "새 분류", "분류 중…", desktop_ui.ACCENT, "#ffffff"),
+            (self.btn_reorg, "reorg", "재정렬", "재정렬 중…", desktop_ui.PANEL, desktop_ui.INK),
+            (self.btn_scan_art, "art", "아티스트 스캔", "스캔 중…", desktop_ui.PANEL, desktop_ui.INK),
+            (self.btn_sync, "brand", "브랜드 분석 및 동기화", "브랜드 동기화 중…", desktop_ui.PANEL, desktop_ui.INK),
+            (self.btn_webp, "webp", "WebP 압축", "압축 중…", desktop_ui.PANEL, desktop_ui.INK),
+        )
+        for button, job, idle_text, active_text, color, foreground in actions:
+            active = self._active_job == job
+            button.config(state="disabled" if busy else "normal", text=active_text if active else idle_text,
+                          bg=desktop_ui.SOFT if active else color, fg=desktop_ui.ACCENT if active else foreground)
+        for button in (self.btn_reset_history, self.btn_reset_brand, self.btn_import):
+            button.config(state="disabled" if busy else "normal")
+        can_stop = self._active_job in ("classify", "reorg", "art", "webp")
+        stopping = can_stop and self.stop_requested
+        self.btn_stop.config(state="normal" if can_stop and not stopping else "disabled",
+                             text="정지 요청됨" if stopping else "정지",
+                             bg=desktop_ui.SOFT if stopping else desktop_ui.PANEL, fg=desktop_ui.ERROR)
+        self._update_auto_webp_controls()
 
-        # ==========================================
-        # ⚙️ 구역 2: 시스템 및 AI 세팅
-        # ==========================================
-        self.create_section_header(self.ctrl_panel, "⚙️ AI 및 시스템 성능")
+    def _launch_job(self, job, target, args=(), job_settings=None):
+        if not self._can_start_job():
+            return False
+        self._job_token += 1
+        self._active_job = job
+        self._active_job_settings = job_settings
+        self.stop_requested = False
+        self.is_syncing = job == "brand"
+        self._refresh_job_controls()
+        kwargs = {"job_token": self._job_token}
+        if job_settings is not None:
+            kwargs["job_settings"] = job_settings
+        try:
+            Thread(target=target, args=args, kwargs=kwargs, daemon=True).start()
+        except Exception as error:
+            self._finish_job(job, self._job_token)
+            self.log(f"❌ 작업을 시작하지 못했습니다: {error}")
+            return False
+        return True
 
-        ai_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
-        ai_frame.pack(fill="x")
+    def _finish_job(self, job, job_token=None):
+        if self._active_job != job or (job_token is not None and job_token != self._job_token):
+            return False
+        self._active_job = None
+        self._active_job_settings = None
+        self.is_syncing = False
+        self._refresh_job_controls()
+        return True
 
-        classify_settings = self.config.get("classify_settings", {})
-        if not isinstance(classify_settings, dict):
-            classify_settings = {}
+    def _snapshot_classify_job_settings(self, include_auto_webp=True):
+        try:
+            normal_workers = int(self.normal_thread_count_var.get())
+            ai_workers = int(self.ai_thread_count_var.get())
+            threshold = float(self.threshold_var.get())
+            use_gpu = bool(self.use_gpu_var.get())
+            if not 1 <= normal_workers <= 64 or not 1 <= ai_workers <= 16:
+                raise ValueError("스레드 수 범위")
+            if not math.isfinite(threshold) or not 0 <= threshold <= 100:
+                raise ValueError("AI 감도 범위")
+        except (ValueError, TypeError, tk.TclError):
+            messagebox.showwarning("설정 확인", "일반 스레드는 1~64, AI 스레드는 1~16, AI 감도는 0~100 사이의 숫자로 입력해 주세요.")
+            return None
+        webp_settings = self._normalize_auto_webp_settings({})
+        if include_auto_webp:
+            try:
+                raw_webp = {
+                    "auto_webp": bool(self.auto_webp_var.get()),
+                    "webp_lossless": bool(self.webp_lossless_var.get()),
+                    "webp_quality": self.webp_quality_var.get(),
+                }
+                if raw_webp["auto_webp"] and not raw_webp["webp_lossless"]:
+                    quality = raw_webp["webp_quality"]
+                    if isinstance(quality, bool) or not isinstance(quality, (str, int)) or not 1 <= int(quality) <= 100:
+                        raise ValueError()
+                webp_settings = self._normalize_auto_webp_settings(raw_webp)
+            except (ValueError, TypeError, tk.TclError):
+                messagebox.showwarning("WebP 화질 확인", "손실 WebP 화질은 1~100의 정수로 입력해 주세요.")
+                return None
+        return {"normal_workers": normal_workers, "ai_workers": ai_workers,
+                "ai_threshold": threshold / 100.0, "use_gpu": use_gpu, **webp_settings}
 
-        ai_available = image_logic.is_ai_available()
-        lite_ai_disabled = is_frozen_app() and not ai_available
-        ai_enabled_by_default = bool(classify_settings.get("use_ai", False)) and not lite_ai_disabled
-
-        self.use_ai_var = tk.BooleanVar(value=ai_enabled_by_default)
-        self.use_gpu_var = tk.BooleanVar(value=bool(classify_settings.get("use_gpu", False)) and not lite_ai_disabled)
-        self.skip_nsfw_var = tk.BooleanVar(value=bool(classify_settings.get("skip_nsfw", False)))
-        self.skip_char_var = tk.BooleanVar(value=bool(classify_settings.get("skip_char", False)))  # 🌟 [신규] 캐릭터 판별 무시 변수
-        legacy_thread_count = int(classify_settings.get("thread_count", 4) or 4)
-        normal_thread_default = int(classify_settings.get("normal_thread_count", legacy_thread_count) or legacy_thread_count)
-        ai_thread_default = int(classify_settings.get("ai_thread_count", min(4, legacy_thread_count)) or min(4, legacy_thread_count))
-
-        ai_check_state = "disabled" if lite_ai_disabled else "normal"
-        ai_check_text = "🤖 AI 자동분류 제외됨" if lite_ai_disabled else "🤖 딥러닝 AI 야짤 정밀 판독"
-        tk.Checkbutton(ai_frame, text=ai_check_text, variable=self.use_ai_var, bg="#1e1e2e", fg="#00f2ff",
-                       selectcolor="#222", font=("Malgun Gothic", 9, "bold"),
-                       command=self.update_thread_guide, state=ai_check_state).pack(side="left")
-        tk.Checkbutton(ai_frame, text="🚀 GPU 가속", variable=self.use_gpu_var, bg="#1e1e2e", fg="#39ff14",
-                       selectcolor="#222", font=("Malgun Gothic", 9, "bold"),
-                       state=ai_check_state).pack(side="left", padx=(10, 5))
-        tk.Checkbutton(ai_frame, text="🙈 수위 무시", variable=self.skip_nsfw_var, bg="#1e1e2e", fg="#ff9ff3",
-                       selectcolor="#222", font=("Malgun Gothic", 9, "bold")).pack(side="left", padx=5)
-        tk.Checkbutton(ai_frame, text="👤 캐릭 판별 무시", variable=self.skip_char_var, bg="#1e1e2e", fg="#feca57",
-                       selectcolor="#222", font=("Malgun Gothic", 9, "bold")).pack(side="left", padx=5)
-
-        perf_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
-        perf_frame.pack(fill="x", pady=2)
-
-        perf_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
-        perf_frame.pack(fill="x", pady=2)
-
-        tk.Label(perf_frame, text="일반:", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#fff").pack(side="left")
-        self.normal_thread_count_var = tk.IntVar(value=normal_thread_default)
-        self.normal_thread_spin = tk.Spinbox(perf_frame, from_=1, to=64, textvariable=self.normal_thread_count_var, width=4,
-                                             bg="#2a2a35", fg="#fff", border=0, command=self.update_thread_guide)
-        self.normal_thread_spin.pack(side="left", padx=5)
-        self.normal_thread_spin.bind("<KeyRelease>", lambda e: self.update_thread_guide())
-
-        tk.Label(perf_frame, text="AI:", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#00f2ff").pack(side="left", padx=(8, 0))
-        self.ai_thread_count_var = tk.IntVar(value=ai_thread_default)
-        self.ai_thread_spin = tk.Spinbox(perf_frame, from_=1, to=16, textvariable=self.ai_thread_count_var, width=4,
-                                         bg="#2a2a35", fg="#00f2ff", border=0, command=self.update_thread_guide)
-        self.ai_thread_spin.pack(side="left", padx=5)
-        self.ai_thread_spin.bind("<KeyRelease>", lambda e: self.update_thread_guide())
-
-        # 기존 코드 호환용 별칭. 새 코드에서는 normal_thread_count_var를 사용한다.
-        self.thread_count_var = self.normal_thread_count_var
-
-        tk.Label(perf_frame, text="AI 감도(%):", font=("Malgun Gothic", 9, "bold"), bg="#1e1e2e", fg="#fff").pack(
-            side="left", padx=(10, 0))
-        self.threshold_var = tk.DoubleVar(value=float(classify_settings.get("ai_threshold_percent", 99.980)))
-        self.threshold_spin = tk.Spinbox(perf_frame, from_=90.000, to=99.999, increment=0.001, format="%.3f",
-                                         textvariable=self.threshold_var, width=6, bg="#2a2a35", fg="#ffb300", border=0)
-        self.threshold_spin.pack(side="left", padx=5)
-
-        tk.Button(perf_frame, text="🪄 자동 최적화", command=self.apply_auto_config, bg="#3b3b4f", fg="#00f2ff",
-                  font=("Malgun Gothic", 8, "bold"), relief="flat", padx=5).pack(side="right")
-
-        self.guide_text_var = tk.StringVar()
-        self.lbl_thread_guide = tk.Label(self.ctrl_panel, textvariable=self.guide_text_var, font=("Malgun Gothic", 8),
-                                         bg="#1e1e2e", fg="#888", justify="left")
-        self.lbl_thread_guide.pack(fill="x", anchor="w")
-        self.update_thread_guide()
-
-        # ==========================================
-        # 🚀 구역 3: 핵심 아카이브 작업
-        # ==========================================
-        self.create_section_header(self.ctrl_panel, "🚀 아카이브 관리 (이미지 처리)")
-
-        action_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
-        action_frame.pack(fill="x")
-
-        # 🌟 버튼 크기 비율 조정: 아티스트 스캔 추가 및 정지 버튼 축소
-        self.btn_run = tk.Button(action_frame, text="▶ 새 분류", command=self.start_process, bg="#0984e3",
-                                 fg="#ffffff", font=("Malgun Gothic", 10, "bold"), relief="flat", width=10)
-        self.btn_run.pack(side="left", ipady=5, padx=(0, 5))
-
-        self.btn_reorg = tk.Button(action_frame, text="🔄 재정렬", command=self.start_reorg, bg="#e17055",
-                                   fg="#ffffff", font=("Malgun Gothic", 10, "bold"), relief="flat", width=10)
-        self.btn_reorg.pack(side="left", ipady=5, padx=5)
-
-        self.btn_scan_art = tk.Button(action_frame, text="🎨 아티스트 스캔", command=self.start_art_scan, bg="#f1c40f",
-                                      fg="#000000", font=("Malgun Gothic", 10, "bold"), relief="flat", width=14)
-        self.btn_scan_art.pack(side="left", ipady=5, padx=5)
-
-        self.btn_stop = tk.Button(action_frame, text="⏹ 정지", command=self.stop_process, bg="#d63031", fg="#ffffff",
-                                  font=("Malgun Gothic", 10, "bold"), relief="flat")
-        self.btn_stop.pack(side="right", fill="x", expand=True, ipady=5, padx=(5, 0))
-
-        self.lbl_progress = tk.Label(self.ctrl_panel, text="대기 중: 0 / 0", font=("Consolas", 10, "bold"), bg="#1e1e2e",
-                                     fg="#00f2ff")
-        self.lbl_progress.pack(pady=2)
-
-        # ==========================================
-        # 👑 구역 4: 브랜드 소속사 동기화
-        # ==========================================
-        self.create_section_header(self.ctrl_panel, "👑 브랜드 소속사 동기화")
-
-        brand_frame = tk.Frame(self.ctrl_panel, bg="#1e1e2e")
-        brand_frame.pack(fill="x")
-
-        self.btn_sync = tk.Button(brand_frame, text="🌐 다수결 브랜드 분석 및 동기화 시작", command=self.start_brand_sync,
-                                  bg="#6c5ce7", fg="#ffffff", font=("Malgun Gothic", 10, "bold"), relief="flat")
-        self.btn_sync.pack(side="left", fill="x", expand=True, ipady=5, padx=(0, 5))
-
-        self.btn_reset_brand = tk.Button(brand_frame, text="⚠️ 정보 초기화", command=self.reset_brand_data, bg="#4a1a1a",
-                                         fg="#ff6b6b", font=("Malgun Gothic", 9, "bold"), relief="flat")
-        self.btn_reset_brand.pack(side="right", ipady=5, padx=(5, 0))
-
-        # ==========================================
-        # 🌐 구역 5: 로컬 서버 및 갤러리
-        # ==========================================
-        self.create_section_header(self.ctrl_panel, "🌐 로컬 서버 및 갤러리")
-
-        self.btn_server = tk.Button(self.ctrl_panel, text="🚀 로컬 웹 서버 켜기", command=self.toggle_server, bg="#00b894",
-                                    fg="#ffffff", font=("Malgun Gothic", 12, "bold"), relief="flat")
-        self.btn_server.pack(fill="x", ipady=6, pady=3)
-
-        self.btn_open = tk.Button(self.ctrl_panel, text="🖼️ 갤러리 띄우기 (127.0.0.1:5000)", command=self.open_gallery,
-                                  bg="#2d3436", fg="#00cec9", font=("Malgun Gothic", 10, "bold"), relief="flat",
-                                  borderwidth=1)
-        self.btn_open.pack(fill="x", ipady=5)
-
-        # 로그창 세팅
-        self.log_area = scrolledtext.ScrolledText(self.log_sidebar, bg="#050508", fg="#d1d1d1", font=("Consolas", 9),
-                                                  border=0, padx=10, pady=10)
-        self.log_area.pack(fill="both", expand=True)
-
-    # ... (이하 로직들은 기존과 완전히 동일합니다) ...
+    def _worker_job_settings(self, job_settings):
+        # Optional arguments preserve existing internal callers; workers never read Tk variables.
+        return job_settings or self._active_job_settings or {
+            "normal_workers": 4, "ai_workers": 2, "ai_threshold": 0.9998, "use_gpu": False,
+        }
 
     def reset_brand_data(self):
+        if not self._can_start_job():
+            return
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "TOTAL_CLASSIFIED", "naia_history.db")
         if not os.path.exists(db_path):
             messagebox.showerror("오류", "아직 데이터베이스(naia_history.db)가 생성되지 않았습니다.")
@@ -690,22 +557,15 @@ class NaiaHyperExecutor:
                 self.log(f"❌ 초기화 실패: {e}")
 
     def start_brand_sync(self):
-        if self.is_syncing: return
-        self.is_syncing = True
-
-        self.btn_sync.config(state="disabled", text="⏳ 브랜드 동기화 진행 중...", bg="#444")
-        self.btn_reset_brand.config(state="disabled")
-        self.btn_run.config(state="disabled")
-        self.btn_reorg.config(state="disabled")
+        if not self._launch_job("brand", self._brand_sync_thread):
+            return
 
         self.log("🌐 브랜드 동기화 작업을 시작합니다...")
 
         if not self.log_visible:
             self.toggle_log()
 
-        Thread(target=self._brand_sync_thread, daemon=True).start()
-
-    def _brand_sync_thread(self):
+    def _brand_sync_thread(self, job_token=None):
         class UIStream:
             def __init__(self, log_func): self.log_func = log_func
 
@@ -734,14 +594,11 @@ class NaiaHyperExecutor:
             self.log(f"🚨 브랜드 동기화 에러: {e}")
         finally:
             sys.stdout = old_stdout
-            self.is_syncing = False
-            self.root.after(0, self._finish_brand_sync_ui)
+            self.root.after(0, lambda: self._finish_brand_sync_ui(job_token))
 
-    def _finish_brand_sync_ui(self):
-        self.btn_sync.config(state="normal", text="🌐 다수결 브랜드 분석 및 동기화 시작", bg="#6c5ce7")
-        self.btn_reset_brand.config(state="normal")
-        self.btn_run.config(state="normal")
-        self.btn_reorg.config(state="normal")
+    def _finish_brand_sync_ui(self, job_token=None):
+        if not self._finish_job("brand", job_token):
+            return
         self.log("🏁 브랜드 동기화 완료.")
         if self.show_alert_var.get(): messagebox.showinfo("완료", "브랜드 동기화가 완료되었습니다.")
 
@@ -759,13 +616,13 @@ class NaiaHyperExecutor:
         use_ai = bool(self.use_ai_var.get())
 
         if normal_t <= 4:
-            normal_msg, color = "일반 안정", "#2ecc71"
+            normal_msg, color = "일반 안정", desktop_ui.ACCENT
         elif normal_t <= 15:
-            normal_msg, color = "일반 균형", "#f1c40f"
+            normal_msg, color = "일반 균형", desktop_ui.MUTED
         elif normal_t <= 32:
-            normal_msg, color = "일반 고속", "#3498db"
+            normal_msg, color = "일반 고속", desktop_ui.INFO
         else:
-            normal_msg, color = "일반 익스트림", "#e74c3c"
+            normal_msg, color = "일반 익스트림", desktop_ui.WARNING
 
         if use_ai:
             if ai_t <= 2:
@@ -817,11 +674,7 @@ class NaiaHyperExecutor:
     def _on_path_click(self, event):
         if self.path_var.get() == self.placeholder:
             self.path_var.set(self.full_path)
-            self.path_entry.config(fg="#ffffff", bg="#3b3b4f")
-        else:
-            self.path_var.set(self.placeholder)
-            self.path_entry.config(fg="#888", bg="#2a2a35")
-            self.root.focus()
+            self.path_entry.config(fg=desktop_ui.INK, bg=desktop_ui.PANEL)
 
     def _on_path_blur(self, event):
         new_val = self.path_var.get().strip()
@@ -829,15 +682,51 @@ class NaiaHyperExecutor:
             self.full_path = new_val
             utils.save_config({"path": self.full_path})
         self.path_var.set(self.placeholder)
-        self.path_entry.config(fg="#888", bg="#2a2a35")
+        self.path_entry.config(fg=desktop_ui.MUTED, bg=desktop_ui.BG)
 
     def log(self, msg):
-        def _append():
-            now = datetime.now().strftime("%H:%M:%S")
-            self.log_area.insert(tk.END, f"[{now}] {msg}\n")
-            self.log_area.see(tk.END)
+        # Workers only enqueue text; Tk is touched by the periodic UI drain.
+        now = datetime.now().strftime("%H:%M:%S")
+        with self._log_lock:
+            if len(self._pending_logs) == self.LOG_QUEUE_LIMIT:
+                self._dropped_logs += 1
+            self._pending_logs.append(f"[{now}] {msg}\n")
 
-        self.root.after(0, _append)
+    def _drain_logs(self):
+        with self._log_lock:
+            batch = [self._pending_logs.popleft() for _ in range(min(len(self._pending_logs), self.LOG_BATCH_SIZE))]
+            dropped, self._dropped_logs = self._dropped_logs, 0
+        if dropped:
+            batch.insert(0, f"[로그] 대기열 한도로 이전 메시지 {dropped:,}개를 생략했습니다.\n")
+        if batch:
+            follow_end = self.log_area.yview()[1] >= 0.999
+            text = ''.join(batch)
+            self.log_area.config(state="normal")
+            self.log_area.insert(tk.END, text)
+            self._log_line_count += text.count('\n')
+            excess = self._log_line_count - self.LOG_MAX_LINES
+            if excess > 0:
+                self.log_area.delete("1.0", f"{excess + 1}.0")
+                self._log_line_count -= excess
+            self.log_area.config(state="disabled")
+            if follow_end:
+                self.log_area.see(tk.END)
+        self.root.after(self.LOG_FLUSH_MS, self._drain_logs)
+
+    def open_legacy_import(self):
+        if self.update_in_progress or self._active_job is not None:
+            messagebox.showinfo("작업 중", "진행 중인 작업을 마친 뒤 자료를 가져와 주세요.")
+            return
+        if not messagebox.askyesno("기존 자료 가져오기", "현재 프로그램과 서버를 닫고 자료 가져오기 창을 열까요?"):
+            return
+        command = [sys.executable] if is_frozen_app() else [sys.executable, os.path.abspath(__file__)]
+        try:
+            subprocess.Popen(command + ["--import-data", str(os.getpid())], cwd=APP_DIR,
+                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except Exception as error:
+            messagebox.showerror("가져오기 창 실행 실패", str(error))
+            return
+        self.on_closing()
 
     def browse(self):
         p = filedialog.askdirectory(initialdir=self.full_path)
@@ -847,11 +736,29 @@ class NaiaHyperExecutor:
             self.log(f"📁 대상 경로 설정됨: {self.full_path}")
 
     def stop_process(self):
+        if self._active_job not in ("classify", "reorg", "art", "webp"):
+            return
         self.stop_requested = True
-        self.btn_stop.config(state="disabled", text="🛑 정지 명령 접수됨!", bg="#ff8c00")
+        self._refresh_job_controls()
         self.log("🛑 정지 버튼이 클릭되었습니다. 현재 작업이 끝나는 대로 멈춥니다.")
 
+    def open_webp_compression(self):
+        if not self._can_start_job():
+            return
+        dialog = getattr(self, '_webp_dialog', None)
+        if dialog is not None and dialog.window.winfo_exists():
+            dialog.window.lift()
+            return
+        from naim.webp_compression_ui import WebPCompressionDialog
+        self._webp_dialog = WebPCompressionDialog(self)
+
     def update_progress(self, current, total, phase="진행 중"):
+        now = time.monotonic()
+        previous_phase, previous_at = getattr(self, "_last_progress_update", (None, 0))
+        if phase == previous_phase and current not in (0, total) and now - previous_at < 0.1:
+            return
+        self._last_progress_update = (phase, now)
+
         def apply():
             try:
                 current_num = int(current or 0)
@@ -865,10 +772,13 @@ class NaiaHyperExecutor:
             self.lbl_progress.config(
                 text=f"{phase}: {current_num} / {total_num} ({percent:.1f}%)"
             )
+            self.progress_bar.configure(value=max(0.0, min(100.0, percent)))
 
         self.root.after(0, apply)
 
     def reset_history(self):
+        if not self._can_start_job():
+            return
         if messagebox.askyesno("히스토리 초기화", "모든 분류 기록과 태그 캐시를 삭제하시겠습니까?"):
             try:
                 db = utils.HistoryDB()
@@ -881,24 +791,18 @@ class NaiaHyperExecutor:
                 self.log(f"❌ DB 초기화 실패: {e}")
 
     def start_art_scan(self):
+        if not self._can_start_job():
+            return
         # 🌟 [수정] 스캔 시작 시 기존 데이터를 초기화할지 묻는 옵션 추가
         ans = messagebox.askyesnocancel("그림체 스캔",
                                         "아티스트 스캔을 진행합니다.\n\n새로운 '조합형 그림체' 기준을 적용하려면 기존 데이터를 초기화해야 합니다.\n\n[예] 기존 내역 초기화 후 전체 재스캔 (권장)\n[아니오] 멈춘 부분부터 이어서 스캔\n[취소] 돌아가기")
         if ans is None:
             return
 
-        self.stop_requested = False
         self.clear_art_db = ans  # 🌟 초기화 여부 저장
+        self._launch_job("art", self._art_scan_thread)
 
-        self.btn_scan_art.config(state="disabled", text="⏳ 스캔 중...", bg="#444", fg="#fff")
-        self.btn_run.config(state="disabled")
-        self.btn_reorg.config(state="disabled")
-        self.btn_sync.config(state="disabled")
-        self.btn_stop.config(state="normal", text="⏹ 정지", bg="#d63031")
-
-        Thread(target=self._art_scan_thread, daemon=True).start()
-
-    def _art_scan_thread(self):
+    def _art_scan_thread(self, job_token=None):
         try:
             classified_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "TOTAL_CLASSIFIED")
             # 🌟 [수정] clear_db 파라미터 전달
@@ -907,11 +811,7 @@ class NaiaHyperExecutor:
         except Exception as e:
             self.log(f"❌ 오류: {e}")
         finally:
-            self.root.after(0, lambda: self.btn_scan_art.config(state="normal", text="🎨 아티스트 스캔", bg="#f1c40f", fg="#000"))
-            self.root.after(0, lambda: self.btn_run.config(state="normal"))
-            self.root.after(0, lambda: self.btn_reorg.config(state="normal"))
-            self.root.after(0, lambda: self.btn_sync.config(state="normal"))
-            self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
+            self.root.after(0, lambda: self._finish_job("art", job_token))
 
     def _read_normal_thread_count_for_settings(self):
         try:
@@ -938,10 +838,24 @@ class NaiaHyperExecutor:
             value = 99.980
         return max(0.0, min(100.0, value))
 
+    def save_desktop_settings(self):
+        """Persist the launcher preference independently of classification settings."""
+        value = bool(self.auto_open_gallery_var.get())
+        try:
+            merge_json_object(utils.CONFIG_FILE, {"auto_open_gallery": value})
+        except Exception as error:
+            self.auto_open_gallery_var.set(bool(self.config.get("auto_open_gallery", True)))
+            self.log(f"❌ 리모콘 설정 저장 실패: {error}")
+            messagebox.showerror("리모콘 설정 저장 실패", str(error))
+            return False
+        self.config["auto_open_gallery"] = value
+        return True
+
     def save_classify_settings(self, silent=False):
         try:
             settings = {
                 "method": self.classify_method_var.get(),
+                "delete_comic_duplicates": bool(self.delete_comic_duplicates_var.get()),
                 "show_alert": bool(self.show_alert_var.get()),
                 "is_fast_mode": bool(self.is_fast_mode.get()),
                 "use_ai": bool(self.use_ai_var.get()),
@@ -952,6 +866,11 @@ class NaiaHyperExecutor:
                 "normal_thread_count": self._read_normal_thread_count_for_settings(),
                 "ai_thread_count": self._read_ai_thread_count_for_settings(),
                 "ai_threshold_percent": self._read_ai_threshold_percent_for_settings(),
+                **self._normalize_auto_webp_settings({
+                    "auto_webp": bool(self.auto_webp_var.get()),
+                    "webp_lossless": bool(self.webp_lossless_var.get()),
+                    "webp_quality": self.webp_quality_var.get(),
+                }),
             }
 
             utils.save_config({"classify_settings": settings})
@@ -969,393 +888,32 @@ class NaiaHyperExecutor:
                 messagebox.showerror("분류 설정 저장 실패", str(e))
 
     def show_action_confirm_dialog(
-        self,
-        title,
-        icon,
-        target_title,
-        target_value,
-        method_title,
-        method_value,
-        method_desc,
-        options,
-        confirm_text,
-        accent_color,
-        warning_text=None,
+        self, title, icon, target_title, target_value, method_title, method_value,
+        method_desc, options, confirm_text, accent_color, warning_text=None,
     ):
-        result = {"ok": False}
-
-        dialog = tk.Toplevel(self.root)
-        dialog.title(title)
-        dialog.configure(bg="#151522")
-        dialog.resizable(False, False)
-        dialog.transient(self.root)
-        dialog.grab_set()
-
-        outer = tk.Frame(dialog, bg="#151522", padx=18, pady=16)
-        outer.pack(fill="both", expand=True)
-
-        header = tk.Frame(outer, bg="#151522")
-        header.pack(fill="x", pady=(0, 12))
-
-        tk.Label(
-            header,
-            text=f"{icon} {title}",
-            bg="#151522",
-            fg=accent_color,
-            font=("Malgun Gothic", 16, "bold")
-        ).pack(anchor="w")
-
-        tk.Label(
-            header,
-            text="작업을 시작하기 전에 아래 설정을 확인해주세요.",
-            bg="#151522",
-            fg="#cfd3dc",
-            font=("Malgun Gothic", 9)
-        ).pack(anchor="w", pady=(4, 0))
-
-        def add_card(parent, card_title, body_builder, border_color="#33334a"):
-            card = tk.Frame(
-                parent,
-                bg="#202033",
-                highlightthickness=1,
-                highlightbackground=border_color,
-                padx=12,
-                pady=10
-            )
-            card.pack(fill="x", pady=(0, 10))
-
-            tk.Label(
-                card,
-                text=card_title,
-                bg="#202033",
-                fg="#a29bfe",
-                font=("Malgun Gothic", 10, "bold")
-            ).pack(anchor="w", pady=(0, 6))
-
-            body_builder(card)
-            return card
-
-        def build_target(card):
-            tk.Label(
-                card,
-                text=target_value,
-                bg="#202033",
-                fg="#ffffff",
-                font=("Malgun Gothic", 9),
-                justify="left",
-                wraplength=560
-            ).pack(anchor="w")
-
-        add_card(outer, target_title, build_target)
-
-        def build_method(card):
-            badge_bg = "#0f5132" if "복사" in method_value else "#6b4f00"
-            badge_fg = "#39ff14" if "복사" in method_value else "#ffdd57"
-
-            row = tk.Frame(card, bg="#202033")
-            row.pack(fill="x")
-
-            tk.Label(
-                row,
-                text=method_value,
-                bg=badge_bg,
-                fg=badge_fg,
-                font=("Malgun Gothic", 10, "bold"),
-                padx=10,
-                pady=4
-            ).pack(side="left")
-
-            tk.Label(
-                card,
-                text=method_desc,
-                bg="#202033",
-                fg="#dfe6e9",
-                font=("Malgun Gothic", 9),
-                justify="left",
-                wraplength=560
-            ).pack(anchor="w", pady=(8, 0))
-
-        add_card(outer, method_title, build_method, border_color=accent_color)
-
-        def build_options(card):
-            for item in options:
-                label = item.get("label", "")
-                value = item.get("value", "")
-                state = item.get("state", None)
-
-                row = tk.Frame(card, bg="#202033")
-                row.pack(fill="x", pady=2)
-
-                tk.Label(
-                    row,
-                    text=label,
-                    bg="#202033",
-                    fg="#dfe6e9",
-                    font=("Malgun Gothic", 9)
-                ).pack(side="left")
-
-                if state is True:
-                    badge_text = value or "ON"
-                    badge_bg = "#0f5132"
-                    badge_fg = "#39ff14"
-                elif state is False:
-                    badge_text = value or "OFF"
-                    badge_bg = "#30303a"
-                    badge_fg = "#8d94a3"
-                else:
-                    badge_text = str(value)
-                    badge_bg = "#16324a"
-                    badge_fg = "#74b9ff"
-
-                tk.Label(
-                    row,
-                    text=badge_text,
-                    bg=badge_bg,
-                    fg=badge_fg,
-                    font=("Malgun Gothic", 8, "bold"),
-                    padx=8,
-                    pady=2
-                ).pack(side="right")
-
-        add_card(outer, "실행 옵션", build_options)
-
-        if warning_text:
-            warning = tk.Frame(
-                outer,
-                bg="#332a12",
-                highlightthickness=1,
-                highlightbackground="#ffb300",
-                padx=12,
-                pady=8
-            )
-            warning.pack(fill="x", pady=(0, 12))
-
-            tk.Label(
-                warning,
-                text=warning_text,
-                bg="#332a12",
-                fg="#ffdd57",
-                font=("Malgun Gothic", 9, "bold"),
-                justify="left",
-                wraplength=560
-            ).pack(anchor="w")
-
-        button_row = tk.Frame(outer, bg="#151522")
-        button_row.pack(fill="x", pady=(4, 0))
-
-        def on_cancel():
-            result["ok"] = False
-            dialog.destroy()
-
-        def on_ok():
-            result["ok"] = True
-            dialog.destroy()
-
-        tk.Button(
-            button_row,
-            text="취소",
-            command=on_cancel,
-            bg="#2d3436",
-            fg="#dfe6e9",
-            font=("Malgun Gothic", 10, "bold"),
-            relief="flat",
-            width=14,
-            pady=6
-        ).pack(side="right", padx=(8, 0))
-
-        tk.Button(
-            button_row,
-            text=confirm_text,
-            command=on_ok,
-            bg=accent_color,
-            fg="#ffffff",
-            font=("Malgun Gothic", 10, "bold"),
-            relief="flat",
-            width=16,
-            pady=6
-        ).pack(side="right")
-
-        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
-        dialog.bind("<Escape>", lambda event: on_cancel())
-        dialog.bind("<Return>", lambda event: on_ok())
-
-        dialog.update_idletasks()
-
-        try:
-            parent_x = self.root.winfo_rootx()
-            parent_y = self.root.winfo_rooty()
-            parent_w = self.root.winfo_width()
-            parent_h = self.root.winfo_height()
-            dialog_w = dialog.winfo_width()
-            dialog_h = dialog.winfo_height()
-
-            x = parent_x + max(0, (parent_w - dialog_w) // 2)
-            y = parent_y + max(0, (parent_h - dialog_h) // 2)
-            dialog.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
-
-        dialog.focus_force()
-        dialog.wait_window()
-
-        return result["ok"]
+        return messagebox.action_confirm(
+            self, title, icon, target_title, target_value, method_title, method_value,
+            method_desc, options, confirm_text, accent_color, warning_text,
+        )
 
     def show_reorg_target_dialog(self):
-        result = {"choice": None}
-
-        dialog = tk.Toplevel(self.root)
-        dialog.title("재정렬 대상 선택")
-        dialog.configure(bg="#151522")
-        dialog.resizable(False, False)
-        dialog.transient(self.root)
-        dialog.grab_set()
-
-        outer = tk.Frame(dialog, bg="#151522", padx=18, pady=16)
-        outer.pack(fill="both", expand=True)
-
-        tk.Label(
-            outer,
-            text="🔄 재정렬 대상 선택",
-            bg="#151522",
-            fg="#e17055",
-            font=("Malgun Gothic", 16, "bold")
-        ).pack(anchor="w")
-
-        tk.Label(
-            outer,
-            text="재정렬할 범위를 선택해주세요.",
-            bg="#151522",
-            fg="#cfd3dc",
-            font=("Malgun Gothic", 9)
-        ).pack(anchor="w", pady=(4, 14))
-
-        def choose(value):
-            result["choice"] = value
-            dialog.destroy()
-
-        full_card = tk.Frame(
-            outer,
-            bg="#202033",
-            highlightthickness=1,
-            highlightbackground="#6c5ce7",
-            padx=12,
-            pady=10
-        )
-        full_card.pack(fill="x", pady=(0, 10))
-
-        tk.Label(
-            full_card,
-            text="🌐 전체 재정렬",
-            bg="#202033",
-            fg="#a29bfe",
-            font=("Malgun Gothic", 11, "bold")
-        ).pack(anchor="w")
-
-        tk.Label(
-            full_card,
-            text="TOTAL_CLASSIFIED 전체를 다시 검사하고 정리합니다.",
-            bg="#202033",
-            fg="#dfe6e9",
-            font=("Malgun Gothic", 9),
-            justify="left",
-            wraplength=560
-        ).pack(anchor="w", pady=(4, 8))
-
-        tk.Button(
-            full_card,
-            text="전체 재정렬 선택",
-            command=lambda: choose("all"),
-            bg="#6c5ce7",
-            fg="#ffffff",
-            font=("Malgun Gothic", 10, "bold"),
-            relief="flat",
-            pady=6
-        ).pack(fill="x")
-
-        partial_card = tk.Frame(
-            outer,
-            bg="#202033",
-            highlightthickness=1,
-            highlightbackground="#00b894",
-            padx=12,
-            pady=10
-        )
-        partial_card.pack(fill="x", pady=(0, 12))
-
-        tk.Label(
-            partial_card,
-            text="📁 부분 재정렬",
-            bg="#202033",
-            fg="#55efc4",
-            font=("Malgun Gothic", 11, "bold")
-        ).pack(anchor="w")
-
-        tk.Label(
-            partial_card,
-            text="특정 폴더만 선택해서 그 안의 이미지만 다시 정리합니다.",
-            bg="#202033",
-            fg="#dfe6e9",
-            font=("Malgun Gothic", 9),
-            justify="left",
-            wraplength=560
-        ).pack(anchor="w", pady=(4, 8))
-
-        tk.Button(
-            partial_card,
-            text="부분 재정렬 선택",
-            command=lambda: choose("partial"),
-            bg="#00b894",
-            fg="#ffffff",
-            font=("Malgun Gothic", 10, "bold"),
-            relief="flat",
-            pady=6
-        ).pack(fill="x")
-
-        button_row = tk.Frame(outer, bg="#151522")
-        button_row.pack(fill="x")
-
-        tk.Button(
-            button_row,
-            text="취소",
-            command=lambda: choose(None),
-            bg="#2d3436",
-            fg="#dfe6e9",
-            font=("Malgun Gothic", 10, "bold"),
-            relief="flat",
-            width=14,
-            pady=6
-        ).pack(side="right")
-
-        dialog.protocol("WM_DELETE_WINDOW", lambda: choose(None))
-        dialog.bind("<Escape>", lambda event: choose(None))
-
-        dialog.update_idletasks()
-
-        try:
-            parent_x = self.root.winfo_rootx()
-            parent_y = self.root.winfo_rooty()
-            parent_w = self.root.winfo_width()
-            parent_h = self.root.winfo_height()
-            dialog_w = dialog.winfo_width()
-            dialog_h = dialog.winfo_height()
-
-            x = parent_x + max(0, (parent_w - dialog_w) // 2)
-            y = parent_y + max(0, (parent_h - dialog_h) // 2)
-            dialog.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
-
-        dialog.focus_force()
-        dialog.wait_window()
-
-        return result["choice"]
+        return messagebox.choose_reorg_target(self)
 
     def start_process(self):
+        if not self._can_start_job():
+            return
         if self.full_path == self.placeholder or not os.path.exists(self.full_path):
             messagebox.showwarning("경고", "올바른 대상 폴더 경로를 선택해주세요.")
             return
 
+        job_settings = self._snapshot_classify_job_settings()
+        if job_settings is None:
+            return
+        if job_settings["auto_webp"] and (self.server_transitioning or utils.is_port_active(5000)):
+            messagebox.showwarning("웹 서버 중지 필요", "자동 WebP 변환을 사용하려면 웹 서버를 중지한 뒤 새 분류를 실행해 주세요.")
+            return
         method = self.classify_method_var.get()
+        delete_comic_duplicates = self.delete_comic_duplicates_var.get()
         is_fast = self.is_fast_mode.get()
         use_ai = self.use_ai_var.get()
         if use_ai and is_frozen_app() and not image_logic.is_ai_available():
@@ -1368,10 +926,10 @@ class NaiaHyperExecutor:
         m_txt = "복사" if method == "copy" else "이동"
         f_txt = "켜짐" if is_fast else "꺼짐"
         a_txt = "켜짐" if use_ai else "꺼짐"
-        g_txt = "켜짐" if self.use_gpu_var.get() else "꺼짐"
+        g_txt = "켜짐" if job_settings["use_gpu"] else "꺼짐"
         s_txt = "무시 (전부 일반짤 처리)" if skip_nsfw else "판독 진행"
         c_txt = "무시 (하위 폴더 미생성)" if skip_char else "판별 진행"  # 🌟
-        t_txt = f"일반 {self.normal_thread_count_var.get()} / AI {self.ai_thread_count_var.get()}"
+        t_txt = f"일반 {job_settings['normal_workers']} / AI {job_settings['ai_workers']}"
 
         method_desc = (
             "원본 이미지는 그대로 두고, 분류 결과 폴더에 복사합니다."
@@ -1380,6 +938,12 @@ class NaiaHyperExecutor:
         )
 
         method_value = "복사: 원본 유지" if method == "copy" else "이동: 원본 이동"
+        webp_mode = "무손실" if job_settings["webp_lossless"] else f"손실 · 화질 {job_settings['webp_quality']}"
+        webp_warning = None
+        if job_settings["auto_webp"]:
+            webp_warning = "이번에 분류한 PNG만 WebP로 변환하고 메타데이터 보존 검증 후 분류된 PNG를 삭제합니다."
+            if method == "copy":
+                webp_warning += "\n복사 모드의 입력 원본은 WebP 변환으로 삭제하지 않습니다."
 
         if not self.show_action_confirm_dialog(
             title="새 이미지 분류 실행 확인",
@@ -1390,48 +954,57 @@ class NaiaHyperExecutor:
             method_value=method_value,
             method_desc=method_desc,
             options=[
+                {"label": "바깥 코믹 중복 원본", "value": "가져오기 성공 후 삭제" if delete_comic_duplicates else "유지", "state": delete_comic_duplicates},
+                {"label": "분류 후 WebP 변환", "value": webp_mode if job_settings["auto_webp"] else "사용 안 함", "state": job_settings["auto_webp"]},
                 {"label": "분류 이력 활용", "value": f_txt, "state": is_fast},
                 {"label": "AI 야짤 정밀 판독", "value": a_txt, "state": use_ai},
-                {"label": "GPU 가속", "value": g_txt, "state": self.use_gpu_var.get()},
+                {"label": "GPU 가속", "value": g_txt, "state": job_settings["use_gpu"]},
                 {"label": "수위 감지", "value": s_txt, "state": not skip_nsfw},
                 {"label": "캐릭터 판별", "value": c_txt, "state": not skip_char},
                 {"label": "스레드 수", "value": str(t_txt), "state": None},
             ],
             confirm_text="분류 시작",
             accent_color="#0984e3",
+            warning_text=webp_warning,
         ):
+            return
+
+        if job_settings["auto_webp"] and (self.server_transitioning or utils.is_port_active(5000)):
+            messagebox.showwarning("웹 서버 중지 필요", "웹 서버가 시작되어 자동 WebP 분류를 시작하지 않았습니다. 서버를 중지한 뒤 다시 실행해 주세요.")
             return
 
         self.save_classify_settings(silent=True)
 
-        self.stop_requested = False
-        self.btn_run.config(state="disabled", text="⏳ 분류 작업 중...", bg="#444")
-        self.btn_reorg.config(state="disabled")
-        self.btn_sync.config(state="disabled")
-        self.btn_stop.config(state="normal", text="⏹ 정지", bg="#d63031")
-        Thread(target=self._logic_thread, args=(self.full_path, method, is_fast, use_ai, skip_nsfw, skip_char),
-               daemon=True).start()
+        self._launch_job("classify", self._logic_thread,
+                         args=(self.full_path, method, is_fast, use_ai, skip_nsfw, skip_char, delete_comic_duplicates),
+                         job_settings=job_settings)
 
-    def _logic_thread(self, source, method, is_fast, use_ai, skip_nsfw, skip_char):
-        use_gpu = self.use_gpu_var.get()
-        threshold_val = self.threshold_var.get() / 100.0
+    def _logic_thread(self, source, method, is_fast, use_ai, skip_nsfw, skip_char, delete_comic_duplicates=False,
+                      job_settings=None, job_token=None):
         try:
-            image_logic.process(source, method=method, is_fast=is_fast, use_ai=use_ai, use_gpu=use_gpu,
-                                normal_workers=self.normal_thread_count_var.get(),
-                                ai_workers=self.ai_thread_count_var.get(),
-                                ai_threshold=threshold_val,
+            settings = self._worker_job_settings(job_settings)
+            image_logic.process(source, method=method, is_fast=is_fast, use_ai=use_ai, use_gpu=settings["use_gpu"],
+                                delete_comic_duplicates=delete_comic_duplicates,
+                                auto_webp=settings.get("auto_webp", False),
+                                webp_lossless=settings.get("webp_lossless", True),
+                                webp_quality=settings.get("webp_quality", 90),
+                                normal_workers=settings["normal_workers"],
+                                ai_workers=settings["ai_workers"],
+                                ai_threshold=settings["ai_threshold"],
                                 log_func=self.log, stop_check=lambda: self.stop_requested,
                                 progress_update=self.update_progress, skip_nsfw=skip_nsfw, skip_char_id=skip_char)
             self.log("✅ [작업 완료] 새 이미지 처리가 끝났습니다.")
         except Exception as e:
             self.log(f"❌ 오류: {e}")
         finally:
-            self.root.after(0, lambda: self.btn_run.config(state="normal", text="▶ 새 분류", bg="#0984e3"))
-            self.root.after(0, lambda: self.btn_reorg.config(state="normal", text="🔄 재정렬", bg="#e17055"))
-            self.root.after(0, lambda: self.btn_sync.config(state="normal"))
-            self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
+            self.root.after(0, lambda: self._finish_job("classify", job_token))
 
     def start_reorg(self):
+        if not self._can_start_job():
+            return
+        job_settings = self._snapshot_classify_job_settings(include_auto_webp=False)
+        if job_settings is None:
+            return
         # 전체/부분 재정렬 선택창
         reorg_choice = self.show_reorg_target_dialog()
 
@@ -1462,10 +1035,10 @@ class NaiaHyperExecutor:
         skip_char = self.skip_char_var.get()  # 🌟
 
         a_txt = "켜짐" if use_ai else "꺼짐"
-        g_txt = "켜짐" if self.use_gpu_var.get() else "꺼짐"
+        g_txt = "켜짐" if job_settings["use_gpu"] else "꺼짐"
         s_txt = "무시 (모두 기존 폴더/일반짤 처리)" if skip_nsfw else "판독 진행"
         c_txt = "무시 (하위 폴더 미생성)" if skip_char else "판별 진행"  # 🌟
-        t_txt = f"일반 {self.normal_thread_count_var.get()} / AI {self.ai_thread_count_var.get()}"
+        t_txt = f"일반 {job_settings['normal_workers']} / AI {job_settings['ai_workers']}"
 
         if not self.show_action_confirm_dialog(
             title="재정렬 실행 확인",
@@ -1477,7 +1050,7 @@ class NaiaHyperExecutor:
             method_desc="재정렬은 기존 분류 폴더를 다시 배치하는 작업이므로 항상 이동 방식으로 처리됩니다.",
             options=[
                 {"label": "AI 야짤 정밀 판독", "value": a_txt, "state": use_ai},
-                {"label": "GPU 가속", "value": g_txt, "state": self.use_gpu_var.get()},
+                {"label": "GPU 가속", "value": g_txt, "state": job_settings["use_gpu"]},
                 {"label": "수위 감지", "value": s_txt, "state": not skip_nsfw},
                 {"label": "캐릭터 판별", "value": c_txt, "state": not skip_char},
                 {"label": "스레드 수", "value": str(t_txt), "state": None},
@@ -1490,22 +1063,17 @@ class NaiaHyperExecutor:
 
         self.save_classify_settings(silent=True)
 
-        self.stop_requested = False
-        self.btn_reorg.config(state="disabled", text="⏳ 재정렬 중...", bg="#444")
-        self.btn_run.config(state="disabled")
-        self.btn_sync.config(state="disabled")
-        self.btn_stop.config(state="normal", text="⏹ 정지", bg="#d63031")
-        Thread(target=self._reorg_thread, args=(use_ai, skip_nsfw, skip_char, reorg_target), daemon=True).start()
+        self._launch_job("reorg", self._reorg_thread,
+                         args=(use_ai, skip_nsfw, skip_char, reorg_target), job_settings=job_settings)
 
-    def _reorg_thread(self, use_ai, skip_nsfw, skip_char, reorg_target):
-        use_gpu = self.use_gpu_var.get()
-        threshold_val = self.threshold_var.get() / 100.0
+    def _reorg_thread(self, use_ai, skip_nsfw, skip_char, reorg_target, job_settings=None, job_token=None):
         try:
+            settings = self._worker_job_settings(job_settings)
             image_logic.process(self.full_path, method="move", is_fast=False, reorg_mode=True, use_ai=use_ai,
-                                use_gpu=use_gpu,
-                                normal_workers=self.normal_thread_count_var.get(),
-                                ai_workers=self.ai_thread_count_var.get(),
-                                ai_threshold=threshold_val,
+                                use_gpu=settings["use_gpu"],
+                                normal_workers=settings["normal_workers"],
+                                ai_workers=settings["ai_workers"],
+                                ai_threshold=settings["ai_threshold"],
                                 log_func=self.log, stop_check=lambda: self.stop_requested,
                                 progress_update=self.update_progress, skip_nsfw=skip_nsfw, skip_char_id=skip_char,
                                 reorg_target=reorg_target)
@@ -1513,12 +1081,12 @@ class NaiaHyperExecutor:
         except Exception as e:
             self.log(f"❌ 오류: {e}")
         finally:
-            self.root.after(0, lambda: self.btn_reorg.config(state="normal", text="🔄 재정렬", bg="#e17055"))
-            self.root.after(0, lambda: self.btn_run.config(state="normal", text="▶ 새 분류", bg="#0984e3"))
-            self.root.after(0, lambda: self.btn_sync.config(state="normal"))
-            self.root.after(0, lambda: self.btn_stop.config(state="disabled", text="⏹ 정지"))
+            self.root.after(0, lambda: self._finish_job("reorg", job_token))
 
     def start_server(self):
+        if self._has_active_webp_job():
+            self.log('⏳ WebP 압축이 끝난 뒤 서버를 켤 수 있습니다.')
+            return
         if self.server_transitioning:
             self.log("⏳ 서버 상태 전환 중입니다. 잠시만 기다려주세요.")
             return
@@ -1530,47 +1098,151 @@ class NaiaHyperExecutor:
         self.server_transitioning = True
         self.server_monitor_token += 1
         monitor_token = self.server_monitor_token
-        base_dir = APP_DIR
-        app_script = os.path.join(base_dir, "app.py")
-
+        results = Queue()
+        cancel = Event()
+        self._server_start_queue = results
+        self._server_start_cancel = cancel
+        self._set_server_transition_ui("● 서버 준비 중…", "", "")
+        self.log("📡 서버를 준비하고 있습니다.")
         try:
+            Thread(target=self._launch_server_worker, args=(results, cancel), daemon=True).start()
+        except Exception as error:
+            self._server_start_queue = None
+            self._server_start_cancel = None
+            self._server_start_failed(str(error))
+            return
+        self.root.after(50, lambda: self._poll_server_start(monitor_token, results))
+
+    def _launch_server_worker(self, results, cancel):
+        """Blocking launch work never touches Tk; the UI polls one result."""
+        process = None
+        result = ("cancelled", None)
+        try:
+            if cancel.is_set():
+                return
+            if utils.is_port_active(5000):
+                result = ("occupied", None)
+                return
+            if cancel.is_set():
+                return
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
-            server_cmd = [sys.executable, "--server"] if is_frozen_app() else [sys.executable, "-u", app_script]
+            control_token = secrets.token_urlsafe(32)
+            env["NAIM_SERVER_CONTROL_TOKEN"] = control_token
+            server_cmd = [sys.executable, "--server"] if is_frozen_app() else [sys.executable, "-u", os.path.join(APP_DIR, "app.py")]
+            process = subprocess.Popen(server_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       encoding='utf-8', errors='replace', bufsize=1, cwd=APP_DIR, env=env,
+                                       creationflags=creation_flags)
+            process._naim_control_token = control_token
+            result = ("started", process)
+        except Exception as error:
+            result = ("error", str(error))
+        finally:
+            try:
+                if cancel.is_set() and process is not None:
+                    self._discard_unready_server(process)
+                    result = ("cancelled", None)
+            finally:
+                results.put(result)
 
-            self.server_process = subprocess.Popen(server_cmd, stdout=subprocess.PIPE,
-                                                   stderr=subprocess.STDOUT,
-                                                   encoding='utf-8', errors='replace', bufsize=1, cwd=base_dir, env=env,
-                                                   creationflags=creation_flags)
+    @staticmethod
+    def _discard_unready_server(process):
+        """Reap only our new child; no HTTP/port cleanup is needed before readiness."""
+        try:
+            running = process.poll() is None
+        except Exception:
+            running = True
+        try:
+            if running:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass  # The child may have exited since the last poll.
+                try:
+                    process.wait(timeout=1)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+        finally:
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except Exception:
+                    pass
 
-            self._set_server_transition_ui("🟡 서버 기동 중...", "#ffc107", "⏳ 연결 중...")
-
-            Thread(target=self.monitor_server, args=(self.server_process, monitor_token), daemon=True).start()
-        except Exception as e:
+    def _poll_server_start(self, monitor_token, results):
+        try:
+            status, value = results.get_nowait()
+        except Empty:
+            self.root.after(50, lambda: self._poll_server_start(monitor_token, results))
+            return
+        current = monitor_token == self.server_monitor_token and results is self._server_start_queue
+        if status == "started" and (not current or self._closing):
+            # Keep close pending until the stale child is reaped off the Tk thread.
+            def discard():
+                try:
+                    self._discard_unready_server(value)
+                finally:
+                    results.put(("cancelled", None))
+            try:
+                Thread(target=discard, daemon=True).start()
+            except Exception:
+                discard()  # Bounded cleanup if a new thread cannot be allocated.
+            self.root.after(50, lambda: self._poll_server_start(monitor_token, results))
+            return
+        if results is self._server_start_queue:
+            self._server_start_queue = None
+            self._server_start_cancel = None
+        if not current or self._closing:
+            return
+        if status == "started":
+            self.server_process = value
+            try:
+                Thread(target=self.monitor_server, args=(value, monitor_token), daemon=True).start()
+            except Exception as error:
+                self._discard_unready_server(value)
+                self._server_start_failed(str(error))
+        elif status == "occupied":
             self.server_transitioning = False
-            self.server_process = None
-            self.log(f"❌ 서버 시작 실패: {e}")
-            if utils.is_port_active(5000):
-                self._set_external_server_ui()
-            else:
-                self._set_server_offline_ui()
+            self._set_external_server_ui()
+            if messagebox.askyesno("서버 충돌", "5000포트가 이미 사용 중입니다.\n기존 프로세스를 강제로 종료하고 새로 켤까요?"):
+                self.stop_server(
+                    on_complete=lambda: self.log("🧹 서버를 종료했습니다. 이제 다시 켤 수 있습니다."),
+                    force_port_cleanup=True,
+                )
+        elif status == "error":
+            self._server_start_failed(value)
+        else:
+            self.server_transitioning = False
+            self._set_server_offline_ui()
+
+    def _server_start_failed(self, error):
+        self.server_transitioning = False
+        self.server_process = None
+        self.log(f"❌ 서버 시작 실패: {error}")
+        self._set_server_offline_ui()
 
     def _set_server_online_ui(self):
-        # 🌟 현재 실행 중인 서버의 PID를 UI에 함께 표시합니다.
+        desktop_ui.set_server_loading(self, False)
         pid = self.server_process.pid if self.server_process else "알 수 없음"
-        self.server_status_var.set(f"🟢 서버 작동 중 (PID: {pid})")
-        self.lbl_status.config(fg="#00b894")
-        self.btn_server.config(text="🛑 로컬 웹 서버 끄기", state="normal", bg="#d63031", fg="#ffffff")
+        self.server_status_var.set("● 서버 실행 중")
+        self.lbl_status.config(fg=desktop_ui.ACCENT)
+        self.btn_server.config(text="서버 중지", state="normal", bg=desktop_ui.PANEL, fg=desktop_ui.INK)
+        desktop_ui.fit_controller_window(self, show_log=self.log_visible)
+        self.log(f"서버 준비 완료 (PID: {pid})")
 
     def _mark_server_ready(self, process, monitor_token):
-        if monitor_token != self.server_monitor_token or self.server_process is not process:
+        if monitor_token != self.server_monitor_token or self.server_process is not process or self.server_ready:
             return
         self.is_opened = True
         self.server_ready = True
         self.server_transitioning = False
         self._set_server_online_ui()
-        self.open_gallery()
+        if self.auto_open_gallery_var.get():
+            self.open_gallery()
 
     def monitor_server(self, process, monitor_token):
         exit_code = None
@@ -1582,7 +1254,7 @@ class NaiaHyperExecutor:
             for line in iter(process.stdout.readline, ''):
                 if line:
                     clean_line = line.strip()
-                    self.root.after(0, lambda l=clean_line: self.log(f"[서버] {l}"))
+                    self.log(f"[서버] {clean_line}")
                     if not self.is_opened and ("SERVER_READY" in clean_line or "Running on http" in clean_line):
                         self.root.after(0, lambda p=process, t=monitor_token: self._mark_server_ready(p, t))
             exit_code = process.wait()
@@ -1614,20 +1286,14 @@ class NaiaHyperExecutor:
             self.log("ℹ️ 서버가 정상적으로 종료되었습니다.")
 
     def _set_server_offline_ui(self):
-        self.server_status_var.set("🔴 서버 중지됨")
-        self.lbl_status.config(fg="#ff4d4d")
-        self.btn_server.config(text="🚀 로컬 웹 서버 켜기", state="normal", bg="#00b894", fg="#ffffff")
+        desktop_ui.set_server_loading(self, False)
+        self.server_status_var.set("● 서버 중지됨")
+        self.lbl_status.config(fg=desktop_ui.MUTED)
+        self.btn_server.config(text="서버 시작", state="normal", bg=desktop_ui.PANEL, fg=desktop_ui.INK)
+        desktop_ui.fit_controller_window(self, show_log=self.log_visible)
 
     def toggle_log(self):
-        if self.log_visible:
-            self.log_sidebar.pack_forget()
-            # 🌟 로그창 닫았을 때 세로 길이도 줄인 사이즈(780)로 맞춰줍니다.
-            self.root.geometry("800x780")
-            self.log_visible = False
-        else:
-            self.root.geometry("1150x780")
-            self.log_sidebar.pack(side="right", fill="y", padx=(10, 30), pady=40)
-            self.log_visible = True
+        desktop_ui.fit_controller_window(self, show_log=not self.log_visible)
 
     def _finish_update_check(self):
         self.update_in_progress = False
@@ -1703,6 +1369,9 @@ class NaiaHyperExecutor:
 
 if __name__ == "__main__":
     # 🌟 3. 메인 로직 구동 (위의 검사를 모두 무사히 통과했을 때만 실행됨)
+    if os.name == "nt":
+        # Give source launches their own taskbar identity instead of Python's.
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("NAI.ImageManager")
     root = tk.Tk()
     app = NaiaHyperExecutor(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)

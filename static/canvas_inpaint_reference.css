@@ -1,0 +1,174 @@
+#canvasInpaintReferenceControls,
+.canvas-inpaint-reference-controls,
+.canvas-inpaint-reference-controls * {
+    box-sizing: border-box;
+}
+
+#canvasInpaintReferenceControls,
+.canvas-inpaint-reference-controls {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+    margin: 0;
+    padding: 10px;
+    border: 1px solid var(--border-color, #393944);
+    border-radius: var(--radius-sm, 8px);
+    background: var(--bg-color, #17171d);
+    color: var(--text-main, #f4f4f6);
+    font: 12px/1.5 var(--font-family, sans-serif);
+}
+
+#canvasInpaintReferenceControls[hidden],
+.canvas-inpaint-reference-controls[hidden] {
+    display: none !important;
+}
+
+.canvas-inpaint-reference-disclosure {
+    min-width: 0;
+}
+
+.canvas-inpaint-reference-summary {
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.canvas-inpaint-reference-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    padding-top: 8px;
+}
+
+.canvas-inpaint-reference-title {
+    display: inline;
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-inpaint-reference-name,
+.canvas-inpaint-reference-status,
+.canvas-inpaint-reference-info {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.canvas-inpaint-reference-name {
+    color: var(--text-main, #f4f4f6);
+}
+
+.canvas-inpaint-reference-status,
+.canvas-inpaint-reference-info {
+    color: var(--text-muted, #a6a6b2);
+}
+
+.canvas-inpaint-reference-status.is-error {
+    color: #ffb4ab;
+}
+
+.canvas-inpaint-reference-row {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.canvas-inpaint-reference-controls button {
+    flex: 0 0 auto;
+    min-height: 32px;
+    max-width: 100%;
+    padding: 6px 9px;
+    font: 12px/1.4 var(--font-family, sans-serif);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.canvas-inpaint-reference-checkbox,
+.canvas-inpaint-reference-action-label {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.canvas-inpaint-reference-checkbox input,
+.canvas-inpaint-reference-action-label input {
+    flex: 0 0 auto;
+    width: auto;
+    margin: 0;
+}
+
+.canvas-inpaint-reference-clear {
+    align-self: flex-start;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted, #a6a6b2);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.canvas-inpaint-reference-clear:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.canvas-inpaint-reference-actions {
+    display: inline-flex;
+    grid-column: 1 / -1;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.canvas-inpaint-reference-action-label {
+    min-height: 32px;
+}
+
+.canvas-inpaint-reference-actions :focus-visible,
+#canvasInpaintReferenceControls :focus-visible {
+    outline: 2px solid var(--accent-blue, #46d4f3);
+    outline-offset: 2px;
+}
+
+.canvas-inpaint-reference-control {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    line-height: 1.5;
+}
+
+.canvas-inpaint-reference-control > span:first-child {
+    flex: 0 0 72px;
+}
+
+.canvas-inpaint-reference-control input[type="number"] {
+    box-sizing: border-box;
+    width: 112px;
+    min-width: 96px;
+    min-height: 32px;
+    max-width: 100%;
+    flex: 0 0 auto;
+    padding: 5px 8px;
+}
+

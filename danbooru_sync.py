@@ -4,6 +4,9 @@ import requests
 import time
 import re
 from collections import Counter
+from pathlib import Path
+
+from naim.storage.character_copyrights import CharacterCopyrightDictionary
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(CURRENT_DIR, "TOTAL_CLASSIFIED", "naia_history.db")
@@ -593,8 +596,19 @@ def sync_copyrights():
     has_local_db = os.path.exists(LOCAL_CHAR_DB_PATH)
     local_cursor = None
     if has_local_db:
-        local_conn = sqlite3.connect(LOCAL_CHAR_DB_PATH)
+        local_conn = sqlite3.connect(Path(LOCAL_CHAR_DB_PATH).resolve().as_uri() + '?mode=ro', uri=True)
         local_cursor = local_conn.cursor()
+
+    dictionary = CharacterCopyrightDictionary(conn)
+    if local_cursor:
+        try:
+            known_tags = cursor.execute("SELECT tag FROM known_characters").fetchall()
+            additional_characters = {normalize_name(row[0]) for row in known_tags if row[0]}
+            additional_characters.discard('')
+            count = dictionary.seed_from_local(local_cursor, additional_characters)
+            print(f"Prepared {count} character/copyright dictionary relations.")
+        except sqlite3.Error as error:
+            print(f"Unable to refresh the local relationship dictionary: {error}")
 
     if RECLASSIFY_ALL_BRANDS_ONCE:
         cursor.execute("UPDATE known_characters SET brand = NULL")
@@ -612,6 +626,7 @@ def sync_copyrights():
         conn.close()
         if has_local_db:
             local_conn.close()
+        session.close()
         return
 
     search_queue = {}
@@ -628,10 +643,11 @@ def sync_copyrights():
         if search_name not in search_queue:
             continue
 
-        brand_name = get_local_brand(search_name, local_cursor)
+        copyright_tag = dictionary.lookup(search_name)
+        brand_name = to_brand_display_name(copyright_tag) if copyright_tag else None
 
         if brand_name:
-            print(f"[{idx}/{total_count}] '{search_name}': [{brand_name}] (local parenthesis match)")
+            print(f"[{idx}/{total_count}] '{search_name}': [{brand_name}] (local relationship dictionary)")
             cursor.executemany(
                 "UPDATE known_characters SET brand = ? WHERE tag = ?",
                 [(brand_name, orig) for orig in search_queue[search_name]]
@@ -652,11 +668,12 @@ def sync_copyrights():
                     print(f"  -> [{brand_name}] (DB anchor + image vote)")
 
                     if search_name in search_queue:
-                        cursor.executemany(
-                            "UPDATE known_characters SET brand = ? WHERE tag = ?",
-                            [(brand_name, orig) for orig in search_queue[search_name]]
-                        )
-                        conn.commit()
+                        with conn:
+                            dictionary.remember(search_name, best_tag)
+                            cursor.executemany(
+                                "UPDATE known_characters SET brand = ? WHERE tag = ?",
+                                [(brand_name, orig) for orig in search_queue[search_name]]
+                            )
                         del search_queue[search_name]
 
                     time.sleep(0.5)
@@ -679,6 +696,7 @@ def sync_copyrights():
     conn.close()
     if has_local_db:
         local_conn.close()
+    session.close()
     print("\nBrand sync complete.")
 
 

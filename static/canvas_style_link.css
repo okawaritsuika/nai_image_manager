@@ -1,0 +1,715 @@
+.canvas-style-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 8px;
+    color: var(--text-main);
+}
+
+.canvas-style-launcher,
+.canvas-style-link-header button,
+.canvas-style-link-topbar button,
+.canvas-style-link-tabs button,
+.canvas-style-link-footer-actions button,
+.canvas-style-link-controls button,
+.canvas-style-link-direct-preview-row button,
+.canvas-style-link-apply {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--btn-secondary);
+    color: var(--text-main);
+    font: inherit;
+    line-height: 1.35;
+    cursor: pointer;
+}
+
+.canvas-style-launcher:hover,
+.canvas-style-link-header button:hover,
+.canvas-style-link-topbar button:hover,
+.canvas-style-link-tabs button:hover,
+.canvas-style-link-footer-actions button:hover,
+.canvas-style-link-controls button:hover,
+.canvas-style-link-direct-preview-row button:hover,
+.canvas-style-link-apply:hover {
+    background: var(--btn-secondary-hover);
+}
+
+.canvas-style-link-header button:focus-visible,
+.canvas-style-link-topbar button:focus-visible,
+.canvas-style-link-tabs button:focus-visible,
+.canvas-style-link-footer-actions button:focus-visible,
+.canvas-style-link-controls button:focus-visible,
+.canvas-style-link-controls input:focus-visible,
+.canvas-style-link-controls select:focus-visible,
+.canvas-style-link-item:focus-visible,
+.canvas-style-link-direct-pane input:focus-visible,
+.canvas-style-link-direct-pane textarea:focus-visible,
+.canvas-style-link-direct-pane button:focus-visible {
+    outline: 2px solid var(--success);
+    outline-offset: 2px;
+}
+
+.canvas-style-link-topbar button:disabled,
+.canvas-style-link-tabs button:disabled,
+.canvas-style-link-footer-actions button:disabled,
+.canvas-style-link-controls button:disabled,
+.canvas-style-link-direct-pane button:disabled,
+.canvas-style-link-review-pane button:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.canvas-style-link-retry {
+    border-color: var(--success) !important;
+}
+
+.canvas-style-token {
+    display: inline-flex;
+    flex-wrap: wrap;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-reference-preview {
+    margin-top: 6px;
+    min-height: 0;
+    max-height: 220px;
+    overflow: auto;
+}
+
+.canvas-style-reference-token {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+#referenceGenBasePrompt[hidden],
+#referenceGenNegativePrompt[hidden] {
+    display: none;
+}
+
+#canvasStyleLinkModal {
+    z-index: 30000;
+    padding: 24px;
+}
+
+#canvasStyleLinkModal .canvas-style-dialog {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    gap: 12px;
+    width: min(1040px, 94vw);
+    max-height: 90vh;
+    min-width: 0;
+    overflow: hidden;
+    padding: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--card-bg);
+    color: var(--text-main);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+
+.canvas-style-link-header,
+.canvas-style-link-topbar,
+.canvas-style-link-tabs,
+.canvas-style-link-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.canvas-style-link-header {
+    justify-content: space-between;
+}
+
+.canvas-style-link-header h3 {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    color: var(--text-main);
+    font-size: 18px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-topbar {
+    align-items: flex-start;
+}
+
+.canvas-style-link-connection-status {
+    flex: 1 1 320px;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-tabs button[aria-pressed="true"],
+.canvas-style-link-controls button[aria-pressed="true"] {
+    border-color: var(--success);
+    box-shadow: inset 0 0 0 1px var(--success);
+}
+
+.canvas-style-link-body {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.canvas-style-link-gallery-pane {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+}
+
+.canvas-style-link-gallery-pane[hidden],
+.canvas-style-link-direct-pane[hidden] {
+    display: none;
+}
+
+.canvas-style-link-help,
+.canvas-style-link-direct-help {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(110px, 150px) auto auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.canvas-style-link-controls input,
+.canvas-style-link-controls select,
+.canvas-style-link-direct-pane input,
+.canvas-style-link-direct-pane textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 7px 9px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--btn-secondary);
+    color: var(--text-main);
+    font: inherit;
+}
+
+.canvas-style-link-controls input,
+.canvas-style-link-controls select,
+.canvas-style-link-direct-pane input {
+    min-height: 36px;
+}
+
+.canvas-style-link-results {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    align-content: start;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: 2px;
+}
+
+.canvas-style-link-item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--btn-secondary);
+    color: var(--text-main);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+}
+
+.canvas-style-link-item:hover {
+    border-color: var(--success);
+    background: var(--btn-secondary-hover);
+}
+
+.canvas-style-link-item.is-selected {
+    border-color: var(--success);
+    box-shadow: inset 0 0 0 1px var(--success);
+}
+
+.canvas-style-link-thumbnail,
+.canvas-style-link-thumbnail-placeholder {
+    display: flex;
+    box-sizing: border-box;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 4 / 5;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--card-bg);
+    object-fit: contain;
+}
+
+.canvas-style-link-thumbnail-placeholder {
+    padding: 8px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-item-details {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.canvas-style-link-item-name {
+    display: -webkit-box;
+    min-width: 0;
+    color: var(--text-main);
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.canvas-style-link-item-meta {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-empty {
+    grid-column: 1 / -1;
+    padding: 18px 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-direct-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+    max-height: 100%;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: 2px;
+}
+
+.canvas-style-link-direct-name,
+.canvas-style-link-direct-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.canvas-style-link-direct-name label,
+.canvas-style-link-direct-field-label,
+.canvas-style-link-direct-preview-label {
+    min-width: 0;
+    color: var(--text-main);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-direct-pane textarea {
+    min-height: 100px;
+    max-height: 180px;
+    resize: vertical;
+    font-size: 12px;
+    line-height: 1.6;
+    overflow: auto;
+}
+
+.canvas-style-link-direct-preview-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 6px;
+    min-width: 0;
+}
+
+.canvas-style-link-direct-preview-label {
+    flex: 0 0 auto;
+    padding-top: 5px;
+    color: var(--text-muted);
+}
+
+.canvas-style-link-direct-preview-row .canvas-style-reference-preview {
+    flex: 1 1 220px;
+    min-width: 0;
+    max-height: 90px;
+    margin-top: 0;
+    padding: 5px 7px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--card-bg);
+    color: var(--text-main);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.canvas-style-link-direct-empty,
+.canvas-style-link-direct-error {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-direct-error {
+    color: var(--success);
+}
+
+.canvas-style-link-review-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+    max-height: 100%;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: 2px;
+}
+
+.canvas-style-link-review-pane[hidden] {
+    display: none;
+}
+
+.canvas-style-review-hero {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.canvas-style-review-hero-media,
+.canvas-style-review-hero-image,
+.canvas-style-review-hero-placeholder {
+    box-sizing: border-box;
+    width: 96px;
+    height: 120px;
+    min-width: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--card-bg);
+}
+
+.canvas-style-review-hero-media {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.canvas-style-review-hero-placeholder[hidden],
+.canvas-style-review-hero-image[hidden] {
+    display: none;
+}
+
+.canvas-style-review-hero-image {
+    object-fit: contain;
+}
+
+.canvas-style-review-hero-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-review-hero-info {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    min-width: 0;
+}
+
+.canvas-style-review-heading {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-main);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-review-library {
+    display: inline-flex;
+    max-width: 100%;
+    padding: 3px 7px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-review-hero > button,
+.canvas-style-review-field-actions button {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--btn-secondary);
+    color: var(--text-main);
+    font: inherit;
+    line-height: 1.35;
+    cursor: pointer;
+}
+
+.canvas-style-review-hero > button:hover,
+.canvas-style-review-field-actions button:hover {
+    background: var(--btn-secondary-hover);
+}
+
+.canvas-style-review-hero > button:focus-visible,
+.canvas-style-review-field-actions button:focus-visible,
+.canvas-style-review-token:focus-visible,
+.canvas-style-link-review-pane > button:focus-visible {
+    outline: 2px solid var(--success);
+    outline-offset: 2px;
+}
+
+.canvas-style-review-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.canvas-style-review-field-header,
+.canvas-style-review-field-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.canvas-style-review-field-header {
+    justify-content: space-between;
+}
+
+.canvas-style-review-field-header h5 {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-main);
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-review-count,
+.canvas-style-review-legend,
+.canvas-style-review-empty,
+.canvas-style-review-no-match {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-review-recipe {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-review-recipe summary {
+    cursor: pointer;
+}
+
+.canvas-style-review-recipe-text {
+    max-height: 100px;
+    overflow: auto;
+    margin-top: 4px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--card-bg);
+    color: var(--text-main);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.canvas-style-review-tokens {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 6px;
+    min-width: 0;
+    max-height: 180px;
+    overflow: auto;
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--card-bg);
+    user-select: none;
+}
+
+.canvas-style-review-token {
+    flex: 0 1 auto;
+    max-width: 100%;
+    min-width: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--btn-secondary);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    user-select: none;
+    cursor: pointer;
+}
+
+.canvas-style-review-token::before {
+    content: '✓';
+    display: inline-block;
+    width: 1em;
+    margin-right: 4px;
+    color: var(--success);
+    visibility: hidden;
+}
+
+.canvas-style-review-token.is-selected::before {
+    visibility: visible;
+}
+
+.canvas-style-review-token.is-match {
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 3px;
+}
+
+.canvas-style-review-token.is-selected {
+    border-color: var(--success);
+    background: var(--btn-secondary-hover);
+}
+
+.canvas-style-review-selection-box {
+    display: block;
+    position: fixed;
+    z-index: 1;
+    pointer-events: none;
+    box-sizing: border-box;
+    border: 1px solid rgba(0, 242, 255, 0.95);
+    background: rgba(0, 242, 255, 0.12);
+    box-shadow: 0 0 0 1px rgba(5, 5, 8, 0.55);
+}
+
+.canvas-style-review-selection-box[hidden] {
+    display: none;
+}
+
+.canvas-style-link-review-error {
+    min-width: 0;
+    color: var(--success);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-apply {
+    align-self: flex-start;
+    border-color: var(--success);
+}
+
+.canvas-style-link-footer {
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
+.canvas-style-link-modal-status {
+    flex: 1 1 240px;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-style-link-footer-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    min-width: 0;
+}
+
+@media (max-width: 600px) {
+    .canvas-style-link-controls {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .canvas-style-link-controls input {
+        grid-column: 1 / -1;
+    }
+
+    .canvas-style-link-footer {
+        align-items: flex-start;
+    }
+
+    .canvas-style-link-footer-actions {
+        justify-content: flex-start;
+    }
+}

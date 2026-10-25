@@ -4,11 +4,215 @@ from PIL import Image
 import utils
 import datetime
 import re
+from naim.jobs.batches import iter_completed
+from naim.images.webp_conversion import restore_webp_metadata
+from naim.images.comics import (
+    collect_comics, find_comic_duplicates, save_comic, pixel_digest,
+    delete_imported_duplicates, comic_destination,
+)
 
 warnings.filterwarnings("ignore")
 USE_AI_FILTER = False
 USE_GPU_MODE = False # 🌟 추가: GPU 사용 여부를 저장할 전역 변수
 nsfw_ai = None
+
+# NovelAI image metadata uses both the request model id and human-readable
+# fields written by different generations of the web client.
+MODEL_FAMILY_V5_IDS = frozenset({
+    "nai-diffusion-5-full",
+    "nai-diffusion-5-full-medium",
+    "nai-diffusion-5-curated",
+    "nai-diffusion-5-full-inpainting",
+    "nai-diffusion-5-full-medium-inpainting",
+})
+MODEL_FAMILY_V4_5_IDS = frozenset({
+    "nai-diffusion-4-5-full",
+    "nai-diffusion-4-5-curated",
+    "nai-diffusion-4-5-full-inpainting",
+})
+MODEL_FAMILY_VALUES = frozenset({"v5", "v4_5", "other"})
+MODEL_FAMILY_FILTERS = frozenset({"all", "v5", "v4_5", "other"})
+
+from naim.images.characters import (
+    _CHARACTER_PROMPT_BLACKLIST,
+    _CHARACTER_PROMPT_TOKEN_PATTERN,
+    GENERIC_CHARACTER_TAGS,
+    _CHARACTER_COUNT_TAG_PATTERN,
+    _clean_character_prompt_tag,
+    _character_alias_key,
+    normalize_generic_character_name,
+    is_generic_character_name,
+    _character_alias_pattern,
+    _character_alias_first_token,
+    _is_simple_character_alias,
+    _character_row_values,
+    build_character_matcher,
+    extract_character_names,
+)
+
+
+def normalize_model_family(value):
+    """Normalize a stored model family; missing/unknown values are other."""
+    value = str(value or "").strip().lower()
+    return value if value in MODEL_FAMILY_VALUES else "other"
+
+
+def normalize_model_family_filter(value):
+    """Normalize the public gallery filter; invalid/missing values mean all."""
+    value = str(value or "all").strip().lower()
+    return value if value in MODEL_FAMILY_FILTERS else "all"
+
+
+def model_family_matches(selected_family, image_family):
+    selected_family = normalize_model_family_filter(selected_family)
+    return selected_family == "all" or selected_family == normalize_model_family(image_family)
+
+
+def classify_model_family(model_value):
+    """Classify an official model id or a NovelAI human-readable model label."""
+    value = str(model_value or "").strip()
+    if not value:
+        return "other"
+
+    folded = value.casefold()
+    if folded in MODEL_FAMILY_V5_IDS:
+        return "v5"
+    if folded in MODEL_FAMILY_V4_5_IDS:
+        return "v4_5"
+
+    # Source/model_name values include a changing hexadecimal suffix.  Require
+    # a word boundary so e.g. a hypothetical "V50" is not treated as V5.
+    if re.match(r"^novelai\s+diffusion\s+v5(?:\b|$)", folded):
+        return "v5"
+    if re.match(r"^novelai\s+diffusion\s+v4\.5(?:\b|$)", folded):
+        return "v4_5"
+    return "other"
+
+
+def _decode_metadata_json(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "ignore")
+    if not isinstance(value, str) or not value.strip().startswith("{"):
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _iter_metadata_model_values(metadata, _seen=None):
+    """Yield model values from a metadata object without guessing prompt data."""
+    if _seen is None:
+        _seen = set()
+    if isinstance(metadata, dict):
+        marker = id(metadata)
+        if marker in _seen:
+            return
+        _seen.add(marker)
+
+        # Keep explicit model fields ahead of nested request parameters.
+        for key, value in metadata.items():
+            key_folded = str(key).casefold()
+            if key_folded in {"model", "model_name"}:
+                if isinstance(value, (str, bytes)):
+                    yield value
+            elif key_folded == "source" and isinstance(value, (str, bytes)):
+                yield value
+
+        for key, value in metadata.items():
+            if str(key).casefold() in {"parameters", "comment"}:
+                nested = _decode_metadata_json(value)
+                if nested is not None:
+                    yield from _iter_metadata_model_values(nested, _seen)
+
+
+def extract_model_family_from_metadata(metadata):
+    """Return v5, v4_5, or other from a metadata dict/JSON string."""
+    parsed = _decode_metadata_json(metadata)
+    if parsed is None:
+        return "other"
+    for model_value in _iter_metadata_model_values(parsed):
+        family = classify_model_family(model_value)
+        if family != "other":
+            return family
+    return "other"
+
+
+def _image_info_value(image, wanted_key):
+    wanted_key = wanted_key.casefold()
+    for key, value in getattr(image, "info", {}).items():
+        if str(key).casefold() == wanted_key:
+            return value
+    return None
+
+
+def extract_model_family_from_image(image, *, _stealth_reader=None):
+    """Read model metadata from PIL text chunks, EXIF, or NovelAI stealth data."""
+    restore_webp_metadata(image)
+    # Official ids and request parameters take precedence over display labels.
+    candidate_values = []
+    visible_metadata_present = False
+    for key in ("model", "parameters", "comment", "model_name", "source"):
+        value = _image_info_value(image, key)
+        if value is None:
+            continue
+        visible_metadata_present = True
+        if key in {"parameters", "comment"}:
+            parsed = _decode_metadata_json(value)
+            if parsed is not None:
+                candidate_values.extend(_iter_metadata_model_values(parsed))
+        else:
+            candidate_values.append(value)
+
+    if hasattr(image, "getexif"):
+        try:
+            exif = image.getexif()
+            if exif and 37510 in exif:
+                visible_metadata_present = True
+                candidate_values.append(exif[37510])
+        except Exception:
+            pass
+
+    for candidate in candidate_values:
+        if isinstance(candidate, bytes):
+            candidate = candidate.decode("utf-8", "ignore")
+        if isinstance(candidate, str):
+            candidate = candidate.replace("\x00", "").strip()
+            if candidate.startswith(("UNICODE", "ASCII")):
+                candidate = candidate[8:]
+        family = classify_model_family(candidate)
+        if family != "other":
+            return family
+
+        parsed = _decode_metadata_json(candidate)
+        if parsed is not None:
+            for model_value in _iter_metadata_model_values(parsed):
+                family = classify_model_family(model_value)
+                if family != "other":
+                    return family
+
+    # Visible metadata is authoritative even when it contains an unknown
+    # model.  This avoids a per-image stealth probe for ordinary PNGs.
+    if visible_metadata_present:
+        return "other"
+
+    stealth_data = (_stealth_reader or read_stealth_info)(image)
+    if stealth_data:
+        family = extract_model_family_from_metadata(stealth_data)
+        if family != "other":
+            return family
+    return "other"
+
+
+def extract_model_family_from_file(file_path):
+    try:
+        with Image.open(file_path) as image:
+            return extract_model_family_from_image(image)
+    except Exception:
+        return "other"
 
 def build_gallery_index_records_from_success(success_records, classified_root):
     records = []
@@ -58,7 +262,10 @@ def build_gallery_index_records_from_success(success_records, classified_root):
             "height": item.get("height"),
             "mtime": mtime,
             "reason": reason,
-            "gallery_tag": ""
+            "gallery_tag": "",
+            "model_family": normalize_model_family(
+                item.get("model_family") or extract_model_family_from_file(final_path)
+            )
         })
 
     return records
@@ -148,47 +355,46 @@ def prune_ignored_dirs(root, dirs):
 
     dirs[:] = kept
 
+_STEALTH_BIT_CHARACTERS = bytes(48 + (value & 1) for value in range(256))
+
+
 def read_stealth_info(image):
+    restore_webp_metadata(image)
     if image.mode != 'RGBA':
         return None
 
-    # 🌟 [초고속 해독] 픽셀을 2중 루프로 일일이 순회하는 대신 C언어 기반의 바이트 배열로 한 번에 추출 (수백 배 가속)
     try:
         width, height = image.size
-        alpha_bytes = image.getchannel('A').tobytes()
-    except Exception:
-        return None
-
-    # NAI 스텔스 데이터는 세로(y) 방향으로 먼저 기록되므로, 1차원 배열에서 정확한 위치를 집어내는 수학 공식 적용
-    def get_bit(idx):
-        x = idx // height
-        y = idx % height
-        return str(alpha_bytes[y * width + x] & 1)
-
-    try:
-        # 1. 시그니처 120비트(15바이트) 확인
-        sig_bits = "".join(get_bit(i) for i in range(120))
-        decoded_sig = bytearray(int(sig_bits[i:i + 8], 2) for i in range(0, 120, 8)).decode('utf-8', errors='ignore')
-
-        if decoded_sig != 'stealth_pngcomp':
+        if width * height < 152:
             return None
+        # The payload runs down columns. Crop before extracting alpha so an
+        # ordinary PNG does not allocate a full-size alpha buffer to probe it.
+        def read_bits(count):
+            columns = (count + height - 1) // height
+            with image.crop((0, 0, columns, height)) as strip:
+                with strip.getchannel('A') as alpha:
+                    with alpha.transpose(Image.Transpose.TRANSPOSE) as ordered:
+                        return ordered.tobytes()[:count].translate(_STEALTH_BIT_CHARACTERS)
 
-        # 2. 파라미터 길이 32비트(4바이트) 확인
-        len_bits = "".join(get_bit(i) for i in range(120, 152))
-        param_len = int(len_bits, 2)
-
-        # 3. 실제 파라미터 내용 추출 (전체 이미지 순회 없이 필요한 만큼만 정확하게 슬라이싱)
-        data_bits = "".join(get_bit(i) for i in range(152, 152 + param_len))
-        byte_data = bytearray(int(data_bits[i:i + 8], 2) for i in range(0, param_len, 8))
-
-        return gzip.decompress(bytes(byte_data)).decode('utf-8')
+        header = read_bits(152)
+        if int(header[:120], 2).to_bytes(15, 'big') != b'stealth_pngcomp':
+            return None
+        param_len = int(header[120:152], 2)
+        if not param_len or 152 + param_len > width * height:
+            return None
+        bits = read_bits(152 + param_len)[152:]
+        whole_bits = param_len - param_len % 8
+        byte_data = int(bits[:whole_bits] or b'0', 2).to_bytes(whole_bits // 8, 'big')
+        if whole_bits != param_len:
+            byte_data += bytes([int(bits[whole_bits:], 2)])
+        return gzip.decompress(byte_data).decode('utf-8')
     except Exception:
         return None
 
 
 # 🌟 2. 메인 작업자 함수
 # [95라인 부근] 함수 인자에 override_cache를 추가합니다.
-def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, skip_nsfw=False, allow_ai=True, mark_ai_pending=False):
+def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, skip_nsfw=False, allow_ai=True, mark_ai_pending=False, metadata_path=None, fallback_prompt_info=None):
     file_hash = None
     try:
         size = os.path.getsize(full_path)
@@ -209,6 +415,7 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
     nsfw_reasons = []
     ai_pending = False
     meta_source = "none"
+    model_family = "other"
 
     def make_result(rating_value=None):
         result = (
@@ -217,7 +424,8 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
             char_tags,
             base_tags,
             (2 if is_nsfw else 0) if rating_value is None else rating_value,
-            nsfw_reasons
+            nsfw_reasons,
+            model_family
         )
         if mark_ai_pending:
             return result + (ai_pending, meta_source)
@@ -232,7 +440,15 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
         return make_result(2 if is_nsfw else 0)
 
     try:
-        with Image.open(full_path) as img:
+        with Image.open(metadata_path or full_path) as img:
+            stealth_cache = []
+
+            def read_stealth_once(image):
+                if not stealth_cache:
+                    stealth_cache.append(read_stealth_info(image))
+                return stealth_cache[0]
+
+            model_family = extract_model_family_from_image(img, _stealth_reader=read_stealth_once)
             # --- (생략 없이 기존 메타데이터 추출 로직 그대로 유지) ---
             raw_meta = ""
             meta_source = "none"
@@ -263,7 +479,7 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
 
             # 2) 텍스트 메타가 없을 때만 무거운 stealth 해독을 시도한다.
             if not raw_meta:
-                stealth_data = read_stealth_info(img)
+                stealth_data = read_stealth_once(img)
                 if stealth_data:
                     raw_meta = stealth_data
                     meta_source = "stealth"
@@ -285,6 +501,15 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
                 prompt_part = raw_meta.split("Negative prompt:")[0]
                 if "\n" in prompt_part: prompt_part = prompt_part.split("\n")[0]
                 meta = {"prompt": prompt_part}
+
+            if not meta and fallback_prompt_info:
+                meta = {
+                    "prompt": fallback_prompt_info.get("basePrompt") or "",
+                    "v4_prompt": {"caption": {"char_captions": [
+                        {"char_caption": text} for text in fallback_prompt_info.get("charPrompts", [])
+                    ]}},
+                }
+                model_family = classify_model_family(fallback_prompt_info.get("model") or "")
 
             nai_rating = meta.get("rating", "unknown")
             base_p = str(meta.get("prompt", "")).lower()
@@ -348,7 +573,7 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
 
     except Exception as e:
         unreadable_reason = f"__UNREADABLE__:{e}"
-        result = (full_path, file_hash, [], [], -999, [unreadable_reason])
+        result = (full_path, file_hash, [], [], -999, [unreadable_reason], model_family)
         if mark_ai_pending:
             return result + (False, meta_source)
         return result
@@ -356,7 +581,11 @@ def analyze_file_worker(full_path, override_cache=None, ai_threshold=0.9998, ski
     return make_result()
 
 def ai_classify_pending_result(base_result, ai_threshold=0.9998):
-    full_path, file_hash, char_tags, base_tags, rating, nsfw_reasons = base_result
+    if len(base_result) >= 7:
+        full_path, file_hash, char_tags, base_tags, rating, nsfw_reasons, model_family = base_result[:7]
+    else:
+        full_path, file_hash, char_tags, base_tags, rating, nsfw_reasons = base_result
+        model_family = "other"
     nsfw_reasons = list(nsfw_reasons or [])
 
     is_nsfw = rating == 2
@@ -386,7 +615,8 @@ def ai_classify_pending_result(base_result, ai_threshold=0.9998):
         char_tags,
         base_tags,
         2 if is_nsfw else 0,
-        nsfw_reasons
+        nsfw_reasons,
+        model_family
     )
 
 def file_io_worker(src, dest, method, nsfw_reasons=None):  # 🌟 인자 추가
@@ -863,7 +1093,13 @@ def scan_and_extract_artists(classified_root, clear_db=False, log_func=print, st
     finally:
         db.close()
 
-def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=False, use_gpu=True, max_workers=None, normal_workers=None, ai_workers=None, ai_threshold=0.9998, log_func=print, stop_check=None, progress_update=None, skip_nsfw=False, skip_char_id=False, reorg_target=None):
+def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=False, use_gpu=True, max_workers=None, normal_workers=None, ai_workers=None, ai_threshold=0.9998, log_func=print, stop_check=None, progress_update=None, skip_nsfw=False, skip_char_id=False, reorg_target=None, delete_comic_duplicates=False, *, auto_webp=False, webp_lossless=True, webp_quality=90):
+    if not isinstance(auto_webp, bool):
+        raise ValueError("자동 WebP 변환 여부를 선택해 주세요.")
+    if auto_webp and (not isinstance(webp_lossless, bool) or isinstance(webp_quality, bool)
+                      or not isinstance(webp_quality, int) or not 1 <= webp_quality <= 100):
+        raise ValueError("자동 WebP 압축 방식과 화질(1~100)을 확인해 주세요.")
+    convert_new_pngs = auto_webp and not reorg_mode
     global USE_AI_FILTER, USE_GPU_MODE
     USE_AI_FILTER = use_ai
     USE_GPU_MODE = use_gpu  # 🌟 사용자 선택값을 전역 변수에 저장
@@ -927,6 +1163,18 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     except Exception as e:
         log_func(f"⚠️ 메모리 로드 중 오류: {e}")
 
+    known_character_rows = []
+    try:
+        cur = db.conn.cursor()
+        cur.execute("SELECT tag, clean_name FROM known_characters")
+        known_character_rows = cur.fetchall()
+    except Exception as e:
+        log_func(f"⚠️ 캐릭터 별칭 캐시 로드 실패: {e}")
+    character_matcher = build_character_matcher(
+        known_character_rows,
+        DANBOORU_RAM_CACHE,
+    )
+
     processed_hashes = set()
     if is_fast and not reorg_mode:
         log_func("⚡ 이전 이력 DB를 메모리에 로드 중입니다...")
@@ -969,6 +1217,41 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
 
     if ignored_folder_count:
         log_func(f"🚫 .ignore 폴더 {ignored_folder_count}개를 분류 대상에서 제외했습니다.")
+
+    comic_groups, comic_by_path = collect_comics(all_images)
+    comic_duplicates = {}
+    comic_destinations = {}
+    comic_prompt_infos = {}
+    if comic_groups and not reorg_mode:
+        duplicate_started = time.perf_counter()
+        log_func("📚 코믹 중복 확인: 같은 생성 폴더의 동일 해상도 후보만 픽셀 비교합니다.")
+        comic_duplicates = find_comic_duplicates(
+            all_images, comic_groups, comic_by_path, stop_check, progress_update,
+        )
+        all_images = [p for p in all_images if p not in comic_duplicates]
+        log_func(f"📚 코믹 {len(comic_groups)}편 / 바깥 중복 {len(comic_duplicates)}장 제외 "
+                 f"({time.perf_counter() - duplicate_started:.2f}초)")
+    if stop_check and stop_check():
+        db.close()
+        return
+
+    comic_metadata_sources = {}
+    for outside, page in comic_duplicates.items():
+        comic_metadata_sources.setdefault(page, outside)
+
+    def analyze_for_classification(path, **options):
+        if path not in comic_by_path:
+            return analyze_file_worker(path, **options)
+        from naim.images.prompt_metadata import (
+            load_prompt_sidecar, extract_prompt_info_from_image, has_prompt_info_payload,
+        )
+        source = comic_metadata_sources.get(path, path)
+        info = load_prompt_sidecar(path) or extract_prompt_info_from_image(source)
+        if not has_prompt_info_payload(info):
+            group = comic_by_path[path]
+            info = {"basePrompt": group["base_prompt"], "charPrompts": group["prompt_tags"]}
+        comic_prompt_infos[path] = info
+        return analyze_file_worker(path, metadata_path=source, fallback_prompt_info=info, **options)
 
     total_images = len(all_images)
     stats["total_scanned"] = total_images
@@ -1057,37 +1340,30 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         stage1a_started_at = time.perf_counter()
         emit_progress(0, total_images, "1A 일반 분석")
         with concurrent.futures.ThreadPoolExecutor(max_workers=normal_worker_count) as executor:
-            futures = {
-                executor.submit(
-                    analyze_file_worker,
-                    img,
-                    override_cache=OVERRIDE_CACHE,
-                    ai_threshold=ai_threshold,
-                    skip_nsfw=skip_nsfw,
-                    allow_ai=False,
-                    mark_ai_pending=True
-                ): img for img in all_images
-            }
-
-            for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            results = iter_completed(
+                executor, analyze_for_classification, all_images, normal_worker_count * 2,
+                stop_check=stop_check, override_cache=OVERRIDE_CACHE,
+                ai_threshold=ai_threshold, skip_nsfw=skip_nsfw,
+                allow_ai=False, mark_ai_pending=True,
+            )
+            for i, (_, future) in enumerate(results, 1):
                 if stop_check and stop_check():
                     log_func(f"🛑 [즉시 정지] {i}장 스캔 중단 요청 수락됨.")
-                    for f in futures:
-                        f.cancel()
+                    results.close()
                     db.close()
                     return
 
                 try:
                     result = future.result()
-                    if len(result) >= 8:
-                        record_meta_source(result[7])
+                    if len(result) >= 9:
+                        record_meta_source(result[8])
                     else:
                         record_meta_source("none")
 
-                    if len(result) >= 7 and result[6]:
-                        ai_pending_results.append(result[:6])
+                    if len(result) >= 8 and result[7]:
+                        ai_pending_results.append(result[:7])
                     else:
-                        metadata_results.append(result[:6])
+                        metadata_results.append(result[:7])
                 except Exception as e:
                     log_func(f"⚠️ 스캔 에러: {e}")
                     record_meta_source("none")
@@ -1118,23 +1394,16 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             emit_progress(0, len(ai_pending_results), "1B AI 판정")
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=ai_worker_count) as executor:
-                futures = {
-                    executor.submit(
-                        ai_classify_pending_result,
-                        base_result,
-                        ai_threshold
-                    ): base_result for base_result in ai_pending_results
-                }
-
-                for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                results = iter_completed(
+                    executor, ai_classify_pending_result, ai_pending_results, ai_worker_count * 2,
+                    stop_check=stop_check, ai_threshold=ai_threshold,
+                )
+                for i, (fallback_result, future) in enumerate(results, 1):
                     if stop_check and stop_check():
                         log_func(f"🛑 [즉시 정지] AI 판정 {i}장 처리 중단 요청 수락됨.")
-                        for f in futures:
-                            f.cancel()
+                        results.close()
                         db.close()
                         return
-
-                    fallback_result = futures[future]
 
                     try:
                         metadata_results.append(future.result())
@@ -1157,21 +1426,15 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         stage1_started_at = time.perf_counter()
         emit_progress(0, total_images, "1단계 스캔")
         with concurrent.futures.ThreadPoolExecutor(max_workers=normal_worker_count) as executor:
-            futures = {
-                executor.submit(
-                    analyze_file_worker,
-                    img,
-                    override_cache=OVERRIDE_CACHE,
-                    ai_threshold=ai_threshold,
-                    skip_nsfw=skip_nsfw
-                ): img for img in all_images
-            }
-
-            for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            results = iter_completed(
+                executor, analyze_for_classification, all_images, normal_worker_count * 2,
+                stop_check=stop_check, override_cache=OVERRIDE_CACHE,
+                ai_threshold=ai_threshold, skip_nsfw=skip_nsfw,
+            )
+            for i, (_, future) in enumerate(results, 1):
                 if stop_check and stop_check():
                     log_func(f"🛑 [즉시 정지] {i}장 스캔 중단 요청 수락됨.")
-                    for f in futures:
-                        f.cancel()
+                    results.close()
                     db.close()
                     return
 
@@ -1188,6 +1451,58 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         stage1_elapsed = time.perf_counter() - stage1_started_at
         log_func(f"⏱️ [계측] 1단계 스캔 완료: {format_elapsed(stage1_elapsed)}")
 
+    # Aggregate before routing: every page in one comic has one rating and cast.
+    comic_results = {row[0]: row for row in metadata_results}
+    blocked_comics = set()
+    comic_destination_ids = {}
+    converted_comic_destinations = {}
+    for folder, group in comic_groups.items():
+        rows = [comic_results.get(path) for path in group["paths"]]
+        if any(row is None or row[4] == -999 for row in rows):
+            blocked_comics.add(folder)
+            stats["error"] += len(group["paths"])
+            log_func("⚠️ 분석하지 못한 페이지가 있는 만화는 전체를 원본에 유지합니다.")
+            continue
+        group["rating"] = 0 if skip_nsfw else max([group["rating"]] + [row[4] for row in rows])
+        names = set(group["characters"])
+        if not skip_char_id:
+            names.update(extract_character_names(group["prompt_tags"], [], character_matcher))
+            for row in rows:
+                names.update(extract_character_names(row[2], row[3], character_matcher))
+        group["characters"] = sorted(n for n in names if n and not is_generic_character_name(n))
+        destination = comic_destination(classified_root, group)
+        if destination in comic_destination_ids and comic_destination_ids[destination] != group["source_id"]:
+            group["name"] = group["name"][:80] + "_" + group["source_id"][:12]
+            destination = comic_destination(classified_root, group)
+        comic_destination_ids[destination] = group["source_id"]
+        # Check every existing page before modifying this comic's files or manifest.
+        try:
+            for path in group["paths"]:
+                target = os.path.join(destination, os.path.basename(path))
+                if os.path.exists(target) and os.path.abspath(path) != os.path.abspath(target):
+                    digest = pixel_digest(path)
+                    if digest is None or digest != pixel_digest(target):
+                        raise ValueError("comic page collision")
+                elif (not reorg_mode and not os.path.exists(target)
+                      and os.path.isfile(os.path.splitext(target)[0] + ".webp")):
+                    from naim.storage.webp_conversion import resolve_converted_gallery_path
+                    converted_path = resolve_converted_gallery_path(
+                        classified_root, os.path.relpath(target, classified_root), db.db_path,
+                    )
+                    if converted_path:
+                        original_hash = comic_results[path][1]
+                        if not original_hash or not (original_hash in processed_hashes or db.conn.execute(
+                                "SELECT 1 FROM processed_files WHERE file_hash = ?", (original_hash,)).fetchone()):
+                            # A changed source must not replace a converted page's
+                            # same-stem prompt sidecar before WebP collision checks.
+                            raise ValueError("converted comic page collision")
+                        converted_comic_destinations[path] = converted_path
+        except (OSError, ValueError):
+            blocked_comics.add(folder)
+            stats["error"] += len(group["paths"])
+            log_func("⚠️ 기존 코믹 페이지와 충돌하여 해당 만화 전체를 원본에 유지합니다.")
+    prepared_comic_dirs = set()
+
     log_func(f"⚡ [2/3 단계] 초고속 RAM 캐시 기반 캐릭터 식별 및 분류 중...")
     stage2_started_at = time.perf_counter()
     emit_progress(0, len(metadata_results), "2/3 분류 경로 결정")
@@ -1195,6 +1510,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     success_records = []
     gallery_success_records = []
     gallery_pending_by_src = {}
+    new_gallery_pngs = []
 
     # 🌟 [해결 1] 루프 밖에서 딱 한 번만 규칙을 읽습니다! (규칙 증발 완벽 차단)
     config = utils.load_config()
@@ -1217,8 +1533,13 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                 log_func(f"⚠️ 긴 폴더명 저장 실패: {physical} | {e}")
 
     # 🚀 자, 이제 윈도우 방해 없는 초고속 루프 시작
-    for i, (full_path, file_hash, char_tags, base_tags, rating, nsfw_reasons) in enumerate(metadata_results, 1):
+    for i, (full_path, file_hash, char_tags, base_tags, rating, nsfw_reasons, model_family) in enumerate(metadata_results, 1):
         img_name = os.path.basename(full_path)
+        comic = comic_by_path.get(full_path)
+        if comic:
+            if comic["folder"] in blocked_comics:
+                continue
+            rating = comic["rating"]
 
         unreadable_reason = ""
         if rating == -999:
@@ -1256,50 +1577,18 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             log_func(f"⚠️ 이미지 판독 실패 → _UNREADABLE 이동 예정: {img_name} | {unreadable_reason}")
             continue
 
-        if is_fast and file_hash in processed_hashes:
+        if is_fast and file_hash in processed_hashes and not comic:
             if method == "move" and os.path.exists(full_path):
                 pass
             else:
                 stats["skipped_db"] += 1
                 continue
 
-        detected_names = set()
+        detected_names = []
         is_daki = False
 
-        def fast_memory_extract(raw_tag):
-            t_clean = raw_tag.strip().lower()
-            if not t_clean: return None
-
-            # NAI 프롬프트 가중치 기호 제거 (예: {{{tag}}}, tag:1.2 등)
-            clean = re.sub(r'^[-0-9.]+:+\s*', '', t_clean)
-            clean = re.sub(r'\s*:+$', '', clean)
-            clean = re.sub(r':[0-9.]+$', '', clean).strip()
-
-            # 태그 전체를 감싸는 괄호만 안전하게 벗김 (단, march_7th_(honkai) 처럼 일부만 감싸는 건 유지)
-            while clean.startswith('(') and clean.endswith(')'): clean = clean[1:-1].strip()
-            while clean.startswith('[') and clean.endswith(']'): clean = clean[1:-1].strip()
-            while clean.startswith('{') and clean.endswith('}'): clean = clean[1:-1].strip()
-
-            clean = re.sub(r'\s+', '_', clean).lower().strip()
-            if len(clean) < 2: return None
-
-            # [핵심 1] 프롬프트가 캐릭터로 둔갑하는 것을 막는 차단 키워드 추가
-            blacklist = [
-                '(medium)', '(object)', '(clothes)', '(creature)', '(species)',
-                '(item)', '(anatomy)', '(background)', '(cosplay)', '(style)',
-                '(studio)', 'artist', 'uniform', 'reality_arc', 'must_include'
-            ]
-            if any(b in clean for b in blacklist): return None
-
-            # 🌟 [핵심 2] 괄호 패턴(re.search)으로 캐릭터를 때려맞추는 꼼수 완전 삭제!
-            # 오직 '단보루 DB(DANBOORU_RAM_CACHE)'에 정확히 등록된 공식 태그만 인정합니다.
-            if clean in DANBOORU_RAM_CACHE:
-                return clean.title()
-
-            return None
-
         # ----------------------------------------------------
-        # 🌟 추출 루프 통합: 괄호가 포함된 태그도 원형 그대로 검사합니다.
+        # 🌟 추출 루프 통합: 캐릭터/베이스 프롬프트를 모두 검사합니다.
         # ----------------------------------------------------
         all_prompt_tags = char_tags + base_tags
 
@@ -1310,19 +1599,27 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             if "dakimakura" in clean_tag:
                 is_daki = True
 
-            if not skip_char_id:
-                # 모든 태그를 DB와 1:1 대조합니다.
-                matched = fast_memory_extract(clean_tag)
-                if matched:
-                    detected_names.add(matched)
+        if not skip_char_id:
+            detected_names = extract_character_names(
+                char_tags,
+                base_tags,
+                character_matcher,
+            )
 
-        final_names = set()
+        final_names = []
         for n in detected_names:
             clean_n = n.strip().lower()
-            if clean_n and clean_n not in ignore_words:
-                final_names.add(n)
+            if (
+                clean_n
+                and clean_n not in ignore_words
+                and not is_generic_character_name(n)
+            ):
+                final_names.append(n)
 
-        names_list = list(final_names)
+        names_list = final_names
+        if comic:
+            names_list = comic["characters"]
+            is_daki = False
         num = len(names_list)
 
         # ----------------------------------------------------
@@ -1539,7 +1836,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         if not cat_raw:
             cat_raw = "3_Group"
 
-        cat = normalize_route_folder_path(cat_raw)
+        cat = "comic" if comic else normalize_route_folder_path(cat_raw)
 
         # 🌟 3단계 등급에 따른 폴더 분배
         if rating in [1, 2]:
@@ -1565,16 +1862,35 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         else:
             folder_name = original_folder
 
+        if comic:
+            folder_name = comic["name"]
+
         # 폴더 생성 실행
         dest_dir = os.path.join(classified_root, cat, folder_name)
-        os.makedirs(dest_dir, exist_ok=True)
         dest_path = os.path.join(dest_dir, img_name)
+        if full_path in converted_comic_destinations:
+            # History skips recopying an imported page, but outside-duplicate
+            # deletion still rechecks RGB pixels against the saved WebP below.
+            comic_destinations[full_path] = converted_comic_destinations[full_path]
+            stats["skipped_duplicate"] += 1
+            success_records.append((full_path, file_hash, img_name, folder_name))
+            continue
+        os.makedirs(dest_dir, exist_ok=True)
+        if comic and dest_dir not in prepared_comic_dirs:
+            # Save the cast before moving pages, so a failed write cannot lose grouping.
+            save_comic(dest_dir, comic)
+            prepared_comic_dirs.add(dest_dir)
+        if comic:
+            from naim.images.prompt_metadata import save_prompt_sidecar
+            save_prompt_sidecar(dest_path, comic_prompt_infos.get(full_path))
 
         # 🌟 [교정] 목적지가 야짤 폴더인지 확인하는 변수 추가
         is_target_nsfw = "_R-18" in cat or "_R-15" in cat
         txt_path = os.path.splitext(dest_path)[0] + ".txt"
 
         if os.path.abspath(full_path) == os.path.abspath(dest_path):
+            if comic:
+                comic_destinations[full_path] = dest_path
             # 🌟 [수정] 폴더 위치와 상관없이 사유(nsfw_reasons)가 있다면 무조건 생성/유지
             if nsfw_reasons:
                 txt_path = os.path.splitext(dest_path)[0] + ".txt"
@@ -1590,11 +1906,29 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                 "rating": rating,
                 "names": names_list,
                 "is_dakimakura": is_daki,
-                "nsfw_reasons": nsfw_reasons
+                "nsfw_reasons": nsfw_reasons,
+                "model_family": model_family
             })
             continue
 
         if os.path.exists(dest_path):
+            if comic:
+                # A matching name alone must never authorize deletion of an original.
+                try:
+                    digest = pixel_digest(full_path)
+                    if digest is None or digest != pixel_digest(dest_path):
+                        stats["error"] += 1
+                        log_func("⚠️ 같은 이름의 다른 코믹 페이지가 있어 원본을 유지합니다.")
+                        continue
+                except (OSError, ValueError):
+                    stats["error"] += 1
+                    continue
+                comic_destinations[full_path] = dest_path
+                gallery_success_records.append({
+                    "final_path": dest_path, "rating": rating, "names": names_list,
+                    "is_dakimakura": False, "nsfw_reasons": nsfw_reasons,
+                    "model_family": model_family,
+                })
             stats["skipped_duplicate"] += 1
             success_records.append((full_path, file_hash, img_name, folder_name))
             continue
@@ -1605,7 +1939,8 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
             "rating": rating,
             "names": names_list,
             "is_dakimakura": is_daki,
-            "nsfw_reasons": nsfw_reasons
+            "nsfw_reasons": nsfw_reasons,
+            "model_family": model_family
         }
 
         if i % 500 == 0 or i == len(metadata_results):
@@ -1626,28 +1961,41 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
     else:
         log_func(f"🚚 [3/3 단계] 새롭게 {action_text}할 파일이 없습니다.")
 
-    max_io_workers = min(16, (os.cpu_count() or 4) * 2)
+    max_io_workers = min(16, normal_worker_count)
     batch_records = []  # 🌟 [추가] 100장 단위 저장을 위한 임시 바구니
+    saved_hashes = set()
+    io_stopped = False
+
+    def transfer_file(item):
+        src, dest, _, _, _, reasons = item
+        return file_io_worker(src, dest, method, reasons)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_io_workers) as executor:
-        future_to_info = {
-            executor.submit(file_io_worker, src, dest, method, nsfw_reasons): (src, img_name, folder_name, file_hash)
-            for src, dest, img_name, folder_name, file_hash, nsfw_reasons in move_queue}
-
-        for i, f in enumerate(concurrent.futures.as_completed(future_to_info), 1):
+        results = iter_completed(
+            executor, transfer_file, move_queue, max_io_workers * 2, stop_check=stop_check,
+        )
+        for i, (item, f) in enumerate(results, 1):
             # 🌟 [추가] 매 장마다 실시간 UI 숫자 업데이트
             emit_progress(i, total_moves, f"3/3 파일 {action_text}")
 
             # 🌟 [추가] 사용자가 정지 버튼을 눌렀는지 확인
-            if stop_check and stop_check():
+            if stop_check and stop_check() and not io_stopped:
                 log_func(f"🛑 사용자에 의해 정지됨. ({i}장 지점에서 중단)")
-                break  # 루프 탈출 (이후 하단의 batch_records 저장 로직으로 이동)
-            src, img_name, folder_name, file_hash = future_to_info[f]
+                io_stopped = True
+            # Drain submitted transfers so every completed copy/move is recorded.
+            src, _, img_name, folder_name, file_hash, _ = item
             if f.result():
+                if src in comic_by_path:
+                    comic_destinations[src] = gallery_pending_by_src[src]["final_path"]
+                    if reorg_mode:
+                        old_rel = os.path.relpath(src, classified_root).replace("\\", "/")
+                        db.remove_gallery_image_record(old_rel)
                 success_records.append((src, file_hash, img_name, folder_name))
                 gallery_record = gallery_pending_by_src.get(src)
                 if gallery_record:
                     gallery_success_records.append(gallery_record)
+                    if convert_new_pngs and gallery_record["final_path"].lower().endswith(".png"):
+                        new_gallery_pngs.append(gallery_record["final_path"])
                 batch_records.append((file_hash, img_name, folder_name))  # 🌟 바구니에 담기
                 stats["success"] += 1
             else:
@@ -1662,12 +2010,19 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                             batch_records
                         )
                     # 콘솔창이 너무 더러워지지 않게 조용히 저장만 합니다.
+                    saved_hashes.update(record[0] for record in batch_records if record[0])
                     batch_records = []  # 바구니 비우기
                 except Exception as e:
                     log_func(f"⚠️ 중간 이력 저장 실패: {e}")
 
             if i % 1000 == 0 or i == total_moves:
                 log_func(f"   ▶ 파일 {action_text} 진행 중: {i} / {total_moves} 개 완료 ({(i / total_moves) * 100:.1f}%)")
+
+    if delete_comic_duplicates and not reorg_mode:
+        deleted = delete_imported_duplicates(
+            comic_duplicates, comic_destinations, stop_check, log_func,
+        )
+        log_func(f"📚 가져오기 확인 후 바깥 코믹 중복 원본 {deleted}장 삭제")
 
     # 🌟 [추가] 100장이 안 채워지고 남은 자투리 데이터들 최종 저장
     if batch_records:
@@ -1677,6 +2032,7 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                     "INSERT OR IGNORE INTO processed_files (file_hash, file_name, characters) VALUES (?, ?, ?)",
                     batch_records
                 )
+            saved_hashes.update(record[0] for record in batch_records if record[0])
         except Exception as e:
             log_func(f"⚠️ 최종 이력 저장 실패: {e}")
 
@@ -1698,32 +2054,42 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
         log_func("✨ 아카이브 청소 완료!")
 
     stage_db_started_at = time.perf_counter()
+    classification_records_saved = True
     emit_progress(0, 1, "DB 저장/갤러리 인덱스")
 
     if success_records:
         log_func("💾 최종 이력을 데이터베이스에 일괄 기록 중입니다...")
         try:
             with db.conn:
+                character_tags = {}
+                history_records = {}
                 for src, file_hash, img_name, folder_name in success_records:
                     if file_hash:
                         # 1. 파일 처리 이력 저장
-                        db.conn.execute(
-                            "INSERT OR IGNORE INTO processed_files (file_hash, file_name, characters) VALUES (?, ?, ?)",
-                            (file_hash, img_name, folder_name)
-                        )
+                        if file_hash not in saved_hashes:
+                            history_records.setdefault(file_hash, (file_hash, img_name, folder_name))
 
                         # 2. 🌟 [핵심] 발견된 캐릭터 태그들을 known_characters 테이블에 저장
                         # folder_name에 합쳐진 캐릭터들을 다시 분리해서 개별 태그로 저장합니다.
-                        chars = [c.strip() for c in
+                        chars = comic_by_path[src]["characters"] if src in comic_by_path else [c.strip() for c in
                                  folder_name.replace("_and_", ",").replace("_Dakimakura", "").split(",") if c.strip()]
                         for char_tag in chars:
-                            if char_tag.lower() not in ignore_words:
-                                db.conn.execute(
-                                    "INSERT OR IGNORE INTO known_characters (tag) VALUES (?)",
-                                    (char_tag,)
-                                )
+                            if (
+                                char_tag.lower() not in ignore_words
+                                and not is_generic_character_name(char_tag)
+                            ):
+                                character_tags.setdefault(char_tag, None)
+                db.conn.executemany(
+                    "INSERT OR IGNORE INTO processed_files (file_hash, file_name, characters) VALUES (?, ?, ?)",
+                    history_records.values(),
+                )
+                db.conn.executemany(
+                    "INSERT OR IGNORE INTO known_characters (tag) VALUES (?)",
+                    ((tag,) for tag in character_tags),
+                )
             log_func(f"✅ {len(success_records)}장의 이력 및 캐릭터 정보가 DB에 저장되었습니다.")
         except Exception as e:
+            classification_records_saved = False
             log_func(f"⚠️ DB 저장 중 오류 발생: {e}")
 
     if gallery_success_records:
@@ -1733,7 +2099,9 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                 db.upsert_gallery_image_records(gallery_records)
 
                 if db.get_gallery_index_state("gallery_index_reset_for_reclassify", "0") == "1":
-                    if stats.get("error", 0) > 0:
+                    if stop_check and stop_check():
+                        db.set_gallery_index_state("full_index_built", "0")
+                    elif stats.get("error", 0) > 0:
                         db.set_gallery_index_state("full_index_built", "0")
                         log_func("⚠️ 실패한 이미지가 있어 갤러리 full index 확정을 보류합니다.")
                     elif stats.get("skipped_duplicate", 0) > 0:
@@ -1750,11 +2118,25 @@ def process(source_path, method="copy", is_fast=True, reorg_mode=False, use_ai=F
                             db.set_gallery_index_state("full_index_built", "0")
                             log_func(f"⚠️ 갤러리 인덱스 확정 실패: {index_err}")
         except Exception as e:
+            classification_records_saved = False
             log_func(f"[WARN] gallery index write failed: {e}")
 
     stage_db_elapsed = time.perf_counter() - stage_db_started_at
     emit_progress(1, 1, "DB 저장/갤러리 인덱스")
     log_func(f"⏱️ [계측] DB 저장/갤러리 인덱스 처리 완료: {format_elapsed(stage_db_elapsed)}")
+
+    # Comic duplicate checks require the transferred PNG pixels. Convert only
+    # new, readable destinations after those checks and persisted references.
+    if new_gallery_pngs and not io_stopped and not (stop_check and stop_check()):
+        if classification_records_saved:
+            from naim.jobs.webp_compression import compress_classified_pngs
+            compress_classified_pngs(
+                db, classified_root, os.path.join(current_dir, "gallery_image_tags.json"),
+                new_gallery_pngs, lossless=webp_lossless, quality=webp_quality,
+                stop_check=stop_check, progress_update=progress_update, log_func=log_func,
+            )
+        else:
+            log_func("⚠️ 분류 이력/인덱스 저장을 확인하지 못해 자동 WebP 변환 없이 PNG를 유지합니다.")
 
     total_elapsed = time.perf_counter() - job_started_at
     log_func(f"⏱️ [계측] 전체 작업 소요 시간: {format_elapsed(total_elapsed)}")
@@ -1868,6 +2250,7 @@ def collect_delete_image_paths_from_folders(fixed_root, folder_paths, log_func=p
 
 def handle_integrated_tasks(fixed_root, data, log_func=print):
     import datetime
+    import uuid
     import utils  # 🌟 DB 사용을 위해 추가
 
     original_log_func = log_func
@@ -1956,7 +2339,9 @@ def handle_integrated_tasks(fixed_root, data, log_func=print):
                 # 🌟 일반 폴더에 있다면 '휴지통으로 대피'하고 위치 기억
                 else:
                     os.makedirs(trash_root, exist_ok=True)
-                    timestamp = datetime.datetime.now().strftime("%H%M%S_")
+                    # Rapid review can send identical filenames from different
+                    # folders within one second. Never replace an earlier image.
+                    timestamp = datetime.datetime.now().strftime("%H%M%S") + uuid.uuid4().hex + "_"
                     trash_path = os.path.join(trash_root, timestamp + file_name)
 
                     os.replace(full_path, trash_path)

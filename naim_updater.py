@@ -21,6 +21,12 @@ PROTECTED_DIRECTORIES = {
     "output",
     "canvas_imports",
     "daki_generated_temp",
+    "daki_style_tests",
+    "daki_imported_styles",
+    "daki_personal_styles",
+    "daki_worldcups",
+    "daki_drafts",
+    "daki_tag_examples",
 }
 PROTECTED_FILES = {
     "artists.json",
@@ -31,6 +37,7 @@ PROTECTED_FILES = {
     "quality_presets.json",
     "tag_dictionary_user_overrides.json",
     "canvas_saved_setups.json",
+    "daki_projects.json",
     "tag_categories_ko.json",
     ".env",
 }
@@ -150,15 +157,22 @@ def apply_staged_update(payload_dir, install_dir, copy_file=shutil.copy2):
     backup = Path(tempfile.mkdtemp(prefix="naim-update-backup-"))
     originally_present = set()
 
+    # Backup is a read-only phase. A partial backup must never trigger rollback
+    # cleanup of installation files that have not been backed up yet.
     try:
         for relative in affected:
             current = install / Path(relative)
             if current.is_file():
-                originally_present.add(relative)
                 backup_target = backup / Path(relative)
                 backup_target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(current, backup_target)
+                originally_present.add(relative)
+    except Exception:
+        shutil.rmtree(backup, ignore_errors=True)
+        raise
 
+    keep_backup = False
+    try:
         for relative in sorted(set(old_files).difference(new_files)):
             current = install / Path(relative)
             if current.is_file():
@@ -172,18 +186,23 @@ def apply_staged_update(payload_dir, install_dir, copy_file=shutil.copy2):
 
         copy_file(payload / MANAGED_MANIFEST, install / MANAGED_MANIFEST)
     except Exception:
-        for relative in affected:
-            current = install / Path(relative)
-            if current.is_file():
-                current.unlink()
-        for relative in originally_present:
-            backup_source = backup / Path(relative)
-            target = install / Path(relative)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(backup_source, target)
+        try:
+            for relative in set(affected).difference(originally_present):
+                current = install / Path(relative)
+                if current.is_file():
+                    current.unlink()
+            for relative in originally_present:
+                backup_source = backup / Path(relative)
+                target = install / Path(relative)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup_source, target)
+        except Exception as rollback_error:
+            keep_backup = True
+            raise RuntimeError(f"업데이트 복구에 실패했습니다. 원본 백업을 보존했습니다: {backup}") from rollback_error
         raise
     finally:
-        shutil.rmtree(backup, ignore_errors=True)
+        if not keep_backup:
+            shutil.rmtree(backup, ignore_errors=True)
 
     return {"installed": len(new_files), "removed": len(set(old_files).difference(new_files))}
 
@@ -206,6 +225,30 @@ def download_file(url, destination, progress=None):
 def wait_for_process(pid, timeout=60):
     if not pid:
         return
+    if os.name == 'nt':
+        # os.kill(pid, 0) is not a harmless liveness probe on Windows.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel.OpenProcess(0x00100000, False, int(pid))
+        if not handle:
+            if ctypes.get_last_error() == 87:
+                return
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            result = kernel.WaitForSingleObject(handle, max(0, int(timeout * 1000)))
+            if result == 0:
+                return
+            if result != 258:
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel.CloseHandle(handle)
+        raise TimeoutError("실행 중인 프로그램이 종료되지 않아 업데이트를 계속할 수 없습니다.")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:

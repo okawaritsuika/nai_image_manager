@@ -1,6 +1,6 @@
 param(
-    [string]$Python = "C:\Users\LEE SANGGGON\AppData\Local\Programs\Python\Python310\python.exe",
-    [string]$Version = "1.2.0"
+    [string]$Python = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe"),
+    [string]$Version = "1.3.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,10 +62,11 @@ $ProtectedFiles = @(
     "quality_presets.json",
     "tag_dictionary_user_overrides.json",
     "canvas_saved_setups.json",
+    "daki_projects.json",
     "tag_categories_ko.json",
     ".env"
 )
-$ProtectedDirectories = @("TOTAL_CLASSIFIED", "output", "canvas_imports", "daki_generated_temp")
+$ProtectedDirectories = @("TOTAL_CLASSIFIED", "output", "canvas_imports", "daki_generated_temp", "daki_style_tests", "daki_imported_styles", "daki_personal_styles", "daki_worldcups", "daki_drafts", "daki_tag_examples")
 $PayloadFiles = Get-ChildItem -LiteralPath $PortableDir -Recurse -File
 foreach ($file in $PayloadFiles) {
     $relative = Get-PortableRelativePath $PortableDir $file.FullName
@@ -118,7 +119,7 @@ $Manifest = [ordered]@{
     sha256 = $Hash
     size = $ZipItem.Length
     payload_root = "NAI_Image_Manager"
-    summary = "Adds advanced gallery views, virtual folders, Waifu2x upscaling, and canvas workflow improvements."
+    summary = "Adds daki projects, shared style workflows, canvas editing, WebP conversion, and expanded upscaling."
 }
 [IO.File]::WriteAllText(
     (Join-Path $Root "release_manifest.json"),

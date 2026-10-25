@@ -1,0 +1,635 @@
+/* Daki is another library view inside the existing gallery shell. */
+body.gallery-daki-active :is(#content, #breadcrumb-path, .search-wrapper, #galleryPromptSearchPanel,
+    #brand-filter-bar, #galleryTagFilterBar, #galleryTagAssignmentModeStatus, #char-chip-container,
+    .gallery-header-row, #galleryModernFilterSection, .gallery-modern-character-section,
+    .gallery-selection-counts, .gallery-reasons-control, #applyBtn, #galleryTagAssignmentModeBtn,
+    #galleryBulkDeleteModeBtn, .gallery-mode-bars, #viewRvBtn, #reviewBoard, #galleryScrollNavigation) { display: none !important; }
+body.gallery-daki-active #nav-tabs .nav-btn.active:not(.daki-nav) { background: #1a1a24; border-color: #444; color: #eee; }
+body.gallery-layout-modern.gallery-daki-active .gallery-modern-sidebar #nav-tabs .nav-btn.active:not(.daki-nav) { background: transparent; border-color: transparent; color: #cdd2de; }
+#dakiLibrary { padding: 0 40px 160px; min-width: 0; }
+#dakiLibrary *, .daki-dialog * { box-sizing: border-box; }
+#dakiLibrary a { color: inherit; text-decoration: none; }
+.daki-library-path { padding: 16px 0 12px; font-size: 14px; color: #888; }
+.daki-library-path a:hover, #dakiBack:hover { color: var(--accent); text-decoration: underline; }
+.daki-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+#dakiLibrary .section-title { margin: 20px 0 10px; }
+.daki-toolbar h1 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.daki-toolbar > button { flex: 0 0 auto; }
+.daki-library-description { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: #999; margin-bottom: 18px; }
+.daki-library-description p { margin: 0; }
+#dakiPageStatus { font-size: 14px; color: #999; }
+#dakiPageStatus:empty { display: none; }
+#dakiLibrary .flex-masonry { padding-left: 0; padding-right: 0; }
+.daki-project-card { min-width: 0; }
+.daki-project-preview.card-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2px; line-height: 1.5; }
+.daki-project-preview > div { min-width: 0; height: 100%; overflow: hidden; display: flex; align-items: center; justify-content: center; text-align: center; color: #999; font-size: 13px; }
+.daki-project-preview img { width: 100%; height: 100%; object-fit: contain; }
+.daki-canvas-preview { min-width: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #999; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.daki-canvas-preview[aria-busy="true"], .daki-canvas-preview.daki-warning { padding: 12px; }
+.daki-project-preview .daki-canvas-preview { width: 100%; }
+.daki-canvas-preview > .daki-canvas-preview-image { display: block; width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; }
+.daki-side { min-width: 0; }
+#dakiLibrary .daki-project-generate-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    max-width: 100%;
+    min-height: 32px;
+    padding: 6px 10px;
+    box-sizing: border-box;
+    border: 1px solid #b299e5;
+    border-radius: 7px;
+    background: #b299e5;
+    color: #191321;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+#dakiLibrary .daki-project-generate-link:hover { border-color: #b299e5; background: #c3aeed; }
+#dakiLibrary .daki-project-generate-link:focus-visible { outline: 2px solid #c3aeed; outline-offset: 3px; }
+body.daki-project-active #dakiLibrary .daki-library-path { padding: 8px 0 4px; font-size: 13px; }
+body.daki-project-active #dakiLibrary .daki-toolbar { gap: 12px; }
+body.daki-project-active #dakiLibrary .daki-toolbar .section-title { margin: 6px 0; font-size: 18px; line-height: 1.4; }
+body.daki-project-active #dakiLibrary .daki-toolbar > button { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+body.daki-project-active #dakiLibrary .daki-library-description { gap: 6px 12px; margin: 4px 0 8px; font-size: 12px; line-height: 1.5; }
+#dakiLibrary .daki-project-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; margin: 8px 0 12px; padding: 10px 12px; border: 1px solid #ffffff20; border-radius: 10px; background: var(--card); }
+#dakiLibrary .daki-project-controls .daki-project-side-links { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+#dakiLibrary .daki-project-controls .daki-project-side-jump { min-height: 32px; max-width: 100%; padding: 6px 10px; border: 1px solid #ffffff30; border-radius: 7px; background: var(--bg); color: var(--text); font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+#dakiLibrary .daki-project-controls .daki-project-side-jump:hover { border-color: #b299e5; }
+#dakiLibrary .daki-project-sort-label { display: inline-flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; color: #bec4d1; font-size: 12px; line-height: 1.4; }
+#dakiLibrary .daki-project-sort { max-width: 100%; min-height: 32px; padding: 6px 10px; border: 1px solid #ffffff30; border-radius: 7px; background: var(--bg); color: var(--text); font-size: 12px; line-height: 1.4; }
+body.daki-project-active #dakiLibrary .daki-side > .section-title { margin: 12px 0 8px; font-size: 16px; line-height: 1.4; scroll-margin-top: calc(var(--gallery-layout-switch-height, 54px) + 96px); }
+.daki-project-items { --daki-project-image-height: min(360px, 55vh); }
+.daki-project-items.gallery-fixed-size-grid { --daki-project-image-height: min(var(--gallery-fixed-image-height, 360px), 55vh); }
+.daki-project-items .daki-project-canvas, .daki-project-items .daki-candidate { position: relative; min-width: 0; display: flex; flex-direction: column; min-height: calc(var(--daki-project-image-height) + 184px); border-width: 2px; border-radius: 9px; }
+.daki-project-canvas { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border: 1px solid #ffffff30; border-radius: 8px; background: var(--card); font-size: 13px; line-height: 1.5; }
+.daki-project-canvas:hover { border-color: var(--accent); }
+.daki-project-items .daki-project-canvas > .daki-canvas-preview,
+.daki-project-items .daki-candidate > img.zoomable,
+.daki-project-items .daki-candidate > .daki-missing-image { width: 100%; height: var(--daki-project-image-height) !important; flex: 0 0 var(--daki-project-image-height); min-height: 0; aspect-ratio: auto; object-fit: contain; }
+.daki-project-canvas-info { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; gap: 4px; padding: 12px; overflow-wrap: anywhere; }
+.daki-project-canvas-heading { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.daki-project-canvas-heading > strong { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#dakiLibrary .daki-project-canvas-details { min-width: 60px; max-width: 100%; min-height: 28px; flex: 0 0 auto; padding: 4px 6px; border: 1px solid #ffffff30; border-radius: 6px; background: var(--bg); color: var(--text); font-size: 11px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+.daki-project-canvas-info > span { color: #aaa; font-size: 12px; overflow-wrap: anywhere; }
+.daki-project-dates { display: grid; min-width: 0; grid-template-columns: 32px minmax(0, 1fr); row-gap: 4px; font-size: 11px; line-height: 1.5; }
+.daki-project-date-label { color: #9299a6; }
+.daki-project-date-value { min-width: 0; color: #bec4d1; overflow-wrap: anywhere; }
+.daki-project-card-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 0 12px 12px; flex: 0 0 auto; }
+.daki-project-canvas-actions { flex-wrap: nowrap; }
+.daki-project-canvas-open { flex: 1 1 80px; min-width: 0; padding: 6px 0; font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+#dakiLibrary .daki-project-items .daki-image-actions { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; align-items: stretch; gap: 0; margin-top: 0; padding: 0; border-top: 0; background: var(--card); }
+#dakiLibrary .daki-project-items .daki-image-actions > span:first-child { min-width: 0; min-height: 0; flex: 0 0 auto; padding: 12px 12px 4px; font-size: 12px; font-weight: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#dakiLibrary .daki-project-items .daki-image-actions > .daki-project-dates { margin: 0 0 auto; padding: 0 12px 12px; }
+#dakiLibrary .daki-project-items .daki-image-dimensions { min-width: 0; padding: 0 12px 6px; color: #aaa; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+#dakiLibrary .daki-project-items .daki-project-delete { width: 88px; max-width: 100%; min-height: 32px; flex: 0 0 auto; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg); color: var(--accent); font-size: 12px; font-weight: 600; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; justify-content: center; }
+#dakiLibrary .daki-project-kind { top: 8px; left: 8px; min-width: 0; max-width: calc(100% - 58px); padding: 4px 7px; border-width: 1px; box-shadow: none; font-size: 11px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; pointer-events: none; }
+#dakiLibrary .daki-project-kind[data-kind="canvas"] { --neon-daki: var(--accent); color: var(--neon-daki); border-color: var(--neon-daki); }
+#dakiLibrary .daki-project-kind[data-kind="image"] { --neon-daki: var(--thumb); color: var(--neon-daki); border-color: var(--neon-daki); }
+.daki-side h2 span { margin-left: 10px; color: #999; font-size: 13px; font-weight: 400; letter-spacing: 0; }
+.daki-candidate { min-width: 0; margin: 0; }
+.daki-image-tools { margin: 16px 0 20px; padding: 14px 16px; border: 1px solid #ffffff20; border-radius: 10px; background: var(--card); }
+.daki-image-tools .gallery-tag-assignment-actions { flex-wrap: wrap; }
+.daki-image-tools .gallery-tag-assignment-actions button[aria-pressed="true"] { background: #14b8a6; color: #001; border-color: #2dd4bf; }
+.daki-tag-choices { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.daki-tag-hint { margin: 12px 0 0; color: #aab1bd; font-size: 12px; line-height: 1.6; }
+body.gallery-daki-active .gallery-zoom-heading { flex-wrap: wrap; }
+#galleryZoomDakiTagModeBtn[aria-pressed="true"] { color: #99f6e4; }
+#galleryZoomTagAction[hidden], #galleryZoomDakiTagModeBtn[hidden] { display: none !important; }
+body.daki-project-active .zoomable { cursor: zoom-in !important; }
+.daki-missing-image { aspect-ratio: 3 / 4; display: grid; place-items: center; color: #999; font-size: 13px; }
+.daki-empty { padding: 38px 20px; text-align: center; color: #999; font-size: 14px; }
+.daki-warning { color: #f4bc80 !important; }
+#dakiLibrary button:disabled, .daki-dialog button:disabled { opacity: .5; cursor: wait; }
+#dakiLibrary :focus-visible, .daki-dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+body.gallery-layout-modern #dakiLibrary { padding: 0 0 160px; }
+body.gallery-layout-modern .daki-library-description,
+body.gallery-layout-modern .daki-empty { color: #bec4d1; }
+.daki-dialog { width: min(510px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; padding: 26px; background: var(--card); color: var(--text); border: 1px solid #555; border-radius: 12px; font: inherit; font-size: 14px; line-height: 1.6; box-shadow: 0 20px 80px #0008; }
+.daki-style-sync-dialog { box-sizing: border-box; width: min(1000px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 14px; }
+.daki-dialog::backdrop { background: #000b; }
+.daki-dialog h2 { font-size: 20px; margin: 0 0 18px; }
+.daki-dialog label { display: block; margin: 16px 0; }
+.daki-dialog input[type=text], .daki-dialog select { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; font: inherit; }
+.daki-dialog fieldset { display: flex; gap: 22px; border: 1px solid #555; border-radius: 8px; padding: 8px 15px; margin-top: 16px; }
+.daki-dialog fieldset label { margin: 3px 0; }
+.daki-dialog legend { padding: 0 5px; }
+.daki-dialog button { font: inherit; cursor: pointer; border: 1px solid #555; border-radius: 8px; padding: 9px 15px; background: var(--bg); color: var(--text); }
+.daki-dialog button:hover { border-color: var(--accent); }
+.daki-dialog .daki-primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 700; }
+.daki-dialog-preview { display: flex; align-items: center; gap: 16px; padding: 12px; border: 1px solid #444; border-radius: 8px; overflow-wrap: anywhere; }
+.daki-dialog-preview img { width: 62px; height: 84px; object-fit: contain; flex: 0 0 auto; }
+.daki-dialog p { color: #999; font-size: 12px; }
+.daki-canvas-open-dialog, .daki-project-delete-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: hidden; padding: 0; border: 1px solid #ffffff24; border-radius: 16px; }
+.daki-canvas-open-dialog[open], .daki-project-delete-dialog[open] { display: flex; flex-direction: column; }
+.daki-canvas-open-header, .daki-project-delete-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 24px 16px; }
+.daki-canvas-open-header h2, .daki-project-delete-header h2 { margin: 0; font-size: 20px; line-height: 1.4; }
+.daki-canvas-open-dialog .daki-canvas-open-close,
+.daki-project-delete-dialog .daki-project-delete-close { display: flex; flex: 0 0 32px; align-items: center; justify-content: center; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; font-size: 22px; line-height: 1; }
+.daki-canvas-open-body, .daki-project-delete-body { min-width: 0; min-height: 0; overflow-y: auto; padding: 0 24px 24px; }
+.daki-canvas-open-selection, .daki-project-delete-selection { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid #ffffff20; border-radius: 10px; background: var(--bg); }
+.daki-canvas-open-side, .daki-project-delete-side { align-self: flex-start; padding: 3px 8px; border: 1px solid var(--accent); color: var(--accent); font-size: 11px; line-height: 1.4; }
+.daki-canvas-open-name, .daki-project-delete-name { overflow-wrap: anywhere; font-size: 15px; font-weight: 600; line-height: 1.6; }
+.daki-canvas-open-dialog .daki-canvas-open-description,
+.daki-project-delete-dialog .daki-project-delete-description { margin: 12px 0 0; color: #bec4d1; font-size: 13px; line-height: 1.6; }
+.daki-project-delete-dialog .daki-project-delete-warning { white-space: pre-line; overflow-wrap: anywhere; }
+.daki-canvas-open-actions, .daki-project-delete-actions { display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 16px 24px 20px; border-top: 1px solid #ffffff20; }
+.daki-canvas-open-dialog .daki-canvas-open-actions > button,
+.daki-canvas-open-dialog .daki-canvas-open-actions > a,
+.daki-project-delete-dialog .daki-project-delete-actions > button { min-width: 88px; max-width: 100%; min-height: 40px; padding: 8px 14px; border: 1px solid #555; border-radius: 8px; font-size: 13px; line-height: 1.4; }
+.daki-canvas-open-dialog .daki-canvas-open-actions > button { background: var(--bg); color: var(--text); }
+.daki-canvas-open-dialog .daki-canvas-open-actions > a.daki-primary { display: inline-flex; align-items: center; justify-content: center; border-color: var(--accent); color: var(--bg); font-weight: 700; text-decoration: none; }
+.daki-project-delete-dialog .daki-project-delete-actions > button:not(.daki-primary) { background: var(--bg); color: var(--text); }
+.daki-style-sync-help > summary { cursor: pointer; padding: 8px 0; }
+.daki-style-sync-help-body { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; gap: 12px; padding: 8px 0 4px; }
+.daki-dialog .daki-style-sync-help-body p { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.daki-style-sync-help-body code { font-size: 12px; overflow-wrap: anywhere; }
+.daki-style-sync-dialog .daki-style-sync-help-body { gap: 4px; padding: 4px 0; }
+.daki-style-sync-dialog .daki-style-sync-help > summary { padding: 6px 0; }
+.daki-style-sync-examples { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; gap: 4px 12px; }
+.daki-style-sync-examples p { min-width: 0; overflow-wrap: anywhere; }
+.daki-style-sync-dialog h2 { margin-bottom: 8px; }
+.daki-style-sync-dialog form > p { margin: 6px 0; overflow-wrap: anywhere; }
+.daki-style-sync-download { display: inline-flex; align-items: center; max-width: 100%; padding: 9px 15px; border: 1px solid #555; border-radius: 8px; background: var(--bg); color: var(--text); line-height: 1.5; white-space: normal; overflow-wrap: anywhere; text-decoration: none; }
+.daki-style-sync-download:hover { border-color: var(--accent); }
+.daki-style-sync-columns { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; gap: 16px; }
+.daki-style-sync-initial, .daki-style-sync-source { display: grid; min-width: 0; justify-items: start; gap: 6px; margin: 0; padding: 10px; border: 1px solid #555; border-radius: 8px; }
+.daki-style-sync-dialog h3 { margin: 0; font-size: 16px; line-height: 1.5; }
+.daki-style-sync-dialog .daki-style-sync-source p { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.daki-style-sync-source-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.daki-style-sync-source-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+.daki-style-sync-dialog .daki-style-sync-source-actions button { padding: 8px 10px; }
+.daki-style-sync-dialog .daki-style-sync-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; margin: 0; }
+.daki-style-sync-dialog .daki-style-sync-dates label { min-width: 0; margin: 0; font-size: 12px; }
+.daki-style-sync-dialog .daki-style-sync-dates input { width: 100%; min-width: 0; max-width: 100%; margin: 4px 0 0; padding: 6px; }
+.daki-style-sync-dialog .daki-dialog-actions { margin: 8px 0 0; align-items: center; }
+.daki-style-sync-dialog .daki-dialog-actions .daki-test-note { flex: 1 1 0; min-width: 0; margin: 0; }
+.daki-style-sync-dialog .daki-dialog-actions button { flex: 0 0 auto; }
+.daki-style-sync-progress { display: grid; width: 100%; min-width: 0; gap: 2px; margin: 2px 0 0; }
+.daki-style-sync-progress-meta { display: block; min-width: 0; color: #bcc7d9; font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+.daki-style-sync-progress-meter { width: 100%; height: 6px; margin: 0; }
+.gallery-index-meter.is-indeterminate > .gallery-index-progress-fill { background: repeating-linear-gradient(135deg, var(--thumb) 0 7px, #4f5368 7px 14px); box-shadow: none; }
+.daki-dialog .daki-style-sync-initial p { margin: 0; line-height: 1.7; }
+.daki-style-sync-initial button { max-width: 100%; white-space: normal; }
+.daki-style-sync-filters { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; min-width: 0; gap: 8px; }
+.daki-style-sync-filter-toggle { display: flex; width: 100%; min-width: 0; gap: 8px; }
+.daki-style-sync-dialog .daki-style-sync-filter-toggle button { flex: 1 1 0; min-width: 0; max-width: 100%; padding: 6px 10px; }
+.daki-style-sync-filter-toggle button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+.daki-dialog .daki-style-sync-filters > p { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.daki-dialog .daki-style-sync-filters label { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.daki-style-sync-field { display: grid !important; grid-template-columns: minmax(0, 1fr); width: 100%; min-width: 0; gap: 5px; }
+.daki-style-sync-field[hidden] { display: none !important; }
+.daki-style-sync-recommendation-row { display: flex; align-items: center; flex-wrap: wrap; min-width: 0; gap: 6px; }
+.daki-style-sync-recommendation-toggle { display: inline-flex !important; flex: 0 0 auto; align-items: center; gap: 6px; }
+.daki-style-sync-recommendation-toggle input { flex: 0 0 auto; margin: 0; }
+.daki-style-sync-recommendation-row input[type=number] { box-sizing: border-box; flex: 0 0 76px; width: 76px; min-width: 0; max-width: 76px; margin: 0; padding: 6px; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; font: inherit; }
+.daki-style-sync-recommendation-row > span { min-width: 0; overflow-wrap: anywhere; }
+.daki-style-sync-filters input[type=text], .daki-style-sync-filters select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; margin: 0; }
+.daki-style-sync-filters textarea { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; height: 62px; min-height: 62px; margin: 0; padding: 8px 12px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; font: inherit; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.daki-style-sync-realistic { display: flex !important; align-items: flex-start; gap: 8px; }
+.daki-style-sync-realistic input { flex: 0 0 auto; margin: 4px 0 0; }
+.daki-style-sync-realistic span { min-width: 0; overflow-wrap: anywhere; }
+.daki-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.daki-dialog [hidden], #dakiLibrary[hidden], #dakiLibrary [hidden], #dakiContextAdd[hidden], .daki-nav[hidden] { display: none !important; }
+.daki-settings-status { color: #f4bc80; font-size: 12px; }
+.daki-nav { text-decoration: none; }
+.daki-folder-preview { font-size: 48px; }
+.daki-style-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.daki-style-toolbar input { flex: 1; min-width: 160px; max-width: 360px; }
+.daki-style-card { min-width: 0; }
+.daki-style-card[data-style-selected=true] { outline: 3px solid var(--accent, #7d85e5); outline-offset: -3px; }
+.daki-style-select { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
+.daki-style-select input { margin: 0; flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--accent, #7d85e5); }
+.daki-style-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daki-style-card > img, .daki-candidate > img { cursor: zoom-in; object-fit: contain; }
+.daki-image-actions { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.daki-image-actions > :first-child { font-size: 12px; font-weight: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daki-image-actions > span:last-child { font-size: 11px; color: #aaa; }
+.daki-image-actions .gallery-card-action-btn { background: #122; color: var(--thumb); border: 1px solid var(--thumb); padding-inline: 8px; }
+.daki-image-actions .daki-style-source { grid-column: 1 / -1; font-size: 11px; overflow-wrap: anywhere; }
+.daki-style-origin { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 5px 12px; }
+.daki-style-origin .daki-style-votes { color: #bbb; font-size: 11px; white-space: nowrap; }
+#dakiLibrary a.daki-style-source, .daki-style-detail a.daki-style-source { color: var(--thumb); text-decoration: underline; text-underline-offset: 3px; }
+.daki-test-history { margin: 20px 0; color: inherit; font-size: 13px; }
+.daki-test-history summary { cursor: pointer; padding: 10px 0; }
+.daki-test-history pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; color: #aaa; }
+.daki-test-records { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr)); gap: 12px; }
+.daki-test-record span { color: #aaa; }
+.daki-test-generation { margin: 16px 0 22px; }
+.daki-test-generation > summary { cursor: pointer; padding: 12px 0; font-size: 13px; color: #c7c9d0; }
+.daki-test-generation .daki-test-controls { margin-top: 0; }
+.daki-test-progress { font-size: 14px; }
+.daki-test-note { font-size: 12px; color: #999; }
+.daki-test-anlas { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.daki-test-placeholder { position: relative; min-height: 120px; }
+.gallery-fixed-size-grid .daki-test-placeholder { height: var(--gallery-fixed-image-height, 360px); }
+.gallery-fixed-size-grid .daki-test-placeholder img { height: 100%; object-fit: contain; }
+.daki-test-placeholder img { opacity: .2; }
+.daki-test-placeholder span { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text); font-size: 14px; line-height: 1.5; }
+.daki-style-detail { width: min(840px, calc(100vw - 32px)); padding: 24px; }
+.daki-style-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.daki-style-detail-header > div { min-width: 0; }
+.daki-style-detail-header > button { flex: 0 0 auto; }
+.daki-style-eyebrow { display: block; margin-bottom: 4px; color: #aaa; font-size: 12px; }
+.daki-style-detail h2 { margin: 0 0 7px; font-size: 22px; line-height: 1.35; overflow-wrap: anywhere; }
+.daki-style-detail .daki-style-source { font-size: 12px; overflow-wrap: anywhere; }
+.daki-style-summary, .daki-style-settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 20px 0; }
+.daki-style-summary > div { padding: 12px 14px; background: var(--bg); border: 1px solid #ffffff1a; border-radius: 8px; }
+.daki-style-detail dt { color: #999; font-size: 11px; }
+.daki-style-detail dd { margin: 3px 0 0; color: var(--text); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.daki-style-prompts { border: 1px solid #ffffff26; border-radius: 10px; overflow: hidden; background: var(--bg); }
+.daki-style-tabs { display: flex; gap: 6px; padding: 7px; border-bottom: 1px solid #ffffff1a; }
+.daki-style-tabs button { min-width: 100px; border-color: transparent; color: #aaa; padding: 7px 18px; }
+.daki-style-tabs button[aria-selected=true] { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 700; }
+.daki-style-prompt-panel { max-height: 30vh; min-height: 140px; overflow: auto; padding: 16px 18px; }
+.daki-style-prompt-panel pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.85; }
+.daki-style-advanced { margin-top: 18px; padding-top: 12px; border-top: 1px solid #ffffff1a; }
+.daki-style-advanced summary { cursor: pointer; color: #bbb; font-size: 13px; }
+.daki-style-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 16px 0; gap: 14px 20px; }
+@media (max-width: 600px) { .daki-style-detail { padding: 18px; } .daki-style-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.daki-dialog textarea, .daki-dialog input[type=password] { display: block; box-sizing: border-box; width: 100%; margin-top: 7px; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; font: inherit; resize: vertical; }
+.daki-test-dialog { width: min(920px, calc(100vw - 32px)); padding: 0; overscroll-behavior: contain; }
+.daki-test-dialog-header { padding: 22px 26px 18px; border-bottom: 1px solid #ffffff1a; }
+.daki-test-dialog-header h2 { margin: 0 0 7px; font-size: 22px; line-height: 1.4; }
+.daki-test-dialog-header p { margin: 0; line-height: 1.7; }
+.daki-test-form-body { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 16px 24px; padding: 18px 26px; }
+.daki-test-form-body > :is(p, label), .daki-test-characters { grid-column: 1 / -1; }
+.daki-test-settings-section { min-width: 0; }
+.daki-test-section-heading { margin-bottom: 12px; }
+.daki-test-section-heading h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; }
+.daki-test-section-heading p { margin: 0; }
+.daki-test-dialog label { min-width: 0; margin: 0; color: #c7c9d0; font-size: 12px; font-weight: 600; }
+.daki-test-dialog :is(input, select, textarea) { min-width: 0; font-size: 13px; font-weight: 400; border-color: #ffffff30; }
+.daki-test-dialog input[type=number] { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid #ffffff30; border-radius: 8px; font: inherit; font-size: 13px; font-weight: 400; }
+.daki-test-dialog :is(input, select, textarea):disabled { color: #92959f; opacity: .6; cursor: not-allowed; }
+.daki-test-dialog button:disabled, #dakiLibrary .daki-test-controls button:disabled { cursor: not-allowed; }
+.daki-test-basics { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.daki-test-size-inputs { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: 10px; margin-top: 14px; }
+.daki-test-size-inputs > button { min-height: 42px; padding: 8px 12px; color: var(--thumb); }
+.daki-test-size-help { margin: 8px 0 0; line-height: 1.7; }
+.daki-test-dialog #dakiTestModelNote { padding: 10px 12px; margin: 14px 0 0; background: var(--bg); border-left: 2px solid var(--thumb); border-radius: 0 6px 6px 0; color: #c7c9d0; line-height: 1.7; }
+.daki-test-prompt-tabs { padding: 0 0 8px; border-bottom: 0; }
+.daki-test-prompt-tabs button { min-width: 86px; font-size: 13px; }
+.daki-test-prompt-editor textarea { min-height: 265px; margin-top: 0; line-height: 1.8; }
+.daki-test-prompt-editor p { margin: 7px 0 0; }
+.daki-test-characters { padding-top: 16px; border-top: 1px solid #ffffff1a; }
+.daki-test-characters .daki-test-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 0; }
+.daki-test-dialog .daki-test-character { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0 12px; padding: 12px 14px; border-color: #ffffff26; }
+.daki-test-character legend { color: #c7c9d0; font-size: 12px; }
+.daki-test-character label p { margin: 0; color: inherit; }
+.daki-test-character textarea { line-height: 1.7; }
+.daki-test-character > button { grid-column: 1 / -1; justify-self: end; margin-top: 0; padding: 5px 12px; font-size: 12px; }
+.daki-test-dialog #dakiTestAddCharacter { padding: 7px 12px; font-size: 12px; }
+.daki-test-dialog #dakiTestPreservedSettings { margin: 0; line-height: 1.8; }
+.daki-test-dialog #dakiTestSettingsStatus { margin: 0; color: var(--thumb); overflow-wrap: anywhere; }
+.daki-test-dialog #dakiTestSettingsStatus:empty { display: none; }
+.daki-test-dialog-actions { position: sticky; bottom: 0; z-index: 2; display: flex; justify-content: flex-end; gap: 10px; margin: 0; padding: 16px 26px; background: var(--card); border-top: 1px solid #ffffff1a; }
+.daki-test-dialog-actions button { min-width: 90px; }
+.daki-test-controls { margin: 16px 0 22px; padding: 18px 20px; background: var(--card); border: 1px solid #ffffff20; border-radius: 10px; }
+.daki-test-controls .daki-style-toolbar { margin: 0 0 16px; gap: 8px; }
+.daki-test-controls .daki-style-toolbar button { font-size: 13px; }
+.daki-test-summary { display: grid; grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(0, 1fr)); gap: 16px; margin: 0 0 16px; padding-bottom: 16px; border-bottom: 1px solid #ffffff1a; }
+.daki-test-summary dt { margin-bottom: 4px; color: #999; font-size: 11px; }
+.daki-test-summary dd { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.daki-test-controls .daki-test-progress { margin: 0 0 9px; line-height: 1.7; }
+.daki-test-progress-track { height: 5px; margin-bottom: 14px; overflow: hidden; border-radius: 3px; background: var(--bg); }
+.daki-test-progress-fill { height: 100%; border-radius: inherit; background: var(--accent); }
+.daki-test-controls .daki-test-note { margin: 10px 0 0; line-height: 1.7; }
+.daki-test-controls .daki-test-anlas { margin-top: 12px; line-height: 1.6; }
+.daki-test-controls .daki-test-anlas input { flex: 0 0 auto; accent-color: var(--accent); }
+@media (max-width: 600px) {
+    .daki-test-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 24px); }
+    .daki-test-dialog-header { padding: 18px; }
+    .daki-test-dialog-header h2 { font-size: 19px; }
+    .daki-test-form-body { padding: 18px; gap: 20px; }
+    .daki-test-basics, .daki-test-dialog .daki-test-character { grid-template-columns: minmax(0, 1fr); }
+    .daki-test-dialog-actions { padding: 14px 18px; }
+    .daki-test-dialog-actions button { flex: 1; }
+    .daki-test-controls { padding: 16px; }
+    .daki-test-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .daki-test-summary > :first-child { grid-column: 1 / -1; }
+    .daki-test-controls .daki-style-toolbar button { flex: 1 1 calc(50% - 8px); white-space: normal; }
+}
+@media (max-width: 760px) {
+    .daki-test-form-body { grid-template-columns: minmax(0, 1fr); }
+    .daki-test-prompt-editor textarea { min-height: 156px; }
+}
+@media (max-width: 800px) { #dakiLibrary { padding-left: 20px; padding-right: 20px; } .daki-toolbar { flex-wrap: wrap; gap: 8px; } }
+
+#dakiLibrary .daki-library-card[data-library="shared"] { --daki-library-rgb: 117, 190, 218; }
+#dakiLibrary .daki-library-card[data-library="personal"] { --daki-library-rgb: 178, 153, 229; }
+#dakiLibrary .daki-library-card[data-library="worldcups"] { --daki-library-rgb: 229, 188, 110; }
+#dakiLibrary .daki-library-card {
+    border-color: rgba(var(--daki-library-rgb), .22);
+    background: var(--card);
+    transition: border-color .18s ease, box-shadow .18s ease;
+}
+#dakiLibrary .daki-library-card .daki-library-cover {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+    place-items: center;
+    background: radial-gradient(circle at 50% 44%, rgba(var(--daki-library-rgb), .16), transparent 65%),
+        linear-gradient(135deg, rgba(var(--daki-library-rgb), .06), transparent 55%), var(--card);
+    color: rgb(var(--daki-library-rgb));
+}
+#dakiLibrary .daki-library-card .daki-library-cover::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: min(74%, 300px);
+    aspect-ratio: 1;
+    border: 1px solid rgba(var(--daki-library-rgb), .075);
+    border-radius: 50%;
+    box-shadow: 0 0 0 18px rgba(var(--daki-library-rgb), .025);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+#dakiLibrary .daki-library-card .daki-library-emblem {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: min(56%, 148px);
+    aspect-ratio: 1;
+    border: 1px solid rgba(var(--daki-library-rgb), .22);
+    border-radius: 28px;
+    background: rgba(var(--daki-library-rgb), .08);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, .18), inset 0 1px rgba(255, 255, 255, .05);
+    transition: transform .18s ease;
+}
+#dakiLibrary .daki-library-card .daki-library-emblem svg { display: block; width: 72%; height: 72%; }
+#dakiLibrary .daki-library-card .card-header {
+    min-width: 0;
+    border-top: 1px solid rgba(var(--daki-library-rgb), .18);
+}
+#dakiLibrary .daki-library-card .char-row { min-width: 0; gap: 10px; }
+#dakiLibrary .daki-library-card .daki-library-dot {
+    display: block;
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    border-radius: 50%;
+    background: rgb(var(--daki-library-rgb));
+    font-size: 0;
+}
+#dakiLibrary .daki-library-card .char-name {
+    min-width: 0;
+    flex: 1;
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+#dakiLibrary .daki-library-card .daki-library-arrow {
+    flex: 0 0 auto;
+    color: rgba(var(--daki-library-rgb), .8);
+    font-size: 18px;
+    line-height: 1;
+}
+#dakiLibrary .daki-library-card .gallery-virtual-folder-card-meta {
+    min-width: 0;
+    color: #bec4d1;
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+#dakiLibrary .daki-library-card:is(:hover, :focus-visible) {
+    border-color: rgb(var(--daki-library-rgb));
+    box-shadow: 0 0 0 1px rgba(var(--daki-library-rgb), .3), 0 8px 24px rgba(var(--daki-library-rgb), .12);
+    transform: none;
+}
+#dakiLibrary .daki-library-card:focus-visible {
+    outline: 2px solid rgb(var(--daki-library-rgb));
+    outline-offset: 3px;
+}
+#dakiLibrary .daki-library-card:is(:hover, :focus-visible) .daki-library-emblem { transform: translateY(-3px); }
+@media (prefers-reduced-motion: reduce) {
+    #dakiLibrary .daki-library-card, #dakiLibrary .daki-library-card .daki-library-emblem { transition: none; }
+    #dakiLibrary .daki-library-card:is(:hover, :focus-visible) .daki-library-emblem { transform: none; }
+}
+
+/* Keep the shared, personal, and test library controls in one compact wrapping group. */
+#dakiLibrary:has(.daki-library-controls) .daki-library-path { padding: 8px 0 4px; font-size: 13px; }
+#dakiLibrary:has(.daki-library-controls) .daki-toolbar { gap: 12px; }
+#dakiLibrary:has(.daki-library-controls) .daki-toolbar .section-title { margin: 6px 0; font-size: 18px; line-height: 1.4; }
+#dakiLibrary:has(.daki-library-controls) .daki-toolbar > button { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+#dakiLibrary:has(.daki-library-controls) .daki-library-description { gap: 6px 12px; margin: 4px 0 8px; font-size: 12px; line-height: 1.5; }
+#dakiLibrary .daki-library-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    min-width: 0;
+    margin: 8px 0 12px;
+    padding: 10px 12px;
+    border: 1px solid #ffffff20;
+    border-radius: 10px;
+    background: var(--card);
+}
+#dakiLibrary .daki-library-controls .daki-style-toolbar {
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+    margin: 0;
+}
+#dakiLibrary .daki-library-controls .daki-style-toolbar > button {
+    min-height: 32px;
+    max-width: 100%;
+    flex-shrink: 0;
+    padding: 6px 10px;
+    border-radius: 7px;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+#dakiLibrary .daki-library-controls .daki-style-toolbar input[type="search"] {
+    flex: 1 1 180px;
+    min-width: 0;
+    max-width: 280px;
+}
+#dakiLibrary .daki-library-controls .daki-image-tools {
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+#dakiLibrary .daki-library-controls .gallery-tag-assignment-actions {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+#dakiLibrary .daki-library-controls .gallery-tag-assignment-actions button {
+    min-height: 32px;
+    max-width: 100%;
+    flex-shrink: 0;
+    padding: 6px 10px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+#dakiLibrary .daki-library-controls .daki-tag-choices {
+    flex: 0 1 auto;
+    min-width: 0;
+    gap: 6px;
+    margin: 0;
+}
+#dakiLibrary .daki-library-controls .daki-tag-hint {
+    flex: 1 0 100%;
+    min-width: 0;
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+#dakiLibrary .daki-library-controls .daki-gallery-filters {
+    flex: 1 1 100%;
+    min-width: 0;
+    margin: 0;
+    padding-top: 6px;
+    border-top: 1px solid #ffffff16;
+}
+#dakiLibrary .daki-library-controls .daki-gallery-filter-controls { gap: 6px 10px; }
+#dakiLibrary .daki-library-controls .daki-gallery-filter-controls .daki-filter-tags {
+    flex: 1 1 140px;
+    min-width: 0;
+    gap: 6px;
+}
+#dakiLibrary .daki-library-controls .daki-filter-sort {
+    min-width: 0;
+    max-width: 100%;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 7px;
+}
+#dakiLibrary .daki-library-controls .daki-filter-sort .filter-select {
+    width: 160px;
+    max-width: 100%;
+    min-width: 0;
+    font-size: 12px;
+}
+#dakiLibrary .daki-library-controls .daki-filter-recommendations .filter-select {
+    width: 80px;
+    max-width: 100%;
+    min-width: 0;
+    font-size: 12px;
+}
+#dakiLibrary .daki-library-controls .daki-filter-history,
+#dakiLibrary .daki-library-controls .daki-filter-retry {
+    min-height: 30px;
+    max-width: 100%;
+    font-size: 11px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+#dakiLibrary .daki-library-controls .daki-gallery-filter-status { margin: 4px 0 0; font-size: 11px; line-height: 1.5; }
+#dakiLibrary .daki-library-controls :is(.daki-tag-choices, .daki-filter-tags) .gallery-tag-filter-chip {
+    max-width: 100%;
+    height: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+#dakiLibrary .daki-library-controls .gallery-tag-assignment-selected { transform: none; }
+#dakiLibrary .daki-library-controls :is(.daki-tag-choices, .daki-filter-tags) .gallery-tag-text-badge {
+    max-width: 100%;
+    height: auto;
+    min-height: 22px;
+    line-height: 1.25;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+}
+
+#dakiLibrary .daki-test-generation { margin: 6px 0 12px; }
+#dakiLibrary .daki-test-generation > summary { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+#dakiLibrary .daki-test-generation .daki-test-controls { margin: 6px 0 12px; padding: 10px 12px; }
+#dakiLibrary .daki-test-generation .daki-test-summary { gap: 8px 12px; margin: 0 0 8px; padding-bottom: 8px; }
+#dakiLibrary .daki-test-generation .daki-test-summary dt { font-size: 11px; line-height: 1.4; }
+#dakiLibrary .daki-test-generation .daki-test-summary dd { font-size: 12px; line-height: 1.4; }
+#dakiLibrary .daki-test-generation .daki-style-toolbar { gap: 6px; margin: 0 0 8px; }
+#dakiLibrary .daki-test-generation .daki-style-toolbar button { min-height: 32px; padding: 6px 10px; font-size: 12px; line-height: 1.4; }
+#dakiLibrary .daki-test-generation .daki-test-progress { margin: 0 0 6px; font-size: 12px; line-height: 1.5; }
+#dakiLibrary .daki-test-generation .daki-test-progress-track { margin-bottom: 8px; }
+#dakiLibrary .daki-test-generation .daki-test-note { margin: 6px 0 0; font-size: 11px; line-height: 1.5; }
+#dakiLibrary .daki-test-generation .daki-test-anlas { margin: 6px 0 0; font-size: 11px; line-height: 1.5; }
+
+#dakiLibrary .daki-project-canvas-info { min-height: auto; }
+#dakiLibrary .daki-project-items .daki-image-actions { min-height: auto; }
+#dakiLibrary .daki-project-items .daki-image-actions > span:first-child {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+}
+
+@container gallery-card (max-width: 280px) {
+    #dakiLibrary .daki-project-items .daki-project-card-actions {
+        flex-wrap: nowrap;
+        gap: 4px;
+        padding: 0 6px 6px;
+    }
+
+    #dakiLibrary .daki-project-items .daki-project-card-actions :is(
+        .daki-project-canvas-details,
+        .daki-project-canvas-open,
+        .daki-project-delete
+    ) {
+        display: inline-flex;
+        width: 28px;
+        height: 28px;
+        min-width: 28px;
+        max-width: 28px;
+        min-height: 28px;
+        flex: 0 0 28px;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        padding: 0;
+        font-size: 14px;
+        line-height: 1;
+        white-space: nowrap;
+    }
+
+    #dakiLibrary .daki-project-items .daki-project-card-actions .daki-project-canvas-open {
+        border: 1px solid #ffffff30;
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--text);
+        text-decoration: none;
+    }
+
+    #dakiLibrary .daki-project-items .daki-project-card-actions .daki-project-delete {
+        margin-left: auto;
+    }
+
+    #dakiLibrary .daki-project-items .daki-project-card-actions .daki-card-action-label {
+        display: none;
+    }
+
+    #dakiLibrary .daki-project-items .daki-project-card-actions :is(
+        .daki-project-canvas-details,
+        .daki-project-canvas-open,
+        .daki-project-delete
+    )::before {
+        content: attr(data-compact-icon);
+    }
+}

@@ -54,12 +54,12 @@ let activeClipSelectionId = null;
 const SELECTION_SIZE_STEP = 64;
 const SELECTION_MIN_SIZE = 64;
 const NAI_FREE_AREA_LIMIT = 1048576;
-const LATEST_NAI_IMAGE_MODEL = 'nai-diffusion-4-5-full';
 
 let activeClipMaskTool = 'brush';
 let clipMaskBrushSize = 96;
 let isClipMaskPainting = false;
 const clipMaskPersistRevisions = new WeakMap();
+let pendingCanvasClipMaskWrites = 0;
 let clipOutputInternalClipboard = null;
 
 const CLIP_MASK_BRUSH_MIN = 8;
@@ -183,15 +183,19 @@ async function recoverPromptFromImageLayer(layer) {
     if (layer.sourcePath) {
         const fromImage = await fetchPromptInfoByPath(layer.sourcePath);
 
-        if (hasAnyPromptText(fromImage)) {
-            layer.promptInfo = normalizePromptInfo(fromImage);
+        if (hasAnyPromptText(fromImage) || canvasInpaintHasGenerationSettings(fromImage)) {
+            if (hasAnyPromptText(fromImage)) layer.promptInfo = normalizePromptInfo(fromImage);
 
-            if (!Array.isArray(layer.promptControlGroups)) {
+            if (hasAnyPromptText(fromImage) && !Array.isArray(layer.promptControlGroups)) {
                 layer.promptControlGroups = [];
             }
 
-            return layer.promptInfo;
+            return hasAnyPromptText(fromImage) ? layer.promptInfo : fromImage;
         }
+    }
+
+    if (canvasInpaintHasGenerationSettings(layer.promptInfo)) {
+        return layer.promptInfo;
     }
 
     return normalizePromptInfo(null);
@@ -363,7 +367,7 @@ function showToast(message) {
     setTimeout(() => toast.remove(), 2100);
 }
 
-const CANVAS_STATE_KEY = 'naia_canvas_state_v1';
+const CANVAS_STATE_KEY = window.CanvasWorkspaceBridge?.stateKey || 'naia_canvas_state_v1';
 const CANVAS_PENDING_IMPORT_KEY = 'naia_canvas_pending_import';
 const CANVAS_DISPLAY_PREVIEW_MAX_SIDE = 4096;
 const CANVAS_IMPORT_SESSION_ID = `canvas_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -410,14 +414,24 @@ let selectedCanvasImportManagerRef = '';
 let canvasImportManagerFilter = 'all';
 
 window.addEventListener('load', async () => {
+    if (window.CanvasWorkspaceBridge?.isHost) return;
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.configure({
+        getContext: () => ({...getClipOutputTarget(), canvasWidth: currentCanvasWidth,
+            canvasHeight: currentCanvasHeight, selectionHidden: isSelectionOverlayHidden}),
+        save: () => saveCanvasState(),
+        redraw: () => renderCanvasLayersOnSurface(),
+        getProjectLink: () => window.CanvasProject?.localLink(),
+        sessionId: CANVAS_IMPORT_SESSION_ID
+    });
     await fetchClipTagDictionary();
     await loadSavedCanvasSetupsFromServer();
 
     updateCanvasRatioInfo();
     restoreCanvasState();
+    if (window.CanvasProject) await CanvasProject.initialize();
     await loadSharedClipPromptGroups(true);
     updateSelectionOverlayToggleUI();
-    await consumePendingCanvasImport();
+    if (!window.CanvasWorkspaceBridge?.isPane) await consumePendingCanvasImport();
 
     document.addEventListener('mousemove', handleLayerMoveMouseMove);
     document.addEventListener('mouseup', handleLayerMoveMouseUp);
@@ -503,6 +517,7 @@ window.addEventListener('load', async () => {
     }, true);
 
     bindExternalCanvasImageDropAndPaste();
+    window.CanvasWorkspaceBridge?.ready();
 
 });
 
@@ -522,10 +537,13 @@ window.addEventListener('resize', () => {
 
 function saveCanvasStateBeforeLeaving() {
     if (!currentCanvasWidth || !currentCanvasHeight) return;
-    saveCanvasState();
+    // Leaving is a flush, not a new edit: do not start a fresh project request
+    // after beforeunload has already checked whether all changes were saved.
+    window.CanvasProject?.flush();
+    getCanvasAutosave().schedule(true);
 }
 
-function clearCurrentCanvasCompletely() {
+async function clearCurrentCanvasCompletely() {
     const hasCanvas = Boolean(currentCanvasWidth && currentCanvasHeight) ||
         (Array.isArray(canvasLayers) && canvasLayers.length > 0);
 
@@ -541,6 +559,11 @@ function clearCurrentCanvasCompletely() {
 
     if (!ok) return;
 
+    if (window.CanvasProject && !await CanvasProject.leave()) return;
+    disposeClipMaskEditor();
+    if (typeof setCanvasLayerEraserEnabled === 'function') setCanvasLayerEraserEnabled(false);
+    canvasAutosave?.reset();
+
     const detachedRefs = collectCanvasImportRefsFromLayer({
         type: 'folder',
         children: canvasLayers
@@ -550,6 +573,10 @@ function clearCurrentCanvasCompletely() {
     currentCanvasHeight = 0;
     lastEditedCanvasAxis = 'width';
 
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.restore(null);
+    if (typeof CanvasRetouch !== 'undefined') CanvasRetouch.restore(null);
+    if (typeof CanvasOppositeReference !== 'undefined') CanvasOppositeReference.restore(null);
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.restore(null);
     canvasLayers = [];
     activeLayerId = null;
     selectedLayerIds.clear();
@@ -573,6 +600,9 @@ function clearCurrentCanvasCompletely() {
 
     sharedSelectionClipPromptInfo = null;
     sharedSelectionClipPromptControlGroups = [];
+    if (typeof CanvasInpaintSettings !== 'undefined') CanvasInpaintSettings.restore(null);
+    if (typeof CanvasProjectSettings !== 'undefined') CanvasProjectSettings.restore(null);
+    if (typeof getCanvasStyleLink === 'function') getCanvasStyleLink()?.restore(null);
 
     pinnedReferenceLayerId = null;
 
@@ -583,7 +613,7 @@ function clearCurrentCanvasCompletely() {
     activeCanvasSetupId = null;
 
     try {
-        localStorage.removeItem(CANVAS_STATE_KEY);
+        localStorage.removeItem(window.CanvasWorkspaceBridge?.stateKey || CANVAS_STATE_KEY);
     } catch (error) {
         console.warn('Canvas state clear failed:', error);
     }
@@ -609,6 +639,7 @@ function clearCurrentCanvasCompletely() {
     renderClipOutputPanel();
     renderPinnedReferencePanel();
 
+    if (typeof resetCanvasEditHistory === 'function') resetCanvasEditHistory();
     cleanupDetachedCanvasImportRefs(detachedRefs);
 }
 
@@ -704,10 +735,11 @@ function updateCanvasRatioInfo() {
     }
 }
 
-function createCanvasFromDialog() {
+async function createCanvasFromDialog() {
     const width = readCanvasInputValue('canvasWidthInput', 960);
     const height = readCanvasInputValue('canvasHeightInput', 3072);
 
+    if (window.CanvasProject && !await CanvasProject.leave()) return;
     activeCanvasSetupId = null;
 
     currentCanvasWidth = width;
@@ -806,6 +838,12 @@ function resizeCurrentCanvasTo(width, height) {
 
 function initializeCanvasLayers() {
     layerIdSeq = 1;
+    if (typeof CanvasInpaintSettings !== 'undefined') CanvasInpaintSettings.restore(null);
+    if (typeof CanvasProjectSettings !== 'undefined') CanvasProjectSettings.restore(null);
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.restore(null);
+    if (typeof CanvasRetouch !== 'undefined') CanvasRetouch.restore(null);
+    if (typeof CanvasOppositeReference !== 'undefined') CanvasOppositeReference.restore(null);
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.restore(null);
 
     const baseLayer = {
         id: layerIdSeq++,
@@ -901,6 +939,7 @@ function addSelectionArea() {
     checkedSelectionId = selection.id;
     activeClipSelectionId = selection.id;
 
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.selectionChanged(selection);
     renderLayerList();
     renderCanvasLayersOnSurface();
     saveCanvasState();
@@ -1194,6 +1233,8 @@ function deleteCanvasLayer(layerId, event) {
 }
 
 function renderLayerList() {
+    if (typeof refreshCanvasStyleLink === 'function') refreshCanvasStyleLink();
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.refresh();
     const list = el('layerList');
     if (!list) return;
 
@@ -1220,6 +1261,8 @@ function renderLayerTree(layers, container, depth) {
 
         const isFolder = layer.type === 'folder';
         const isSelection = layer.type === 'selection';
+        const selectionLabel = isSelection && typeof CanvasDakiFocus !== 'undefined'
+            ? CanvasDakiFocus.selectionLabel?.(layer) || '선택 영역' : '선택 영역';
         const isCheckedSelection = isSelection && isSelectionChecked(layer.id);
         const isContainer = isFolder || isSelection;
         const isImage = layer.type === 'image';
@@ -1272,7 +1315,7 @@ function renderLayerTree(layers, container, depth) {
                         isFolder
                             ? `폴더 · ${layer.children.length}개`
                             : isSelection
-                                ? `선택 영역 · ${layer.children.length}개`
+                                ? `<span class="layer-selection-region" data-selection-id="${layer.id}" title="${escapeHtml(selectionLabel)}">${escapeHtml(selectionLabel)}</span><span class="layer-selection-count">· ${layer.children.length}개</span>`
                                 : isClip
                                     ? '클립 이미지'
                                     : isImage
@@ -1467,15 +1510,41 @@ function getCanvasLayerDisplaySrc(layer) {
     );
 }
 
-function saveCanvasState() {
-    const state = buildCanvasStateSnapshot();
-
-    try {
-        localStorage.setItem(CANVAS_STATE_KEY, JSON.stringify(state));
-    } catch (error) {
-        console.warn('Canvas state save failed:', error);
-    }
+let canvasAutosave = null;
+function getCanvasAutosave() {
+    if (!canvasAutosave) canvasAutosave = createCanvasAutosave({
+        snapshot: () => ({...buildCanvasStateSnapshot({preserveMasks: Boolean(window.CanvasProject?.localLink() || window.CanvasWorkspaceBridge?.isPane)}),
+            projectLink: window.CanvasProject?.localLink() || null,
+            ...(window.CanvasWorkspaceBridge?.isPane ? {workspaceSetupId: activeCanvasSetupId} : {})}),
+        write: text => localStorage.setItem(window.CanvasWorkspaceBridge?.stateKey || CANVAS_STATE_KEY, text),
+        status: setCanvasAutosaveStatus
+    });
+    return canvasAutosave;
 }
+function setCanvasAutosaveStatus(state) {
+    const box = document.getElementById('canvasAutosaveStatus');
+    const label = document.getElementById('canvasAutosaveMessage');
+    const retry = document.getElementById('canvasAutosaveRetry');
+    if (!box || !label || !retry) return;
+    box.hidden = state === 'idle';
+    box.dataset.state = state;
+    label.textContent = state === 'error'
+        ? '자동 저장 실패. 현재 작업은 화면에 남아 있습니다. 다시 시도하거나 현재 캔버스 저장으로 보관하세요.'
+        : state === 'pending' ? '자동 저장 대기 중…' : '이 브라우저에 자동 저장됨';
+    retry.hidden = state !== 'error';
+    window.CanvasWorkspaceBridge?.report();
+}
+function saveCanvasState(options = {}) {
+    const edited = typeof recordCanvasEditHistory === 'function' ? recordCanvasEditHistory() : true;
+    if (edited) window.CanvasProject?.schedule(Boolean(options.immediate));
+    return getCanvasAutosave().schedule(Boolean(options.immediate));
+}
+window.addEventListener('beforeunload', event => {
+    if (canvasAutosave && !canvasAutosave.flush()) {
+        event.preventDefault();
+        event.returnValue = '';
+    }
+});
 
 function normalizeCanvasImportRef(value) {
     const text = String(value || '').trim();
@@ -1551,10 +1620,10 @@ function collectStoredCanvasImportRefs() {
     const refs = new Set();
 
     try {
-        const rawState = localStorage.getItem(CANVAS_STATE_KEY);
-        if (rawState) {
-            collectCanvasImportRefsFromValue(JSON.parse(rawState), refs);
-        }
+        const states = window.CanvasWorkspaceState
+            ? CanvasWorkspaceState.storedStates(localStorage)
+            : [JSON.parse(localStorage.getItem(CANVAS_STATE_KEY) || 'null')];
+        states.forEach(state => collectCanvasImportRefsFromValue(state, refs));
     } catch (error) {
         console.warn('Stored canvas import ref collection failed:', error);
     }
@@ -1566,6 +1635,7 @@ function collectRetainedCanvasImportRefs() {
     return [
         ...new Set([
             ...collectCurrentCanvasImportRefs(),
+            ...(typeof collectCanvasEditHistoryImportRefs === 'function' ? collectCanvasEditHistoryImportRefs() : []),
             ...collectSavedCanvasImportRefs(),
             ...collectStoredCanvasImportRefs()
         ])
@@ -1672,17 +1742,26 @@ async function cleanupDetachedCanvasImportRefs(refs) {
     }
 }
 
-function buildCanvasStateSnapshot() {
+function buildCanvasStateSnapshot(options = {}) {
     return {
         version: 2,
         savedAt: Date.now(),
         width: currentCanvasWidth,
         height: currentCanvasHeight,
-        layers: cloneCanvasLayersForState(canvasLayers),
+        layers: cloneCanvasLayersForState(canvasLayers, options.preserveMasks === true),
         activeLayerId,
         layerIdSeq,
+        styleLink: typeof getCanvasStyleLink === 'function' ? getCanvasStyleLink()?.snapshot() : undefined,
+        projectSettingsLink: typeof CanvasProjectSettings !== 'undefined' ? CanvasProjectSettings.snapshot() : undefined,
+        dakiBodyMap: typeof CanvasDakiFocus !== 'undefined' ? CanvasDakiFocus.snapshot() : undefined,
+        retouchDraft: typeof CanvasRetouch !== 'undefined' ? CanvasRetouch.snapshot() : undefined,
+        oppositeReference: typeof CanvasOppositeReference !== 'undefined' ? CanvasOppositeReference.snapshot() : undefined,
+        inpaintReference: typeof CanvasInpaintReference !== 'undefined' ? CanvasInpaintReference.snapshot() : undefined,
         sharedSelectionClipPromptInfo: sharedSelectionClipPromptInfo
             ? structuredClone(sharedSelectionClipPromptInfo)
+            : null,
+        inpaintSettings: typeof CanvasInpaintSettings !== 'undefined'
+            ? CanvasInpaintSettings.snapshot()
             : null,
         sharedSelectionClipPromptControlGroups: structuredClone(sharedSelectionClipPromptControlGroups || []),
         isSelectionOverlayHidden,
@@ -1693,21 +1772,21 @@ function buildCanvasStateSnapshot() {
     };
 }
 
-function cloneCanvasLayersForState(layers = []) {
-    return (Array.isArray(layers) ? layers : [])
-        .map((layer) => {
-            const copy = structuredClone(layer);
-
-            if (copy.type === 'clip') {
-                clearClipInpaintMask(copy);
+function cloneCanvasLayersForState(layers = [], preserveMasks = false) {
+    const copies = structuredClone(Array.isArray(layers) ? layers : []);
+    const clearSnapshotMasks = (items) => {
+        items.forEach((layer) => {
+            if (layer.type === 'clip' && !preserveMasks) {
+                clearClipInpaintMask(layer);
             }
 
-            if ((copy.type === 'folder' || copy.type === 'selection') && Array.isArray(copy.children)) {
-                copy.children = cloneCanvasLayersForState(copy.children);
+            if ((layer.type === 'folder' || layer.type === 'selection') && Array.isArray(layer.children)) {
+                clearSnapshotMasks(layer.children);
             }
-
-            return copy;
         });
+    };
+    clearSnapshotMasks(copies);
+    return copies;
 }
 
 function collectClipInpaintMaskRefs(clip) {
@@ -1749,6 +1828,7 @@ function restoreCanvasState() {
         }
 
         applyCanvasStateSnapshot(state);
+        window.CanvasProject?.restoreLocalLink(state.projectLink);
 
     } catch (error) {
         console.warn('Canvas state restore failed:', error);
@@ -1852,7 +1932,13 @@ function showPendingCanvasImportModal(payload) {
     document.body.appendChild(modal);
 }
 
-function resetCanvasForPendingImport() {
+async function resetCanvasForPendingImport() {
+    if (window.CanvasProject && !await CanvasProject.leave()) return false;
+    if (typeof getCanvasStyleLink === 'function') getCanvasStyleLink()?.restore(null);
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.restore(null);
+    if (typeof CanvasRetouch !== 'undefined') CanvasRetouch.restore(null);
+    if (typeof CanvasOppositeReference !== 'undefined') CanvasOppositeReference.restore(null);
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.restore(null);
     currentCanvasWidth = 0;
     currentCanvasHeight = 0;
     canvasLayers = [];
@@ -1867,9 +1953,13 @@ function resetCanvasForPendingImport() {
 
     sharedSelectionClipPromptInfo = null;
     sharedSelectionClipPromptControlGroups = [];
+    if (typeof CanvasInpaintSettings !== 'undefined') CanvasInpaintSettings.restore(null);
+    if (typeof CanvasProjectSettings !== 'undefined') CanvasProjectSettings.restore(null);
 
     canvasZoom = 1;
     clipPreviewZoom = 1;
+    if (typeof resetCanvasEditHistory === 'function') resetCanvasEditHistory();
+    return true;
 }
 
 async function confirmPendingCanvasImport(mode) {
@@ -1883,18 +1973,7 @@ async function confirmPendingCanvasImport(mode) {
     const shouldSaveBeforeImport = Boolean(saveCheckbox && saveCheckbox.checked);
 
     try {
-        if (shouldSaveBeforeImport && !isCurrentCanvasAlreadySaved()) {
-            await saveCurrentCanvasSetupSilently();
-        }
-
-        localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
-        closePendingCanvasImportModal();
-
-        if (mode === 'reset') {
-            resetCanvasForPendingImport();
-        }
-
-        await importImageLayer(payload);
+        await importPendingCanvasImage(payload, {reset: mode === 'reset', saveCurrent: shouldSaveBeforeImport});
 
     } catch (error) {
         alert(`캔버스 이미지 가져오기 실패: ${error.message || error}`);
@@ -2192,14 +2271,7 @@ function openExternalCanvasImagePicker() {
 }
 
 function isSupportedExternalCanvasImage(file) {
-    if (!file) return false;
-
-    const type = String(file.type || '').toLowerCase();
-    if (['image/png', 'image/jpeg', 'image/webp'].includes(type)) {
-        return true;
-    }
-
-    return /\.(png|jpe?g|webp)$/i.test(String(file.name || ''));
+    return CanvasImageClipboard.isSupported(file);
 }
 
 async function handleExternalCanvasImageSelected(input) {
@@ -2279,38 +2351,11 @@ function getFirstSupportedImageFileFromList(files) {
 }
 
 function blobToDataUrl(blob) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error('클립보드 이미지를 읽을 수 없습니다.'));
-        reader.readAsDataURL(blob);
-    });
+    return CanvasImageClipboard.toDataUrl(blob);
 }
 
 async function readExternalCanvasImageFileFromSystemClipboard() {
-    if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') {
-        return null;
-    }
-
-    let items = [];
-    try {
-        items = await navigator.clipboard.read();
-    } catch (error) {
-        return null;
-    }
-
-    for (const item of items) {
-        const type = item.types.find((candidate) => candidate.startsWith('image/'));
-        if (!type) continue;
-
-        const blob = await item.getType(type);
-        const extension = type.split('/')[1] || 'png';
-        return new File([blob], `clipboard-image.${extension}`, {
-            type: blob.type || type || 'image/png'
-        });
-    }
-
-    return null;
+    return CanvasImageClipboard.readSystemFile();
 }
 
 async function readExternalCanvasImageDataUrlFromSystemClipboard() {
@@ -2367,7 +2412,17 @@ function bindExternalCanvasImageDropAndPaste() {
     document.addEventListener('paste', async (event) => {
         if (isEditablePasteTarget(event.target)) return;
 
-        let file = getFirstSupportedImageFileFromList(event.clipboardData?.files);
+        let file = CanvasImageClipboard.readEventFile(event.clipboardData);
+        const pasteToSelection = isClipOutputKeyboardTargetActive();
+        // Cancel synchronously: after awaiting clipboard permission it is too late.
+        if (file || pasteToSelection) event.preventDefault();
+        if (pasteToSelection) {
+            await pasteInternalClipboardToClipInpaintResults({
+                externalImageFile: file,
+                preferSystemClipboard: !file
+            });
+            return;
+        }
         if (!file) {
             file = await readExternalCanvasImageFileFromSystemClipboard();
         }
@@ -2392,8 +2447,7 @@ async function consumePendingCanvasImport() {
 
         // 캔버스가 없으면 물어보지 않고 바로 새 캔버스로 가져온다.
         if (!hasUsableCurrentCanvas()) {
-            localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
-            await importImageLayer(payload);
+            await importPendingCanvasImage(payload);
             return;
         }
 
@@ -2403,6 +2457,38 @@ async function consumePendingCanvasImport() {
     } catch (error) {
         localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
         alert(`캔버스 이미지 가져오기 실패: ${error.message || error}`);
+    }
+}
+
+let pendingCanvasImageImportBusy = false;
+
+async function importPendingCanvasImage(payload, {reset = false, saveCurrent = false} = {}) {
+    if (pendingCanvasImageImportBusy) return false;
+    pendingCanvasImageImportBusy = true;
+    try {
+        const project = window.CanvasProject;
+        const target = project ? await project.prepareImageImport(payload.projectContext) : null;
+        if (target === false) return false;
+
+        if (saveCurrent && !isCurrentCanvasAlreadySaved()) await saveCurrentCanvasSetupSilently();
+        // Flush the old project before the imported layer can enter its autosave snapshot.
+        const current = project?.localLink();
+        if (target && current && target.projectId !== current.projectId && !await project.leave()) return false;
+        if (reset && !await resetCanvasForPendingImport()) return false;
+
+        localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
+        closePendingCanvasImportModal();
+        await importImageLayer(payload);
+        if (target) {
+            try {
+                await project.connectImportedImage(target, payload);
+            } catch (error) {
+                showToast('그림은 가져왔지만 프로젝트 연결에 실패했습니다. 「Daki 프로젝트 연결」에서 다시 연결해 주세요. ' + error.message);
+            }
+        }
+        return true;
+    } finally {
+        pendingCanvasImageImportBusy = false;
     }
 }
 
@@ -2437,10 +2523,12 @@ async function importImageLayer(payload) {
         allowUpscale: true
     });
 
+    if (typeof CanvasInpaintSettings !== 'undefined') CanvasInpaintSettings.seed(payload.promptInfo);
     let promptInfo = normalizePromptInfo(payload.promptInfo);
 
     if ((!promptInfo || !hasAnyPromptText(promptInfo)) && payload.path) {
         const fetchedPrompt = await fetchPromptInfoByPath(payload.path);
+        if (typeof CanvasInpaintSettings !== 'undefined') CanvasInpaintSettings.seed(fetchedPrompt);
         if (fetchedPrompt && hasAnyPromptText(fetchedPrompt)) {
             promptInfo = fetchedPrompt;
         }
@@ -2493,6 +2581,13 @@ function renderCanvasLayersOnSurface() {
     renderPinnedReferencePanel();
     renderCanvasResizeHandles(surface, displayScale);
     renderCanvasResizeSpacingGuides(surface, displayScale);
+    if (typeof syncCanvasLayerEraser === 'function') syncCanvasLayerEraser();
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.syncEditor?.();
+    if (typeof CanvasOppositeReference !== 'undefined') CanvasOppositeReference.render();
+    if (typeof CanvasRetouch !== 'undefined') CanvasRetouch.sync();
+    if (typeof CanvasGrid !== 'undefined') CanvasGrid.render();
+    if (typeof CanvasKeyboardMove !== 'undefined') CanvasKeyboardMove.syncControls();
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.render();
 }
 
 function setCanvasLayerNodePosition(node, x, y, displayScale) {
@@ -2622,6 +2717,7 @@ function flushCanvasHotLayerGeometry(ids) {
 
     updateCanvasHotMultiLayerOverlay(surface, displayScale);
     updateCanvasHotResizeControls(surface, displayScale);
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.render();
 }
 
 function renderCanvasResizeHandles(surface, displayScale) {
@@ -3830,17 +3926,19 @@ function refreshOpenClipPromptModalAfterPromptMatch(promptInfo, promptControlGro
     }
 
     const info = normalizePromptInfo(promptInfo || {});
+    const generationInfo = typeof CanvasInpaintSettings !== 'undefined'
+        ? CanvasInpaintSettings.apply(info)
+        : info;
 
     setClipPromptEditorValue('base', info.basePrompt || '');
     setClipPromptEditorValue('negative', info.negativePrompt || '');
     setClipCharPromptValues(info.charPrompts || info.charPrompt || '');
 
-    setClipPromptInputValueIfExists('clipSamplerInput', info.sampler || 'k_euler_ancestral');
-    setClipPromptInputValueIfExists('clipStepsInput', info.steps || 28);
-    setClipPromptInputValueIfExists('clipCfgInput', info.cfg || info.scale || 6);
-    setClipPromptInputValueIfExists('clipStrengthInput', info.strength ?? 0.65);
-    setClipPromptInputValueIfExists('clipNoiseInput', info.noise ?? 0.2);
-    setClipPromptInputValueIfExists('clipSeedInput', info.seed ?? -1);
+    setGenerationSettings('clip', generationInfo);
+    setClipPromptInputValueIfExists('clipCfgInput', generationInfo.cfg || generationInfo.scale || 6);
+    setClipPromptInputValueIfExists('clipStrengthInput', generationInfo.strength ?? 0.65);
+    setClipPromptInputValueIfExists('clipNoiseInput', generationInfo.noise ?? 0.2);
+    setClipPromptInputValueIfExists('clipSeedInput', generationInfo.seed ?? -1);
 
     const owner = getActiveClipForPromptControl();
 
@@ -3956,6 +4054,7 @@ function updateCanvasBaseLayer(width, height) {
 }
 
 function toggleLayerMoveMode() {
+    if (!isLayerMoveMode && typeof setCanvasLayerEraserEnabled === 'function') setCanvasLayerEraserEnabled(false);
     isLayerMoveMode = !isLayerMoveMode;
     activeLayerDrag = null;
 
@@ -3968,8 +4067,8 @@ function toggleLayerMoveMode() {
 
     if (hint) {
         hint.innerText = isLayerMoveMode
-            ? '이동할 이미지 레이어를 클릭한 뒤 마우스를 떼지 말고 움직이세요.'
-            : '이동 버튼을 켠 뒤 캔버스 위 이미지 레이어를 드래그하세요.';
+            ? '레이어를 드래그하거나 방향키로 이동하세요. Shift를 누르면 큰 간격으로 이동합니다.'
+            : '이동 버튼을 켜고 레이어를 드래그하거나 방향키로 이동하세요.';
     }
 
     renderCanvasLayersOnSurface();
@@ -3977,6 +4076,7 @@ function toggleLayerMoveMode() {
 }
 
 function toggleImageResizeMode() {
+    if (!isImageResizeMode && typeof setCanvasLayerEraserEnabled === 'function') setCanvasLayerEraserEnabled(false);
     isImageResizeMode = !isImageResizeMode;
     activeImageResizeDrag = null;
     hideImageResizeGuideOverlay();
@@ -4018,10 +4118,11 @@ function toggleImageResizeMode() {
 
 function getCanvasFitScale(width, height) {
     const workspace = document.querySelector('.canvas-workspace');
-    const padding = 120;
+    const padding = window.CanvasWorkspaceBridge?.isPane ? 48 : 120;
 
-    const availableWidth = Math.max(200, (workspace?.clientWidth || window.innerWidth) - padding);
-    const availableHeight = Math.max(200, (workspace?.clientHeight || window.innerHeight) - padding);
+    const minimum = window.CanvasWorkspaceBridge?.isPane ? 40 : 200;
+    const availableWidth = Math.max(minimum, (workspace?.clientWidth || window.innerWidth) - padding);
+    const availableHeight = Math.max(minimum, (workspace?.clientHeight || window.innerHeight) - padding);
 
     return Math.min(
         availableWidth / Math.max(1, width),
@@ -4031,6 +4132,7 @@ function getCanvasFitScale(width, height) {
 }
 
 function setCanvasResizeMode(enabled) {
+    if (enabled && typeof setCanvasLayerEraserEnabled === 'function') setCanvasLayerEraserEnabled(false);
     isCanvasResizeMode = Boolean(enabled);
     activeCanvasResizeDrag = null;
 
@@ -4109,10 +4211,13 @@ function updateSelectionOverlayToggleUI() {
     const hint = el('selectionOverlayHint');
 
     if (btn) {
-        btn.classList.toggle('active', isSelectionOverlayHidden);
+        btn.classList.toggle('active', !isSelectionOverlayHidden);
         btn.innerText = isSelectionOverlayHidden
-            ? '▣ 선택 영역 표시'
-            : '▣ 선택 영역 숨김';
+            ? '▣ 영역 숨김'
+            : '▣ 영역 표시';
+        const label = isSelectionOverlayHidden ? '선택 영역 숨김' : '선택 영역 표시';
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
     }
 
     if (hint) {
@@ -4128,49 +4233,6 @@ function getCanvasDisplayScale() {
 
     const displayWidth = surface.clientWidth || parseFloat(surface.style.width) || currentCanvasWidth;
     return displayWidth / currentCanvasWidth;
-}
-
-function getInitialImageLayerGeometry(imageWidth, imageHeight, options = null) {
-    const canvasWidth = currentCanvasWidth || imageWidth || 960;
-    const canvasHeight = currentCanvasHeight || imageHeight || 3072;
-    const allowUpscale = options?.allowUpscale === true;
-
-    const containScale = Math.min(
-        canvasWidth / imageWidth,
-        canvasHeight / imageHeight
-    );
-    const fitScale = allowUpscale ? containScale : Math.min(containScale, 1);
-
-    const width = Math.max(1, Math.round(imageWidth * fitScale));
-    const height = Math.max(1, Math.round(imageHeight * fitScale));
-
-    return {
-        width,
-        height,
-        x: Math.round((canvasWidth - width) / 2),
-        y: Math.round((canvasHeight - height) / 2)
-    };
-}
-
-function normalizeImageLayerGeometry(layer) {
-    if (!layer || layer.type !== 'image') return;
-
-    const imageWidth = parseInt(layer.imageWidth, 10) || currentCanvasWidth || 960;
-    const imageHeight = parseInt(layer.imageHeight, 10) || currentCanvasHeight || 3072;
-
-    if (!Number.isFinite(layer.layerWidth) || !Number.isFinite(layer.layerHeight) || !layer.layerWidth || !layer.layerHeight) {
-        const geometry = getInitialImageLayerGeometry(imageWidth, imageHeight);
-        layer.layerWidth = geometry.width;
-        layer.layerHeight = geometry.height;
-    }
-
-    if (!Number.isFinite(layer.x)) {
-        layer.x = Math.round(((currentCanvasWidth || imageWidth) - layer.layerWidth) / 2);
-    }
-
-    if (!Number.isFinite(layer.y)) {
-        layer.y = Math.round(((currentCanvasHeight || imageHeight) - layer.layerHeight) / 2);
-    }
 }
 
 function isResizableCanvasLayer(layer) {
@@ -5420,7 +5482,7 @@ function startSelectionResizeDrag(event, layerId, handle) {
         clientY: event.clientY
     };
 
-    updateSelectionSizeTooltip(event.clientX, event.clientY, layer.layerWidth, layer.layerHeight);
+    updateSelectionSizeTooltip(event.clientX, event.clientY, layer.layerWidth, layer.layerHeight, true);
 }
 
 function handleSelectionMouseMove(event) {
@@ -5606,7 +5668,7 @@ function handleSelectionResize(event, layer) {
     layer.layerWidth = nextWidth;
     layer.layerHeight = nextHeight;
 
-    updateSelectionSizeTooltip(event.clientX, event.clientY, nextWidth, nextHeight);
+    updateSelectionSizeTooltip(event.clientX, event.clientY, nextWidth, nextHeight, true);
     updateCanvasHotLayerGeometry(layer.id);
 }
 
@@ -5678,6 +5740,7 @@ function handleSelectionMouseUp(event) {
 
     hideSelectionSizeTooltip();
 
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.selectionChanged(layer);
     renderLayerList();
     syncCanvasSurfaceSelectionState();
     updateSelectionHoverCursor(event);
@@ -5697,17 +5760,48 @@ function getSelectionSizeTooltip() {
     return tooltip;
 }
 
-function updateSelectionSizeTooltip(clientX, clientY, width, height) {
+function updateSelectionSizeTooltip(clientX, clientY, width, height, isSelection = false) {
     const tooltip = getSelectionSizeTooltip();
-    const area = width * height;
-    const isAnlas = area > NAI_FREE_AREA_LIMIT;
+    let requestSize = {width, height, reference: null};
+    let referenceMissing = false;
 
-    tooltip.classList.toggle('danger', isAnlas);
-    tooltip.innerText = `${width} × ${height}px${isAnlas ? ' · Anlas 가능' : ''}`;
+    if (isSelection) {
+        width = snapToSelectionStep(width);
+        height = snapToSelectionStep(height);
+        requestSize = {width, height, reference: null};
+        if (typeof CanvasInpaintReference !== 'undefined') {
+            try {
+                requestSize = CanvasInpaintReference.request(width, height);
+            } catch (_) {
+                referenceMissing = true;
+            }
+        }
+    }
+
+    const isAnlas = requestSize.width * requestSize.height > NAI_FREE_AREA_LIMIT;
+    const rangeLabel = isAnlas ? 'Anlas 가능' : '무료 크기 범위';
+    let text = `${width} × ${height}px${isAnlas ? ' · Anlas 가능' : ''}`;
+    if (isSelection) {
+        text = `선택 ${width} × ${height}px`;
+        if (referenceMissing) {
+            text += '\n참고 이미지 없음 · 요청 불가';
+        } else if (requestSize.reference) {
+            text += ` · 참고 폭 ${requestSize.reference.width}px\n전체 ${requestSize.width} × ${requestSize.height}px · ${rangeLabel}`;
+        } else {
+            text += ` · ${rangeLabel}`;
+        }
+    }
+
+    tooltip.classList.toggle('danger', isAnlas || referenceMissing);
+    tooltip.innerText = text;
 
     tooltip.style.display = 'block';
-    tooltip.style.left = `${clientX + 10}px`;
-    tooltip.style.top = `${clientY - 38}px`;
+    const bounds = tooltip.getBoundingClientRect();
+    const maxLeft = Math.max(8, window.innerWidth - bounds.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - bounds.height - 8);
+    const top = clientY - bounds.height - 10;
+    tooltip.style.left = `${Math.max(8, Math.min(clientX + 10, maxLeft))}px`;
+    tooltip.style.top = `${Math.max(8, Math.min(top < 8 ? clientY + 10 : top, maxTop))}px`;
 }
 
 function hideSelectionSizeTooltip() {
@@ -6238,8 +6332,10 @@ async function pasteInternalClipboardToClipInpaintResults(options = {}) {
     try {
         let clipboard = clipOutputInternalClipboard;
 
-        if (options.preferSystemClipboard) {
-            const externalImageDataUrl = await readExternalCanvasImageDataUrlFromSystemClipboard();
+        if (options.externalImageFile || options.preferSystemClipboard) {
+            const externalImageDataUrl = options.externalImageFile
+                ? await blobToDataUrl(options.externalImageFile)
+                : await readExternalCanvasImageDataUrlFromSystemClipboard();
             if (externalImageDataUrl) {
                 clipboard = buildExternalClipboardPayloadForClipOutput(externalImageDataUrl, state);
             }
@@ -6417,13 +6513,7 @@ function handleClipOutputClipboardShortcut(event) {
         return true;
     }
 
-    if (event.key.toLowerCase() === 'v') {
-        if (!isClipOutputKeyboardTargetActive()) return false;
-        event.preventDefault();
-        pasteInternalClipboardToClipInpaintResults();
-        return true;
-    }
-
+    // Ctrl+V is handled by the paste event, which includes external image bytes.
     return false;
 }
 
@@ -6578,49 +6668,6 @@ async function createClipFromSelection(selection) {
     saveCanvasState();
 }
 
-async function renderMergedCanvasToDataUrl() {
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        throw new Error('내보낼 캔버스가 없습니다.');
-    }
-
-    const offscreen = document.createElement('canvas');
-    offscreen.width = currentCanvasWidth;
-    offscreen.height = currentCanvasHeight;
-
-    const ctx = offscreen.getContext('2d');
-    ctx.clearRect(0, 0, currentCanvasWidth, currentCanvasHeight);
-
-    // 캔버스 베이스 레이어가 보이면 흰 배경 합성
-    if (hasVisibleCanvasBaseLayer(canvasLayers)) {
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, currentCanvasWidth, currentCanvasHeight);
-    }
-
-    const drawableLayers = collectDrawableImageLayersForClip(canvasLayers);
-
-    for (const layer of drawableLayers) {
-        if (layer.type === 'image') {
-            if (layer.pinnedReference) continue;
-
-            normalizeImageLayerGeometry(layer);
-        }
-
-        if (!layer.src) continue;
-
-        const img = await loadImageElementForClip(layer.src);
-
-        ctx.drawImage(
-            img,
-            layer.x || 0,
-            layer.y || 0,
-            layer.layerWidth || layer.imageWidth || img.naturalWidth || img.width,
-            layer.layerHeight || layer.imageHeight || img.naturalHeight || img.height
-        );
-    }
-
-    return offscreen.toDataURL('image/png');
-}
-
 async function dataUrlToBlob(dataUrl) {
     const response = await fetch(dataUrl);
     return await response.blob();
@@ -6684,9 +6731,10 @@ async function downloadMergedCanvasImage() {
 
     try {
         const dataUrl = await renderMergedCanvasToDataUrl();
+        const projectName = await window.CanvasProject?.suggestDownloadName?.();
         const link = document.createElement('a');
         link.href = dataUrl;
-        link.download = buildMergedCanvasDownloadName();
+        link.download = projectName || buildMergedCanvasDownloadName();
         document.body.appendChild(link);
         link.click();
         link.remove();
@@ -6753,6 +6801,13 @@ async function buildMergedOnlyCanvasStateSnapshot() {
         ],
         activeLayerId: imageLayerId,
         layerIdSeq: 3,
+        styleLink: typeof getCanvasStyleLink === 'function' ? getCanvasStyleLink()?.snapshot() : undefined,
+        projectSettingsLink: typeof CanvasProjectSettings !== 'undefined' ? CanvasProjectSettings.snapshot() : undefined,
+        oppositeReference: typeof CanvasOppositeReference !== 'undefined' ? CanvasOppositeReference.snapshot() : undefined,
+        inpaintReference: typeof CanvasInpaintReference !== 'undefined' ? CanvasInpaintReference.snapshot() : undefined,
+        inpaintSettings: typeof CanvasInpaintSettings !== 'undefined'
+            ? CanvasInpaintSettings.snapshot()
+            : null,
         isSelectionOverlayHidden: false,
         checkedSelectionId: null,
         canvasZoom: 1,
@@ -6780,19 +6835,6 @@ function rectsIntersect(ax, ay, aw, ah, bx, by, bw, bh) {
            ay + ah > by;
 }
 
-function loadImageElementForClip(src) {
-    return new Promise((resolve, reject) => {
-        const img = new Image();
-
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('이미지를 불러올 수 없습니다.'));
-
-        // 같은 서버의 /image, /canvas-imports는 문제 없음.
-        // 외부 URL을 쓸 경우 CORS 때문에 canvas export가 막힐 수 있음.
-        img.src = src;
-    });
-}
-
 async function saveClipDataUrlToServer(dataUrl, options = {}) {
     const response = await fetch('/api/canvas/import_base64', {
         method: 'POST',
@@ -6811,50 +6853,6 @@ async function saveClipDataUrlToServer(dataUrl, options = {}) {
     }
 
     return data.src;
-}
-
-function hasVisibleCanvasBaseLayer(layers) {
-    for (const layer of layers) {
-        if (!layer.visible) continue;
-
-        if (layer.type === 'canvas') {
-            return true;
-        }
-
-        if ((layer.type === 'folder' || layer.type === 'selection') && Array.isArray(layer.children)) {
-            if (hasVisibleCanvasBaseLayer(layer.children)) return true;
-        }
-    }
-
-    return false;
-}
-
-function collectDrawableImageLayersForClip(layers, output = []) {
-    // renderCanvasLayerStack과 같은 순서: 아래 레이어부터 위 레이어 순서
-    [...layers].reverse().forEach((layer) => {
-        if (!layer || !layer.visible) return;
-
-        if (layer.type === 'folder' || layer.type === 'selection') {
-            layer.children = Array.isArray(layer.children) ? layer.children : [];
-            collectDrawableImageLayersForClip(layer.children, output);
-            return;
-        }
-
-        // 일반 이미지 레이어는 그대로 포함
-        if (layer.type === 'image' && layer.src) {
-            output.push(layer);
-            return;
-        }
-
-        // 캔버스에 실제로 보이는 클립(= 인페인팅 결과)도 포함
-        // 원본 클립은 renderOnCanvas가 없으므로 제외됨
-        if (layer.type === 'clip' && layer.renderOnCanvas && layer.src) {
-            output.push(layer);
-            return;
-        }
-    });
-
-    return output;
 }
 
 function findSelectionWithVisibleClip(layers = canvasLayers) {
@@ -7044,6 +7042,33 @@ function positionClipOutputPanel(panel, selection, clip) {
 
     panel.style.left = `${Math.round(clipOutputPanelPosition.canvasLeft * displayScale + gap)}px`;
     panel.style.top = `${Math.round(clipOutputPanelPosition.canvasTop * displayScale)}px`;
+    keepDefaultClipOutputPanelVisible(panel);
+}
+
+function keepDefaultClipOutputPanelVisible(panel) {
+    if (!panel) return;
+    const workspace = panel.closest('.canvas-workspace');
+    if (!workspace || !workspace.clientWidth || !workspace.clientHeight) return;
+
+    const workspaceRect = workspace.getBoundingClientRect();
+    // The workspace can extend below a short browser window. Keep the resize corner reachable.
+    const visibleWidth = Math.min(workspace.clientWidth, window.innerWidth - workspaceRect.left - workspace.clientLeft);
+    const visibleHeight = Math.min(workspace.clientHeight, window.innerHeight - workspaceRect.top - workspace.clientTop);
+    panel.style.maxWidth = `${Math.max(420, visibleWidth - 16)}px`;
+    panel.style.maxHeight = `${Math.max(340, visibleHeight - 16)}px`;
+    if (clipOutputPanelPosition?.custom) return;
+    const panelRect = panel.getBoundingClientRect();
+    const inset = 8;
+    const left = workspaceRect.left + workspace.clientLeft + inset;
+    const top = workspaceRect.top + workspace.clientTop + inset;
+    const maxLeft = Math.max(left, left + visibleWidth - inset * 2 - panelRect.width);
+    const maxTop = Math.max(top, top + visibleHeight - inset * 2 - panelRect.height);
+    const nextLeft = Math.max(left, Math.min(maxLeft, panelRect.left));
+    const nextTop = Math.max(top, Math.min(maxTop, panelRect.top));
+
+    // Move only the floating UI; original canvas coordinates and user drag positions stay intact.
+    panel.style.left = `${Math.round((parseFloat(panel.style.left) || 0) + nextLeft - panelRect.left)}px`;
+    panel.style.top = `${Math.round((parseFloat(panel.style.top) || 0) + nextTop - panelRect.top)}px`;
 }
 
 function bindClipOutputPanelDrag(panel) {
@@ -7055,6 +7080,117 @@ function bindClipOutputPanelDrag(panel) {
     if (!title) return;
 
     title.onmousedown = (event) => startClipOutputPanelDrag(event, panel);
+}
+
+function getClipOutputViewportSize(wrap) {
+    const bounds = wrap.getBoundingClientRect();
+    const style = getComputedStyle(wrap);
+    // Exclude borders, but not transient scrollbars from the previous image size.
+    return {
+        width: Math.max(0, Math.floor(bounds.width - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth))),
+        height: Math.max(0, Math.floor(bounds.height - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth)))
+    };
+}
+
+function fitClipOutputPanelToImage(panel, clip) {
+    const wrap = panel.querySelector('.canvas-clip-output-image-wrap');
+    if (!wrap || !clip) return;
+    const naturalWidth = Math.max(1, Number(clip.imageWidth) || 512);
+    const naturalHeight = Math.max(1, Number(clip.imageHeight) || 512);
+    const maxWidth = Math.min(546, parseFloat(panel.style.maxWidth) || window.innerWidth - 32);
+    const maxHeight = parseFloat(panel.style.maxHeight) || window.innerHeight - 32;
+    panel.dataset.manualSize = '';
+    panel.classList.remove('compact');
+    panel.style.width = `${maxWidth}px`;
+    panel.style.height = 'auto';
+    // With a zero flex basis the viewport contributes only its borders here.
+    const viewport = getClipOutputViewportSize(wrap);
+    const bounds = panel.getBoundingClientRect();
+    const chromeWidth = bounds.width - viewport.width;
+    const chromeHeight = bounds.height - viewport.height;
+    const scale = Math.min(1, Math.max(1, maxWidth - chromeWidth) / naturalWidth,
+        Math.max(1, maxHeight - chromeHeight) / naturalHeight);
+    panel.style.width = `${Math.max(Math.min(420, maxWidth), Math.floor(naturalWidth * scale) + chromeWidth)}px`;
+    panel.style.height = `${Math.floor(naturalHeight * scale) + chromeHeight}px`;
+}
+
+function getClipOutputResizeScale(width, height, dx, dy) {
+    const horizontal = dx / Math.max(1, width);
+    const vertical = dy / Math.max(1, height);
+    return 1 + (Math.abs(horizontal) >= Math.abs(vertical) ? horizontal : vertical);
+}
+
+function bindClipOutputPanelResize(panel, clip, syncOverlay) {
+    const handle = panel.querySelector('.clip-output-resize-handle');
+    const reset = panel.querySelector('.clip-output-auto-size');
+    const wrap = panel.querySelector('.canvas-clip-output-image-wrap');
+    if (!handle || !wrap) return () => {};
+    let drag = null;
+    const measure = () => {
+        const viewport = getClipOutputViewportSize(wrap);
+        return {...viewport, chromeWidth: panel.getBoundingClientRect().width - viewport.width};
+    };
+    const resize = (start, factor) => {
+        const maxWidth = parseFloat(panel.style.maxWidth) || window.innerWidth - 32;
+        const maxHeight = parseFloat(panel.style.maxHeight) || window.innerHeight - 32;
+        const minFactor = Math.max((320 - start.chromeWidth) / start.width, 64 / start.height);
+        factor = Math.max(minFactor, Math.min(factor, (maxWidth - start.chromeWidth) / start.width));
+        const setWidth = () => {
+            const width = start.width * factor + start.chromeWidth;
+            panel.classList.toggle('compact', width < 420);
+            panel.style.width = `${width}px`;
+        };
+        setWidth();
+        // Compact toolbars have a second row; keep that chrome out of image scaling.
+        let chromeHeight = panel.getBoundingClientRect().height - getClipOutputViewportSize(wrap).height;
+        factor = Math.min(factor, Math.max(1, maxHeight - chromeHeight) / start.height);
+        factor = Math.max(minFactor, factor);
+        setWidth();
+        chromeHeight = panel.getBoundingClientRect().height - getClipOutputViewportSize(wrap).height;
+        panel.style.height = `${Math.min(maxHeight, start.height * factor + chromeHeight)}px`;
+        panel.dataset.manualSize = '1';
+        syncOverlay();
+    };
+    const stop = () => {
+        if (drag) {
+            try { handle.releasePointerCapture(drag.pointerId); } catch (_) {}
+        }
+        drag = null;
+        panel.classList.remove('resizing');
+    };
+    const autoSize = () => {
+        stop();
+        fitClipOutputPanelToImage(panel, clip);
+        syncOverlay();
+    };
+    handle.onpointerdown = (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault(); event.stopPropagation();
+        drag = {...measure(), pointerId: event.pointerId, x: event.clientX, y: event.clientY};
+        handle.setPointerCapture(event.pointerId);
+        panel.classList.add('resizing');
+    };
+    handle.onpointermove = (event) => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        event.preventDefault(); event.stopPropagation();
+        resize(drag, getClipOutputResizeScale(drag.width, drag.height, event.clientX - drag.x, event.clientY - drag.y));
+    };
+    handle.onpointerup = handle.onpointercancel = handle.onlostpointercapture = stop;
+    handle.onkeydown = (event) => {
+        if (event.key === 'Home') { event.preventDefault(); autoSize(); return; }
+        const delta = {ArrowRight: 16, ArrowDown: 16, ArrowLeft: -16, ArrowUp: -16}[event.key];
+        if (!delta) return;
+        event.preventDefault(); event.stopPropagation();
+        const start = measure();
+        resize(start, 1 + delta / start.width);
+    };
+    if (reset) reset.onclick = autoSize;
+    return () => {
+        stop();
+        handle.onpointerdown = handle.onpointermove = handle.onpointerup = null;
+        handle.onpointercancel = handle.onlostpointercapture = handle.onkeydown = null;
+        if (reset) reset.onclick = null;
+    };
 }
 
 function startClipOutputPanelDrag(event, panel) {
@@ -7082,7 +7218,9 @@ function handleClipOutputPanelDragMove(event) {
     const drag = activeClipOutputPanelDrag;
     const displayScale = Math.max(getCanvasDisplayScale(), 0.01);
     const gap = 18;
-    const nextLeft = Math.max(0, Math.round(drag.startLeft + event.clientX - drag.startClientX));
+    // A default panel may sit left of the stage after viewport clamping.
+    // Keep that starting position reachable so its first drag does not jump.
+    const nextLeft = Math.max(Math.min(0, drag.startLeft), Math.round(drag.startLeft + event.clientX - drag.startClientX));
     const nextTop = Math.round(drag.startTop + event.clientY - drag.startClientY);
 
     drag.panel.style.left = `${nextLeft}px`;
@@ -7090,7 +7228,7 @@ function handleClipOutputPanelDragMove(event) {
 
     clipOutputPanelPosition = {
         ...(clipOutputPanelPosition || {}),
-        canvasLeft: Math.max(0, (nextLeft - gap) / displayScale),
+        canvasLeft: drag.startLeft < 0 ? (nextLeft - gap) / displayScale : Math.max(0, (nextLeft - gap) / displayScale),
         canvasTop: nextTop / displayScale,
         custom: true
     };
@@ -7104,6 +7242,7 @@ function stopClipOutputPanelDrag() {
 }
 
 function renderClipOutputPanel() {
+    disposeClipMaskEditor();
     const stage = el('canvasStage');
     if (!stage) return;
 
@@ -7114,6 +7253,7 @@ function renderClipOutputPanel() {
 
     if (!target || !target.clip) {
         stage.classList.remove('has-clip-output');
+        if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.render();
         return;
     }
 
@@ -7121,6 +7261,14 @@ function renderClipOutputPanel() {
 
     const panel = document.createElement('div');
     panel.className = 'canvas-clip-output-panel';
+    panel.dataset.clipSizeKey = `${target.selection.id}:${target.clip.id}:${target.clip.imageWidth}x${target.clip.imageHeight}`;
+    // Retain a manual size only for the same clip, never for a new selection/image.
+    if (oldPanel?.dataset.clipSizeKey === panel.dataset.clipSizeKey && oldPanel.dataset.manualSize === '1') {
+        panel.dataset.manualSize = '1';
+        panel.style.width = oldPanel.style.width;
+        panel.style.height = oldPanel.style.height;
+        panel.classList.toggle('compact', oldPanel.classList.contains('compact'));
+    }
 
     const previewClip = getTopVisibleInpaintClipForSelection(target.selection, target.clip);
     const showInpaintPreview = Boolean(!isClipInpaintMergedSourceMode && isClipInpaintPreviewMode && previewClip);
@@ -7160,25 +7308,28 @@ function renderClipOutputPanel() {
     const isLoading = clipInpaintLoadingClipId === target.clip.id;
 
     panel.innerHTML = `
-        <div class="canvas-clip-output-title">클립 결과</div>
+        <div class="canvas-clip-output-title">클립 결과 <span class="clip-output-drag-hint">드래그로 이동</span></div>
         <div class="canvas-clip-output-meta">
-            ${escapeHtml(target.selection.name || '선택 영역')} · ${displayClip.imageWidth} × ${displayClip.imageHeight}px
-            · <span class="clip-preview-zoom-readout">${Math.round(clipPreviewZoom * 100)}%</span>
+            <span class="clip-output-selection-name" title="${escapeHtml(target.selection.name || '선택 영역')}">${escapeHtml(target.selection.name || '선택 영역')}</span>
+            <span>${displayClip.imageWidth} × ${displayClip.imageHeight}px</span>
+            <span class="clip-preview-zoom-readout">${Math.round(clipPreviewZoom * 100)}%</span>
             ${
                 isClipInpaintMergedSourceMode
-                    ? ` · <span class="clip-preview-mode-label">${hasMergedPreview ? '통합 소스 보기' : '통합 소스 생성 중...'}</span>`
+                    ? `<span class="clip-preview-mode-label">${hasMergedPreview ? '통합 소스 보기' : '통합 소스 생성 중...'}</span>`
                     : showInpaintPreview && previewClip
-                        ? ` · <span class="clip-preview-mode-label">인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}</span>`
-                        : ` · <span class="clip-preview-mode-label">마스크 편집 보기</span>`
+                        ? `<span class="clip-preview-mode-label" title="인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}">인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}</span>`
+                        : `<span class="clip-preview-mode-label">마스크 편집 보기</span>`
             }
         </div>
 
         <div class="canvas-clip-output-toolbar">
+            <div class="clip-output-tools-row" role="group" aria-label="클립 편집 도구">
             <div class="clip-mask-tool-control ${openClipMaskSizeTool === 'brush' ? 'open' : ''}">
-                <button class="clip-mask-tool-btn ${activeClipMaskTool === 'brush' ? 'active' : ''}"
+                <button class="clip-mask-tool-btn clip-mask-tool-labeled ${activeClipMaskTool === 'brush' ? 'active' : ''}"
                         title="브러시"
+                        aria-pressed="${activeClipMaskTool === 'brush'}"
                         onclick="toggleClipMaskToolSizePopover('brush', event)">
-                    ●
+                    브러시
                 </button>
                 <div class="clip-brush-size-popover">
                     <input type="range"
@@ -7192,10 +7343,11 @@ function renderClipOutputPanel() {
             </div>
 
             <div class="clip-mask-tool-control ${openClipMaskSizeTool === 'eraser' ? 'open' : ''}">
-                <button class="clip-mask-tool-btn ${activeClipMaskTool === 'eraser' ? 'active' : ''}"
+                <button class="clip-mask-tool-btn clip-mask-tool-labeled ${activeClipMaskTool === 'eraser' ? 'active' : ''}"
                         title="지우개"
+                        aria-pressed="${activeClipMaskTool === 'eraser'}"
                         onclick="toggleClipMaskToolSizePopover('eraser', event)">
-                    ◌
+                    지우개
                 </button>
                 <div class="clip-brush-size-popover">
                     <input type="range"
@@ -7208,10 +7360,11 @@ function renderClipOutputPanel() {
                 </div>
             </div>
 
-            <button class="clip-mask-tool-btn ${showInpaintPreview ? 'active' : ''}"
+            <button class="clip-mask-tool-btn clip-mask-tool-labeled ${showInpaintPreview ? 'active' : ''}"
                     title="인페인팅 결과 보기 토글"
+                    aria-pressed="${showInpaintPreview}"
                     onclick="toggleClipInpaintPreview()">
-                ◧
+                결과 보기
             </button>
 
             <button class="clip-mask-tool-btn selection-overlay-toggle ${isSelectionOverlayHidden ? '' : 'active'}"
@@ -7226,16 +7379,19 @@ function renderClipOutputPanel() {
                 위치
             </button>
 
-            <button class="clip-mask-tool-btn auto-mask ${activeClipAutoMaskPickClipId === target.clip.id ? 'active' : ''}"
+            <button class="clip-mask-tool-btn clip-mask-tool-labeled auto-mask ${activeClipAutoMaskPickClipId === target.clip.id ? 'active' : ''}"
                     title="클릭한 그림 레이어 기준으로 위 레이어 영역을 제외해 자동 선택"
+                    aria-pressed="${activeClipAutoMaskPickClipId === target.clip.id}"
                     onclick="toggleClipAutoMaskPickMode(${target.clip.id})">
-                A
+                자동 선택
             </button>
+            </div>
 
-            <button class="clip-mask-tool-btn prompt-btn"
+            <div class="clip-output-actions-row" role="group" aria-label="인페인팅 설정과 실행">
+            <button class="clip-mask-tool-btn clip-mask-tool-labeled prompt-btn"
                     title="프롬프트"
                     onclick="openClipPromptModal(${target.clip.id})">
-                ✎
+                프롬프트
             </button>
 
             <button class="clip-mask-tool-btn merged-source-toggle ${isClipInpaintMergedSourceMode ? 'active' : ''}"
@@ -7244,11 +7400,12 @@ function renderClipOutputPanel() {
                 통합 ${isClipInpaintMergedSourceMode ? 'ON' : 'OFF'}
             </button>
 
-            <button class="clip-mask-tool-btn prompt-btn"
+            <button class="clip-mask-tool-btn clip-mask-tool-labeled clip-inpaint-run-btn"
                     title="인페인팅"
                     onclick="requestClipInpainting(${target.clip.id})">
-                IN
+                인페인팅
             </button>
+            </div>
         </div>
 
         <div class="${imageWrapClass}" data-clip-id="${target.clip.id}">
@@ -7260,10 +7417,21 @@ function renderClipOutputPanel() {
                 <div class="clip-inpaint-loading-text">${escapeHtml(clipInpaintLoadingMessage)}</div>
             </div>
         </div>
+        <div class="clip-output-size-actions">
+            <button type="button" class="secondary clip-output-auto-size" title="클립 이미지에 맞는 자동 크기로 되돌리기">자동 크기</button>
+            <span class="clip-output-resize-hint">모서리 드래그: 창·이미지 함께 조절</span>
+        </div>
+        <button type="button" class="clip-output-resize-handle" aria-label="클립 창과 이미지 크기 조절" title="비율을 유지하며 크기 조절 · 방향키로 조절 · Home: 자동 크기">◢</button>
     `;
 
     stage.appendChild(panel);
+    if (typeof CanvasInpaintReference !== 'undefined') {
+        CanvasInpaintReference.mountActions(panel.querySelector('.clip-output-actions-row'));
+        CanvasInpaintReference.render();
+    }
     positionClipOutputPanel(panel, target.selection, target.clip);
+    if (panel.dataset.manualSize !== '1') fitClipOutputPanelToImage(panel, target.clip);
+    keepDefaultClipOutputPanelVisible(panel);
     bindClipOutputPanelDrag(panel);
 
     const outputWrap = panel.querySelector('.canvas-clip-output-image-wrap');
@@ -7275,9 +7443,19 @@ function renderClipOutputPanel() {
     bindClipMaskEditor(panel, target.clip);
 }
 
-function getOrCreateSelectionInpaintFolder(selection) {
+function getOrCreateSelectionInpaintFolder(selection, preparedFocus = null) {
     selection.children = Array.isArray(selection.children) ? selection.children : [];
-    let folder = selection.children.find((child) => child.type === 'folder' && child.name === '인페인팅');
+    // 부위가 바뀌어도 같은 선택 영역의 결과는 기존 폴더에 계속 쌓는다.
+    let folder = selection.children.find((child) => child.type === 'folder'
+        && (child.name === '인페인팅'
+            || (typeof child.dakiRegion === 'string' && child.dakiRegion.length > 0)
+            || (Array.isArray(child.children) && child.children.some((result) =>
+                result.type === 'clip' && result.renderOnCanvas === true
+                && Number(result.sourceSelectionId) === Number(selection.id)))));
+
+    if (!folder && typeof CanvasDakiFocus !== 'undefined') {
+        folder = CanvasDakiFocus.resultFolder(selection, preparedFocus, () => layerIdSeq++);
+    }
 
     if (!folder) {
         folder = {
@@ -7298,6 +7476,7 @@ function getOrCreateSelectionInpaintFolder(selection) {
 
 
 async function requestClipInpainting(clipId) {
+    if (clipInpaintLoadingClipId) return;
     const found = findCanvasLayer(clipId);
     const clip = found?.layer;
     const selection = findSelectionParentForLayerId(clipId);
@@ -7313,20 +7492,38 @@ async function requestClipInpainting(clipId) {
         return;
     }
 
-    const requestPromptInfo = buildEffectiveClipPromptInfo(clip);
+    let preparedFocus;
+    try {
+        const original = buildEffectiveClipPromptInfo(clip);
+        preparedFocus = typeof CanvasDakiFocus !== 'undefined'
+            ? await CanvasDakiFocus.prepare(clip, original) : {promptInfo: original};
+    } catch (error) {
+        alert('부위 설정을 확인해 주세요: ' + error.message);
+        return;
+    }
+    const requestPromptInfo = preparedFocus.promptInfo;
     const requestWidth = clip.imageWidth || clip.layerWidth;
     const requestHeight = clip.imageHeight || clip.layerHeight;
     const requestSteps = parseInt(requestPromptInfo.steps || 28, 10) || 28;
+    let referenceRequest;
+    try {
+        referenceRequest = typeof CanvasInpaintReference !== 'undefined'
+            ? CanvasInpaintReference.request(requestWidth, requestHeight)
+            : {width: requestWidth, height: requestHeight, reference: null};
+    } catch (error) {
+        alert(error.message);
+        return;
+    }
 
     const canUseAnlas = await showAnlasWarningModal({
-        width: requestWidth,
-        height: requestHeight,
+        width: referenceRequest.width,
+        height: referenceRequest.height,
         steps: requestSteps,
         title: '캔버스 인페인팅 Anlas 사용 경고',
         detail: '현재 캔버스 인페인팅 요청은 무료 범위를 벗어나 Anlas가 소모될 수 있습니다.'
     });
 
-    if (!canUseAnlas) return;
+    if (!canUseAnlas || clipInpaintLoadingClipId || findCanvasLayer(clipId)?.layer !== clip) return;
 
     setClipInpaintProcessing(
         clipId,
@@ -7350,6 +7547,7 @@ async function requestClipInpainting(clipId) {
                 width: requestWidth,
                 height: requestHeight,
                 promptInfo: requestPromptInfo,
+                ...(referenceRequest.reference ? {reference: referenceRequest.reference} : {}),
                 tempCategory: 'canvas_inpaint',
                 tempSessionId: CANVAS_IMPORT_SESSION_ID
             })
@@ -7359,8 +7557,12 @@ async function requestClipInpainting(clipId) {
         if (!response.ok || data.status !== 'success') {
             throw new Error(data.message || '인페인팅 요청에 실패했습니다.');
         }
+        if (findCanvasLayer(clipId)?.layer !== clip || findCanvasLayer(selection.id)?.layer !== selection) {
+            showToast('요청 중 캔버스가 변경되어 인페인팅 결과를 현재 캔버스에 붙이지 않았습니다.');
+            return;
+        }
 
-        const inpaintFolder = getOrCreateSelectionInpaintFolder(selection);
+        const inpaintFolder = getOrCreateSelectionInpaintFolder(selection, preparedFocus);
         selection.hasInpaintResult = true;
 
         const resultClip = {
@@ -7373,7 +7575,7 @@ async function requestClipInpainting(clipId) {
             sourceSelectionId: selection.id,
             sourcePath: clip.sourcePath || '',
             promptOwnerId: clip.promptOwnerId || clip.id,
-            promptInfo: normalizePromptInfo(clip.promptInfo),
+            promptInfo: normalizePromptInfo(data.promptInfo || requestPromptInfo || clip.promptInfo),
             promptControlGroups: Array.isArray(clip.promptControlGroups)
                 ? structuredClone(clip.promptControlGroups)
                 : [],
@@ -7384,6 +7586,10 @@ async function requestClipInpainting(clipId) {
             layerWidth: clip.layerWidth,
             layerHeight: clip.layerHeight,
             createdAt: Date.now()
+        };
+        if (preparedFocus.folderRegion) resultClip.dakiGenerationFocus = {
+            region: preparedFocus.folderRegion, regions: preparedFocus.regions,
+            prompt: preparedFocus.addedPrompt
         };
         
 
@@ -7476,7 +7682,17 @@ function setClipMaskBrushSize(value) {
     });
 }
 
+let activeClipMaskEditorCleanup = null;
+
+function disposeClipMaskEditor() {
+    if (activeClipMaskEditorCleanup) {
+        activeClipMaskEditorCleanup();
+        activeClipMaskEditorCleanup = null;
+    }
+}
+
 function bindClipMaskEditor(panel, clip) {
+    disposeClipMaskEditor();
     const wrap = panel.querySelector('.canvas-clip-output-image-wrap');
     const img = panel.querySelector('.clip-output-image');
     const overlayCanvas = panel.querySelector('.clip-mask-overlay-canvas');
@@ -7500,6 +7716,21 @@ function bindClipMaskEditor(panel, clip) {
     let maskDirty = false;
     let maskLoadToken = 0;
     let clipAlphaSampler = null;
+    let disposed = false;
+    let maskPreviewFrame = null;
+    let dirtyBounds = null;
+    const markMaskBounds = (from, to = from) => {
+        const radius = Math.max(1, clipMaskBrushSize / 2) + 2;
+        const bounds = {left: Math.min(from.x, to.x) - radius, top: Math.min(from.y, to.y) - radius,
+            right: Math.max(from.x, to.x) + radius, bottom: Math.max(from.y, to.y) + radius};
+        if (!dirtyBounds) dirtyBounds = bounds;
+        else {
+            dirtyBounds.left = Math.min(dirtyBounds.left, bounds.left);
+            dirtyBounds.top = Math.min(dirtyBounds.top, bounds.top);
+            dirtyBounds.right = Math.max(dirtyBounds.right, bounds.right);
+            dirtyBounds.bottom = Math.max(dirtyBounds.bottom, bounds.bottom);
+        }
+    };
 
     const syncMaskCanvasSize = (width, height, preserveExisting = false) => {
         const nextWidth = Math.max(1, Math.round(width || maskCanvas.width || 512));
@@ -7519,7 +7750,22 @@ function bindClipMaskEditor(panel, clip) {
     };
 
     const renderMaskPreview = () => {
-        redrawMaskOverlay(maskCanvas, overlayCanvas);
+        if (maskPreviewFrame !== null) {
+            cancelAnimationFrame(maskPreviewFrame);
+            maskPreviewFrame = null;
+        }
+        if (disposed) return;
+        redrawMaskOverlay(maskCanvas, overlayCanvas, dirtyBounds);
+        dirtyBounds = null;
+    };
+
+    const queueMaskPreview = () => {
+        // Every pointer sample already updates maskCanvas; only its display is coalesced.
+        if (disposed || maskPreviewFrame !== null) return;
+        maskPreviewFrame = requestAnimationFrame(() => {
+            maskPreviewFrame = null;
+            renderMaskPreview();
+        });
     };
 
     const refreshClipAlphaSampler = () => {
@@ -7564,6 +7810,7 @@ function bindClipMaskEditor(panel, clip) {
         maskCtx.restore();
 
         maskDirty = true;
+        markMaskBounds(point);
     };
 
     const drawMaskStrokeSegment = (from, to) => {
@@ -7588,9 +7835,11 @@ function bindClipMaskEditor(panel, clip) {
 
         maskCtx.restore();
         maskDirty = true;
+        markMaskBounds(from, to);
     };
 
     const syncOverlayPosition = () => {
+        if (disposed) return;
         applyClipPreviewZoom(wrap, img, clip);
 
         const preserveMask = maskInitialized || maskDirty;
@@ -7606,8 +7855,30 @@ function bindClipMaskEditor(panel, clip) {
         overlayCanvas.style.height = `${img.clientHeight}px`;
 
         refreshClipAlphaSampler();
-        redrawMaskOverlay(maskCanvas, overlayCanvas);
+        dirtyBounds = null; // Resizing the overlay requires a full redraw.
+        renderMaskPreview();
+        keepDefaultClipOutputPanelVisible(panel);
     };
+
+    const resizeObserver = typeof ResizeObserver === 'function'
+        ? new ResizeObserver(() => { if (img.complete) syncOverlayPosition(); }) : null;
+    const disposeResize = bindClipOutputPanelResize(panel, clip, syncOverlayPosition);
+
+    activeClipMaskEditorCleanup = () => {
+        disposed = true;
+        maskLoadToken += 1;
+        if (maskPreviewFrame !== null) {
+            cancelAnimationFrame(maskPreviewFrame);
+            maskPreviewFrame = null;
+        }
+        window.removeEventListener('resize', syncOverlayPosition);
+        resizeObserver?.disconnect();
+        disposeResize();
+        img.onload = null;
+    };
+
+    resizeObserver?.observe(panel);
+    window.addEventListener('resize', syncOverlayPosition);
 
     img.onload = () => {
         syncOverlayPosition();
@@ -7661,9 +7932,6 @@ function bindClipMaskEditor(panel, clip) {
 
     loadExistingMask();
 
-    window.addEventListener('resize', syncOverlayPosition);
-
-    // 아래 pointer 이벤트들은 기존 코드 그대로 유지
     overlayCanvas.onpointerdown = (event) => {
         if (event.button === 2) {
             return;
@@ -7725,7 +7993,7 @@ function bindClipMaskEditor(panel, clip) {
         }
 
         lastPoint = point;
-        renderMaskPreview();
+        queueMaskPreview();
     };
 
     overlayCanvas.onpointerup = async (event) => {
@@ -7738,6 +8006,7 @@ function bindClipMaskEditor(panel, clip) {
             overlayCanvas.releasePointerCapture(event.pointerId);
         } catch (e) {}
 
+        if (maskPreviewFrame !== null) renderMaskPreview();
         await persistClipMask(clip, maskCanvas);
         maskDirty = true;
     };
@@ -7745,6 +8014,7 @@ function bindClipMaskEditor(panel, clip) {
     overlayCanvas.onpointercancel = async () => {
         isClipMaskPainting = false;
         lastPoint = null;
+        if (maskPreviewFrame !== null) renderMaskPreview();
         await persistClipMask(clip, maskCanvas);
         maskDirty = true;
     };
@@ -8088,26 +8358,16 @@ function resizeCanvasPreserveContent(canvas, width, height) {
     }
 }
 
-function redrawMaskOverlay(maskCanvas, overlayCanvas) {
-    const overlayCtx = overlayCanvas.getContext('2d');
-    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-
-    const temp = document.createElement('canvas');
-    temp.width = maskCanvas.width;
-    temp.height = maskCanvas.height;
-
-    const tempCtx = temp.getContext('2d');
-
-    // 실제 마스크는 흰색이지만, 화면에는 빨간색 반투명으로 표시
-    tempCtx.clearRect(0, 0, temp.width, temp.height);
-    tempCtx.drawImage(maskCanvas, 0, 0);
-
-    const imageData = tempCtx.getImageData(0, 0, temp.width, temp.height);
+function redrawMaskOverlay(maskCanvas, overlayCanvas, bounds = null) {
+    const left = bounds ? Math.max(0, Math.floor(bounds.left)) : 0;
+    const top = bounds ? Math.max(0, Math.floor(bounds.top)) : 0;
+    const right = bounds ? Math.min(maskCanvas.width, Math.ceil(bounds.right)) : maskCanvas.width;
+    const bottom = bounds ? Math.min(maskCanvas.height, Math.ceil(bounds.bottom)) : maskCanvas.height;
+    if (right <= left || bottom <= top) return;
+    const imageData = maskCanvas.getContext('2d').getImageData(left, top, right - left, bottom - top);
     const data = imageData.data;
-
     for (let i = 0; i < data.length; i += 4) {
         const alpha = data[i + 3];
-
         if (alpha > 0) {
             data[i] = 72;
             data[i + 1] = 160;
@@ -8115,9 +8375,8 @@ function redrawMaskOverlay(maskCanvas, overlayCanvas) {
             data[i + 3] = Math.min(150, alpha);
         }
     }
-
-    tempCtx.putImageData(imageData, 0, 0);
-    overlayCtx.drawImage(temp, 0, 0);
+    // Replace this region, including erased pixels. Never rescale the real mask.
+    overlayCanvas.getContext('2d').putImageData(imageData, left, top);
 }
 
 async function persistClipMask(clip, maskCanvas) {
@@ -8131,6 +8390,7 @@ async function persistClipMask(clip, maskCanvas) {
     clip.maskHeight = maskCanvas.height;
     clip.maskDataUrl = maskDataUrl;
 
+    pendingCanvasClipMaskWrites++;
     try {
         const savedSrc = await saveClipDataUrlToServer(maskDataUrl);
         if (clipMaskPersistRevisions.get(clip) !== revision) return;
@@ -8141,6 +8401,8 @@ async function persistClipMask(clip, maskCanvas) {
         // 서버 저장 실패 시 임시로 dataUrl 보관
         console.warn('Mask save failed, fallback to local dataUrl:', error);
         clip.maskDataUrl = maskDataUrl;
+    } finally {
+        pendingCanvasClipMaskWrites--;
     }
 
     saveCanvasState();
@@ -8160,7 +8422,9 @@ function normalizePromptInfo(promptInfo) {
         charPrompts,
         charPrompt: buildLegacyCharPromptText(charPrompts),
         negativePrompt: negativeText,
-        model: String(info.model || 'nai-diffusion-4-full'),
+        model: String(info.model || 'nai-diffusion-5-full'),
+        cfg_rescale: Number(info.cfg_rescale === '' ? 0.4 : info.cfg_rescale ?? 0.4),
+        noise_schedule: String(info.noise_schedule || 'native'),
         sampler: String(info.sampler || 'k_euler_ancestral'),
         steps: Number(info.steps || 28),
         cfg: Number(info.cfg || info.scale || 6),
@@ -8168,6 +8432,18 @@ function normalizePromptInfo(promptInfo) {
         noise: Number(info.noise ?? 0.2),
         seed: Number(info.seed ?? -1)
     };
+}
+
+function applyCanvasInpaintSettingsToPromptInfo(promptInfo) {
+    return typeof CanvasInpaintSettings !== 'undefined'
+        ? CanvasInpaintSettings.apply(promptInfo)
+        : normalizePromptInfo(promptInfo);
+}
+
+function canvasInpaintHasGenerationSettings(promptInfo) {
+    return typeof CanvasInpaintSettings !== 'undefined' &&
+        typeof CanvasInpaintSettings.hasGenerationSettings === 'function' &&
+        CanvasInpaintSettings.hasGenerationSettings(promptInfo);
 }
 
 function pickNegativePromptText(info) {
@@ -8285,10 +8561,20 @@ async function openClipPromptModal(clipId) {
     syncPromptStateFromOwner(clip);
 
     owner.promptInfo = normalizePromptInfo(owner.promptInfo || {});
+    setGenerationSettings('clip', typeof CanvasInpaintSettings !== 'undefined'
+        ? CanvasInpaintSettings.apply(owner.promptInfo)
+        : owner.promptInfo);
 
     setClipPromptEditorValue('base', owner.promptInfo.basePrompt || '');
     setClipPromptEditorValue('negative', owner.promptInfo.negativePrompt || '');
     setClipCharPromptValues(owner.promptInfo.charPrompts || owner.promptInfo.charPrompt || '');
+    const selection = findSelectionParentForLayerId(clip.id);
+    el('clipInstancePromptInput').value = typeof selection?.instancePrompt === 'string' ? selection.instancePrompt : '';
+    el('clipInstancePromptInput').disabled = !selection;
+    el('clipInstanceNegativePromptInput').value = getClipInstancePrompt(clip, 'instanceNegativePrompt');
+    el('clipInstanceNegativePromptInput').disabled = !selection;
+    switchClipInstancePromptTab('base');
+    if (typeof CanvasDetailPresets !== 'undefined') CanvasDetailPresets.refreshPicker();
 
     ensureClipPromptControlGroups(owner);
     renderClipPromptControlGroups(owner);
@@ -8299,10 +8585,15 @@ async function openClipPromptModal(clipId) {
     switchClipPromptTab('base');
 
     el('clipPromptModalOverlay').classList.add('open');
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.refresh();
+    if (typeof refreshCanvasStyleLink === 'function') refreshCanvasStyleLink();
 }
 
 function closeClipPromptModal() {
+    if (typeof CanvasDetailPresets !== 'undefined') CanvasDetailPresets.closePicker();
     el('clipPromptModalOverlay')?.classList.remove('open');
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.refresh();
+    if (typeof refreshCanvasStyleLink === 'function') refreshCanvasStyleLink();
 }
 
 function saveClipPromptModal() {
@@ -8318,18 +8609,20 @@ function saveClipPromptModal() {
 
     const charPrompts = getClipCharPromptValues();
 
+    const settings = readGenerationSettings('clip');
+    if (!settings) return;
+    const selection = findSelectionParentForLayerId(clip.id);
+    if (selection) {
+        selection.instancePrompt = el('clipInstancePromptInput').value.trim();
+        selection.instanceNegativePrompt = el('clipInstanceNegativePromptInput').value.trim();
+    }
+    if (typeof CanvasInpaintSettings !== 'undefined') CanvasInpaintSettings.update(settings);
     owner.promptInfo = normalizePromptInfo({
         basePrompt: getClipPromptEditorValue('base'),
         charPrompts,
         charPrompt: buildLegacyCharPromptText(charPrompts),
         negativePrompt: getClipPromptEditorValue('negative'),
-        model: LATEST_NAI_IMAGE_MODEL,
-        sampler: getClipInputValue('clipSamplerInput', 'k_euler_ancestral'),
-        steps: getClipNumberValue('clipStepsInput', 28),
-        cfg: getClipNumberValue('clipCfgInput', 6),
-        strength: getClipNumberValue('clipStrengthInput', 0.65),
-        noise: getClipNumberValue('clipNoiseInput', 0.2),
-        seed: getClipNumberValue('clipSeedInput', -1)
+        ...settings
     });
 
     rememberSharedSelectionClipPrompt(owner.promptInfo, owner.promptControlGroups);
@@ -8418,20 +8711,28 @@ async function fetchPromptInfoByPath(path) {
             Array.isArray(data.characterPrompts) ? data.characterPrompts.join('\n') :
             String(data.charPrompt || data.characterPrompt || '');
 
-        return normalizePromptInfo({
+        const promptInfo = normalizePromptInfo({
             basePrompt: data.basePrompt || data.prompt || '',
             charPrompt: charText,
             negativePrompt: pickNegativePromptText(data),
             model: data.model,
             sampler: data.sampler,
             steps: data.steps,
-            cfg: data.cfg,
+            cfg: data.cfg ?? data.scale,
+            cfg_rescale: data.cfg_rescale,
+            noise_schedule: data.noise_schedule,
             seed: data.seed,
             strength: data.strength,
             noise: data.noise,
             uc: data.uc,
             negative_prompt: data.negative_prompt
         });
+        Object.defineProperty(promptInfo, '__hasGenerationSettings', {
+            value: NAI_GENERATION_FIELDS.some(field => Object.prototype.hasOwnProperty.call(data, field.key))
+                || Object.prototype.hasOwnProperty.call(data, 'scale'),
+            enumerable: false
+        });
+        return promptInfo;
 
     } catch (error) {
         console.warn('Prompt metadata fetch failed:', error);
@@ -8934,6 +9235,7 @@ function applyClipWeightedRanges(tokens) {
 }
 
 function renderAllClipPromptTokens() {
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.promptChanged();
     getClipPromptFields().forEach((field) => renderClipPromptTokens(field.key));
 }
 
@@ -8945,6 +9247,7 @@ function renderClipPromptTokens(fieldKey) {
     const surface = el(field.tokensId);
     if (!input || !surface) return;
 
+    if (typeof getCanvasStyleLink === 'function') getCanvasStyleLink()?.refresh();
     const tokens = parseClipPromptTokens(input.value);
     const disabledState = getDisabledClipPromptVisualState(fieldKey);
 
@@ -8960,11 +9263,20 @@ function renderClipPromptTokens(fieldKey) {
         return;
     }
 
-    const groupedParts = applyClipPromptGroupsWithIndexes(tokens.map((token, index) => ({ token, index })));
+    const indexedTokens = tokens.map((token, index) => ({ token, index }));
+    const groupedParts = typeof buildCanvasStylePromptParts === 'function'
+        ? buildCanvasStylePromptParts(fieldKey, indexedTokens)
+        : applyClipPromptGroupsWithIndexes(indexedTokens);
 
     let pendingTokens = [];
 
     groupedParts.forEach((part) => {
+        if (part.type === 'style') {
+            renderClipTokenSequenceWithWeightedRanges(surface, fieldKey, pendingTokens, disabledState);
+            pendingTokens = [];
+            renderCanvasStylePromptButton(surface, fieldKey, part, disabledState);
+            return;
+        }
         if (part.type === 'group') {
             renderClipTokenSequenceWithWeightedRanges(surface, fieldKey, pendingTokens, disabledState);
             pendingTokens = [];
@@ -9919,6 +10231,23 @@ function switchClipPromptTab(tab) {
     }
 }
 
+function switchClipInstancePromptTab(tab) {
+    const btnBase = el('clipInstanceTabBaseBtn');
+    const btnNegative = el('clipInstanceTabNegativeBtn');
+    const tabBase = el('clipInstanceTabBase');
+    const tabNegative = el('clipInstanceTabNegative');
+
+    if (!btnBase || !btnNegative || !tabBase || !tabNegative) return;
+
+    const showBase = tab === 'base';
+    btnBase.classList.toggle('active', showBase);
+    btnNegative.classList.toggle('active', !showBase);
+    btnBase.setAttribute('aria-pressed', String(showBase));
+    btnNegative.setAttribute('aria-pressed', String(!showBase));
+    tabBase.hidden = !showBase;
+    tabNegative.hidden = showBase;
+}
+
 function findTopVisibleInpaintClipInLayers(layers, excludeClipId = null) {
     if (!Array.isArray(layers)) return null;
 
@@ -10240,12 +10569,16 @@ function renderClipPromptControlGroups(clip) {
 
                 <button class="clip-control-toggle-btn ${group.enabled ? 'on' : ''}"
                         title="인페인팅에 포함/제외"
+                        aria-label="${escapeHtml(group.name)} 프롬프트 포함"
+                        aria-pressed="${Boolean(group.enabled)}"
                         onclick="toggleClipPromptControlGroupEnabled(${group.id})">
                     ${group.enabled ? 'ON' : 'OFF'}
                 </button>
 
                 <button class="clip-control-icon-btn"
                         title="펼치기/접기"
+                        aria-label="${escapeHtml(group.name)} ${group.expanded ? '접기' : '펼치기'}"
+                        aria-expanded="${Boolean(group.expanded)}"
                         onclick="toggleClipPromptControlGroupExpanded(${group.id})">
                     ${group.expanded ? '▲' : '▼'}
                 </button>
@@ -10427,8 +10760,55 @@ function removeClipPromptControlItem(groupId, itemIndex) {
 
 function setClipPromptDragData(event, payload) {
     event.dataTransfer.effectAllowed = 'copy';
-    event.dataTransfer.setData('application/x-clip-prompt-item', JSON.stringify(payload));
-    event.dataTransfer.setData('text/plain', payload.token || payload.name || '');
+
+    let dragPayload = payload;
+    const sourceButton = event.currentTarget?.closest?.('.prompt-token-btn[data-clip-prompt-field]')
+        || event.target?.closest?.('.prompt-token-btn[data-clip-prompt-field]');
+    const selection = selectedClipPromptGroup;
+    const field = selection && payload.field === selection.fieldKey
+        ? getClipPromptField(payload.field)
+        : null;
+
+    if (sourceButton?.classList?.contains('button-selected')
+        && field
+        && field.inputId === selection.inputId
+        && selection.fieldKey === sourceButton.dataset.clipPromptField
+        && Number.isInteger(selection.tokenStart)
+        && Number.isInteger(selection.tokenEnd)
+        && selection.tokenStart >= 0
+        && selection.tokenEnd >= selection.tokenStart) {
+        const sourceStartValue = sourceButton.dataset.clipPromptStart;
+        const sourceEndValue = sourceButton.dataset.clipPromptEnd;
+        const sourceStart = Number(sourceStartValue);
+        const sourceEnd = Number(sourceEndValue);
+        const input = el(field.inputId);
+        const tokens = input ? parseClipPromptTokens(input.value) : [];
+
+        if (/^-?\d+$/.test(sourceStartValue || '')
+            && /^-?\d+$/.test(sourceEndValue || '')
+            && Number.isInteger(sourceStart)
+            && Number.isInteger(sourceEnd)
+            && sourceStart >= 0
+            && sourceEnd >= sourceStart
+            && sourceStart >= selection.tokenStart
+            && sourceEnd <= selection.tokenEnd
+            && selection.tokenEnd < tokens.length) {
+            const selectedTokens = tokens.slice(selection.tokenStart, selection.tokenEnd + 1);
+
+            if (selectedTokens.length >= 2 && joinClipPromptTokens(selectedTokens) === selection.text) {
+                dragPayload = {
+                    field: payload.field,
+                    type: 'tokens',
+                    tokens: selectedTokens
+                };
+            }
+        }
+    }
+
+    event.dataTransfer.setData('application/x-clip-prompt-item', JSON.stringify(dragPayload));
+    event.dataTransfer.setData('text/plain', dragPayload.type === 'tokens'
+        ? joinClipPromptTokens(dragPayload.tokens)
+        : payload.token || payload.name || '');
 }
 
 function bindClipPromptControlDropZone(dropZone, group) {
@@ -10471,33 +10851,35 @@ function addClipPromptControlItemToGroup(groupId, payload) {
     const group = findClipPromptControlGroup(groupId);
     if (!group || !payload) return;
 
-    const field = normalizeClipPromptControlField(payload.field);
+    const normalized = normalizeClipPromptControlItems(payload);
+    if (!normalized) return;
 
-    let item = null;
+    if (normalized.batch) {
+        const existingItems = Array.isArray(group.items) ? group.items : [];
+        const seenKeys = new Set(existingItems.map(getClipPromptControlItemKey));
+        const itemsToAdd = [];
 
-    if (payload.type === 'group') {
-        const tokens = Array.isArray(payload.tokens)
-            ? payload.tokens.map((token) => String(token || '').trim()).filter(Boolean)
-            : parseClipPromptTokens(payload.token || '');
+        normalized.items.forEach((item) => {
+            const itemKey = getClipPromptControlItemKey(item);
+            if (seenKeys.has(itemKey)) return;
+            seenKeys.add(itemKey);
+            itemsToAdd.push(item);
+        });
 
-        if (!tokens.length) return;
+        if (!itemsToAdd.length) return;
 
-        item = {
-            field,
-            type: 'group',
-            name: payload.name || '그룹',
-            tokens
-        };
-    } else {
-        const token = String(payload.token || '').trim();
-        if (!token) return;
+        group.items = existingItems;
+        group.items.push(...itemsToAdd);
 
-        item = {
-            field,
-            type: 'token',
-            token
-        };
+        hideClipGroupSelectionPopover();
+        const owner = getActiveClipForPromptControl();
+        renderClipPromptControlGroups(owner);
+        renderAllClipPromptTokens();
+        saveCanvasState();
+        return;
     }
+
+    const item = normalized.items[0];
 
     group.items = Array.isArray(group.items) ? group.items : [];
 
@@ -10512,6 +10894,54 @@ function addClipPromptControlItemToGroup(groupId, payload) {
     renderClipPromptControlGroups(owner);
     renderAllClipPromptTokens();
     saveCanvasState();
+}
+
+function normalizeClipPromptControlItems(payload) {
+    const field = normalizeClipPromptControlField(payload.field);
+
+    if (payload.type === 'tokens') {
+        if (!Array.isArray(payload.tokens) || !payload.tokens.length) return null;
+        if (payload.tokens.some((token) => typeof token !== 'string' || !token.trim())) return null;
+
+        return {
+            batch: true,
+            items: payload.tokens.map((token) => ({
+                field,
+                type: 'token',
+                token: token.trim()
+            }))
+        };
+    }
+
+    if (payload.type === 'group') {
+        const tokens = Array.isArray(payload.tokens)
+            ? payload.tokens.map((token) => String(token || '').trim()).filter(Boolean)
+            : parseClipPromptTokens(payload.token || '');
+
+        if (!tokens.length) return null;
+
+        return {
+            batch: false,
+            items: [{
+                field,
+                type: 'group',
+                name: payload.name || '그룹',
+                tokens
+            }]
+        };
+    }
+
+    const token = String(payload.token || '').trim();
+    if (!token) return null;
+
+    return {
+        batch: false,
+        items: [{
+            field,
+            type: 'token',
+            token
+        }]
+    };
 }
 
 function getClipPromptControlItemKey(item) {
@@ -10569,6 +10999,17 @@ function getDisabledClipPromptVisualState(fieldKey) {
         });
     });
 
+    // Automatic exclusions use compact character indexes, while editor fields have stable IDs.
+    let autoField = fieldKey;
+    if (normalizedField === 'char') {
+        const charFields = getClipPromptFields().filter(field => field.isChar && el(field.inputId)?.value.trim());
+        const index = charFields.findIndex(field => field.key === fieldKey);
+        autoField = index < 0 ? '' : `char-${index}`;
+    }
+    const automatic = typeof CanvasDakiFocus !== 'undefined'
+        ? CanvasDakiFocus.excludedTokens?.(autoField) || [] : [];
+    automatic.forEach(token => tokenKeys.add(normalizeClipTokenForGroup(token)));
+
     return { tokenKeys, groupKeys };
 }
 
@@ -10584,7 +11025,8 @@ function isClipPromptGroupDisabledByControls(tokens, disabledState) {
         .map((token) => normalizeClipTokenForGroup(token))
         .join('|');
 
-    return disabledState.groupKeys.has(key);
+    return disabledState.groupKeys.has(key)
+        || Boolean(tokens?.length && tokens.every(token => isClipPromptTokenDisabledByControls(token, disabledState)));
 }
 
 function buildEffectiveClipPromptInfo(clip) {
@@ -10609,13 +11051,24 @@ function buildEffectiveClipPromptInfo(clip) {
         .map((text) => String(text || '').trim())
         .filter(Boolean);
 
-    return normalizePromptInfo({
+    return applyCanvasInpaintSettingsToPromptInfo({
         ...baseInfo,
-        basePrompt: applyDisabledClipPromptControlGroups(baseInfo.basePrompt, groups, 'base'),
-        negativePrompt: applyDisabledClipPromptControlGroups(baseInfo.negativePrompt, groups, 'negative'),
+        basePrompt: [
+            applyDisabledClipPromptControlGroups(baseInfo.basePrompt, groups, 'base'),
+            getClipInstancePrompt(clip)
+        ].filter(Boolean).join(', '),
+        negativePrompt: [
+            applyDisabledClipPromptControlGroups(baseInfo.negativePrompt, groups, 'negative'),
+            getClipInstancePrompt(clip, 'instanceNegativePrompt')
+        ].filter(Boolean).join(', '),
         charPrompts: effectiveCharPrompts,
         charPrompt: buildLegacyCharPromptText(effectiveCharPrompts)
     });
+}
+
+function getClipInstancePrompt(clip, field = 'instancePrompt') {
+    const selection = clip ? findSelectionParentForLayerId(clip.id) : null;
+    return typeof selection?.[field] === 'string' ? selection[field].trim() : '';
 }
 
 function applyDisabledClipPromptControlGroups(promptText, groups, field) {
@@ -11008,11 +11461,11 @@ function refreshActiveCanvasDragCoordinateCache() {
 }
 
 function bindCanvasWheelZoom() {
-    const surface = el('canvasSurface');
-    if (!surface || surface.dataset.zoomWheelBound === '1') return;
+    const workspace = document.querySelector('.canvas-workspace');
+    if (!workspace || workspace.dataset.zoomWheelBound === '1') return;
 
-    surface.dataset.zoomWheelBound = '1';
-    surface.addEventListener('wheel', handleCanvasWheelZoom, { passive: false });
+    workspace.dataset.zoomWheelBound = '1';
+    workspace.addEventListener('wheel', handleCanvasWheelZoom, { passive: false });
 }
 
 function bindCanvasWorkspacePanDrag() {
@@ -11107,6 +11560,13 @@ function stopCanvasWorkspacePanDrag(event) {
 
 function handleCanvasWheelZoom(event) {
     if (!currentCanvasWidth || !currentCanvasHeight) return;
+    // Keep embedded editors and controls in charge of their own scrolling.
+    if (event.target?.closest?.(
+        '.canvas-clip-output-panel, .canvas-pinned-reference-panel, ' +
+        '#canvasDakiFocus, .canvas-multi-references, ' +
+        'input, textarea, select, button, [contenteditable="true"]'
+    )) return;
+    if (!event.deltaY) return;
 
     if (hasActiveCanvasGeometryDrag()) {
         event.preventDefault();
@@ -11154,24 +11614,17 @@ function applyClipPreviewZoom(wrap, img, clip) {
     const naturalWidth = Number(clip.imageWidth || img.naturalWidth || 512);
     const naturalHeight = Number(clip.imageHeight || img.naturalHeight || 512);
 
-    // 선택 영역 이미지를 기본으로 보여줄 최대 크기.
-    // zoom 1일 때는 이 크기만큼만 래퍼가 보인다.
-    const maxViewportWidth = Math.min(520, Math.max(320, window.innerWidth * 0.34));
-    const fitScale = maxViewportWidth / naturalWidth;
+    // At the default zoom the complete clip fits both axes. Explicit wheel zoom still scrolls.
+    // Use the border box so scrollbars appearing during zoom do not change the base scale.
+    const viewport = getClipOutputViewportSize(wrap);
+    const fitScale = Math.min(Math.max(1, viewport.width) / naturalWidth,
+        Math.max(1, viewport.height) / naturalHeight);
 
-    const baseWidth = Math.max(1, Math.round(naturalWidth * fitScale));
-    const baseHeight = Math.max(1, Math.round(naturalHeight * fitScale));
+    const baseWidth = Math.max(1, Math.floor(naturalWidth * fitScale));
+    const baseHeight = Math.max(1, Math.floor(naturalHeight * fitScale));
 
     const displayWidth = Math.max(1, Math.round(baseWidth * clipPreviewZoom));
     const displayHeight = Math.max(1, Math.round(baseHeight * clipPreviewZoom));
-
-    // 래퍼는 기존 선택 영역 표시 크기만큼만 보이게 고정.
-    // 이미지가 확대되면 래퍼 안에서 스크롤된다.
-    wrap.style.width = `${baseWidth}px`;
-    wrap.style.height = `${baseHeight}px`;
-    wrap.style.maxWidth = 'min(520px, calc(100vw - 80px))';
-    wrap.style.maxHeight = 'min(72vh, 720px)';
-    wrap.style.overflow = 'auto';
 
     img.style.width = `${displayWidth}px`;
     img.style.height = `${displayHeight}px`;
@@ -11271,525 +11724,6 @@ function hasUsableCurrentCanvas() {
     return Boolean(currentCanvasWidth && currentCanvasHeight && Array.isArray(canvasLayers) && canvasLayers.length);
 }
 
-function normalizeSavedCanvasSetupItem(item) {
-    if (!item || typeof item !== 'object') return null;
-    if (!item.state || typeof item.state !== 'object') return null;
-
-    const setup = {
-        ...item,
-        id: String(item.id || `canvas_setup_${Date.now()}_${Math.random().toString(16).slice(2)}`),
-        name: String(item.name || '이름 없는 캔버스').trim() || '이름 없는 캔버스',
-        savedAt: Number(item.savedAt || Date.now()),
-        width: Number(item.width || item.state?.width || 0),
-        height: Number(item.height || item.state?.height || 0),
-        layerCount: Number(item.layerCount || countLayersInSavedState(item.state) || 0),
-        saveMode: String(item.saveMode || 'normal')
-    };
-
-    return setup;
-}
-
-function normalizeSavedCanvasSetupsList(list) {
-    const result = [];
-    const seen = new Set();
-
-    (Array.isArray(list) ? list : []).forEach((item) => {
-        const normalized = normalizeSavedCanvasSetupItem(item);
-        if (!normalized) return;
-
-        if (seen.has(normalized.id)) {
-            normalized.id = `${normalized.id}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-        }
-
-        seen.add(normalized.id);
-        result.push(normalized);
-    });
-
-    result.sort((a, b) => Number(b.savedAt || 0) - Number(a.savedAt || 0));
-    return result;
-}
-
-function mergeSavedCanvasSetups(serverList, legacyList) {
-    const merged = [];
-    const seenIds = new Set();
-
-    normalizeSavedCanvasSetupsList(serverList).forEach((item) => {
-        seenIds.add(item.id);
-        merged.push(item);
-    });
-
-    normalizeSavedCanvasSetupsList(legacyList).forEach((item) => {
-        if (seenIds.has(item.id)) {
-            const serverItem = merged.find((entry) => entry.id === item.id);
-            const serverSavedAt = Number(serverItem?.savedAt || 0);
-            const legacySavedAt = Number(item.savedAt || 0);
-
-            // 같은 id인데 브라우저 저장본이 더 최신이면 덮어쓰기
-            if (serverItem && legacySavedAt > serverSavedAt) {
-                Object.assign(serverItem, item);
-            }
-
-            return;
-        }
-
-        seenIds.add(item.id);
-        merged.push(item);
-    });
-
-    merged.sort((a, b) => Number(b.savedAt || 0) - Number(a.savedAt || 0));
-    return merged;
-}
-
-function readLegacySavedCanvasSetups() {
-    try {
-        const raw = localStorage.getItem(CANVAS_SAVED_SETUPS_KEY);
-        const list = raw ? JSON.parse(raw) : [];
-        return normalizeSavedCanvasSetupsList(list);
-    } catch (error) {
-        console.warn('Legacy saved canvas setups read failed:', error);
-        return [];
-    }
-}
-
-async function loadSavedCanvasSetupsFromServer(force = false) {
-    if (!force && Array.isArray(cachedSavedCanvasSetups)) {
-        return cachedSavedCanvasSetups;
-    }
-
-    if (!force && savedCanvasSetupsLoadPromise) {
-        return savedCanvasSetupsLoadPromise;
-    }
-
-    savedCanvasSetupsLoadPromise = (async () => {
-        try {
-            const res = await fetch('/api/canvas/setups');
-            const data = await res.json();
-
-            if (!res.ok || data.status !== 'success') {
-                throw new Error(data.message || '캔버스 저장본을 불러오지 못했습니다.');
-            }
-
-            const serverList = normalizeSavedCanvasSetupsList(data.setups);
-            const legacyList = data.allowLegacyMigration === false ? [] : readLegacySavedCanvasSetups();
-
-            if (legacyList.length) {
-                const merged = mergeSavedCanvasSetups(serverList, legacyList);
-                const beforeCount = serverList.length;
-
-                cachedSavedCanvasSetups = merged;
-                const saveOk = await persistSavedCanvasSetups(merged);
-
-                if (saveOk) {
-                    const addedCount = Math.max(0, merged.length - beforeCount);
-                    canvasLegacySetupMigrationMessage =
-                        `브라우저에 남아 있던 캔버스 저장본 ${legacyList.length}개를 확인했고, 서버 저장본과 병합했습니다.` +
-                        (addedCount ? ` 새로 복구된 저장본: ${addedCount}개.` : '');
-
-                    // 기존 localStorage 데이터는 삭제하지 않는다.
-                    // 사용자가 직접 확인할 수 있도록 남겨두되, 앞으로 저장은 서버 JSON에만 한다.
-                }
-            } else {
-                cachedSavedCanvasSetups = serverList;
-            }
-
-            return cachedSavedCanvasSetups;
-        } catch (error) {
-            console.warn('Saved canvas setups server load failed:', error);
-            cachedSavedCanvasSetups = [];
-            return cachedSavedCanvasSetups;
-        } finally {
-            savedCanvasSetupsLoadPromise = null;
-        }
-    })();
-
-    return savedCanvasSetupsLoadPromise;
-}
-
-function loadSavedCanvasSetups() {
-    return Array.isArray(cachedSavedCanvasSetups) ? cachedSavedCanvasSetups : [];
-}
-
-function persistSavedCanvasSetups(list) {
-    cachedSavedCanvasSetups = normalizeSavedCanvasSetupsList(list);
-
-    savedCanvasSetupsSavePromise = savedCanvasSetupsSavePromise
-        .catch(() => null)
-        .then(async () => {
-            const res = await fetch('/api/canvas/setups', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    setups: cachedSavedCanvasSetups
-                })
-            });
-
-            const data = await res.json();
-
-            if (!res.ok || data.status !== 'success') {
-                throw new Error(data.message || '캔버스 저장본 저장 실패');
-            }
-
-            cachedSavedCanvasSetups = normalizeSavedCanvasSetupsList(data.setups || cachedSavedCanvasSetups);
-            return true;
-        })
-        .catch((error) => {
-            console.warn('Saved canvas setups server save failed:', error);
-            if (typeof showToast === 'function') {
-                showToast(`⚠️ 캔버스 저장본 저장 실패: ${error.message || error}`);
-            }
-            return false;
-        });
-
-    return savedCanvasSetupsSavePromise;
-}
-
-function saveCurrentCanvasSetup() {
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('저장할 캔버스가 없습니다.');
-        return;
-    }
-
-    const activeSavedItem = activeCanvasSetupId
-        ? loadSavedCanvasSetups().find((item) => item.id === activeCanvasSetupId)
-        : null;
-
-    const defaultName = activeSavedItem?.name || `캔버스 ${currentCanvasWidth}×${currentCanvasHeight}`;
-    const nameInput = el('canvasSaveNameInput');
-
-    if (nameInput) {
-        nameInput.value = defaultName;
-        requestAnimationFrame(() => {
-            nameInput.focus();
-            nameInput.select();
-        });
-    }
-
-    const normalOption = document.querySelector('input[name="canvasSaveMode"][value="normal"]');
-    if (normalOption) normalOption.checked = true;
-
-    const modal = el('canvasSaveOptionsModal');
-    if (modal) {
-        modal.style.display = 'flex';
-    }
-}
-
-async function confirmSaveCurrentCanvasSetup() {
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('저장할 캔버스가 없습니다.');
-        return;
-    }
-
-    const name = String(el('canvasSaveNameInput')?.value || '').trim();
-    if (!name) {
-        alert('저장 이름을 입력해 주세요.');
-        return;
-    }
-
-    const mode = getSelectedCanvasSaveMode();
-
-    try {
-        const snapshot = mode === 'imageOnly'
-            ? await buildMergedOnlyCanvasStateSnapshot()
-            : buildCanvasStateSnapshot();
-
-        const saveOptions = {
-            mode,
-            layerCount: countLayersInSavedState(snapshot)
-        };
-
-        const activeSavedItem = activeCanvasSetupId
-            ? loadSavedCanvasSetups().find((item) => item.id === activeCanvasSetupId)
-            : null;
-
-        const sameNameItem = findCanvasSetupByName(name);
-        const overwriteTarget = activeSavedItem || sameNameItem || null;
-
-        if (overwriteTarget) {
-            const ok = confirm(
-                `'${overwriteTarget.name}' 저장본을 덮어쓸까요?\n\n` +
-                '취소하면 새 저장본으로 추가합니다.'
-            );
-
-            if (ok) {
-                await updateCanvasSetupItem(overwriteTarget.id, name, snapshot, saveOptions);
-            } else {
-                await saveCanvasSetupItem(name, snapshot, saveOptions);
-            }
-        } else {
-            await saveCanvasSetupItem(name, snapshot, saveOptions);
-        }
-
-        closeCanvasSaveOptionsModal();
-
-        if (mode === 'mergeAfterSave') {
-            await replaceCurrentCanvasWithMergedImage();
-            alert(`'${name}' 저장 완료\n현재 캔버스는 통합 이미지 1장만 남겼습니다.`);
-            return;
-        }
-
-        if (mode === 'resetAfterSave') {
-            resetCurrentCanvasAfterSave();
-            alert(`'${name}' 저장 완료\n현재 캔버스를 초기화했습니다.`);
-            return;
-        }
-
-        if (mode === 'imageOnly') {
-            alert(`'${name}' 그림만 저장 완료`);
-            return;
-        }
-
-        alert(`'${name}' 저장 완료`);
-
-    } catch (error) {
-        alert(`저장 실패: ${error.message || error}`);
-    }
-}
-
-async function openSavedCanvasSetupsModal() {
-    await loadSavedCanvasSetupsFromServer(true);
-    renderSavedCanvasSetupList();
-
-    if (canvasLegacySetupMigrationMessage) {
-        const listEl = el('savedCanvasSetupList');
-        if (listEl) {
-            const notice = document.createElement('div');
-            notice.className = 'saved-canvas-migration-notice';
-            notice.style.cssText = `
-                margin-bottom: 10px;
-                padding: 10px 12px;
-                border: 1px solid #00b894;
-                border-radius: 10px;
-                background: rgba(0, 184, 148, 0.12);
-                color: #dfffee;
-                font-size: 12px;
-                line-height: 1.5;
-                font-weight: 700;
-            `;
-            notice.innerText = canvasLegacySetupMigrationMessage;
-            listEl.prepend(notice);
-        }
-    }
-
-    const modal = el('savedCanvasSetupsModal');
-    if (modal) modal.style.display = 'flex';
-}
-
-function closeSavedCanvasSetupsModal() {
-    const modal = el('savedCanvasSetupsModal');
-    if (modal) modal.style.display = 'none';
-}
-
-function renderSavedCanvasSetupList() {
-    const listEl = el('savedCanvasSetupList');
-    if (!listEl) return;
-
-    const list = loadSavedCanvasSetups();
-
-    listEl.innerHTML = '';
-
-    if (!list.length) {
-        listEl.innerHTML = `<div class="saved-canvas-empty">저장된 캔버스가 없습니다.</div>`;
-        return;
-    }
-
-    list.forEach((item) => {
-        const dateText = formatSavedCanvasDate(item.savedAt);
-        const layerCount = item.layerCount ?? countLayersInSavedState(item.state);
-        const modeLabel = getCanvasSaveModeLabel(item.saveMode);
-
-        const row = document.createElement('div');
-        row.className = 'saved-canvas-item';
-
-        row.innerHTML = `
-            <div class="saved-canvas-info">
-                <div class="saved-canvas-name">${escapeHtml(item.name || '이름 없는 캔버스')}</div>
-                <div class="saved-canvas-meta">
-                    ${escapeHtml(String(item.width || item.state?.width || '?'))} × ${escapeHtml(String(item.height || item.state?.height || '?'))}
-                    · 레이어 ${layerCount}개
-                    · ${escapeHtml(dateText)}
-                    · ${escapeHtml(modeLabel)}
-                </div>
-            </div>
-
-            <div class="saved-canvas-actions">
-                <button class="secondary" onclick="loadCanvasSetup('${item.id}')">불러오기</button>
-                <button class="secondary" onclick="renameCanvasSetup('${item.id}')">이름</button>
-                <button class="danger" onclick="deleteCanvasSetup('${item.id}')">삭제</button>
-            </div>
-        `;
-
-        listEl.appendChild(row);
-    });
-}
-
-function formatSavedCanvasDate(timestamp) {
-    if (!timestamp) return '날짜 없음';
-
-    const date = new Date(timestamp);
-
-    if (Number.isNaN(date.getTime())) return '날짜 없음';
-
-    return date.toLocaleString();
-}
-
-function countLayersInSavedState(state) {
-    if (!state || !Array.isArray(state.layers)) return 0;
-
-    const scan = (layers) => {
-        return layers.reduce((count, layer) => {
-            const children = Array.isArray(layer.children) ? scan(layer.children) : 0;
-            return count + 1 + children;
-        }, 0);
-    };
-
-    return scan(state.layers);
-}
-
-function loadCanvasSetup(setupId) {
-    const list = loadSavedCanvasSetups();
-    const item = list.find((entry) => entry.id === setupId);
-
-    if (!item || !item.state) {
-        alert('저장본을 찾을 수 없습니다.');
-        return;
-    }
-
-    const ok = confirm(`'${item.name}' 캔버스를 불러올까요?\n현재 캔버스 작업 상태는 자동 저장 슬롯에서 덮어써집니다.`);
-    if (!ok) return;
-
-    applyCanvasStateSnapshot(item.state);
-    activeCanvasSetupId = item.id;
-
-    closeSavedCanvasSetupsModal();
-}
-
-async function renameCanvasSetup(setupId) {
-    const list = loadSavedCanvasSetups();
-    const item = list.find((entry) => entry.id === setupId);
-
-    if (!item) return;
-
-    const nextName = prompt('새 이름을 입력하세요.', item.name || '');
-    if (!nextName || !nextName.trim()) return;
-
-    item.name = nextName.trim();
-    item.savedAt = Date.now();
-
-    const saved = await persistSavedCanvasSetups(list);
-    if (!saved) {
-        alert('이름 변경 저장에 실패했습니다.');
-        return;
-    }
-    renderSavedCanvasSetupList();
-}
-
-async function deleteCanvasSetup(setupId) {
-    const list = loadSavedCanvasSetups();
-    const item = list.find((entry) => entry.id === setupId);
-
-    if (!item) return;
-
-    const ok = confirm(`'${item.name}' 저장본을 삭제할까요?`);
-    if (!ok) return;
-
-    const detachedRefs = collectCanvasImportRefsFromLayer(item.state);
-    const nextList = list.filter((entry) => entry.id !== setupId);
-    const saved = await persistSavedCanvasSetups(nextList);
-    if (!saved) {
-        alert('캔버스 저장본 삭제에 실패했습니다.');
-        return;
-    }
-
-    if (activeCanvasSetupId === setupId) {
-        activeCanvasSetupId = null;
-    }
-    renderSavedCanvasSetupList();
-    cleanupDetachedCanvasImportRefs(detachedRefs);
-}
-
-function applyCanvasStateSnapshot(state) {
-    if (!state || !state.width || !state.height) {
-        alert('불러올 수 없는 캔버스 저장본입니다.');
-        return;
-    }
-
-    currentCanvasWidth = parseInt(state.width, 10) || 0;
-    currentCanvasHeight = parseInt(state.height, 10) || 0;
-    canvasLayers = Array.isArray(state.layers) ? structuredClone(state.layers) : [];
-    activeLayerId = state.activeLayerId || canvasLayers[0]?.id || null;
-    layerIdSeq = parseInt(state.layerIdSeq, 10) || (canvasLayers.length + 1);
-    const restoredClipPromptGroups = normalizeSharedPromptGroups(state.clipPromptGroups || []);
-    if (restoredClipPromptGroups.length) {
-        clipPromptGroups = mergePromptGroupLists(clipPromptGroups, restoredClipPromptGroups);
-        saveSharedClipPromptGroups(true).catch((error) => {
-            console.warn('캔버스 저장본의 프롬프트 그룹 공유 저장 실패:', error);
-        });
-    }
-
-    sharedSelectionClipPromptInfo = state.sharedSelectionClipPromptInfo
-        ? normalizePromptInfo(state.sharedSelectionClipPromptInfo)
-        : null;
-
-    sharedSelectionClipPromptControlGroups = Array.isArray(state.sharedSelectionClipPromptControlGroups)
-        ? structuredClone(state.sharedSelectionClipPromptControlGroups)
-        : [];
-
-    isSelectionOverlayHidden = Boolean(state.isSelectionOverlayHidden);
-    checkedSelectionId = state.checkedSelectionId || null;
-
-    if (typeof canvasZoom !== 'undefined') {
-        canvasZoom = Number(state.canvasZoom) || 1;
-    }
-
-    if (typeof clipPreviewZoom !== 'undefined') {
-        clipPreviewZoom = Number(state.clipPreviewZoom) || 1;
-    }
-
-    isClipInpaintMergedSourceMode = Boolean(state.isClipInpaintMergedSourceMode);
-
-    normalizeCanvasLayerTree(canvasLayers);
-
-    const needsLegacyPromptMigration = Number(state.version || 0) < 2;
-
-    if (needsLegacyPromptMigration) {
-        if (typeof migratePromptOwnersAndControlGroups === 'function') {
-            migratePromptOwnersAndControlGroups();
-        }
-
-        if (typeof forceSharePromptControlsByImageOwner === 'function') {
-            forceSharePromptControlsByImageOwner();
-        }
-    }
-
-    // 최신 구조에서는 clip → owner 병합 금지.
-    // owner → clip 복사본 동기화만 수행.
-    syncAllPromptCopiesFromOwners();
-
-    // 선택 영역 클립들은 다시 공용 프롬프트 owner 하나를 공유하도록 강제
-    migrateAllSelectionClipsToSharedPromptOwner();
-
-    if (typeof syncClipPromptControlGroupSeqFromAllLayers === 'function') {
-        syncClipPromptControlGroupSeqFromAllLayers();
-    }
-
-    if (typeof refreshPinnedReferenceStateFromLayers === 'function') {
-        refreshPinnedReferenceStateFromLayers();
-    }
-
-    ensureCheckedSelectionId();
-    updateSelectionOverlayToggleUI();
-
-    if (currentCanvasWidth && currentCanvasHeight) {
-        renderCanvas(currentCanvasWidth, currentCanvasHeight);
-        renderLayerList();
-    } else {
-        renderLayerList();
-    }
-
-    updateCanvasRatioInfo();
-    migrateCanvasLayerDataUrlsToServer();
-}
-
 async function migrateCanvasLayerDataUrlsToServer() {
     const layers = getAllCanvasLayerNodes()
         .filter((layer) => {
@@ -11829,9 +11763,7 @@ function getCanvasExportPromptInfo() {
             hasAnyPromptText(layer.promptInfo);
     });
 
-    if (imageLayer) {
-        return normalizePromptInfo(imageLayer.promptInfo);
-    }
+    if (imageLayer) return applyCanvasInpaintSettingsToPromptInfo(imageLayer.promptInfo);
 
     const clipLayer = allLayers.find((layer) => {
         return layer.type === 'clip' &&
@@ -11841,17 +11773,33 @@ function getCanvasExportPromptInfo() {
 
     if (clipLayer) {
         const owner = getPromptOwnerLayer(clipLayer) || clipLayer;
-        return normalizePromptInfo(owner.promptInfo || clipLayer.promptInfo);
+        return applyCanvasInpaintSettingsToPromptInfo(owner.promptInfo || clipLayer.promptInfo);
     }
 
-    return normalizePromptInfo(null);
+    const generationOnlyLayer = allLayers.find((layer) => {
+        return layer && layer.visible !== false &&
+            (layer.type === 'image' || layer.type === 'clip') &&
+            canvasInpaintHasGenerationSettings(layer.promptInfo);
+    });
+    if (generationOnlyLayer) {
+        const owner = generationOnlyLayer.type === 'clip'
+            ? getPromptOwnerLayer(generationOnlyLayer) || generationOnlyLayer
+            : generationOnlyLayer;
+        return applyCanvasInpaintSettingsToPromptInfo(owner.promptInfo || generationOnlyLayer.promptInfo);
+    }
+
+    if (canvasInpaintHasGenerationSettings(sharedSelectionClipPromptInfo)) {
+        return applyCanvasInpaintSettingsToPromptInfo(sharedSelectionClipPromptInfo);
+    }
+
+    return applyCanvasInpaintSettingsToPromptInfo(null);
 }
 
 async function getCanvasExportPromptInfoAsync() {
     const direct = getCanvasExportPromptInfo();
 
     if (hasAnyPromptText(direct)) {
-        return normalizePromptInfo(direct);
+        return applyCanvasInpaintSettingsToPromptInfo(direct);
     }
 
     const allLayers = getAllCanvasLayerNodes();
@@ -11866,10 +11814,14 @@ async function getCanvasExportPromptInfoAsync() {
     for (const layer of imageLayers) {
         const recovered = await recoverPromptFromImageLayer(layer);
 
-        if (hasAnyPromptText(recovered)) {
-            layer.promptInfo = normalizePromptInfo(recovered);
-            saveCanvasState();
-            return layer.promptInfo;
+        if (hasAnyPromptText(recovered) || canvasInpaintHasGenerationSettings(recovered)) {
+            if (hasAnyPromptText(recovered)) {
+                layer.promptInfo = normalizePromptInfo(recovered);
+                saveCanvasState();
+            }
+            return applyCanvasInpaintSettingsToPromptInfo(
+                hasAnyPromptText(recovered) ? layer.promptInfo : recovered
+            );
         }
     }
 
@@ -11889,25 +11841,29 @@ async function getCanvasExportPromptInfoAsync() {
         );
 
         if (hasAnyPromptText(candidate)) {
-            return candidate;
+            return applyCanvasInpaintSettingsToPromptInfo(candidate);
         }
 
         const sourcePath = clip.sourcePath || owner.sourcePath || '';
         if (sourcePath) {
             const fromImage = await fetchPromptInfoByPath(sourcePath);
 
-            if (hasAnyPromptText(fromImage)) {
-                clip.promptInfo = normalizePromptInfo(fromImage);
-                if (owner && owner !== clip) {
-                    owner.promptInfo = normalizePromptInfo(fromImage);
+            if (hasAnyPromptText(fromImage) || canvasInpaintHasGenerationSettings(fromImage)) {
+                if (hasAnyPromptText(fromImage)) {
+                    clip.promptInfo = normalizePromptInfo(fromImage);
+                    if (owner && owner !== clip) {
+                        owner.promptInfo = normalizePromptInfo(fromImage);
+                    }
+                    saveCanvasState();
                 }
-                saveCanvasState();
-                return normalizePromptInfo(fromImage);
+                return applyCanvasInpaintSettingsToPromptInfo(fromImage);
             }
+        } else if (canvasInpaintHasGenerationSettings(owner.promptInfo || clip.promptInfo)) {
+            return applyCanvasInpaintSettingsToPromptInfo(owner.promptInfo || clip.promptInfo);
         }
     }
 
-    return normalizePromptInfo(null);
+    return applyCanvasInpaintSettingsToPromptInfo(getCanvasExportPromptInfo());
 }
 
 function isCurrentCanvasDakimakuraLike(promptInfo = null) {
@@ -11930,35 +11886,82 @@ function isCurrentCanvasDakimakuraLike(promptInfo = null) {
         promptText.includes('body pillow');
 }
 
+let canvasExportBusy = false;
+
 async function exportMergedCanvasToClassified() {
     if (!currentCanvasWidth || !currentCanvasHeight) {
         alert('내보낼 캔버스가 없습니다.');
         return;
     }
+    if (canvasExportBusy) return;
 
+    canvasExportBusy = true;
+    const exportButton = document.getElementById('canvasExportMergedBtn');
+    let linkedProject = null;
     try {
+        linkedProject = window.CanvasProject?.localLink?.() || null;
+        let capturedLink = null;
+        let isSameLink = () => true;
+        let destination = {destination: 'gallery'};
+        if (linkedProject) {
+            capturedLink = {
+                projectId: linkedProject.projectId,
+                canvasId: linkedProject.canvasId,
+                projectName: linkedProject.projectName,
+                side: linkedProject.side
+            };
+            destination = await window.CanvasProject.chooseExportDestination(linkedProject);
+            if (!destination) return;
+            isSameLink = () => {
+                const current = window.CanvasProject?.localLink?.();
+                return current && current.projectId === capturedLink.projectId
+                    && current.canvasId === capturedLink.canvasId && current.side === capturedLink.side;
+            };
+            if (!isSameLink()) return;
+            if (destination.destination === 'project' && (destination.projectId !== capturedLink.projectId
+                || destination.canvasId !== capturedLink.canvasId)) return;
+            if (destination.destination !== 'project' && destination.destination !== 'gallery') return;
+        }
+
+        if (exportButton) exportButton.disabled = true;
         const promptInfo = await getCanvasExportPromptInfoAsync();
         const isDakimakura = isCurrentCanvasDakimakuraLike(promptInfo);
+        if (!isSameLink()) return;
 
         const image = await renderMergedCanvasToDataUrl();
+        if (!isSameLink()) return;
+
+        const body = {
+            image,
+            width: currentCanvasWidth,
+            height: currentCanvasHeight,
+            promptInfo,
+            isDakimakura,
+            source: 'canvas'
+        };
+        if (destination.destination === 'project') {
+            body.destination = 'project';
+            body.projectId = destination.projectId;
+            body.canvasId = destination.canvasId;
+        }
 
         const response = await fetch('/api/canvas/export_merged', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                image,
-                width: currentCanvasWidth,
-                height: currentCanvasHeight,
-                promptInfo,
-                isDakimakura,
-                source: 'canvas'
-            })
+            body: JSON.stringify(body)
         });
 
         const data = await response.json();
 
         if (!response.ok || data.status !== 'success') {
             throw new Error(data.message || '통합 내보내기에 실패했습니다.');
+        }
+
+        if (destination.destination === 'project') {
+            const side = data.side || capturedLink.side;
+            const sideLabel = side === 'back' ? '뒷면' : '앞면';
+            showToast(`${data.projectName || capturedLink.projectName} · ${sideLabel}에 그림을 추가했습니다.`);
+            return;
         }
 
         const exportedPath = data.path || '';
@@ -11973,6 +11976,14 @@ async function exportMergedCanvasToClassified() {
 
     } catch (error) {
         alert(`통합 내보내기 실패: ${error.message || error}`);
+    } finally {
+        canvasExportBusy = false;
+        if (exportButton) {
+            exportButton.disabled = false;
+            if (linkedProject && document.activeElement === document.body && exportButton.isConnected) {
+                exportButton.focus();
+            }
+        }
     }
 }
 
@@ -12776,7 +12787,7 @@ async function updateCanvasSetupItem(setupId, name, snapshot, options = {}) {
     };
 
     list[index] = nextItem;
-    const saved = await persistSavedCanvasSetups(list);
+    const saved = await persistSavedCanvasSetups(list, {upserts: [nextItem], removeIds: []});
     if (!saved) {
         throw new Error('캔버스 저장본을 서버에 저장하지 못했습니다.');
     }
@@ -12811,7 +12822,7 @@ async function saveCanvasSetupItem(name, snapshot, options = {}) {
     };
 
     list.unshift(item);
-    const saved = await persistSavedCanvasSetups(list);
+    const saved = await persistSavedCanvasSetups(list, {upserts: [item], removeIds: []});
     if (!saved) {
         throw new Error('캔버스 저장본을 서버에 저장하지 못했습니다.');
     }
@@ -12828,10 +12839,15 @@ async function replaceCurrentCanvasWithMergedImage() {
     saveCanvasState();
 }
 
-function resetCurrentCanvasAfterSave() {
+async function resetCurrentCanvasAfterSave() {
+    if (window.CanvasProject && !await CanvasProject.leave()) return false;
     const width = currentCanvasWidth;
     const height = currentCanvasHeight;
 
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.restore(null);
+    if (typeof CanvasRetouch !== 'undefined') CanvasRetouch.restore(null);
+    if (typeof CanvasOppositeReference !== 'undefined') CanvasOppositeReference.restore(null);
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.restore(null);
     canvasLayers = [];
     layerIdSeq = 1;
     activeLayerId = null;
@@ -12849,6 +12865,7 @@ function resetCurrentCanvasAfterSave() {
     renderLayerList();
     updateCanvasRatioInfo();
     saveCanvasState();
+    return true;
 }
 
 function getCanvasSaveModeLabel(mode) {
@@ -13101,2030 +13118,4 @@ function handleMultiImageResizeMouseMove(event) {
 
     updateCanvasHotLayerGeometry(drag.starts.map((start) => start.id));
     updateActiveImageResizeGuideOverlay();
-}
-
-/* =========================================================
-   참조 이미지 생성
-   - 가운데 캔버스 우클릭 → 참조 이미지 생성
-   - 현재 캔버스 통합 이미지 생성
-   - 선택 해상도 흰 배경 중앙에 비율 유지 배치
-   - 갤러리 인페인팅과 비슷한 마스크 편집/인페인팅
-   - 덮어쓰기/새로 저장 없음
-   - 내보내기: 현재 캔버스에 새 이미지 레이어로 가져오기
-========================================================= */
-
-let referenceGenSession = null;
-let referenceGenTool = 'brush';
-let referenceGenBrushSize = 96;
-const REFERENCE_GEN_MASK_OVERLAY_ALPHA = 0.34;
-let referenceGenZoom = 1;
-const REFERENCE_GEN_ZOOM_MIN = 0.25;
-const REFERENCE_GEN_ZOOM_MAX = 8;
-let referenceGenPainting = false;
-let referenceGenLastPoint = null;
-let referenceGenLastPointerEvent = null;
-let referenceGenMaskVisible = true;
-let referenceGenCharPromptSeq = 1;
-let referenceGenMaskCanvas = null;
-let referenceGenMaskCtx = null;
-let referenceGenInternalClipboard = null;
-let referenceGenUpscaleLastEditedAxis = 'width';
-const REFERENCE_GEN_RESOLUTION_STEP = 64;
-const REFERENCE_GEN_HIGH_AREA_LIMIT = 768 * 2496;
-const REFERENCE_GEN_MAX_SIDE = 2496;
-
-window.addEventListener('load', () => {
-    bindCanvasSurfaceReferenceContextMenu();
-
-    document.addEventListener('click', (event) => {
-        const surfaceMenu = el('canvasSurfaceContextMenu');
-        const referenceMenu = getReferenceGenClipboardContextMenu(false);
-
-        if (
-            surfaceMenu &&
-            surfaceMenu.style.display === 'block' &&
-            !surfaceMenu.contains(event.target)
-        ) {
-            closeCanvasSurfaceContextMenu();
-        }
-
-        if (
-            referenceMenu &&
-            referenceMenu.style.display === 'block' &&
-            !referenceMenu.contains(event.target)
-        ) {
-            closeReferenceGenClipboardContextMenu();
-        }
-
-        if (!event.target.closest?.('.reference-gen-tool-wrap')) {
-            document.querySelectorAll('.reference-gen-tool-wrap.open').forEach((wrap) => {
-                wrap.classList.remove('open');
-            });
-        }
-
-        const detailMenu = el('referenceGenDetailChoiceMenu');
-        if (
-            detailMenu &&
-            detailMenu.style.display === 'block' &&
-            !detailMenu.contains(event.target) &&
-            !event.target.closest?.('[data-reference-gen-detail-choice]')
-        ) {
-            closeReferenceGenDetailChoice();
-        }
-    });
-
-    document.addEventListener('keydown', (event) => {
-        if (event.key !== 'Escape') return;
-
-        closeCanvasSurfaceContextMenu();
-        closeReferenceGenClipboardContextMenu();
-        closeReferenceGenUpscaleExportModal();
-        closeReferenceGenDetailChoice();
-    });
-
-    document.addEventListener('scroll', () => {
-        closeCanvasSurfaceContextMenu();
-        closeReferenceGenClipboardContextMenu();
-        closeReferenceGenDetailChoice();
-    }, true);
-
-    window.addEventListener('resize', () => {
-        syncReferenceGenOverlayDisplaySize();
-    });
-});
-
-function bindCanvasSurfaceReferenceContextMenu() {
-    const surface = el('canvasSurface');
-    if (!surface) return;
-
-    if (surface.dataset.referenceGenContextBound === '1') {
-        return;
-    }
-
-    surface.dataset.referenceGenContextBound = '1';
-
-    surface.addEventListener('contextmenu', (event) => {
-        openCanvasSurfaceContextMenu(event);
-    });
-}
-
-function openCanvasSurfaceContextMenu(event) {
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    closeCanvasImageLayerContextMenu();
-    closeCanvasSelectionContextMenu();
-
-    const menu = el('canvasSurfaceContextMenu');
-    if (!menu) return;
-
-    menu.style.display = 'block';
-
-    const margin = 12;
-    const menuWidth = menu.offsetWidth || 180;
-    const menuHeight = menu.offsetHeight || 60;
-
-    const left = Math.min(event.clientX, window.innerWidth - menuWidth - margin);
-    const top = Math.min(event.clientY, window.innerHeight - menuHeight - margin);
-
-    menu.style.left = `${Math.max(margin, left)}px`;
-    menu.style.top = `${Math.max(margin, top)}px`;
-}
-
-function closeCanvasSurfaceContextMenu() {
-    const menu = el('canvasSurfaceContextMenu');
-    if (menu) menu.style.display = 'none';
-}
-
-function getReferenceGenClipboardContextMenu(createIfMissing = true) {
-    let menu = el('referenceGenClipboardContextMenu');
-
-    if (!menu && createIfMissing) {
-        menu = document.createElement('div');
-        menu.id = 'referenceGenClipboardContextMenu';
-        menu.className = 'canvas-layer-context-menu reference-gen-clipboard-context-menu';
-        menu.innerHTML = `
-            <button class="canvas-layer-context-item" onclick="copyReferenceGenImageToClipboard()">
-                복사
-            </button>
-            <button class="canvas-layer-context-item" onclick="pasteClipboardToReferenceGenImage()">
-                가져오기
-            </button>
-        `;
-        document.body.appendChild(menu);
-    }
-
-    return menu;
-}
-
-function openReferenceGenClipboardContextMenu(event) {
-    if (!referenceGenSession?.currentSrc) {
-        return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    closeCanvasImageLayerContextMenu();
-    closeCanvasSelectionContextMenu();
-    closeCanvasSurfaceContextMenu();
-    closeClipOutputClipboardContextMenu();
-
-    const menu = getReferenceGenClipboardContextMenu();
-    if (!menu) return;
-
-    menu.style.display = 'block';
-
-    const margin = 12;
-    const menuWidth = menu.offsetWidth || 180;
-    const menuHeight = menu.offsetHeight || 80;
-
-    const left = Math.min(event.clientX, window.innerWidth - menuWidth - margin);
-    const top = Math.min(event.clientY, window.innerHeight - menuHeight - margin);
-
-    menu.style.left = `${Math.max(margin, left)}px`;
-    menu.style.top = `${Math.max(margin, top)}px`;
-}
-
-function closeReferenceGenClipboardContextMenu() {
-    const menu = getReferenceGenClipboardContextMenu(false);
-    if (menu) menu.style.display = 'none';
-}
-
-function buildReferenceGenClipboardPayload(src, width, height, promptInfo = null) {
-    if (!src) return null;
-
-    return {
-        src,
-        width: Math.max(1, Math.round(Number(width) || 1)),
-        height: Math.max(1, Math.round(Number(height) || 1)),
-        promptInfo: normalizeReferenceGenPromptInfo(promptInfo || referenceGenSession?.promptInfo || {}),
-        copiedAt: Date.now()
-    };
-}
-
-async function copyReferenceGenImageToClipboard() {
-    closeReferenceGenClipboardContextMenu();
-
-    if (!referenceGenSession?.currentSrc) {
-        alert('복사할 참조 이미지가 없습니다.');
-        return false;
-    }
-
-    referenceGenInternalClipboard = buildReferenceGenClipboardPayload(
-        referenceGenSession.currentSrc,
-        referenceGenSession.width,
-        referenceGenSession.height,
-        referenceGenSession.promptInfo
-    );
-
-    try {
-        await writeClipOutputToSystemClipboard(referenceGenSession.currentSrc);
-        showReferenceGenToast('참조 이미지를 클립보드에 복사했습니다.');
-        return true;
-    } catch (error) {
-        alert(`참조 이미지 복사 실패: ${error.message || error}`);
-        return false;
-    }
-}
-
-async function getImageSizeFromDataUrl(dataUrl) {
-    const image = await loadReferenceGenImage(dataUrl);
-    return {
-        width: image.naturalWidth || image.width || 1,
-        height: image.naturalHeight || image.height || 1
-    };
-}
-
-async function resizeReferenceGenImageToSessionSize(src, targetWidth, targetHeight) {
-    const image = await loadReferenceGenImage(src);
-    const sourceWidth = Math.max(1, image.naturalWidth || image.width || 1);
-    const sourceHeight = Math.max(1, image.naturalHeight || image.height || 1);
-    const width = Math.max(1, Math.round(Number(targetWidth) || 1));
-    const height = Math.max(1, Math.round(Number(targetHeight) || 1));
-
-    if (sourceWidth === width && sourceHeight === height) {
-        return { src, sourceWidth, sourceHeight, width, height, resized: false };
-    }
-
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    const scale = Math.max(width / sourceWidth, height / sourceHeight);
-    const drawWidth = sourceWidth * scale;
-    const drawHeight = sourceHeight * scale;
-    const drawX = (width - drawWidth) / 2;
-    const drawY = (height - drawHeight) / 2;
-    ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
-
-    return {
-        src: canvas.toDataURL('image/png'),
-        sourceWidth,
-        sourceHeight,
-        width,
-        height,
-        resized: true
-    };
-}
-
-async function pasteClipboardToReferenceGenImage() {
-    closeReferenceGenClipboardContextMenu();
-
-    if (!referenceGenSession) {
-        alert('참조 이미지 세션이 없습니다.');
-        return false;
-    }
-
-    try {
-        let clipboard = null;
-        const externalImageDataUrl = await readExternalCanvasImageDataUrlFromSystemClipboard();
-
-        if (externalImageDataUrl) {
-            const size = await getImageSizeFromDataUrl(externalImageDataUrl);
-            clipboard = buildReferenceGenClipboardPayload(
-                externalImageDataUrl,
-                size.width,
-                size.height,
-                referenceGenSession.promptInfo
-            );
-        } else if (referenceGenInternalClipboard?.src) {
-            clipboard = referenceGenInternalClipboard;
-        } else if (clipOutputInternalClipboard?.src) {
-            clipboard = buildReferenceGenClipboardPayload(
-                clipOutputInternalClipboard.src,
-                clipOutputInternalClipboard.imageWidth || clipOutputInternalClipboard.layerWidth,
-                clipOutputInternalClipboard.imageHeight || clipOutputInternalClipboard.layerHeight,
-                clipOutputInternalClipboard.promptInfo || referenceGenSession.promptInfo
-            );
-        }
-
-        if (!clipboard?.src) {
-            alert('가져올 클립보드 이미지가 없습니다.');
-            return false;
-        }
-
-        const targetWidth = Math.max(1, Math.round(Number(referenceGenSession.width) || 1));
-        const targetHeight = Math.max(1, Math.round(Number(referenceGenSession.height) || 1));
-        const fittedImage = await resizeReferenceGenImageToSessionSize(
-            clipboard.src,
-            targetWidth,
-            targetHeight
-        );
-        const pastedSrc = String(fittedImage.src).startsWith('data:')
-            ? await saveClipDataUrlToServer(fittedImage.src)
-            : fittedImage.src;
-
-        referenceGenSession.width = targetWidth;
-        referenceGenSession.height = targetHeight;
-        referenceGenSession.currentSrc = pastedSrc;
-        referenceGenSession.originalSrc = pastedSrc;
-        referenceGenSession.detailSourceSrc = pastedSrc;
-        referenceGenSession.resultSrc = '';
-        referenceGenSession.promptInfo = normalizeReferenceGenPromptInfo(
-            clipboard.promptInfo || referenceGenSession.promptInfo
-        );
-        referenceGenSession.maskDataUrl = '';
-
-        openReferenceGenLayer();
-        const resizeText = fittedImage.resized
-            ? ` (${fittedImage.sourceWidth}×${fittedImage.sourceHeight} → ${targetWidth}×${targetHeight} 비율 유지·중앙 조절)`
-            : '';
-        showReferenceGenToast(`클립보드 이미지를 참조 이미지로 가져왔습니다${resizeText}.`);
-        return true;
-    } catch (error) {
-        alert(`참조 이미지 가져오기 실패: ${error.message || error}`);
-        return false;
-    }
-}
-
-function openReferenceGenResolutionModal() {
-    closeCanvasSurfaceContextMenu();
-
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
-        return;
-    }
-
-    applyReferenceGenPreset(512, 1664);
-
-    const modal = el('referenceGenResolutionModal');
-    if (modal) {
-        modal.style.display = 'flex';
-    }
-}
-
-function closeReferenceGenResolutionModal() {
-    const modal = el('referenceGenResolutionModal');
-    if (modal) {
-        modal.style.display = 'none';
-    }
-}
-
-function applyReferenceGenPreset(width, height) {
-    const widthInput = el('referenceGenWidthInput');
-    const heightInput = el('referenceGenHeightInput');
-
-    if (widthInput) widthInput.value = width;
-    if (heightInput) heightInput.value = height;
-    setReferenceGenPresetInfo(`선택 해상도: ${width} × ${height}`);
-}
-
-function getReferenceGenExpectedAnlasCost(width, height, steps = 28) {
-    if (typeof window.getExpectedAnlasCost === 'function') {
-        return window.getExpectedAnlasCost(width, height, steps);
-    }
-
-    const area = Math.max(0, Number(width) || 0) * Math.max(0, Number(height) || 0);
-    if (area <= NAI_FREE_AREA_LIMIT && steps <= 28) return 0;
-    return Math.max(2, Math.ceil((area * steps) / 1460000));
-}
-
-function setReferenceGenPresetInfo(message) {
-    const info = el('referenceGenPresetInfo');
-    if (info) info.innerText = message || '';
-}
-
-function getReferenceGenCanvasRatio() {
-    const width = Math.max(1, Number(currentCanvasWidth) || 1);
-    const height = Math.max(1, Number(currentCanvasHeight) || 1);
-    return width / height;
-}
-
-function findReferenceGenCanvasRatioResolution(mode) {
-    const targetRatio = getReferenceGenCanvasRatio();
-    const maxArea = mode === 'paid' ? REFERENCE_GEN_HIGH_AREA_LIMIT : NAI_FREE_AREA_LIMIT;
-    const minArea = mode === 'paid' ? NAI_FREE_AREA_LIMIT + 1 : 0;
-    const ratioTolerance = mode === 'free' ? 0.02 : 0.000001;
-    const candidates = [];
-
-    for (let width = REFERENCE_GEN_RESOLUTION_STEP; width <= REFERENCE_GEN_MAX_SIDE; width += REFERENCE_GEN_RESOLUTION_STEP) {
-        for (let height = REFERENCE_GEN_RESOLUTION_STEP; height <= REFERENCE_GEN_MAX_SIDE; height += REFERENCE_GEN_RESOLUTION_STEP) {
-            const area = width * height;
-            if (area > maxArea || area < minArea) continue;
-
-            candidates.push({
-                width,
-                height,
-                area,
-                ratioError: Math.abs(Math.log((width / height) / targetRatio))
-            });
-        }
-    }
-
-    if (!candidates.length) return null;
-
-    const bestRatioError = Math.min(...candidates.map((candidate) => candidate.ratioError));
-    return candidates
-        .filter((candidate) => candidate.ratioError <= bestRatioError + ratioTolerance)
-        .sort((a, b) => b.area - a.area)[0] || null;
-}
-
-function applyReferenceGenCanvasRatioPreset(mode) {
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
-        return;
-    }
-
-    const presetMode = mode === 'paid' ? 'paid' : 'free';
-    const result = findReferenceGenCanvasRatioResolution(presetMode);
-
-    if (!result) {
-        setReferenceGenPresetInfo('현재 캔버스 비율에 맞는 해상도 후보를 찾지 못했습니다.');
-        return;
-    }
-
-    applyReferenceGenPreset(result.width, result.height);
-
-    const ratio = (result.width / result.height).toFixed(4);
-    const canvasRatio = getReferenceGenCanvasRatio().toFixed(4);
-    const cost = getReferenceGenExpectedAnlasCost(result.width, result.height, 28);
-    const label = presetMode === 'paid' ? '고해상도' : '무료 최대';
-    const costLabel = cost > 0 ? `예상 ${cost} Anlas` : 'Anlas 0';
-
-    setReferenceGenPresetInfo(
-        `${label}: ${result.width} × ${result.height} · ${costLabel} · 캔버스 비율 ${canvasRatio} / 선택 비율 ${ratio}`
-    );
-}
-
-function readReferenceGenResolutionInput() {
-    const width = parseInt(el('referenceGenWidthInput')?.value, 10);
-    const height = parseInt(el('referenceGenHeightInput')?.value, 10);
-
-    return {
-        width: Number.isFinite(width) && width >= 64 ? width : 512,
-        height: Number.isFinite(height) && height >= 64 ? height : 1664
-    };
-}
-
-async function createReferenceGenSessionFromDialog() {
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
-        return;
-    }
-
-    const { width, height } = readReferenceGenResolutionInput();
-
-    closeReferenceGenResolutionModal();
-
-    try {
-        setReferenceGenProcessing(true, '참조 이미지 생성 중...');
-
-        const mergedDataUrl = await renderMergedCanvasToDataUrl();
-        const referenceDataUrl = await buildReferenceGenBaseImageDataUrl(
-            mergedDataUrl,
-            width,
-            height
-        );
-
-        const savedSrc = await saveClipDataUrlToServer(referenceDataUrl);
-        const promptInfo = normalizeReferenceGenPromptInfo(getCanvasExportPromptInfo());
-
-        referenceGenSession = {
-            width,
-            height,
-            originalSrc: savedSrc,
-            currentSrc: savedSrc,
-            detailSourceSrc: savedSrc,
-            resultSrc: '',
-            promptInfo,
-            maskDataUrl: '',
-            createdAt: Date.now()
-        };
-
-        referenceGenTool = 'brush';
-        referenceGenBrushSize = 96;
-        referenceGenMaskVisible = true;
-        referenceGenPainting = false;
-        referenceGenLastPoint = null;
-        referenceGenLastPointerEvent = null;
-
-        openReferenceGenLayer();
-        showReferenceGenToast('참조 이미지가 생성되었습니다.');
-
-    } catch (error) {
-        alert(`참조 이미지 생성 실패: ${error.message || error}`);
-    } finally {
-        setReferenceGenProcessing(false);
-    }
-}
-
-async function buildReferenceGenBaseImageDataUrl(sourceDataUrl, targetWidth, targetHeight) {
-    const sourceImage = await loadReferenceGenImage(sourceDataUrl);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-
-    const ctx = canvas.getContext('2d');
-
-    // 참조 이미지 배경은 흰색
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, targetWidth, targetHeight);
-
-    /*
-        중요:
-        여기서 맞추는 기준은 이미지 레이어가 아니라
-        현재 가운데 실제 캔버스 전체 통합 이미지다.
-    */
-    const scale = Math.min(
-        targetWidth / sourceImage.naturalWidth,
-        targetHeight / sourceImage.naturalHeight
-    );
-
-    const drawWidth = Math.round(sourceImage.naturalWidth * scale);
-    const drawHeight = Math.round(sourceImage.naturalHeight * scale);
-    const drawX = Math.round((targetWidth - drawWidth) / 2);
-    const drawY = Math.round((targetHeight - drawHeight) / 2);
-
-    ctx.drawImage(sourceImage, drawX, drawY, drawWidth, drawHeight);
-
-    return canvas.toDataURL('image/png');
-}
-
-function loadReferenceGenImage(src) {
-    return new Promise((resolve, reject) => {
-        const img = new Image();
-
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('이미지를 불러올 수 없습니다.'));
-
-        img.src = src;
-    });
-}
-
-function openReferenceGenLayer() {
-    if (!referenceGenSession) return;
-
-    const layer = el('referenceGenLayer');
-    const img = el('referenceGenImage');
-    const meta = el('referenceGenMeta');
-
-    if (!layer || !img) return;
-
-    if (meta) {
-        meta.innerText = `${referenceGenSession.width} × ${referenceGenSession.height}px`;
-    }
-
-    referenceGenZoom = 1;
-
-    img.onload = () => {
-        setupReferenceGenOverlay();
-        clearReferenceGenMask();
-        applyReferenceGenMaskVisibility();
-    };
-
-    img.src = withCacheBuster(referenceGenSession.currentSrc);
-
-    layer.style.display = 'flex';
-
-    setReferenceGenTool('brush');
-    setReferenceGenBrushSize(referenceGenBrushSize);
-    setReferenceGenPromptValues(referenceGenSession.promptInfo);
-}
-
-function closeReferenceGen() {
-    const layer = el('referenceGenLayer');
-    if (layer) layer.style.display = 'none';
-
-    referenceGenPainting = false;
-    referenceGenLastPoint = null;
-    hideReferenceGenBrushCursor();
-}
-
-function setupReferenceGenOverlay() {
-    const img = el('referenceGenImage');
-    const overlay = el('referenceGenOverlay');
-    const wrap = el('referenceGenImageWrap');
-
-    if (!img || !overlay || !referenceGenSession) return;
-
-    referenceGenMaskCanvas = document.createElement('canvas');
-    referenceGenMaskCanvas.width = referenceGenSession.width;
-    referenceGenMaskCanvas.height = referenceGenSession.height;
-    referenceGenMaskCtx = referenceGenMaskCanvas.getContext('2d');
-    referenceGenMaskCtx.clearRect(0, 0, referenceGenMaskCanvas.width, referenceGenMaskCanvas.height);
-
-    overlay.width = referenceGenSession.width;
-    overlay.height = referenceGenSession.height;
-
-    syncReferenceGenOverlayDisplaySize();
-    redrawReferenceGenMaskOverlay();
-    bindReferenceGenWheelZoom();
-
-    if (overlay.dataset.referenceGenBound !== '1') {
-        overlay.dataset.referenceGenBound = '1';
-
-        overlay.addEventListener('mousedown', startReferenceGenMaskPaint);
-        overlay.addEventListener('mousemove', moveReferenceGenMaskPaint);
-        overlay.addEventListener('mouseup', stopReferenceGenMaskPaint);
-        overlay.addEventListener('mouseleave', stopReferenceGenMaskPaint);
-
-        overlay.addEventListener('mouseenter', (event) => {
-            referenceGenLastPointerEvent = event;
-            updateReferenceGenBrushCursor(event);
-        });
-
-        overlay.addEventListener('mousemove', (event) => {
-            referenceGenLastPointerEvent = event;
-            updateReferenceGenBrushCursor(event);
-        });
-
-        overlay.addEventListener('mouseleave', () => {
-            hideReferenceGenBrushCursor();
-        });
-
-        overlay.addEventListener('contextmenu', openReferenceGenClipboardContextMenu);
-
-        overlay.addEventListener('touchstart', startReferenceGenMaskPaint, { passive: false });
-        overlay.addEventListener('touchmove', moveReferenceGenMaskPaint, { passive: false });
-        overlay.addEventListener('touchend', stopReferenceGenMaskPaint, { passive: false });
-    }
-
-    if (wrap && wrap.dataset.referenceGenContextBound !== '1') {
-        wrap.dataset.referenceGenContextBound = '1';
-        wrap.addEventListener('contextmenu', openReferenceGenClipboardContextMenu);
-    }
-}
-
-function syncReferenceGenOverlayDisplaySize() {
-    applyReferenceGenZoom();
-}
-
-function getReferenceGenBaseDisplaySize() {
-    const imageWidth = Math.max(1, Number(referenceGenSession?.width) || 1);
-    const imageHeight = Math.max(1, Number(referenceGenSession?.height) || 1);
-    const maxViewportWidth = Math.min(900, Math.max(320, window.innerWidth * 0.86));
-    const maxViewportHeight = Math.min(Math.max(360, window.innerHeight * 0.72), 9000);
-    const fitScale = Math.min(
-        1,
-        maxViewportWidth / imageWidth,
-        maxViewportHeight / imageHeight
-    );
-
-    return {
-        width: Math.max(1, Math.round(imageWidth * fitScale)),
-        height: Math.max(1, Math.round(imageHeight * fitScale)),
-        maxViewportWidth,
-        maxViewportHeight
-    };
-}
-
-function applyReferenceGenZoom() {
-    const img = el('referenceGenImage');
-    const overlay = el('referenceGenOverlay');
-    const wrap = el('referenceGenImageWrap');
-
-    if (!img || !overlay || !wrap || !referenceGenSession) return;
-
-    const baseSize = getReferenceGenBaseDisplaySize();
-    const displayWidth = Math.max(1, Math.round(baseSize.width * referenceGenZoom));
-    const displayHeight = Math.max(1, Math.round(baseSize.height * referenceGenZoom));
-    const viewportWidth = Math.min(displayWidth, baseSize.maxViewportWidth);
-    const viewportHeight = Math.min(displayHeight, baseSize.maxViewportHeight);
-
-    wrap.style.width = `${Math.max(1, Math.round(viewportWidth))}px`;
-    wrap.style.height = `${Math.max(1, Math.round(viewportHeight))}px`;
-    wrap.style.maxWidth = 'min(900px, 86vw)';
-    wrap.style.maxHeight = '72vh';
-    wrap.style.overflow = 'auto';
-
-    img.style.width = `${displayWidth}px`;
-    img.style.height = `${displayHeight}px`;
-    img.style.maxWidth = 'none';
-    img.style.maxHeight = 'none';
-
-    overlay.style.width = `${displayWidth}px`;
-    overlay.style.height = `${displayHeight}px`;
-}
-
-function bindReferenceGenWheelZoom() {
-    const wrap = el('referenceGenImageWrap');
-    if (!wrap || wrap.dataset.referenceGenZoomWheelBound === '1') return;
-
-    wrap.dataset.referenceGenZoomWheelBound = '1';
-    wrap.addEventListener('wheel', handleReferenceGenWheelZoom, { passive: false });
-}
-
-function handleReferenceGenWheelZoom(event) {
-    const wrap = el('referenceGenImageWrap');
-    if (!wrap || !referenceGenSession) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    const rect = wrap.getBoundingClientRect();
-    const pointerX = event.clientX - rect.left + wrap.scrollLeft;
-    const pointerY = event.clientY - rect.top + wrap.scrollTop;
-    const oldZoom = referenceGenZoom;
-
-    referenceGenZoom = clampZoom(
-        referenceGenZoom * getWheelZoomFactor(event),
-        REFERENCE_GEN_ZOOM_MIN,
-        REFERENCE_GEN_ZOOM_MAX
-    );
-
-    if (referenceGenZoom === oldZoom) return;
-
-    const ratio = referenceGenZoom / oldZoom;
-    applyReferenceGenZoom();
-
-    requestAnimationFrame(() => {
-        wrap.scrollLeft = pointerX * ratio - (event.clientX - rect.left);
-        wrap.scrollTop = pointerY * ratio - (event.clientY - rect.top);
-        updateReferenceGenBrushCursor(referenceGenLastPointerEvent);
-    });
-}
-
-function getReferenceGenPointer(event) {
-    const overlay = el('referenceGenOverlay');
-    const rect = overlay.getBoundingClientRect();
-
-    const pointSource = event.touches && event.touches.length
-        ? event.touches[0]
-        : event;
-
-    return {
-        x: (pointSource.clientX - rect.left) * (overlay.width / rect.width),
-        y: (pointSource.clientY - rect.top) * (overlay.height / rect.height),
-        clientX: pointSource.clientX,
-        clientY: pointSource.clientY
-    };
-}
-
-function startReferenceGenMaskPaint(event) {
-    if (!referenceGenSession) return;
-    if (Number.isInteger(event?.button) && event.button !== 0) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    referenceGenPainting = true;
-
-    const point = getReferenceGenPointer(event);
-    referenceGenLastPoint = point;
-
-    drawReferenceGenMaskPoint(point);
-    updateReferenceGenBrushCursorFromPoint(point);
-}
-
-function moveReferenceGenMaskPaint(event) {
-    if (!referenceGenSession) return;
-
-    const point = getReferenceGenPointer(event);
-    referenceGenLastPointerEvent = event;
-
-    updateReferenceGenBrushCursorFromPoint(point);
-
-    if (!referenceGenPainting) {
-        return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (referenceGenLastPoint) {
-        drawReferenceGenMaskLine(referenceGenLastPoint, point);
-    } else {
-        drawReferenceGenMaskPoint(point);
-    }
-
-    referenceGenLastPoint = point;
-}
-
-function stopReferenceGenMaskPaint(event) {
-    if (!referenceGenPainting) {
-        return;
-    }
-
-    if (event) {
-        event.preventDefault?.();
-        event.stopPropagation?.();
-    }
-
-    referenceGenPainting = false;
-    referenceGenLastPoint = null;
-    updateReferenceGenMaskDataUrl();
-}
-
-function drawReferenceGenMaskPoint(point) {
-    if (!referenceGenMaskCtx) return;
-
-    referenceGenMaskCtx.save();
-
-    if (referenceGenTool === 'eraser') {
-        referenceGenMaskCtx.globalCompositeOperation = 'destination-out';
-        referenceGenMaskCtx.fillStyle = 'rgba(0, 0, 0, 1)';
-    } else {
-        referenceGenMaskCtx.globalCompositeOperation = 'source-over';
-
-        // 실제 마스크 데이터는 불투명하게 저장한다.
-        // 화면에는 redrawReferenceGenMaskOverlay()에서 반투명으로 보여준다.
-        referenceGenMaskCtx.fillStyle = 'rgba(0, 128, 255, 1)';
-    }
-
-    referenceGenMaskCtx.beginPath();
-    referenceGenMaskCtx.arc(point.x, point.y, referenceGenBrushSize / 2, 0, Math.PI * 2);
-    referenceGenMaskCtx.fill();
-
-    referenceGenMaskCtx.restore();
-    drawReferenceGenMaskOverlayPoint(point);
-}
-
-function drawReferenceGenMaskLine(from, to) {
-    if (!referenceGenMaskCtx) return;
-
-    referenceGenMaskCtx.save();
-
-    if (referenceGenTool === 'eraser') {
-        referenceGenMaskCtx.globalCompositeOperation = 'destination-out';
-        referenceGenMaskCtx.strokeStyle = 'rgba(0, 0, 0, 1)';
-    } else {
-        referenceGenMaskCtx.globalCompositeOperation = 'source-over';
-
-        // 실제 마스크 데이터는 불투명하게 저장한다.
-        // 화면 표시만 반투명 처리한다.
-        referenceGenMaskCtx.strokeStyle = 'rgba(0, 128, 255, 1)';
-    }
-
-    referenceGenMaskCtx.lineWidth = referenceGenBrushSize;
-    referenceGenMaskCtx.lineCap = 'round';
-    referenceGenMaskCtx.lineJoin = 'round';
-
-    referenceGenMaskCtx.beginPath();
-    referenceGenMaskCtx.moveTo(from.x, from.y);
-    referenceGenMaskCtx.lineTo(to.x, to.y);
-    referenceGenMaskCtx.stroke();
-
-    referenceGenMaskCtx.restore();
-    drawReferenceGenMaskOverlayLine(from, to);
-}
-
-function clearReferenceGenOverlayPath(ctx, drawPath) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = 'rgba(0, 0, 0, 1)';
-    ctx.strokeStyle = 'rgba(0, 0, 0, 1)';
-    drawPath(ctx);
-    ctx.restore();
-}
-
-function redrawReferenceGenMaskOverlay() {
-    const overlay = el('referenceGenOverlay');
-
-    if (!overlay || !referenceGenMaskCanvas) return;
-
-    const ctx = overlay.getContext('2d');
-
-    ctx.clearRect(0, 0, overlay.width, overlay.height);
-
-    // 갤러리 인페인팅과 같은 방식:
-    // 실제 마스크는 불투명, 화면 표시만 반투명.
-    ctx.save();
-    ctx.globalAlpha = REFERENCE_GEN_MASK_OVERLAY_ALPHA;
-    ctx.drawImage(referenceGenMaskCanvas, 0, 0, overlay.width, overlay.height);
-    ctx.restore();
-
-    applyReferenceGenMaskVisibility();
-}
-
-function drawReferenceGenMaskOverlayPoint(point) {
-    const overlay = el('referenceGenOverlay');
-    if (!overlay) return;
-
-    const ctx = overlay.getContext('2d');
-    const drawPath = (targetCtx) => {
-        targetCtx.beginPath();
-        targetCtx.arc(point.x, point.y, referenceGenBrushSize / 2, 0, Math.PI * 2);
-        targetCtx.fill();
-    };
-
-    if (referenceGenTool === 'eraser') {
-        ctx.save();
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = 'rgba(0, 0, 0, 1)';
-        drawPath(ctx);
-        ctx.restore();
-    } else {
-        clearReferenceGenOverlayPath(ctx, drawPath);
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = REFERENCE_GEN_MASK_OVERLAY_ALPHA;
-        ctx.fillStyle = 'rgba(0, 210, 255, 1)';
-        drawPath(ctx);
-        ctx.restore();
-    }
-
-    applyReferenceGenMaskVisibility();
-}
-
-function drawReferenceGenMaskOverlayLine(from, to) {
-    const overlay = el('referenceGenOverlay');
-    if (!overlay) return;
-
-    const ctx = overlay.getContext('2d');
-    const drawPath = (targetCtx) => {
-        targetCtx.lineWidth = referenceGenBrushSize;
-        targetCtx.lineCap = 'round';
-        targetCtx.lineJoin = 'round';
-        targetCtx.beginPath();
-        targetCtx.moveTo(from.x, from.y);
-        targetCtx.lineTo(to.x, to.y);
-        targetCtx.stroke();
-    };
-
-    if (referenceGenTool === 'eraser') {
-        ctx.save();
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = 'rgba(0, 0, 0, 1)';
-        drawPath(ctx);
-        ctx.restore();
-    } else {
-        clearReferenceGenOverlayPath(ctx, drawPath);
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = REFERENCE_GEN_MASK_OVERLAY_ALPHA;
-        ctx.strokeStyle = 'rgba(0, 210, 255, 1)';
-        drawPath(ctx);
-        ctx.restore();
-    }
-
-    applyReferenceGenMaskVisibility();
-}
-
-function clearReferenceGenMask() {
-    if (!referenceGenMaskCanvas || !referenceGenMaskCtx) {
-        const overlay = el('referenceGenOverlay');
-
-        if (overlay && referenceGenSession) {
-            referenceGenMaskCanvas = document.createElement('canvas');
-            referenceGenMaskCanvas.width = referenceGenSession.width;
-            referenceGenMaskCanvas.height = referenceGenSession.height;
-            referenceGenMaskCtx = referenceGenMaskCanvas.getContext('2d');
-        }
-    }
-
-    if (referenceGenMaskCtx && referenceGenMaskCanvas) {
-        referenceGenMaskCtx.clearRect(
-            0,
-            0,
-            referenceGenMaskCanvas.width,
-            referenceGenMaskCanvas.height
-        );
-    }
-
-    if (referenceGenSession) {
-        referenceGenSession.maskDataUrl = '';
-    }
-
-    redrawReferenceGenMaskOverlay();
-}
-
-function updateReferenceGenMaskDataUrl() {
-    if (!referenceGenMaskCanvas || !referenceGenSession) return;
-
-    referenceGenSession.maskDataUrl = referenceGenMaskCanvas.toDataURL('image/png');
-}
-
-function isReferenceGenMaskEmpty() {
-    return !getReferenceGenMaskBounds();
-}
-
-function setReferenceGenTool(tool, button = null) {
-    referenceGenTool = tool === 'eraser' ? 'eraser' : 'brush';
-
-    document.querySelectorAll('.reference-gen-tool-btn').forEach((btn) => {
-        btn.classList.remove('active');
-    });
-
-    document.querySelectorAll('.reference-gen-tool-wrap').forEach((wrap) => {
-        wrap.classList.remove('open');
-    });
-
-    if (button) {
-        button.classList.add('active');
-
-        const wrap = button.closest('.reference-gen-tool-wrap');
-        if (wrap) wrap.classList.add('open');
-    } else {
-        const selector = referenceGenTool === 'eraser'
-            ? `.reference-gen-tool-btn[onclick*="eraser"]`
-            : `.reference-gen-tool-btn[onclick*="brush"]`;
-
-        const targetButton = document.querySelector(selector);
-        if (targetButton) {
-            targetButton.classList.add('active');
-
-            const wrap = targetButton.closest('.reference-gen-tool-wrap');
-            if (wrap) wrap.classList.add('open');
-        }
-    }
-
-    updateReferenceGenBrushCursor(referenceGenLastPointerEvent);
-}
-
-function setReferenceGenBrushSize(value) {
-    referenceGenBrushSize = Math.max(8, Math.min(320, parseInt(value, 10) || 96));
-
-    document.querySelectorAll('.reference-gen-size-popover input[type="range"]').forEach((input) => {
-        input.value = String(referenceGenBrushSize);
-    });
-
-    document.querySelectorAll('.reference-gen-size-readout').forEach((node) => {
-        node.innerText = `${referenceGenBrushSize}px`;
-    });
-
-    updateReferenceGenBrushCursor(referenceGenLastPointerEvent);
-}
-
-function toggleReferenceGenMaskVisible() {
-    referenceGenMaskVisible = !referenceGenMaskVisible;
-    applyReferenceGenMaskVisibility();
-}
-
-function applyReferenceGenMaskVisibility() {
-    const overlay = el('referenceGenOverlay');
-    const btn = el('referenceGenMaskToggleBtn');
-    const cursor = el('referenceGenBrushCursor');
-
-    if (overlay) {
-        overlay.style.opacity = referenceGenMaskVisible ? '1' : '0';
-    }
-
-    if (btn) {
-        btn.innerText = referenceGenMaskVisible ? '선택범위 숨김' : '선택범위 표시';
-        btn.classList.toggle('active', !referenceGenMaskVisible);
-    }
-
-    if (!referenceGenMaskVisible && cursor) {
-        cursor.style.display = 'none';
-    }
-}
-
-function updateReferenceGenBrushCursor(event) {
-    if (!event) return;
-
-    const point = getReferenceGenPointer(event);
-    updateReferenceGenBrushCursorFromPoint(point);
-}
-
-function updateReferenceGenBrushCursorFromPoint(point) {
-    const cursor = el('referenceGenBrushCursor');
-    const overlay = el('referenceGenOverlay');
-
-    if (!cursor || !overlay || !referenceGenMaskVisible) {
-        hideReferenceGenBrushCursor();
-        return;
-    }
-
-    const displayScale = (overlay.clientWidth || overlay.getBoundingClientRect().width || overlay.width) / overlay.width;
-    const size = Math.max(4, referenceGenBrushSize * displayScale);
-
-    cursor.style.display = 'block';
-    cursor.style.left = `${point.clientX}px`;
-    cursor.style.top = `${point.clientY}px`;
-    cursor.style.width = `${size}px`;
-    cursor.style.height = `${size}px`;
-    cursor.classList.toggle('eraser', referenceGenTool === 'eraser');
-}
-
-function hideReferenceGenBrushCursor() {
-    const cursor = el('referenceGenBrushCursor');
-    if (cursor) {
-        cursor.style.display = 'none';
-    }
-}
-
-function openReferenceGenPrompt() {
-    if (!referenceGenSession) {
-        alert('참조 이미지 세션이 없습니다.');
-        return;
-    }
-
-    setReferenceGenPromptValues(referenceGenSession.promptInfo);
-
-    const layer = el('referenceGenPromptLayer');
-    if (layer) {
-        layer.style.display = 'flex';
-    }
-}
-
-function closeReferenceGenPrompt() {
-    const layer = el('referenceGenPromptLayer');
-    if (layer) {
-        layer.style.display = 'none';
-    }
-}
-
-function setReferenceGenPromptValues(promptInfo) {
-    const p = normalizeReferenceGenPromptInfo(promptInfo);
-
-    const baseInput = el('referenceGenBasePrompt');
-    const negativeInput = el('referenceGenNegativePrompt');
-    const samplerInput = el('referenceGenSampler');
-    const stepsInput = el('referenceGenSteps');
-    const cfgInput = el('referenceGenCfg');
-    const seedInput = el('referenceGenSeed');
-    const strengthInput = el('referenceGenStrength');
-    const noiseInput = el('referenceGenNoise');
-
-    if (baseInput) baseInput.value = p.basePrompt || '';
-    if (negativeInput) negativeInput.value = p.negativePrompt || '';
-    if (samplerInput) samplerInput.value = p.sampler || 'k_euler_ancestral';
-    if (stepsInput) stepsInput.value = p.steps || 28;
-    if (cfgInput) cfgInput.value = p.cfg || p.scale || 6;
-    if (seedInput) seedInput.value = p.seed ?? -1;
-    if (strengthInput) strengthInput.value = p.strength ?? 0.65;
-    if (noiseInput) noiseInput.value = p.noise ?? 0.2;
-
-    const charPrompts = normalizeReferenceGenCharPromptList(p);
-    setReferenceGenCharPromptValues(charPrompts);
-}
-
-function saveReferenceGenPrompt() {
-    if (!referenceGenSession) {
-        closeReferenceGenPrompt();
-        return;
-    }
-
-    referenceGenSession.promptInfo = buildReferenceGenPromptInfoFromInputs();
-    closeReferenceGenPrompt();
-    showReferenceGenToast('참조 이미지 프롬프트를 저장했습니다.');
-}
-
-function buildReferenceGenPromptInfoFromInputs() {
-    const charPrompts = getReferenceGenCharPromptValues();
-
-    return normalizeReferenceGenPromptInfo({
-        basePrompt: el('referenceGenBasePrompt')?.value || '',
-        charPrompt: charPrompts.join(', '),
-        charPrompts,
-        negativePrompt: el('referenceGenNegativePrompt')?.value || '',
-        sampler: el('referenceGenSampler')?.value || 'k_euler_ancestral',
-        steps: parseInt(el('referenceGenSteps')?.value, 10) || 28,
-        cfg: parseFloat(el('referenceGenCfg')?.value) || 6,
-        seed: parseInt(el('referenceGenSeed')?.value, 10),
-        strength: parseFloat(el('referenceGenStrength')?.value) || 0.65,
-        noise: parseFloat(el('referenceGenNoise')?.value) || 0.2
-    });
-}
-
-function normalizeReferenceGenPromptInfo(value) {
-    const normalized = typeof normalizePromptInfo === 'function'
-        ? normalizePromptInfo(value || {})
-        : (value || {});
-
-    const charPrompts = normalizeReferenceGenCharPromptList(normalized);
-
-    return {
-        ...normalized,
-        basePrompt: normalized.basePrompt || normalized.prompt || normalized.baseCaption || '',
-        charPrompt: normalized.charPrompt || charPrompts.join(', '),
-        charPrompts,
-        negativePrompt: normalized.negativePrompt || normalized.negative_prompt || normalized.uc || '',
-        sampler: normalized.sampler || 'k_euler_ancestral',
-        steps: normalized.steps || 28,
-        cfg: normalized.cfg || normalized.scale || 6,
-        seed: normalized.seed ?? -1,
-        strength: normalized.strength ?? 0.65,
-        noise: normalized.noise ?? 0.2
-    };
-}
-
-function normalizeReferenceGenCharPromptList(value) {
-    if (Array.isArray(value)) {
-        return value
-            .map((item) => String(item || '').trim())
-            .filter(Boolean);
-    }
-
-    if (value && typeof value === 'object') {
-        if (Array.isArray(value.charPrompts)) {
-            return normalizeReferenceGenCharPromptList(value.charPrompts);
-        }
-
-        if (Array.isArray(value.characterPrompts)) {
-            return normalizeReferenceGenCharPromptList(value.characterPrompts);
-        }
-
-        const single = value.charPrompt || value.characterPrompt || value.char_prompt || '';
-        return normalizeReferenceGenCharPromptList(single);
-    }
-
-    return String(value || '')
-        .split(/\n|,/)
-        .map((item) => item.trim())
-        .filter(Boolean);
-}
-
-function getReferenceGenCharPromptValues() {
-    return [...document.querySelectorAll('#referenceGenCharPromptList textarea')]
-        .map((textarea) => String(textarea.value || '').trim())
-        .filter(Boolean);
-}
-
-function setReferenceGenCharPromptValues(values) {
-    const container = el('referenceGenCharPromptList');
-    if (!container) return;
-
-    const list = normalizeReferenceGenCharPromptList(values);
-
-    container.innerHTML = '';
-
-    if (!list.length) {
-        addReferenceGenCharPromptEditor('');
-        return;
-    }
-
-    list.forEach((value) => addReferenceGenCharPromptEditor(value));
-}
-
-function addReferenceGenCharPromptEditor(initialValue = '') {
-    const container = el('referenceGenCharPromptList');
-    if (!container) return;
-
-    const id = `rgcp${referenceGenCharPromptSeq++}`;
-    const index = container.querySelectorAll('.reference-gen-char-prompt-item').length + 1;
-
-    const item = document.createElement('div');
-    item.className = 'reference-gen-char-prompt-item';
-    item.dataset.charPromptId = id;
-    item.style.cssText = `
-        border: 1px solid var(--border-color);
-        border-radius: 10px;
-        padding: 10px;
-        margin-bottom: 10px;
-        background: var(--bg-color);
-    `;
-
-    item.innerHTML = `
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
-            <div style="font-size:12px; font-weight:900; color:var(--accent-blue);">
-                Character Prompt ${index}
-            </div>
-            <button type="button"
-                    class="secondary"
-                    style="padding:4px 8px; font-size:12px;">
-                삭제
-            </button>
-        </div>
-        <textarea rows="4" id="referenceGenCharPromptInput-${id}"></textarea>
-    `;
-
-    const textarea = item.querySelector('textarea');
-    textarea.value = String(initialValue || '');
-
-    const deleteBtn = item.querySelector('button');
-    deleteBtn.onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        item.remove();
-        renumberReferenceGenCharPromptEditors();
-
-        if (!container.querySelector('.reference-gen-char-prompt-item')) {
-            addReferenceGenCharPromptEditor('');
-        }
-    };
-
-    container.appendChild(item);
-}
-
-function renumberReferenceGenCharPromptEditors() {
-    document.querySelectorAll('#referenceGenCharPromptList .reference-gen-char-prompt-item').forEach((item, index) => {
-        const title = item.querySelector('div div');
-        if (title) {
-            title.innerText = `Character Prompt ${index + 1}`;
-        }
-    });
-}
-
-async function requestReferenceGenInpaint() {
-    if (!referenceGenSession) {
-        alert('참조 이미지 세션이 없습니다.');
-        return;
-    }
-
-    if (isReferenceGenMaskEmpty()) {
-        alert('인페인팅할 영역을 먼저 칠해 주세요.');
-        return;
-    }
-
-    referenceGenSession.promptInfo = normalizeReferenceGenPromptInfo(referenceGenSession.promptInfo);
-    updateReferenceGenMaskDataUrl();
-
-    const requestSteps = parseInt(referenceGenSession.promptInfo.steps || 28, 10) || 28;
-
-    const canUseAnlas = await showAnlasWarningModal({
-        width: referenceGenSession.width,
-        height: referenceGenSession.height,
-        steps: requestSteps,
-        title: '참조 이미지 인페인팅 Anlas 사용 경고',
-        detail: '현재 참조 이미지 인페인팅 요청은 무료 범위를 벗어나 Anlas가 소모될 수 있습니다.'
-    });
-
-    if (!canUseAnlas) return;
-
-    setReferenceGenProcessing(true, '인페인팅 처리 중...');
-
-    try {
-        const response = await fetch('/api/canvas/inpaint', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                image: referenceGenSession.currentSrc,
-                mask: referenceGenSession.maskDataUrl,
-                width: referenceGenSession.width,
-                height: referenceGenSession.height,
-                promptInfo: referenceGenSession.promptInfo,
-                persistResult: false,
-                tempCategory: 'canvas_inpaint',
-                tempSessionId: CANVAS_IMPORT_SESSION_ID
-            })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok || data.status !== 'success') {
-            throw new Error(data.message || '인페인팅 요청에 실패했습니다.');
-        }
-
-        referenceGenSession.resultSrc = data.image || data.src;
-        referenceGenSession.currentSrc = referenceGenSession.resultSrc;
-
-        const img = el('referenceGenImage');
-
-        if (img) {
-            img.onload = () => {
-                setupReferenceGenOverlay();
-                clearReferenceGenMask();
-                referenceGenMaskVisible = false;
-                applyReferenceGenMaskVisibility();
-            };
-
-            img.src = withCacheBuster(referenceGenSession.currentSrc);
-        }
-
-        showReferenceGenToast('인페인팅 결과를 받았습니다.');
-
-    } catch (error) {
-        alert(`인페인팅 실패: ${error.message || error}`);
-    } finally {
-        setReferenceGenProcessing(false);
-    }
-}
-
-const REFERENCE_GEN_DETAIL_OPTIONS = [
-    { strength: 'gpt-prompt', label: 'GPT 원본 유지', hint: '현재 그림의 눈색·화풍 유지' },
-    { strength: 'gpt-reference-prompt', label: 'GPT + 참조 이미지', hint: '2번째 그림의 캐릭터·눈동자 참조' }
-];
-
-function getReferenceGenMaskBounds() {
-    if (!referenceGenMaskCanvas) return null;
-
-    const sourceWidth = Math.max(1, referenceGenMaskCanvas.width);
-    const sourceHeight = Math.max(1, referenceGenMaskCanvas.height);
-    const probeScale = Math.min(1, 512 / Math.max(sourceWidth, sourceHeight));
-    const probeWidth = Math.max(1, Math.round(sourceWidth * probeScale));
-    const probeHeight = Math.max(1, Math.round(sourceHeight * probeScale));
-    const probeCanvas = document.createElement('canvas');
-    probeCanvas.width = probeWidth;
-    probeCanvas.height = probeHeight;
-
-    const probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true });
-    probeCtx.drawImage(referenceGenMaskCanvas, 0, 0, probeWidth, probeHeight);
-    const data = probeCtx.getImageData(0, 0, probeWidth, probeHeight).data;
-    let minX = probeWidth;
-    let minY = probeHeight;
-    let maxX = -1;
-    let maxY = -1;
-
-    for (let y = 0; y < probeHeight; y += 1) {
-        for (let x = 0; x < probeWidth; x += 1) {
-            if (data[(y * probeWidth + x) * 4 + 3] <= 8) continue;
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
-        }
-    }
-
-    if (maxX < minX || maxY < minY) return null;
-
-    return {
-        left: Math.max(0, Math.floor(minX * sourceWidth / probeWidth)),
-        top: Math.max(0, Math.floor(minY * sourceHeight / probeHeight)),
-        right: Math.min(sourceWidth, Math.ceil((maxX + 1) * sourceWidth / probeWidth)),
-        bottom: Math.min(sourceHeight, Math.ceil((maxY + 1) * sourceHeight / probeHeight))
-    };
-}
-
-function formatCanvasAspectRatio(width, height) {
-    let a = Math.max(1, Math.round(Number(width) || 1));
-    let b = Math.max(1, Math.round(Number(height) || 1));
-    const originalWidth = a;
-    const originalHeight = b;
-
-    while (b) {
-        const remainder = a % b;
-        a = b;
-        b = remainder;
-    }
-
-    const divisor = Math.max(1, a);
-    return `${originalWidth / divisor}:${originalHeight / divisor}`;
-}
-
-function buildGptDetailPrompt(mode, bounds = null, useCharacterReference = false) {
-    const width = Math.max(1, Math.round(Number(referenceGenSession?.width) || 1));
-    const height = Math.max(1, Math.round(Number(referenceGenSession?.height) || 1));
-    const aspectRatio = formatCanvasAspectRatio(width, height);
-    const detailMode = mode === 'eye' ? 'eye' : 'face';
-    const subject = detailMode === 'eye' ? 'the eye and iris geometry' : 'the face and eye details';
-    let targetInstruction = detailMode === 'eye'
-        ? 'Target all visible eyes and irises in the first image. Do not modify the rest of the face or image.'
-        : 'Target the entire visible face and its eyes in the first image. Do not modify hair, body, clothing, background, or composition.';
-
-    if (bounds) {
-        const boxWidth = Math.max(1, bounds.right - bounds.left);
-        const boxHeight = Math.max(1, bounds.bottom - bounds.top);
-        const leftPercent = (bounds.left / width * 100).toFixed(2);
-        const topPercent = (bounds.top / height * 100).toFixed(2);
-        const rightPercent = (bounds.right / width * 100).toFixed(2);
-        const bottomPercent = (bounds.bottom / height * 100).toFixed(2);
-        targetInstruction = `Target: ${subject} inside x=${bounds.left}..${bounds.right}, y=${bounds.top}..${bounds.bottom} (box ${boxWidth} x ${boxHeight}; ${leftPercent}%..${rightPercent}% from the left, ${topPercent}%..${bottomPercent}% from the top).`;
-    }
-
-    const redrawInstruction = detailMode === 'eye'
-        ? 'Redraw only malformed eyelid, iris, pupil, eyelash, and highlight lines in the target. Make every curve smooth, clean, attractive, and coherent.'
-        : 'Refine only malformed facial and eye lines in the target. Preserve the same expression, proportions, skin tone, and pose.';
-    const colorInstruction = useCharacterReference
-        ? 'The second attached image is the character reference. Match the character identity and drawing style from it. Change the iris color, iris pattern, pupil appearance, and catchlight design in the first image to match the second image. Changes to iris color and internal eye design are explicitly allowed, but do not recolor skin, hair, clothing, background, or lighting.'
-        : 'Preserve the original character identity and original iris color from the first image. Do not borrow colors or identity from any other image.';
-    const outsideTarget = bounds
-        ? 'Outside the target box, preserve the source pixels, composition, and linework exactly.'
-        : detailMode === 'eye'
-            ? 'Outside the visible eye and iris regions, preserve the source pixels, face, composition, and linework exactly.'
-            : 'Outside the visible face and eye regions, preserve the source pixels, composition, and linework exactly.';
-
-    return [
-        'Edit the first attached anime/illustration image with strict local changes only.',
-        `The source canvas is ${width} x ${height} pixels with a ${aspectRatio} aspect ratio.`,
-        targetInstruction,
-        redrawInstruction,
-        colorInstruction,
-        `Request an output of exactly ${width} x ${height} pixels and preserve the ${aspectRatio} aspect ratio exactly. If that exact pixel size is unavailable, use the nearest supported resolution with the same ${aspectRatio} aspect ratio. Do not crop, rotate, or reframe it.`,
-        `${outsideTarget} Keep the top, bottom, left, and right surrounding regions unchanged so the result can be placed directly over the original image.`,
-        'Do not change the overall palette, skin tone, brightness, contrast, saturation, color temperature, lighting, pose, expression, line weight, or rendering style.',
-        'Do not apply a global redraw, global denoise, global sharpening, relighting, or style transfer.',
-        'Blend the repaired lines naturally at the target boundary without a rectangular seam, halo, blur, darkening, or color shift.',
-        useCharacterReference
-            ? 'Use the second image only as the character and eye reference. Keep the first image as the exact layout, pose, composition, and pixel-alignment source.'
-            : 'Use only the first image as the visual source.',
-        'Return one edited image only.'
-    ].join('\n');
-}
-
-function openGptDetailPrompt(mode = 'eye', useCharacterReference = false) {
-    if (!referenceGenSession) {
-        alert('참조 이미지 세션이 없습니다.');
-        return;
-    }
-
-    const bounds = getReferenceGenMaskBounds();
-    const detailMode = mode === 'eye' ? 'eye' : 'face';
-    const promptText = el('gptDetailPromptText');
-    const meta = el('gptDetailPromptMeta');
-    const layer = el('gptDetailPromptLayer');
-
-    if (promptText) {
-        promptText.value = buildGptDetailPrompt(detailMode, bounds, useCharacterReference);
-    }
-    if (meta) {
-        const targetText = bounds
-            ? `x ${bounds.left}-${bounds.right}, y ${bounds.top}-${bounds.bottom}`
-            : `${detailMode === 'eye' ? '눈 전체' : '얼굴 전체'} 자동`;
-        const referenceText = useCharacterReference ? ' · 2번째 그림 참조' : '';
-        meta.innerText = `${referenceGenSession.width} × ${referenceGenSession.height}px · ${targetText}${referenceText}`;
-    }
-    if (layer) layer.style.display = 'flex';
-}
-
-function closeGptDetailPrompt() {
-    const layer = el('gptDetailPromptLayer');
-    if (layer) layer.style.display = 'none';
-}
-
-async function copyGptDetailPrompt() {
-    const promptText = el('gptDetailPromptText');
-    const value = String(promptText?.value || '').trim();
-    if (!value) return;
-
-    try {
-        await navigator.clipboard.writeText(value);
-    } catch (error) {
-        promptText.focus();
-        promptText.select();
-        if (!document.execCommand('copy')) {
-            alert('프롬프트를 복사할 수 없습니다. 텍스트를 직접 선택해 주세요.');
-            return;
-        }
-    }
-
-    showReferenceGenToast('ChatGPT용 프롬프트를 복사했습니다.');
-}
-
-function getReferenceGenDetailChoiceMenu() {
-    let menu = el('referenceGenDetailChoiceMenu');
-    if (menu) return menu;
-
-    menu = document.createElement('div');
-    menu.id = 'referenceGenDetailChoiceMenu';
-    menu.style.cssText = `
-        position: fixed;
-        display: none;
-        min-width: 170px;
-        padding: 6px;
-        border: 1px solid var(--border-color);
-        border-radius: 8px;
-        background: var(--card-bg, #181824);
-        color: var(--text-main, #f5f5f7);
-        box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42);
-        z-index: 99999;
-    `;
-    document.body.appendChild(menu);
-    return menu;
-}
-
-function closeReferenceGenDetailChoice() {
-    const menu = el('referenceGenDetailChoiceMenu');
-    if (menu) menu.style.display = 'none';
-}
-
-function toggleReferenceGenDetailChoice(mode = 'face', anchor = null) {
-    const detailMode = mode === 'eye' ? 'eye' : 'face';
-    const menu = getReferenceGenDetailChoiceMenu();
-
-    if (menu.style.display === 'block' && menu.dataset.mode === detailMode) {
-        closeReferenceGenDetailChoice();
-        return;
-    }
-
-    menu.dataset.mode = detailMode;
-    menu.innerHTML = '';
-
-    REFERENCE_GEN_DETAIL_OPTIONS.forEach((option) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.dataset.referenceGenDetailChoiceItem = option.strength;
-        button.style.cssText = `
-            width: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            padding: 9px 10px;
-            border: 0;
-            border-radius: 6px;
-            background: transparent;
-            color: var(--text-main, #f5f5f7);
-            font-size: 13px;
-            font-weight: 800;
-            cursor: pointer;
-            text-align: left;
-        `;
-        button.innerHTML = `<span>${option.label}</span><span style="font-size:11px; color:var(--text-muted, #a7a7b5); font-weight:700;">${option.hint}</span>`;
-        button.onmouseenter = () => {
-            button.style.background = 'rgba(255, 255, 255, 0.10)';
-        };
-        button.onmouseleave = () => {
-            button.style.background = 'transparent';
-        };
-        button.onclick = (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            closeReferenceGenDetailChoice();
-            openGptDetailPrompt(detailMode, option.strength === 'gpt-reference-prompt');
-        };
-        menu.appendChild(button);
-    });
-
-    const rect = anchor?.getBoundingClientRect?.() || { left: 16, bottom: 16 };
-    const margin = 10;
-    menu.style.display = 'block';
-
-    const width = menu.offsetWidth || 170;
-    const height = menu.offsetHeight || 120;
-    const left = Math.min(Math.max(margin, rect.left), window.innerWidth - width - margin);
-    const top = Math.min(Math.max(margin, rect.bottom + 6), window.innerHeight - height - margin);
-
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-}
-
-function getReferenceGenExportCoverSize(width = null, height = null) {
-    const imageWidth = Math.max(1, Number(width || referenceGenSession?.width) || 1);
-    const imageHeight = Math.max(1, Number(height || referenceGenSession?.height) || 1);
-
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        return {
-            width: imageWidth,
-            height: imageHeight
-        };
-    }
-
-    const scale = Math.max(
-        currentCanvasWidth / imageWidth,
-        currentCanvasHeight / imageHeight
-    );
-
-    return {
-        width: Math.max(1, Math.round(imageWidth * scale)),
-        height: Math.max(1, Math.round(imageHeight * scale))
-    };
-}
-
-function getReferenceGenSourceLayer() {
-    if (!referenceGenSession?.sourceLayerId) return null;
-    return findCanvasLayer(referenceGenSession.sourceLayerId)?.layer || null;
-}
-
-function isReferenceGenSourceClipSession() {
-    const sourceLayer = getReferenceGenSourceLayer();
-    return Boolean(referenceGenSession?.sourceLayerType === 'clip' && sourceLayer?.type === 'clip' && sourceLayer.src);
-}
-
-function getReferenceGenDefaultUpscaleSize() {
-    if (isReferenceGenSourceClipSession()) {
-        return {
-            width: Math.max(1, Math.round(Number(referenceGenSession?.width) || 1)),
-            height: Math.max(1, Math.round(Number(referenceGenSession?.height) || 1))
-        };
-    }
-
-    return getReferenceGenExportCoverSize();
-}
-
-function getReferenceGenUpscaleInputSize() {
-    const width = Math.max(64, Math.min(20000, parseInt(el('referenceGenUpscaleWidthInput')?.value, 10) || 2500));
-    const height = Math.max(64, Math.min(20000, parseInt(el('referenceGenUpscaleHeightInput')?.value, 10) || 8000));
-
-    return { width, height };
-}
-
-function getSelectedReferenceGenUpscaleQuality() {
-    return document.querySelector('input[name="referenceGenUpscaleQuality"]:checked')?.value || 'standard';
-}
-
-function applyReferenceGenUpscalePreset(width, height) {
-    const widthInput = el('referenceGenUpscaleWidthInput');
-    const heightInput = el('referenceGenUpscaleHeightInput');
-
-    if (widthInput) widthInput.value = Math.max(64, Math.min(20000, Math.round(Number(width) || 2500)));
-    if (heightInput) heightInput.value = Math.max(64, Math.min(20000, Math.round(Number(height) || 8000)));
-
-    referenceGenUpscaleLastEditedAxis = 'width';
-    updateReferenceGenUpscaleInfo();
-}
-
-function applyReferenceGenUpscaleExportSizePreset() {
-    const size = getReferenceGenDefaultUpscaleSize();
-    applyReferenceGenUpscalePreset(size.width, size.height);
-}
-
-function applyReferenceGenUpscaleMultiplierPreset(multiplier) {
-    if (!referenceGenSession) return;
-
-    const scale = Math.max(1, Number(multiplier) || 1);
-    applyReferenceGenUpscalePreset(
-        Math.round(referenceGenSession.width * scale),
-        Math.round(referenceGenSession.height * scale)
-    );
-}
-
-function handleReferenceGenUpscaleWidthInput() {
-    referenceGenUpscaleLastEditedAxis = 'width';
-
-    if (el('referenceGenUpscaleRatioLock')?.checked && referenceGenSession?.width && referenceGenSession?.height) {
-        const width = parseInt(el('referenceGenUpscaleWidthInput')?.value, 10) || 2500;
-        const ratio = referenceGenSession.height / Math.max(1, referenceGenSession.width);
-        const heightInput = el('referenceGenUpscaleHeightInput');
-        if (heightInput) heightInput.value = Math.round(width * ratio);
-    }
-
-    updateReferenceGenUpscaleInfo();
-}
-
-function handleReferenceGenUpscaleHeightInput() {
-    referenceGenUpscaleLastEditedAxis = 'height';
-
-    if (el('referenceGenUpscaleRatioLock')?.checked && referenceGenSession?.width && referenceGenSession?.height) {
-        const height = parseInt(el('referenceGenUpscaleHeightInput')?.value, 10) || 8000;
-        const ratio = referenceGenSession.width / Math.max(1, referenceGenSession.height);
-        const widthInput = el('referenceGenUpscaleWidthInput');
-        if (widthInput) widthInput.value = Math.round(height * ratio);
-    }
-
-    updateReferenceGenUpscaleInfo();
-}
-
-function updateReferenceGenUpscaleInfo() {
-    const info = el('referenceGenUpscaleInfo');
-    if (!info) return;
-
-    const size = getReferenceGenUpscaleInputSize();
-    const mp = (size.width * size.height / 1000000).toFixed(1);
-
-    if (!referenceGenSession?.width || !referenceGenSession?.height) {
-        info.innerText = `목표 해상도 ${size.width} × ${size.height}px · 약 ${mp}MP`;
-        return;
-    }
-
-    const sx = size.width / Math.max(1, referenceGenSession.width);
-    const sy = size.height / Math.max(1, referenceGenSession.height);
-
-    info.innerText = `목표 해상도 ${size.width} × ${size.height}px · 약 ${mp}MP · 원본 대비 ${sx.toFixed(2)}x / ${sy.toFixed(2)}x`;
-}
-
-function openReferenceGenUpscaleExportModal() {
-    if (!referenceGenSession || !referenceGenSession.currentSrc) {
-        alert('업스케일링할 참조 이미지가 없습니다.');
-        return;
-    }
-
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
-        return;
-    }
-
-    const meta = el('referenceGenUpscaleMeta');
-    if (meta) {
-        const exportSize = getReferenceGenDefaultUpscaleSize();
-        meta.innerText = `원본 ${referenceGenSession.width} × ${referenceGenSession.height}px · 내보내기 기준 ${exportSize.width} × ${exportSize.height}px`;
-    }
-
-    applyReferenceGenUpscaleExportSizePreset();
-
-    const layer = el('referenceGenUpscaleLayer');
-    if (layer) layer.style.display = 'flex';
-}
-
-function closeReferenceGenUpscaleExportModal() {
-    const layer = el('referenceGenUpscaleLayer');
-    if (layer) layer.style.display = 'none';
-}
-
-async function startReferenceGenUpscaleExport() {
-    if (!referenceGenSession || !referenceGenSession.currentSrc) {
-        alert('업스케일링할 참조 이미지가 없습니다.');
-        return;
-    }
-
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
-        return;
-    }
-
-    const size = getReferenceGenUpscaleInputSize();
-    const engine = el('referenceGenUpscaleEngine')?.value || 'realcugan';
-    const quality = getSelectedReferenceGenUpscaleQuality();
-
-    if (size.width * size.height > 130000000) {
-        alert('목표 해상도가 너무 큽니다. 130MP 이하로 설정해 주세요.');
-        return;
-    }
-
-    closeReferenceGenUpscaleExportModal();
-    setReferenceGenProcessing(true, '참조 이미지 업스케일링 처리 중...');
-
-    try {
-        const response = await fetch('/api/canvas/reference_upscale', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                image: referenceGenSession.currentSrc,
-                target_width: size.width,
-                target_height: size.height,
-                engine,
-                quality,
-                tempCategory: isReferenceGenSourceClipSession() ? 'canvas_inpaint' : 'canvas',
-                sessionId: CANVAS_IMPORT_SESSION_ID
-            })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok || data.status !== 'success') {
-            throw new Error(data.message || '참조 이미지 업스케일링 실패');
-        }
-
-        await addReferenceGenResultToCanvas({
-            src: data.src,
-            name: `참조 이미지 업스케일 ${data.width || size.width}×${data.height || size.height}`,
-            promptInfo: referenceGenSession.promptInfo,
-            width: data.width || size.width,
-            height: data.height || size.height
-        });
-
-        closeReferenceGen();
-        showReferenceGenToast('업스케일링한 참조 이미지를 내보냈습니다.');
-    } catch (error) {
-        alert(`업스케일링 내보내기 실패: ${error.message || error}`);
-    } finally {
-        setReferenceGenProcessing(false);
-    }
-}
-
-async function exportReferenceGenToCanvas() {
-    if (!referenceGenSession || !referenceGenSession.currentSrc) {
-        alert('내보낼 참조 이미지가 없습니다.');
-        return;
-    }
-
-    if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
-        return;
-    }
-
-    try {
-        const clipSession = isReferenceGenSourceClipSession();
-
-        await addReferenceGenResultToCanvas({
-            src: referenceGenSession.currentSrc,
-            name: `참조 이미지 ${referenceGenSession.width}×${referenceGenSession.height}`,
-            promptInfo: referenceGenSession.promptInfo,
-            width: referenceGenSession.width,
-            height: referenceGenSession.height
-        });
-
-        closeReferenceGen();
-        showReferenceGenToast(
-            clipSession
-                ? '디테일 결과를 선택 영역 클립으로 내보냈습니다.'
-                : '참조 이미지를 비율 유지·중앙 맞춤으로 내보냈습니다.'
-        );
-
-    } catch (error) {
-        alert(`내보내기 실패: ${error.message || error}`);
-    }
-}
-
-async function addReferenceGenImageLayerFitCanvas(options) {
-    const { src, name, promptInfo } = options || {};
-    const info = await loadImageInfo(src);
-
-    const imageWidth = info.width || referenceGenSession?.width || 512;
-    const imageHeight = info.height || referenceGenSession?.height || 1664;
-
-    const geometry = getInitialImageLayerGeometry(imageWidth, imageHeight, {
-        allowUpscale: true
-    });
-
-    const newLayerId = layerIdSeq++;
-
-    const layer = {
-        id: newLayerId,
-        promptOwnerId: newLayerId,
-        name: name || `참조 이미지 ${imageWidth}×${imageHeight}`,
-        visible: true,
-        type: 'image',
-        src: withCacheBuster(src),
-        sourcePath: '',
-        promptInfo: normalizePromptInfoForReferenceGenExport(promptInfo),
-        promptControlGroups: [],
-        imageWidth,
-        imageHeight,
-        x: geometry.x,
-        y: geometry.y,
-        layerWidth: geometry.width,
-        layerHeight: geometry.height
-    };
-
-    canvasLayers.unshift(layer);
-    activeLayerId = layer.id;
-
-    selectedLayerIds.clear();
-    selectedLayerIds.add(Number(layer.id));
-
-    renderCanvas(currentCanvasWidth, currentCanvasHeight);
-    renderLayerList();
-    saveCanvasState();
-}
-
-async function addReferenceGenResultToCanvas({ src, name, promptInfo, width, height }) {
-    if (isReferenceGenSourceClipSession()) {
-        return addReferenceGenClipToSourceSelection({ src, name, promptInfo, width, height });
-    }
-
-    return addReferenceGenImageLayerFitCanvas({ src, name, promptInfo });
-}
-
-async function addReferenceGenClipToSourceSelection({ src, name, promptInfo, width, height }) {
-    const sourceClip = getReferenceGenSourceLayer();
-    const selection = findSelectionParentForLayerId(sourceClip?.id);
-
-    if (!sourceClip || sourceClip.type !== 'clip' || !selection) {
-        return addReferenceGenImageLayerFitCanvas({ src, name, promptInfo });
-    }
-
-    const inpaintFolder = getOrCreateSelectionInpaintFolder(selection);
-    const imageWidth = Math.max(1, Math.round(Number(width || sourceClip.imageWidth || sourceClip.layerWidth || 1)));
-    const imageHeight = Math.max(1, Math.round(Number(height || sourceClip.imageHeight || sourceClip.layerHeight || 1)));
-
-    const resultClip = {
-        id: layerIdSeq++,
-        name: name || `업스케일 ${inpaintFolder.children.filter((child) => child.type === 'clip').length + 1}`,
-        visible: true,
-        type: 'clip',
-        renderOnCanvas: true,
-        src: withCacheBuster(src),
-        sourceSelectionId: selection.id,
-        sourcePath: sourceClip.sourcePath || '',
-        promptOwnerId: sourceClip.promptOwnerId || sourceClip.id,
-        promptInfo: normalizePromptInfoForReferenceGenExport(promptInfo || sourceClip.promptInfo || {}),
-        promptControlGroups: Array.isArray(sourceClip.promptControlGroups)
-            ? structuredClone(sourceClip.promptControlGroups)
-            : [],
-        imageWidth,
-        imageHeight,
-        x: sourceClip.x ?? selection.x,
-        y: sourceClip.y ?? selection.y,
-        sourceSelectionX: sourceClip.sourceSelectionX ?? sourceClip.x ?? selection.x,
-        sourceSelectionY: sourceClip.sourceSelectionY ?? sourceClip.y ?? selection.y,
-        layerWidth: sourceClip.layerWidth || sourceClip.imageWidth || selection.layerWidth,
-        layerHeight: sourceClip.layerHeight || sourceClip.imageHeight || selection.layerHeight,
-        createdAt: Date.now(),
-        sourceReferenceGenClipId: sourceClip.id
-    };
-
-    inpaintFolder.children.unshift(resultClip);
-    selection.expanded = true;
-
-    clearClipMergedSourcePreviewCache();
-    clipMergedSourcePreviewSeq += 1;
-    migrateAllSelectionClipsToSharedPromptOwner(resultClip.id);
-
-    activeLayerId = resultClip.id;
-    activeClipSelectionId = selection.id;
-    checkedSelectionId = selection.id;
-    isClipInpaintPreviewMode = true;
-
-    selectedLayerIds.clear();
-    selectedLayerIds.add(Number(resultClip.id));
-
-    renderLayerList();
-    renderCanvasLayersOnSurface();
-    renderClipOutputPanel();
-    saveCanvasState();
-}
-
-function normalizePromptInfoForReferenceGenExport(promptInfo) {
-    if (typeof normalizePromptInfo === 'function') {
-        return normalizePromptInfo(promptInfo || {});
-    }
-
-    return promptInfo || {};
-}
-
-function setReferenceGenProcessing(isProcessing, message = '처리 중...') {
-    const loading = el('referenceGenLoading');
-    const text = el('referenceGenLoadingText');
-
-    if (text) {
-        text.innerText = message;
-    }
-
-    if (loading) {
-        loading.classList.toggle('show', Boolean(isProcessing));
-        loading.style.display = isProcessing ? 'flex' : '';
-    }
-}
-
-function withCacheBuster(src) {
-    if (!src) return src;
-
-    if (src.startsWith('data:')) {
-        return src;
-    }
-
-    const separator = src.includes('?') ? '&' : '?';
-    return `${src}${separator}t=${Date.now()}`;
-}
-
-function showReferenceGenToast(message) {
-    if (typeof showToast === 'function') {
-        showToast(message);
-        return;
-    }
-
-    console.log(message);
 }

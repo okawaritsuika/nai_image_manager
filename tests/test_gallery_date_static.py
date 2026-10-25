@@ -1,3 +1,4 @@
+from tests.frontend_sources import read_page_scripts
 import pathlib
 import unittest
 
@@ -24,7 +25,7 @@ def extract_js_function(source, name):
 class GalleryDateStaticTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.js = (ROOT / "static" / "index.js").read_text(encoding="utf-8")
+        cls.js = read_page_scripts(ROOT, "index.html")
         cls.html = (ROOT / "index.html").read_text(encoding="utf-8")
 
     def test_date_controls_and_character_default_are_present(self):

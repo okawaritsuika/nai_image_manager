@@ -1,3 +1,4 @@
+from tests.frontend_sources import read_page_scripts
 import pathlib
 import unittest
 
@@ -25,7 +26,7 @@ class GalleryScrollNavigationStaticTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.css = (ROOT / "static" / "index.css").read_text(encoding="utf-8")
-        cls.js = (ROOT / "static" / "index.js").read_text(encoding="utf-8")
+        cls.js = read_page_scripts(ROOT, "index.html")
         cls.html = (ROOT / "index.html").read_text(encoding="utf-8")
 
     def test_gallery_only_native_scrollbar_hide_and_custom_structure(self):

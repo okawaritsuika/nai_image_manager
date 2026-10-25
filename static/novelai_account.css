@@ -1,0 +1,37 @@
+.nai-header-account { display: flex; align-items: center; margin-left: auto; border: 1px solid #414550; border-radius: 7px; background: #252831; }
+.main-header .nai-header-account { flex: 0 0 auto; }
+.nai-header-account + .gallery-layout-options { margin-left: 0; }
+.nai-header-account button { border: 0; background: transparent; color: #d6dae4; font: inherit; cursor: pointer; padding: 5px 9px; white-space: nowrap; }
+#naiAccountBadge { display: flex; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+#naiAccountRefresh { border-left: 1px solid #414550; font-size: 18px; line-height: 20px; }
+.nai-account-divider { color: #70798b; }
+.nai-header-account[data-state="error"] #naiQuotaLabel, .nai-header-account[data-negative="true"] #naiQuotaLabel { color: #f3b786; }
+.nai-account-settings { grid-column: 1 / -1; min-width: 0; padding: 16px; border: 1px solid #3e4154; border-radius: 12px; background: #101018; color: #e4e6ef; }
+.nai-account-heading, .nai-key-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.nai-account-heading > b { font-size: 15px; }
+.nai-account-settings button { border: 1px solid #42465b; border-radius: 6px; background: #252735; color: #dce2f1; padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.nai-account-balances { display: flex; gap: 36px; margin-top: 15px; }
+.nai-account-balances > div { display: grid; gap: 4px; }
+.nai-account-balances span { color: #a7adc0; font-size: 12px; }
+.nai-account-balances strong { color: #c4d9ff; font-size: 23px; font-variant-numeric: tabular-nums; }
+.nai-account-detail { color: #a7adc0; font-size: 12px; line-height: 1.6; margin: 12px 0 16px; }
+#naiKeyForm { padding-top: 14px; border-top: 1px solid #303344; }
+#naiKeyForm label { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; font-size: 12px; }
+#naiKeyHint { color: #a7adc0; font-family: monospace; }
+.nai-key-input-row { display: flex; gap: 6px; }
+#naiApiKey { flex: 1; min-width: 0; border: 1px solid #42465b; border-radius: 6px; padding: 9px 10px; background: #191b27; color: #eef0f5; font-size: 13px; }
+.nai-account-settings .nai-key-save { background: #354e79; border-color: #6488c0; color: #eef4ff; }
+.nai-key-footer { margin-top: 8px; }
+.nai-key-footer small { font-size: 11px; color: #9299ae; line-height: 1.5; }
+.nai-account-settings #naiKeyRemove { background: transparent; color: #b3a3ae; border-color: transparent; white-space: nowrap; }
+#naiKeyStatus { margin: 5px 0 0; min-height: 16px; font-size: 12px; color: #b6caed; }
+#naiKeyStatus[data-error="true"] { color: #f3b786; }
+.nai-account-settings button:disabled, .nai-header-account button:disabled { opacity: .5; cursor: wait; }
+.nai-account-settings :is(button, input):focus-visible, .nai-header-account button:focus-visible { outline: 2px solid #adc8ff; outline-offset: 2px; }
+@media (max-width: 600px) {
+    .nai-header-account { margin-left: 0; }
+    .nai-account-settings { padding: 12px; }
+    .nai-key-input-row { flex-wrap: wrap; }
+    #naiApiKey { flex-basis: 100%; }
+    .nai-key-footer { align-items: flex-start; }
+}

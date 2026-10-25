@@ -1,0 +1,248 @@
+.daki-project-style-picker {
+    display: grid;
+    min-width: 0;
+    gap: 8px;
+}
+.daki-project-style-picker-help,
+.daki-project-style-picker-status {
+    min-width: 0;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-style-picker-status { color: var(--text-muted, #bec4d1); }
+.daki-project-style-picker [hidden] { display: none !important; }
+.daki-project-style-picker-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+    gap: 8px;
+    min-width: 0;
+    max-height: 220px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 1px;
+}
+.daki-project-style-picker-card {
+    display: grid;
+    min-width: 0;
+    gap: 5px;
+    align-content: start;
+    padding: 6px;
+    border: 1px solid var(--border-color, #ffffff30);
+    border-radius: 8px;
+    background: var(--card-bg, var(--card, #252630));
+    color: var(--text-main, var(--text, #f2f3f5));
+    text-align: left;
+    cursor: pointer;
+}
+.daki-project-style-picker-card:focus-visible,
+.daki-project-style-picker-button:focus-visible,
+.daki-project-style-picker-apply:focus-visible,
+.daki-project-style-picker-tab:focus-visible,
+.daki-project-style-picker-prompt:focus-visible,
+.daki-project-style-picker-select:focus-visible,
+.daki-project-style-picker-import-checkbox input:focus-visible {
+    outline: 2px solid var(--accent-blue, var(--accent, #4e9cff));
+    outline-offset: 2px;
+}
+.daki-project-style-picker-card[disabled] { opacity: .55; cursor: default; }
+.daki-project-style-picker-thumbnail {
+    display: block;
+    width: 100%;
+    height: 112px;
+    object-fit: contain;
+    border-radius: 5px;
+    background: var(--bg-color, var(--bg, #1d1e26));
+}
+.daki-project-style-picker-name,
+.daki-project-style-picker-image-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.daki-project-style-picker-missing { color: var(--text-muted, #bec4d1); }
+.daki-project-style-picker-button,
+.daki-project-style-picker-apply,
+.daki-project-style-picker-tab {
+    display: inline-flex;
+    flex: 0 0 auto;
+    min-width: 0;
+    min-height: 32px;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color, #ffffff30);
+    border-radius: 7px;
+    background: var(--card-bg, var(--card, #252630));
+    color: var(--text-main, var(--text, #f2f3f5));
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+.daki-project-style-picker-apply {
+    border-color: var(--accent-blue, var(--accent, #4e9cff));
+    background: var(--accent-blue, var(--accent, #4e9cff));
+    color: var(--accent-text, #fff);
+}
+.daki-project-style-picker :disabled { opacity: .55; cursor: default; }
+.daki-project-style-picker-draft {
+    display: grid;
+    min-width: 0;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border-color, #ffffff24);
+    border-radius: 8px;
+    background: var(--card-bg, var(--card, #252630));
+}
+.daki-project-style-picker-image-heading {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 10px;
+}
+.daki-project-style-picker-preview {
+    flex: 0 0 auto;
+    width: auto;
+    max-width: 128px;
+    height: auto;
+    max-height: 160px;
+    object-fit: contain;
+    border-radius: 6px;
+    background: var(--bg-color, var(--bg, #1d1e26));
+}
+.daki-project-style-picker-image-name { flex: 1 1 auto; margin: 0; }
+.daki-project-style-picker-tabs {
+    display: flex;
+    min-width: 0;
+    gap: 6px;
+}
+.daki-project-style-picker-tab { flex: 1 1 0; }
+.daki-project-style-picker-tab[aria-selected="true"] {
+    border-color: var(--accent-blue, var(--accent, #4e9cff));
+    background: var(--accent-blue, var(--accent, #4e9cff));
+    color: var(--accent-text, #fff);
+}
+.daki-project-style-picker-prompt-panel {
+    min-width: 0;
+}
+.daki-project-style-picker-import-section {
+    display: grid;
+    min-width: 0;
+    gap: 6px;
+}
+.daki-project-style-picker-import-heading {
+    min-width: 0;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-style-picker-import-label,
+.daki-project-style-picker-import-checkbox {
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-style-picker-select {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 32px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color, #ffffff30);
+    border-radius: 7px;
+    background: var(--card-bg, var(--card, #252630));
+    color: var(--text-main, var(--text, #f2f3f5));
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.daki-project-style-picker-import-status {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-muted, #bec4d1);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-style-picker-character-rows {
+    display: grid;
+    min-width: 0;
+    max-height: 320px;
+    gap: 8px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 1px;
+}
+.daki-project-style-picker-character-row {
+    display: grid;
+    min-width: 0;
+    gap: 6px;
+}
+.daki-project-style-picker-import-checkbox {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 6px;
+}
+.daki-project-style-picker-import-checkbox input {
+    flex: 0 0 auto;
+}
+.daki-project-style-picker-prompt {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    height: 160px;
+    max-height: 240px;
+    resize: vertical;
+    overflow: auto;
+    padding: 8px;
+    border: 1px solid var(--border-color, #ffffff30);
+    border-radius: 7px;
+    background: var(--bg-color, var(--bg, #1d1e26));
+    color: var(--text-main, var(--text, #f2f3f5));
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.daki-project-style-picker-character-prompt {
+    height: 96px;
+    min-height: 72px;
+    max-height: 240px;
+}
+.daki-project-style-picker-generation-preview {
+    display: grid;
+    min-width: 0;
+    gap: 4px;
+}
+.daki-project-style-picker-generation-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    min-width: 0;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.daki-project-style-picker-generation-label,
+.daki-project-style-picker-generation-value {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.daki-project-style-picker-generation-label { color: var(--text-muted, #bec4d1); }
+.daki-project-style-picker-actions {
+    display: flex;
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}

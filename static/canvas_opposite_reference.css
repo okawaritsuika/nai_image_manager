@@ -1,0 +1,417 @@
+#canvasOppositeControls,
+#canvasOppositeControls *,
+.canvas-opposite-controls,
+.canvas-opposite-controls * {
+    box-sizing: border-box;
+}
+
+#canvasOppositeControls,
+.canvas-opposite-controls {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-main);
+    font: 12px/1.5 var(--font-family);
+}
+
+#canvasOppositeControls[hidden],
+.canvas-opposite-controls[hidden],
+.canvas-opposite-preview[hidden] {
+    display: none !important;
+}
+
+#canvasOppositeTitle,
+.canvas-opposite-title {
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
+.canvas-opposite-controls-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+
+#canvasOppositeControls button,
+.canvas-opposite-controls button {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    max-width: 100%;
+    min-height: 32px;
+    padding: 7px 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+#canvasOppositeControls label,
+.canvas-opposite-visible-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 0 auto;
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+#canvasOppositeVisible,
+.canvas-opposite-visible-label input {
+    flex: 0 0 auto;
+    width: auto;
+    margin: 0;
+}
+
+#canvasOppositeControls label input {
+    margin: 0;
+}
+
+#canvasOppositeStatus,
+.canvas-opposite-status {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-opposite-preview {
+    box-sizing: border-box;
+    position: relative;
+    display: block;
+    flex: 0 0 auto;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    overflow: visible;
+    background: transparent;
+    color: var(--text-main);
+}
+
+.canvas-opposite-preview-header {
+    box-sizing: border-box;
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    min-width: 112px;
+    width: 100%;
+    flex-wrap: wrap;
+    margin-top: 8px;
+    padding: 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.canvas-opposite-preview-header strong {
+    flex: 1 0 100%;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-main);
+    font-size: 11px;
+    line-height: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: move;
+    touch-action: none;
+    user-select: none;
+}
+
+.canvas-opposite-preview-header button {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    min-height: 28px;
+    padding: 4px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-muted);
+    font: 11px/1.2 var(--font-family);
+    cursor: pointer;
+}
+
+.canvas-opposite-preview-header button:hover {
+    color: var(--text-main);
+}
+
+.canvas-opposite-preview-header .canvas-opposite-preview-hide {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+    font-size: 16px;
+}
+
+.canvas-opposite-preview-picture {
+    position: relative;
+    width: 100%;
+}
+
+.canvas-opposite-preview img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    object-fit: contain;
+    background: var(--bg-color);
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+.canvas-opposite-preview-resize {
+    position: absolute;
+    z-index: 2;
+    right: 0;
+    bottom: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm) 0 0 0;
+    background: var(--card-bg);
+    color: var(--text-main);
+    font: 14px/1 var(--font-family);
+    cursor: nwse-resize;
+    touch-action: none;
+}
+
+.canvas-opposite-preview-resize:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.canvas-stage.has-opposite-reference {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 16px;
+    min-width: max-content;
+}
+
+.canvas-workspace:has(> .canvas-stage.has-opposite-reference) {
+    padding: 12px;
+}
+
+.canvas-opposite-dialog {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 12px;
+    box-sizing: border-box;
+    width: min(680px, calc(100vw - 32px));
+    height: min(760px, calc(100dvh - 32px));
+    max-height: calc(100dvh - 32px);
+    min-width: 0;
+    padding: 20px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-main);
+    background: var(--card-bg);
+    color: var(--text-main);
+    font: 13px/1.5 var(--font-family);
+    box-shadow: var(--shadow-md);
+}
+
+.canvas-opposite-dialog:not([open]) {
+    display: none;
+}
+
+.canvas-opposite-dialog::backdrop {
+    background: #000b;
+}
+
+.canvas-opposite-dialog *,
+.canvas-opposite-dialog *::before,
+.canvas-opposite-dialog *::after {
+    box-sizing: border-box;
+    min-width: 0;
+}
+
+.canvas-opposite-dialog :focus-visible,
+#canvasOppositeControls :focus-visible,
+.canvas-opposite-controls :focus-visible,
+.canvas-opposite-preview :focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+}
+
+.canvas-opposite-dialog-header,
+.canvas-opposite-dialog-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.canvas-opposite-dialog-header h2 {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.canvas-opposite-dialog-close {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-main);
+    font: 20px/1 var(--font-family);
+    cursor: pointer;
+}
+
+.canvas-opposite-dialog-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 4px;
+}
+
+.canvas-opposite-dialog-status,
+.canvas-opposite-empty {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-opposite-dialog-status.is-error {
+    color: #ffb4ab;
+}
+
+.canvas-opposite-choice-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+}
+
+.canvas-opposite-choice-section h3 {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.canvas-opposite-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr));
+    gap: 10px;
+    min-width: 0;
+}
+
+.canvas-opposite-choice {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 7px;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-main);
+    text-align: left;
+    cursor: pointer;
+}
+
+.canvas-opposite-choice:hover:not(:disabled),
+.canvas-opposite-choice.is-selected {
+    border-color: var(--accent-blue);
+}
+
+.canvas-opposite-choice:disabled {
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: 0.72;
+}
+
+.canvas-opposite-choice-image {
+    display: block;
+    width: 100%;
+    height: 160px;
+    min-width: 0;
+    object-fit: contain;
+    background: var(--card-bg);
+}
+
+.canvas-opposite-choice-image.is-missing {
+    background: repeating-linear-gradient(135deg, var(--bg-color), var(--bg-color) 8px, var(--card-bg) 8px, var(--card-bg) 16px);
+}
+
+.canvas-opposite-choice-name,
+.canvas-opposite-choice-details {
+    display: block;
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-opposite-choice-canvas-icon {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 160px;
+    border-radius: calc(var(--radius-sm) - 2px);
+    background: var(--card-bg);
+    color: var(--accent-blue);
+    font-size: 48px;
+    line-height: 1;
+}
+
+.canvas-opposite-choice-details {
+    color: var(--text-muted);
+}
+
+.canvas-opposite-dialog-footer {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.canvas-opposite-dialog-footer button {
+    flex: 0 0 auto;
+}

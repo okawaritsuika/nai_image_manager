@@ -4,36 +4,109 @@
     <meta charset="UTF-8">
     <title>NAI ImageManager - 캔버스</title>
     <link rel="stylesheet" href="/static/style_lab.css">
-    <link rel="stylesheet" href="/static/canvas.css">
+    <link rel="stylesheet" href="/static/canvas.css?v=20261025-selection-size">
+    <link rel="stylesheet" href="/static/upscale_models.css">
+    <link rel="stylesheet" href="/static/canvas_saved_gallery.css">
+    <link rel="stylesheet" href="/static/canvas_grid.css">
+    <link rel="stylesheet" href="/static/canvas_keyboard_move.css">
+    <link rel="stylesheet" href="/static/canvas_inpaint_settings.css">
+    <link rel="stylesheet" href="/static/canvas_detail_presets.css?v=20261025">
+    <link rel="stylesheet" href="/static/canvas_inpaint_reference.css?v=20261025-selection-size">
+    <link rel="stylesheet" href="/static/canvas_style_link.css">
+    <link rel="stylesheet" href="/static/canvas_project.css">
+    <link rel="stylesheet" href="/static/daki_project_settings.css">
+    <link rel="stylesheet" href="/static/daki_project_style_picker.css">
+    <link rel="stylesheet" href="/static/canvas_opposite_reference.css">
+    <link rel="stylesheet" href="/static/canvas_daki_focus.css">
+    <link rel="stylesheet" href="/static/canvas_daki_map_editor.css">
+    <link rel="stylesheet" href="/static/canvas_retouch.css?v=20261025-multiselect">
     <link rel="stylesheet" href="/static/common_anlas_warning.css">
+    <link rel="stylesheet" href="/static/novelai_account.css">
+    <link rel="stylesheet" href="/static/canvas_workspace.css?v=20261017-header">
+    <script src="/static/novelai_account.js" defer></script>
 </head>
 <body>
     <header class="main-header">
         <div class="header-container-fluid">
             <div class="header-logo" onclick="location.href='/'">
-                🖼️ 캔버스 <span>NAI ImageManger</span>
+                🖼️ 캔버스
             </div>
 
-            <nav class="header-nav">
-                <button onclick="location.href='/'" class="nav-button secondary">🏠 갤러리 돌아가기</button>
-                <button onclick="location.href='/style-lab'" class="nav-button secondary">🧪 그림체 연구소</button>
-                <button onclick="location.href='/daki-workshop'" class="nav-button secondary">🛏️ 다키 제작소</button>
-                <button onclick="openCanvasDialog()" class="nav-button secondary">새 캔버스</button>
-                <button class="secondary" onclick="openSavedCanvasSetupsModal()">
-                    📂 저장한 캔버스
-                </button>
-                <button class="secondary" onclick="clearCurrentCanvasCompletely()">
-                    🧹 캔버스 초기화
-                </button>
-                <button id="externalCanvasImageBtn" class="secondary" onclick="openExternalCanvasImagePicker()">
-                    📁 외부 이미지 가져오기
-                </button>
-                <button id="externalCanvasImageExportBtn" class="secondary" onclick="downloadMergedCanvasImage()">
-                    💾 외부 이미지 내보내기
-                </button>
-                <button id="externalCanvasImageManagerBtn" class="secondary" onclick="openCanvasImportManagerModal()">
-                    🖼 외부 이미지 목록
-                </button>
+            <nav class="header-nav" aria-label="캔버스 작업">
+                <button type="button" onclick="location.href='/'" class="nav-button secondary" title="갤러리" aria-label="갤러리">🏠 갤러리</button>
+                <details class="canvas-header-menu">
+                    <summary title="캔버스">캔버스</summary>
+                    <div class="canvas-header-menu-content" aria-label="캔버스 작업">
+                        <button type="button" class="secondary" onclick="openCanvasDialog()" title="새 캔버스">＋ 새 캔버스</button>
+                        <button type="button" class="secondary" onclick="openSavedCanvasSetupsModal()" title="캔버스 관리">📂 캔버스 관리</button>
+                        <button type="button" class="secondary" onclick="clearCurrentCanvasCompletely()" title="캔버스 초기화">🧹 캔버스 초기화</button>
+                    </div>
+                </details>
+                <details class="canvas-header-menu">
+                    <summary title="도구">도구</summary>
+                    <div class="canvas-header-menu-content" aria-label="캔버스 도구">
+                        <button type="button" id="externalCanvasImageBtn" class="secondary" onclick="openExternalCanvasImagePicker()" title="이미지 가져오기">📁 이미지 가져오기</button>
+                        <button type="button" id="externalCanvasImageExportBtn" class="secondary" onclick="downloadMergedCanvasImage()" title="이미지 내보내기">💾 이미지 내보내기</button>
+                        <button type="button" id="externalCanvasImageManagerBtn" class="secondary" onclick="openCanvasImportManagerModal()" title="이미지 목록">🖼 이미지 목록</button>
+                        <button type="button" id="canvasStyleLinkBtn" class="secondary" onclick="openCanvasStyleLinkPicker()" title="그림체 연결">🎨 그림체 연결</button>
+                        <button type="button" id="canvasDetailPresetManageBtn" class="secondary" onclick="CanvasDetailPresets.openManager()">디테일 프리셋 관리</button>
+                    </div>
+                </details>
+                <div class="canvas-connection-tools">
+                    <div id="canvasProjectBar" class="canvas-project-inline" data-state="idle">
+                        <button id="canvasProjectLinkBtn" type="button" class="canvas-project-connect" title="프로젝트 연결" onclick="CanvasProject.open()">프로젝트</button>
+                        <details id="canvasProjectStatus" class="canvas-project-status" hidden>
+                            <summary id="canvasProjectSummary" title="">
+                                <span id="canvasProjectSide" class="canvas-project-side"></span>
+                                <span class="canvas-project-summary-names">
+                                    <span id="canvasProjectSummaryProject" class="canvas-project-summary-project"></span>
+                                    <span id="canvasProjectSummaryLabel" class="canvas-project-summary-label"></span>
+                                </span>
+                                <span id="canvasProjectSummaryState" class="canvas-project-summary-state" role="status" aria-live="polite"></span>
+                                <span class="canvas-project-chevron" aria-hidden="true">⌄</span>
+                            </summary>
+                            <div class="canvas-project-popover">
+                                <div class="canvas-project-popover-header">
+                                    <strong>연결된 캔버스</strong>
+                                    <button type="button" class="canvas-project-close" title="연결 상태 닫기" aria-label="연결 상태 닫기" onclick="this.closest('details').open = false">×</button>
+                                </div>
+                                <div class="canvas-project-popover-body">
+                                    <div class="canvas-project-info">
+                                        <span class="canvas-project-section-label">프로젝트</span>
+                                        <a id="canvasProjectLocation" target="_blank" rel="noopener"></a>
+                                    </div>
+                                    <div class="canvas-project-canvas-card">
+                                        <span class="canvas-project-section-label">편집 캔버스</span>
+                                        <div class="canvas-project-current-canvas">
+                                            <span id="canvasProjectDetailSide" class="canvas-project-detail-side"></span>
+                                            <span id="canvasProjectCanvasLabel" class="canvas-project-canvas-name"></span>
+                                        </div>
+                                    </div>
+                                    <div id="canvasOppositeControls" class="canvas-opposite-controls" hidden>
+                                        <div class="canvas-opposite-controls-header">
+                                            <h3 id="canvasOppositeTitle">반대쪽 참고 그림</h3>
+                                            <label for="canvasOppositeVisible"><input id="canvasOppositeVisible" type="checkbox" disabled onchange="CanvasOppositeReference.setVisible(this.checked)"> 표시</label>
+                                        </div>
+                                        <button id="canvasOppositeChoose" type="button" class="secondary" onclick="CanvasOppositeReference.open()">그림 선택</button>
+                                        <p id="canvasOppositeStatus" role="status" aria-live="polite"></p>
+                                        <button id="canvasOppositeRetry" type="button" class="secondary" hidden onclick="CanvasOppositeReference.refresh()">다시 불러오기</button>
+                                    </div>
+                                    <div class="canvas-project-footer">
+                                        <button type="button" class="secondary" onclick="DakiProjectSettings.open({...CanvasProject.localLink(), opener: this})">캔버스 연동 설정</button>
+                                        <p id="canvasProjectSettingsMessage" role="status" aria-live="polite"></p>
+                                        <button id="canvasProjectSettingsRetry" type="button" class="secondary" hidden onclick="CanvasProjectSettings.refresh()">연동 설정 다시 불러오기</button>
+                                        <p id="canvasProjectMessage" role="status" aria-live="polite"></p>
+                                        <div class="canvas-project-actions">
+                                            <button id="canvasProjectRetry" type="button" class="secondary" hidden onclick="CanvasProject.retry()">저장 다시 시도</button>
+                                            <button id="canvasProjectRecover" type="button" class="secondary" hidden onclick="CanvasProject.recoverConflict()">내 작업을 새 캔버스로 보관</button>
+                                            <button id="canvasProjectDisconnect" type="button" class="secondary canvas-project-disconnect" hidden onclick="CanvasProject.leave()">연결 종료</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                </div>
                 <input
                     type="file"
                     id="externalCanvasImageInput"
@@ -41,12 +114,23 @@
                     style="display:none;"
                     onchange="handleExternalCanvasImageSelected(this)"
                 >
+                <div id="canvasWorkspaceControls" class="canvas-workspace-controls-slot">
+                    <button type="button" id="canvasWorkspaceLaunch" onclick="CanvasWorkspaceBridge.launch()" class="nav-button secondary" title="여러 캔버스 열기">여러 캔버스</button>
+                </div>
             </nav>
+            <div class="nai-header-account" aria-label="NovelAI 잔액">
+                <button type="button" id="naiAccountBadge" title="NovelAI 잔액 새로고침"><span id="naiQuotaLabel">할당량 —</span><span class="nai-account-divider">·</span><span id="naiAnlasLabel">Anlas —</span></button>
+                <button type="button" id="naiAccountRefresh" title="NovelAI 잔액 새로고침" aria-label="NovelAI 잔액 새로고침">↻</button>
+            </div>
         </div>
     </header>
 
-    <main class="canvas-page-layout">
+    <main id="canvasWorkspace" class="canvas-page-layout" tabindex="-1">
         <section class="canvas-toolbar panel">
+            <div id="canvasAutosaveStatus" role="status" aria-live="polite" hidden class="canvas-help">
+                <span id="canvasAutosaveMessage"></span>
+                <button id="canvasAutosaveRetry" type="button" hidden onclick="saveCanvasState({immediate:true})">자동 저장 다시 시도</button>
+            </div>
             <div>
                 <h3>캔버스 설정</h3>
                 <div class="canvas-size-readout">
@@ -55,79 +139,164 @@
                 </div>
             </div>
 
-            <div class="canvas-tool-group">
-                <button id="layerMoveToolBtn" class="secondary canvas-tool-btn" onclick="toggleLayerMoveMode()">
+            <section id="canvasInpaintReferenceControls" aria-label="인페인팅 참고 이미지"></section>
+
+            <section class="canvas-tool-section" aria-label="편집 도구">
+                <h4>편집</h4>
+                <button id="canvasRetouchBtn" type="button" class="secondary canvas-tool-btn" title="전체 합성본의 색감·브러시·유동화·선명도를 보정합니다." onclick="CanvasRetouch.open()">◐ 전체 그림 보정</button>
+                <button id="layerMoveToolBtn" class="secondary canvas-tool-btn" title="선택한 레이어를 드래그하거나 방향키로 이동합니다." aria-describedby="layerMoveToolHint" onclick="toggleLayerMoveMode()">
                     ✥ 레이어 이동
                 </button>
-                <div id="layerMoveToolHint" class="canvas-tool-hint">
-                    이동 버튼을 켠 뒤 캔버스 위 이미지 레이어를 드래그하세요.
+                <div id="canvasKeyboardMoveControls" class="canvas-keyboard-move-controls" hidden>
+                    <label for="canvasKeyboardMoveUnit">이동 단위
+                        <select id="canvasKeyboardMoveUnit">
+                            <option value="px">px</option>
+                            <option value="percent">캔버스 %</option>
+                        </select>
+                    </label>
+                    <div class="canvas-keyboard-move-steps">
+                        <label for="canvasKeyboardMoveStep">방향키
+                            <input id="canvasKeyboardMoveStep" type="number" min="1" max="10000" step="1" value="1" aria-describedby="canvasKeyboardMoveHelp">
+                        </label>
+                        <label for="canvasKeyboardMoveShiftStep">Shift + 방향키
+                            <input id="canvasKeyboardMoveShiftStep" type="number" min="1" max="10000" step="1" value="10" aria-describedby="canvasKeyboardMoveHelp">
+                        </label>
+                    </div>
+                    <p id="canvasKeyboardMoveHelp" class="canvas-keyboard-move-help">방향키로 이동 · Shift로 큰 간격 이동. %는 캔버스 가로·세로 크기 기준입니다.</p>
                 </div>
-
-                <div class="canvas-tool-group">
-                    <button id="imageResizeToolBtn"
-                            class="secondary canvas-tool-btn"
-                            onclick="toggleImageResizeMode()">
-                        ⤡ 그림 크기 조절
+                <div class="canvas-eraser-tool">
+                    <button id="layerEraserToolBtn" class="secondary canvas-tool-btn" title="선택한 그림이나 인페인팅 결과의 픽셀을 지웁니다. Ctrl+Z: 지우기 되돌리기." aria-describedby="layerEraserHint" aria-pressed="false" onclick="toggleCanvasLayerEraser()">
+                        ◌ 그림 지우개
                     </button>
+                    <div class="canvas-eraser-options">
+                        <label for="layerEraserSize">지우개 크기 <span id="layerEraserSizeValue">64px</span></label>
+                        <input id="layerEraserSize" type="range" min="1" max="512" step="1" value="64" oninput="setCanvasLayerEraserSize(this.value)">
+                        <button id="layerEraserUndoBtn" class="secondary" title="가장 최근 지우기 작업을 되돌립니다." disabled onclick="undoCanvasLayerEraserStroke()">지우기 되돌리기</button>
+                    </div>
+                    <div id="layerEraserHint" class="canvas-tool-hint" aria-live="polite" hidden>그림 레이어 선택 → 지우개 켜기 → 그림 위에서 드래그. Ctrl+Z: 지우기 되돌리기</div>
+                </div>
+            </section>
 
-                    <label class="canvas-ratio-toggle" style="font-size:12px;">
+            <section class="canvas-tool-section" aria-label="크기 조절 도구">
+                <h4>크기 조절</h4>
+                <button id="imageResizeToolBtn"
+                        class="secondary canvas-tool-btn"
+                        title="이미지 레이어의 크기를 조절합니다. Alt: 세밀 조절, Shift: 비율 유지 해제."
+                        aria-describedby="imageResizeToolHint"
+                        onclick="toggleImageResizeMode()">
+                    ⤡ 그림 크기 조절
+                </button>
+
+                <div class="canvas-ratio-options">
+                    <label class="canvas-ratio-toggle">
                         <input type="checkbox" id="imageResizeRatioLock" checked>
                         <span>비율 유지</span>
                     </label>
 
-                    <label class="canvas-ratio-toggle" style="font-size:12px;">
+                    <label class="canvas-ratio-toggle">
                         <input type="checkbox" id="imageResizeFineMode">
                         <span>세밀 조절</span>
                     </label>
-
-                    <div class="image-align-actions">
-                        <button class="secondary" onclick="alignActiveImageLayer('x')">가운데 X</button>
-                        <button class="secondary" onclick="alignActiveImageLayer('y')">가운데 Y</button>
-                        <button class="secondary" onclick="alignActiveImageLayer('both')">정중앙</button>
-                        <button class="secondary" onclick="fitActiveImageLayerToCanvasAndCenter()">캔버스에 맞춤</button>
-                    </div>
-
-                    <div id="imageResizeToolHint" class="canvas-tool-hint">
-                        버튼을 켠 뒤 이미지 레이어를 선택하고 가장자리/모서리를 드래그하세요.
-                        Alt를 누르면 더 세밀하게, Shift를 누르면 비율 유지 없이 조절합니다.
-                    </div>
-
-                    <button id="canvasResizeToolBtn"
-                            class="secondary canvas-tool-btn"
-                            onclick="toggleCanvasResizeMode()">
-                        ⛶ 캔버스 크기 조절
-                    </button>
-                    <div id="canvasResizeToolHint" class="canvas-tool-hint">
-                        버튼을 켠 뒤 캔버스 오른쪽/아래쪽/오른쪽 아래 핸들을 드래그하세요.
-                    </div>
                 </div>
 
-                <button id="selectionOverlayToggleBtn"
+                <div class="image-align-actions">
+                    <button class="secondary" title="이미지를 가로 가운데에 맞춥니다." onclick="alignActiveImageLayer('x')">가운데 X</button>
+                    <button class="secondary" title="이미지를 세로 가운데에 맞춥니다." onclick="alignActiveImageLayer('y')">가운데 Y</button>
+                    <button class="secondary" title="이미지를 캔버스 한가운데에 맞춥니다." onclick="alignActiveImageLayer('both')">정중앙</button>
+                    <button class="secondary" title="이미지 비율을 유지해 캔버스 안에 맞추고 가운데에 놓습니다." onclick="fitActiveImageLayerToCanvasAndCenter()">캔버스에 맞춤</button>
+                </div>
+
+                <button id="canvasResizeToolBtn"
                         class="secondary canvas-tool-btn"
-                        onclick="toggleSelectionOverlayVisibility()">
-                    ▣ 선택 영역 숨김
+                        title="캔버스 오른쪽이나 아래쪽의 핸들로 크기를 조절합니다."
+                        aria-describedby="canvasResizeToolHint"
+                        onclick="toggleCanvasResizeMode()">
+                    ⛶ 캔버스 크기 조절
                 </button>
-                <div id="selectionOverlayHint" class="canvas-tool-hint">
-                    선택 영역 박스만 숨기고 인페인팅 결과를 확인합니다.
-                </div>
+            </section>
 
-                <button class="secondary canvas-tool-btn" onclick="saveCurrentCanvasSetup()">
+            <details id="canvasGridControls" class="canvas-grid-controls">
+                <summary>격자 · 보조선</summary>
+                <div class="canvas-grid-controls-body">
+                    <label class="canvas-grid-toggle">
+                        <input id="canvasGridCenter" type="checkbox">
+                        <span>중앙 십자선</span>
+                    </label>
+                    <label class="canvas-grid-toggle">
+                        <input id="canvasGridThin" type="checkbox">
+                        <span>얇은 격자</span>
+                    </label>
+                    <label class="canvas-grid-toggle">
+                        <input id="canvasGridMajor" type="checkbox">
+                        <span>굵은 격자</span>
+                    </label>
+                    <label for="canvasGridDensity" class="canvas-grid-density">
+                        격자 간격
+                        <input id="canvasGridDensity" type="range" min="1" max="32" step="1" value="8">
+                        <span class="canvas-grid-density-scale"><span>널널하게</span><span>촘촘하게</span></span>
+                    </label>
+                    <p id="canvasGridHelp" class="canvas-grid-help">화면에만 표시하며 설정은 저장하지 않습니다.</p>
+                </div>
+            </details>
+
+            <section class="canvas-tool-section" aria-label="보기와 저장">
+                <h4>보기 · 저장</h4>
+                <button id="canvasInpaintSettingsBtn" type="button" class="secondary canvas-tool-btn" title="현재 캔버스의 인페인팅 생성 설정을 편집합니다." aria-describedby="canvasInpaintSettingsToolHint">
+                    ⚙ 인페인팅 설정
+                </button>
+
+                <button class="secondary canvas-tool-btn" title="현재 캔버스와 레이어, 선택 영역, 프롬프트 제어 그룹을 저장합니다." aria-describedby="canvasSaveToolHelp" onclick="saveCurrentCanvasSetup()">
                     💾 현재 캔버스 저장
                 </button>
-                <div class="canvas-tool-hint">
-                    현재 캔버스 크기, 레이어, 선택 영역, 인페인팅 결과, 프롬프트 제어그룹을 이름 붙여 저장합니다.
-                </div>
 
-                <button class="secondary canvas-tool-btn" onclick="exportMergedCanvasToClassified()">
+                <button id="canvasExportMergedBtn" class="secondary canvas-tool-btn" title="보이는 이미지와 인페인팅 결과를 합쳐 내보냅니다. 프로젝트 연결 중에는 프로젝트나 갤러리를 선택할 수 있습니다." aria-describedby="canvasExportToolHelp" onclick="exportMergedCanvasToClassified()">
                     🖼 통합 내보내기
                 </button>
-                <div class="canvas-tool-hint">
-                    현재 캔버스에 보이는 이미지와 인페인팅 결과를 한 장으로 합성해 캐릭터 폴더로 저장합니다.
+            </section>
+
+            <details class="canvas-toolbar-help">
+                <summary>사용법 · 단축키</summary>
+                <p class="canvas-tool-hint">Ctrl+Z: 레이어·선택 영역·클립 편집 실행 취소. 입력란에서는 글자 편집을 취소합니다. 다른 캔버스를 불러오면 기록이 초기화됩니다.</p>
+                <div class="canvas-toolbar-help-content">
+                    <div>
+                        <strong>레이어 이동</strong>
+                        <p id="layerMoveToolHint" class="canvas-tool-hint">이동 버튼을 켜고 레이어를 드래그하거나 방향키로 이동하세요. Shift를 누르면 큰 간격으로 이동합니다.</p>
+                    </div>
+                    <div>
+                        <strong>그림 지우개</strong>
+                        <p class="canvas-tool-hint">그림 레이어를 선택하고 지우개를 켠 뒤 드래그하세요. Ctrl+Z로 지우기를 되돌립니다.</p>
+                    </div>
+                    <div>
+                        <strong>그림 크기 조절</strong>
+                        <p id="imageResizeToolHint" class="canvas-tool-hint">버튼을 켠 뒤 이미지 레이어를 선택하고 가장자리/모서리를 드래그하세요. Alt를 누르면 더 세밀하게, Shift를 누르면 비율 유지 없이 조절합니다.</p>
+                    </div>
+                    <div>
+                        <strong>캔버스 크기 조절</strong>
+                        <p id="canvasResizeToolHint" class="canvas-tool-hint">버튼을 켠 뒤 캔버스 오른쪽/아래쪽/오른쪽 아래 핸들을 드래그하세요.</p>
+                    </div>
+                    <div>
+                        <strong>선택 영역 표시</strong>
+                        <p id="selectionOverlayHint" class="canvas-tool-hint">선택 영역 박스만 숨기고 인페인팅 결과를 확인합니다.</p>
+                    </div>
+                    <div>
+                        <strong>인페인팅 설정</strong>
+                        <p id="canvasInpaintSettingsToolHint" class="canvas-tool-hint">캔버스 전체에서 공유할 모델과 인페인팅 생성 값을 설정합니다.</p>
+                    </div>
+                    <div>
+                        <strong>현재 캔버스 저장</strong>
+                        <p id="canvasSaveToolHelp" class="canvas-tool-hint">캔버스 크기, 레이어, 선택 영역, 인페인팅 결과와 프롬프트 제어 그룹을 저장합니다.</p>
+                    </div>
+                    <div>
+                        <strong>통합 내보내기</strong>
+                        <p id="canvasExportToolHelp" class="canvas-tool-hint">현재 캔버스에 보이는 이미지와 인페인팅 결과를 합쳐 내보냅니다. 프로젝트에 연결되어 있으면 저장 위치를 선택합니다.</p>
+                    </div>
                 </div>
-            </div>
+            </details>
         </section>
 
-        <section class="canvas-workspace">
+        <section class="canvas-workspace-shell">
+            <section id="canvasDakiFocus" class="canvas-daki-focus canvas-daki-hud" aria-label="다키 부위 포커스" hidden></section>
+            <div class="canvas-workspace">
             <div id="canvasEmptyState" class="canvas-empty-state">
                 <div class="canvas-empty-icon">🖼️</div>
                 <div class="canvas-empty-title">캔버스가 없습니다</div>
@@ -137,13 +306,16 @@
             <div id="canvasStage" class="canvas-stage" style="display:none;">
                 <div id="canvasSurface" class="canvas-surface"></div>
             </div>
+            </div>
         </section>
 
         <aside class="canvas-layer-panel panel">
+            <div id="canvasDakiMapPanel" hidden></div>
+            <div id="canvasRetouchPanel" hidden></div>
             <div class="layer-panel-header">
                 <h3>레이어</h3>
                 <div class="layer-panel-actions">
-                    <button class="secondary layer-add-btn" onclick="addCanvasLayer()">+ 레이어</button>
+                    <button id="selectionOverlayToggleBtn" type="button" class="secondary layer-add-btn" title="선택 영역 표시" aria-label="선택 영역 표시" aria-describedby="selectionOverlayHint" onclick="toggleSelectionOverlayVisibility()">▣ 영역 표시</button>
                     <button class="secondary layer-add-btn" onclick="addCanvasFolder()">+ 폴더</button>
                     <button class="secondary layer-add-btn" onclick="addSelectionArea()">+ 선택 영역</button>
                 </div>
@@ -156,10 +328,10 @@
     </main>
 
     <div id="canvasCreateModal" class="modal-overlay">
-        <div class="modal-content canvas-modal">
+        <div class="modal-content canvas-modal" role="dialog" aria-modal="true" aria-labelledby="canvasCreateTitle">
             <div class="canvas-modal-header">
-                <h3>새 캔버스 생성</h3>
-                <button class="icon-btn danger" onclick="closeCanvasDialog()">×</button>
+                <h3 id="canvasCreateTitle" tabindex="-1">새 캔버스 생성</h3>
+                <button class="icon-btn danger" aria-label="새 캔버스 창 닫기" onclick="closeCanvasDialog()">×</button>
             </div>
 
             <div class="form-group">
@@ -173,9 +345,9 @@
             <div class="form-group">
                 <label>해상도 입력</label>
                 <div class="canvas-resolution-row">
-                    <input type="number" id="canvasWidthInput" value="960" min="64" step="1" oninput="handleCanvasWidthInput()">
+                    <input type="number" id="canvasWidthInput" aria-label="캔버스 가로 크기 (픽셀)" value="960" min="64" step="1" oninput="handleCanvasWidthInput()">
                     <span>×</span>
-                    <input type="number" id="canvasHeightInput" value="3072" min="64" step="1" oninput="handleCanvasHeightInput()">
+                    <input type="number" id="canvasHeightInput" aria-label="캔버스 세로 크기 (픽셀)" value="3072" min="64" step="1" oninput="handleCanvasHeightInput()">
                 </div>
             </div>
 
@@ -416,16 +588,17 @@
                 <button class="icon-btn danger" onclick="closeReferenceGenUpscaleExportModal()">×</button>
             </div>
 
-            <div class="reference-gen-upscale-section">
+            <div class="reference-gen-upscale-dialog-body">
+            <div class="reference-gen-upscale-section" id="referenceGenUpscaleResolutionSection">
                 <div class="reference-gen-upscale-preset-row">
                     <button type="button" onclick="applyReferenceGenUpscaleExportSizePreset()">
                         내보내기 크기
                     </button>
                     <button type="button" onclick="applyReferenceGenUpscaleMultiplierPreset(2)">
-                        2x
+                        2배
                     </button>
                     <button type="button" onclick="applyReferenceGenUpscaleMultiplierPreset(4)">
-                        4x
+                        4배
                     </button>
                 </div>
 
@@ -446,6 +619,10 @@
                 </div>
 
                 <label class="reference-gen-upscale-check">
+                    <input id="referenceGenUpscaleFit516" type="checkbox" onchange="updateReferenceGenUpscaleInfo()">
+                    <span>5:16 자동 맞춤 · 선택한 배수로 확대 후 중앙 자르기</span>
+                </label>
+                <label class="reference-gen-upscale-check">
                     <input id="referenceGenUpscaleRatioLock" type="checkbox" checked>
                     <span>비율 고정</span>
                 </label>
@@ -459,13 +636,41 @@
                     <option value="realcugan" selected>Real-CUGAN / 애니 그림 추천</option>
                     <option value="waifu2x">Waifu2x CUNet / 선화 보존·노이즈 억제</option>
                     <option value="lanczos">Lanczos / 빠른 리사이즈</option>
+                    <option value="illustrationjanai">중간 확대 · IllustrationJaNai V3detail FDAT M 4×</option>
+                    <option value="animesharp">최종 확대 · AnimeSharp V4 RCAN 2×</option>
+                    <option value="nai">NovelAI · 5:16 자동 맞춤</option>
                 </select>
-                <div class="reference-gen-upscale-help">
-                    두 AI 엔진 모두 별도 서버 없이 앱에서 바로 실행됩니다.
+                <div id="referenceGenUpscaleModelPanel" class="upscale-model-panel" aria-live="polite">
+                    <div class="upscale-model-heading">
+                        <strong id="referenceGenUpscaleModelName">Real-CUGAN</strong>
+                        <span id="referenceGenUpscaleModelState" class="upscale-model-state" data-state="loading">확인 중</span>
+                    </div>
+                    <p id="referenceGenUpscaleModelDescription" class="upscale-model-description"></p>
+                    <p id="referenceGenUpscaleModelMessage" class="upscale-model-message" role="status"></p>
+                    <div id="referenceGenUpscaleModelProgressArea" class="upscale-model-progress-area" hidden>
+                        <div class="upscale-model-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                            <div id="referenceGenUpscaleModelProgressBar" class="upscale-model-progress-bar"></div>
+                        </div>
+                        <span id="referenceGenUpscaleModelProgressText" class="upscale-model-progress-text"></span>
+                    </div>
+                    <div class="upscale-model-actions">
+                        <button id="referenceGenUpscaleModelDownload" type="button" hidden>다운로드</button>
+                        <button id="referenceGenUpscaleModelCancel" type="button" hidden>다운로드 취소</button>
+                        <button id="referenceGenUpscaleModelDelete" type="button" hidden>설치 삭제</button>
+                        <button id="referenceGenUpscaleModelRetry" type="button" hidden>다시 확인</button>
+                        <button id="referenceGenUpscaleNaiRetry" type="button" hidden>미리보기 다시 시도</button>
+                    </div>
+                    <a id="referenceGenUpscaleWaifuWebsite" class="upscale-model-website" href="https://unlimited.waifu2x.net/" target="_blank" rel="noopener" hidden>waifu2x 웹사이트 열기</a>
+                    <p id="referenceGenUpscaleWaifuInfo" class="upscale-model-description" hidden>브라우저에서 처리하므로 PC 성능 영향을 받습니다. 이미지는 업로드되지 않고 브라우저에서 처리됩니다.</p>
+                    <div id="referenceGenUpscaleNaiPreview" class="upscale-nai-preview" hidden>
+                        <strong>NAI 업스케일 크기 미리보기</strong>
+                        <p id="referenceGenUpscaleNaiSteps" class="upscale-nai-steps"></p>
+                        <p class="upscale-nai-note">중앙을 잘라 5:16에 맞추고, 비율을 늘이지 않고 NAI 입력 크기로 조정합니다. 원본은 보존되며 결과는 요청 목표보다 작을 수 있습니다.</p>
+                    </div>
                 </div>
             </div>
 
-            <div class="reference-gen-upscale-section">
+            <div class="reference-gen-upscale-section" id="referenceGenUpscaleQualitySection">
                 <label>품질</label>
                 <div class="reference-gen-upscale-quality-list">
                     <label class="reference-gen-upscale-quality-item">
@@ -491,10 +696,11 @@
                     </label>
                 </div>
             </div>
+            </div>
 
             <div class="reference-gen-upscale-actions">
                 <button class="secondary" onclick="closeReferenceGenUpscaleExportModal()">닫기</button>
-                <button class="success" onclick="startReferenceGenUpscaleExport()">업스케일링 내보내기</button>
+                <button id="referenceGenUpscaleStart" class="success" onclick="startReferenceGenUpscaleExport()">업스케일링 내보내기</button>
             </div>
         </div>
     </div>
@@ -507,8 +713,11 @@
                 <button class="icon-btn danger" onclick="closeReferenceGenPrompt()">×</button>
             </div>
 
+            <div id="referenceStyleLinkToolbar"></div>
+
             <div class="clip-prompt-field">
                 <label for="referenceGenBasePrompt">Base Prompt</label>
+                <div id="referenceGenBaseStylePreview"></div>
                 <textarea id="referenceGenBasePrompt" rows="8"></textarea>
             </div>
 
@@ -528,10 +737,11 @@
 
             <div class="clip-prompt-field">
                 <label for="referenceGenNegativePrompt">Negative Prompt</label>
+                <div id="referenceGenNegativeStylePreview"></div>
                 <textarea id="referenceGenNegativePrompt" rows="6"></textarea>
             </div>
 
-            <div class="clip-prompt-setting-grid">
+            <div class="clip-prompt-setting-grid" id="referenceGenGenerationSettings">
                 <div class="clip-prompt-field">
                     <label for="referenceGenSampler">Sampler</label>
                     <select id="referenceGenSampler">
@@ -548,7 +758,7 @@
                 </div>
 
                 <div class="clip-prompt-field">
-                    <label for="referenceGenCfg">CFG</label>
+                    <label for="referenceGenCfg">Prompt Guidance</label>
                     <input id="referenceGenCfg" type="number" min="1" max="20" step="0.1" value="6">
                 </div>
 
@@ -576,24 +786,25 @@
     </div>
 
     <div id="clipPromptModalOverlay" class="clip-prompt-modal-overlay">
-        <div class="clip-prompt-modal">
+        <div class="clip-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="clipPromptTitle" aria-owns="clipGroupSelectionPopover tagTranslationModal temporaryClipPromptGroupMenu">
             <div class="clip-prompt-modal-header">
-                <h3>클립 인페인팅 프롬프트</h3>
-                <button class="icon-btn danger" onclick="closeClipPromptModal()">×</button>
+                <h3 id="clipPromptTitle" tabindex="-1">클립 인페인팅 프롬프트</h3>
+                <button class="icon-btn danger" aria-label="클립 프롬프트 창 닫기" onclick="closeClipPromptModal()">×</button>
             </div>
 
             <div class="clip-prompt-grid">
-                <div class="clip-prompt-column">
-                    <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-                        <div style="font-size:13px; font-weight:900;">프롬프트</div>
-                        <div style="display:flex; gap:6px; align-items:center;">
-                            <button id="clipPromptCollapseToggle" class="secondary" onclick="toggleClipPromptCollapse()" style="font-size:11px; padding:5px 9px;">
+                <div class="clip-prompt-column clip-prompt-editor-column">
+                    <div id="clipStyleLinkToolbar"></div>
+                    <div class="clip-prompt-section-heading">
+                        <h4>프롬프트</h4>
+                        <div class="clip-prompt-editor-actions">
+                            <button id="clipPromptCollapseToggle" class="secondary" onclick="toggleClipPromptCollapse()">
                                 접기
                             </button>
-                            <button id="clipPromptViewToggle" class="secondary" onclick="toggleClipPromptViewMode()" style="font-size:11px; padding:5px 9px;">
+                            <button id="clipPromptViewToggle" class="secondary" onclick="toggleClipPromptViewMode()">
                                 텍스트 편집
                             </button>
-                            <button class="secondary" onclick="openClipPromptGroupManager()" style="font-size:11px; padding:5px 9px;">
+                            <button class="secondary" onclick="openClipPromptGroupManager()">
                                 그룹 관리
                             </button>
                         </div>
@@ -625,6 +836,25 @@
                             </div>
                         </div>
 
+                        <div class="prompt-section-card clip-instance-prompt-card">
+                            <div class="clip-instance-prompt-header">
+                                <h4>인스턴스</h4>
+                                <div class="tabs-container clip-instance-prompt-tabs" role="group" aria-label="인스턴스 프롬프트 종류">
+                                    <button id="clipInstanceTabBaseBtn" type="button" class="active" aria-pressed="true" aria-controls="clipInstanceTabBase" onclick="switchClipInstancePromptTab('base')">Base</button>
+                                    <button id="clipInstanceTabNegativeBtn" type="button" aria-pressed="false" aria-controls="clipInstanceTabNegative" onclick="switchClipInstancePromptTab('negative')">Negative</button>
+                                </div>
+                            </div>
+                            <div id="clipInstanceTabBase" class="clip-instance-prompt-panel">
+                                <p id="clipInstancePromptHelp" class="clip-prompt-section-help">이 선택 영역의 Base 뒤에 추가됩니다.</p>
+                                <textarea id="clipInstancePromptInput" rows="3" aria-label="Base 인스턴스 프롬프트" aria-describedby="clipInstancePromptHelp"></textarea>
+                            </div>
+                            <div id="clipInstanceTabNegative" class="clip-instance-prompt-panel" hidden>
+                                <p id="clipInstanceNegativePromptHelp" class="clip-prompt-section-help">이 선택 영역의 Negative 뒤에 추가됩니다.</p>
+                                <textarea id="clipInstanceNegativePromptInput" rows="3" aria-label="Negative 인스턴스 프롬프트" aria-describedby="clipInstanceNegativePromptHelp"></textarea>
+                            </div>
+                            <div id="clipDetailPresetPicker"></div>
+                        </div>
+
                         <div class="clip-prompt-block" data-tab="char">
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                                 <label style="margin:0;">Character Prompt</label>
@@ -636,8 +866,24 @@
                     </div>
                 </div>
 
-                <div class="clip-prompt-column">
-                    <div class="clip-prompt-setting-grid">
+                <div class="clip-prompt-column clip-prompt-controls-column">
+                    <details class="clip-prompt-control-section" open>
+                        <summary id="clipManualControlTitle">수동 제어 그룹</summary>
+                        <div class="clip-prompt-control-body">
+                            <div class="clip-prompt-section-heading">
+                                <p class="clip-prompt-section-help">여러 태그를 선택한 뒤 선택된 태그를 끌어 한꺼번에 넣을 수 있습니다. 그룹 ON/OFF로 포함 여부를 정하세요.</p>
+                                <button class="secondary clip-control-add-btn" onclick="addClipPromptControlGroup()">+ 그룹 추가</button>
+                            </div>
+                            <div id="clipPromptControlGroupList" class="clip-control-group-list"></div>
+                        </div>
+                    </details>
+
+                    <div class="clip-prompt-controls-scroll">
+                    <section id="canvasDakiPromptFocus" class="canvas-daki-focus" aria-label="선택 영역 부위 프롬프트" hidden></section>
+
+                    <details class="clip-prompt-generation-section" open>
+                        <summary>생성 설정</summary>
+                        <div class="clip-prompt-setting-grid" id="clipGenerationSettings">
                         <div class="clip-prompt-field">
                             <label for="clipSamplerInput">Sampler</label>
                             <select id="clipSamplerInput">
@@ -654,7 +900,7 @@
                         </div>
 
                         <div class="clip-prompt-field">
-                            <label for="clipCfgInput">CFG</label>
+                            <label for="clipCfgInput">Prompt Guidance</label>
                             <input id="clipCfgInput" type="number" min="1" max="20" step="0.1" value="6">
                         </div>
 
@@ -682,14 +928,8 @@
                             <label for="clipSeedInput">Seed</label>
                             <input id="clipSeedInput" type="number" step="1" value="-1">
                         </div>
-                    </div>
-                    
-                    <div class="clip-prompt-control-section">
-                        <button class="secondary clip-control-add-btn" onclick="addClipPromptControlGroup()">
-                            + 제어 그룹 추가
-                        </button>
-
-                        <div id="clipPromptControlGroupList" class="clip-control-group-list"></div>
+                        </div>
+                    </details>
                     </div>
                 </div>
             </div>
@@ -701,6 +941,23 @@
         </div>
     </div>
 
+    <dialog id="canvasInpaintSettingsDialog" aria-labelledby="canvasInpaintSettingsTitle">
+        <form id="canvasInpaintSettingsForm" novalidate>
+            <header class="canvas-inpaint-settings-header">
+                <h2 id="canvasInpaintSettingsTitle">인페인팅 설정</h2>
+                <button id="canvasInpaintSettingsClose" type="button" class="icon-btn danger" aria-label="인페인팅 설정 창 닫기">×</button>
+            </header>
+            <div class="canvas-inpaint-settings-body">
+                <p class="canvas-inpaint-settings-help">현재 캔버스의 클립 인페인팅과 통합 내보내기에 공통으로 적용됩니다. 프롬프트와 제어 그룹은 유지됩니다.</p>
+                <div id="inpaintGenerationSettings" class="clip-prompt-setting-grid"></div>
+            </div>
+            <footer class="canvas-inpaint-settings-footer">
+                <button id="canvasInpaintSettingsCancel" type="button" class="secondary">취소</button>
+                <button type="submit" class="success">적용</button>
+            </footer>
+        </form>
+    </dialog>
+
     <div id="clipGroupSelectionPopover" class="prompt-group-popover" style="display:none;">
         <button id="clipBtnStartPromptGroup" onclick="showClipPromptGroupNameInput()">그룹묶기</button>
         <button id="clipBtnCreateTempPromptGroup" onclick="saveSelectedTemporaryClipPromptGroup()">임시 그룹묶기</button>
@@ -711,20 +968,20 @@
     </div>
 
     <div id="clipPromptGroupModal" class="modal-overlay">
-        <div class="modal-content" style="width: 520px; max-width: 92vw;">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="clipPromptGroupTitle" style="width: 520px; max-width: 92vw;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-                <h3 style="margin:0; font-size:16px;">프롬프트 그룹 관리</h3>
-                <button class="icon-btn danger" onclick="closeClipPromptGroupManager()">×</button>
+                <h3 id="clipPromptGroupTitle" tabindex="-1" style="margin:0; font-size:16px;">프롬프트 그룹 관리</h3>
+                <button class="icon-btn danger" aria-label="프롬프트 그룹 창 닫기" onclick="closeClipPromptGroupManager()">×</button>
             </div>
             <div id="clipPromptGroupList" style="display:flex; flex-direction:column; gap:8px; max-height:50vh; overflow-y:auto;"></div>
         </div>
     </div>
     
     <div id="savedCanvasSetupsModal" class="modal-overlay">
-        <div class="modal-content saved-canvas-modal">
+        <div class="modal-content saved-canvas-modal" role="dialog" aria-modal="true" aria-labelledby="savedCanvasSetupsTitle">
             <div class="saved-canvas-modal-header">
-                <h3>저장한 캔버스</h3>
-                <button class="icon-btn danger" onclick="closeSavedCanvasSetupsModal()">×</button>
+                <h3 id="savedCanvasSetupsTitle" tabindex="-1">캔버스 관리</h3>
+                <button class="icon-btn danger" aria-label="캔버스 관리 창 닫기" onclick="closeSavedCanvasSetupsModal()">×</button>
             </div>
 
             <div id="savedCanvasSetupList" class="saved-canvas-list"></div>
@@ -733,14 +990,14 @@
 
     <div id="canvasSaveOptionsModal"
         class="modal-overlay">
-        <div class="modal-content canvas-modal canvas-save-options-modal">
+        <div class="modal-content canvas-modal canvas-save-options-modal" role="dialog" aria-modal="true" aria-labelledby="canvasSaveOptionsTitle">
             <div class="canvas-modal-header">
-                <h3>현재 캔버스 저장</h3>
-                <button class="icon-btn danger" onclick="closeCanvasSaveOptionsModal()">×</button>
+                <h3 id="canvasSaveOptionsTitle" tabindex="-1">현재 캔버스 저장</h3>
+                <button class="icon-btn danger" aria-label="캔버스 저장 창 닫기" onclick="closeCanvasSaveOptionsModal()">×</button>
             </div>
 
             <div class="form-group">
-                <label>저장 이름</label>
+                <label for="canvasSaveNameInput">저장 이름</label>
                 <input id="canvasSaveNameInput"
                     type="text"
                     placeholder="저장 이름">
@@ -823,7 +1080,54 @@
         </div>
     </div>
 
+    <div id="canvasStyleLinkModal" class="modal-overlay" style="display:none;">
+        <div class="canvas-style-dialog" role="dialog" aria-modal="true" aria-labelledby="canvasStyleLinkTitle">
+            <h3 id="canvasStyleLinkTitle" tabindex="-1">캔버스 그림체 연결</h3>
+        </div>
+    </div>
+
+    <div id="canvasDetailPresetModal" class="canvas-detail-preset-overlay" role="dialog" aria-modal="true" aria-labelledby="canvasDetailPresetTitle" hidden></div>
+
     <script src="/static/common_anlas_warning.js"></script>
-    <script src="/static/canvas.js"></script>
+    <script src="/static/canvas_clipboard.js"></script>
+    <script src="/static/canvas_autosave.js"></script>
+    <script src="/static/canvas_history.js"></script>
+    <script src="/static/canvas_project_autosave.js"></script>
+    <script src="/static/generation_settings.js"></script>
+    <script src="/static/daki_project_style_picker.js"></script>
+    <script src="/static/daki_project_settings.js"></script>
+    <script src="/static/canvas_inpaint_settings.js"></script>
+    <script src="/static/canvas_inpaint_reference.js?v=20261025-selection-size"></script>
+    <script src="/static/canvas_workspace_state.js?v=20261017-inline"></script>
+    <script src="/static/canvas_workspace_bridge.js?v=20261017-inline"></script>
+    <script src="/static/canvas_composite.js"></script>
+    <script src="/static/daki_canvas_previews.js"></script>
+    <script src="/static/canvas.js?v=20261025-selection-size"></script>
+    <script src="/static/canvas_grid.js"></script>
+    <script src="/static/canvas_keyboard_move.js"></script>
+    <script src="/static/canvas_style_link.js"></script>
+    <script src="/static/canvas_style_bridge.js"></script>
+    <script src="/static/canvas_project_settings.js"></script>
+    <script src="/static/canvas_eraser.js"></script>
+    <script src="/static/canvas_setups.js?v=20261017-workspace"></script>
+    <script src="/static/canvas_history_bridge.js"></script>
+    <script src="/static/canvas_project.js?v=20261025-detail-presets"></script>
+    <script src="/static/canvas_detail_presets.js?v=20261025"></script>
+    <script src="/static/canvas_opposite_reference.js"></script>
+    <script src="/static/canvas_daki_regions.js"></script>
+    <script src="/static/canvas_daki_prompt_rules.js"></script>
+    <script src="/static/canvas_daki_map_editor.js"></script>
+    <script src="/static/canvas_daki_focus.js"></script>
+    <script src="/static/canvas_retouch_state.js?v=20261025-preview"></script>
+    <script src="/static/canvas_retouch_panel.js?v=20261025-multiselect"></script>
+    <script src="/static/canvas_retouch_brush.js?v=20261017-skin"></script>
+    <script src="/static/canvas_retouch_liquify.js?v=20261025-live"></script>
+    <script src="/static/canvas_retouch_viewport.js?v=20261025-preview"></script>
+    <script src="/static/canvas_retouch.js?v=20261025-multiselect"></script>
+    <script src="/static/upscale_models.js"></script>
+    <script src="/static/canvas_reference.js"></script>
+    <script src="/static/canvas_dialogs.js?v=20261025-detail-presets"></script>
+    <script src="/static/canvas_header.js?v=20261017-header"></script>
+    <script src="/static/canvas_workspace.js?v=20261017-header"></script>
 </body>
 </html>

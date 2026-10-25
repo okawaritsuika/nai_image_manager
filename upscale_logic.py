@@ -1,18 +1,12 @@
 # -*- coding: utf-8 -*-
 import os
 import shutil
-import subprocess
 import tempfile
-import time
 from PIL import Image
 
 
-def get_app_dir():
-    import sys
-
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+from naim.paths import get_app_dir
+from naim.processes import UpscaleCancelled, run_process_with_cancel
 
 
 CURRENT_DIR = get_app_dir()
@@ -28,7 +22,7 @@ WAIFU2X_EXE = os.path.join(
     "waifu2x-ncnn-vulkan",
     "waifu2x-ncnn-vulkan.exe"
 )
-SUPPORTED_UPSCALE_ENGINES = ("realcugan", "waifu2x", "lanczos")
+SUPPORTED_UPSCALE_ENGINES = ("realcugan", "waifu2x", "lanczos", "illustrationjanai", "animesharp", "nai")
 
 try:
     LANCZOS = Image.Resampling.LANCZOS
@@ -36,8 +30,6 @@ except AttributeError:
     LANCZOS = Image.LANCZOS
 
 
-class UpscaleCancelled(Exception):
-    pass
 
 
 QUALITY_SETTINGS = {
@@ -277,48 +269,6 @@ def resolve_realcugan_denoise_for_scale(scale, preferred_denoise):
         f"models-se 폴더를 확인해 주세요. 사용 가능한 파일: {available}"
     )
 
-def run_process_with_cancel(cmd, cancel_event=None, cwd=None):
-    process = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    )
-
-    output_lines = []
-
-    try:
-        while True:
-            check_cancel(cancel_event)
-
-            line = process.stdout.readline() if process.stdout else ""
-            if line:
-                output_lines.append(line.rstrip())
-
-            code = process.poll()
-            if code is not None:
-                if process.stdout:
-                    rest = process.stdout.read()
-                    if rest:
-                        output_lines.extend(rest.splitlines())
-                return code, "\n".join(output_lines)
-
-            time.sleep(0.1)
-
-    except UpscaleCancelled:
-        try:
-            process.terminate()
-            process.wait(timeout=5)
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                pass
-        raise
 
 
 def run_waifu2x_once(input_path, output_path, scale, noise, tta, cancel_event=None):
@@ -586,6 +536,75 @@ def run_lanczos_only(source_path, target_path, target_width, target_height, prog
 
 
 def run_upscale(
+    source_path,
+    target_path,
+    target_width,
+    target_height,
+    engine="realcugan",
+    quality="standard",
+    progress_callback=None,
+    cancel_event=None,
+    nai_api_key=None,
+    fit_5_16=False,
+):
+    engine = normalize_upscale_engine(engine)
+    if engine == 'nai':
+        target_width, target_height = validate_target_size(target_width, target_height)
+        from naim.images.nai_upscale import run_nai_upscale
+        return run_nai_upscale(source_path, target_path, target_width, target_height,
+                               api_key=nai_api_key, progress_callback=progress_callback,
+                               cancel_event=cancel_event)
+    target_width, target_height = validate_target_size(target_width, target_height)
+    if fit_5_16 is True:
+        check_cancel(cancel_event)
+        source_width, source_height = get_image_size(source_path)
+        with tempfile.TemporaryDirectory(prefix="naia_fit_5_16_") as temp_dir:
+            scaled_path = os.path.join(temp_dir, "scaled.png")
+            result = run_upscale(
+                source_path=source_path,
+                target_path=scaled_path,
+                target_width=target_width,
+                target_height=target_height,
+                engine=engine,
+                quality=quality,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+                fit_5_16=False,
+            )
+            check_cancel(cancel_event)
+            with Image.open(scaled_path) as scaled:
+                scaled.load()
+                scaled_width, scaled_height = scaled.size
+                unit = min(scaled_width // 5, scaled_height // 16)
+                crop_width, crop_height = unit * 5, unit * 16
+                left = (scaled_width - crop_width) // 2
+                top = (scaled_height - crop_height) // 2
+                crop_box = [left, top, left + crop_width, top + crop_height]
+                os.makedirs(os.path.dirname(target_path) or ".", exist_ok=True)
+                with scaled.crop(tuple(crop_box)).convert("RGBA") as cropped:
+                    cropped.save(target_path, "PNG")
+            check_cancel(cancel_event)
+        result["source_width"] = source_width
+        result["source_height"] = source_height
+        result["final_width"] = crop_width
+        result["final_height"] = crop_height
+        result["fit_5_16"] = True
+        result["crop_box"] = crop_box
+        return result
+    if engine == 'lanczos':
+        return _run_upscale(source_path, target_path, target_width, target_height,
+                            engine, quality, progress_callback, cancel_event)
+    from naim.upscale_assets import UPSCALE_ASSETS
+    with UPSCALE_ASSETS.use(engine):
+        if engine in ('illustrationjanai', 'animesharp'):
+            from naim.images.model_upscale import run_model_upscale
+            return run_model_upscale(source_path, target_path, target_width, target_height,
+                                     engine, progress_callback, cancel_event)
+        return _run_upscale(source_path, target_path, target_width, target_height,
+                            engine, quality, progress_callback, cancel_event)
+
+
+def _run_upscale(
     source_path,
     target_path,
     target_width,

@@ -1,0 +1,25 @@
+/* Reuse the gallery's tag chips and compact SORT control, inside the library. */
+.daki-gallery-filters { margin: 12px 0 20px; }
+.daki-gallery-filter-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; }
+.daki-gallery-filter-controls .daki-filter-tags { display: flex; flex: 1 1 360px; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; background: transparent; min-width: 0; }
+.daki-filter-sort { display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; padding: 6px 15px; border: 1px solid #333; border-radius: 25px; background: #1a1a24; }
+.daki-filter-label { color: #888; font-size: 10px; font-weight: bold; }
+.daki-filter-sort .filter-select, .daki-filter-recommendations .filter-select { width: 260px; min-width: 0; max-width: 100%; padding: 2px 18px 2px 0; border: 0; border-radius: 0; background: transparent; color: #ccc; font-size: 11px; font-weight: normal; text-overflow: ellipsis; }
+.daki-filter-sort option, .daki-filter-recommendations option { background: #1a1a24; color: #eee; }
+.daki-filter-sort:focus-within { border-color: var(--accent); }
+.daki-filter-recommendations { display: flex; align-items: center; gap: 7px; max-width: 100%; padding: 6px 12px; border: 1px solid #333; border-radius: 25px; background: #1a1a24; }
+.daki-filter-recommendations .filter-select { width: 90px; }
+.daki-filter-recommendations:focus-within { border-color: var(--accent); }
+.daki-filter-count { color: #bbb; font-size: 11px; white-space: nowrap; }
+.daki-gallery-filter-controls .daki-filter-history,
+.daki-gallery-filter-controls .daki-filter-retry { padding: 0 12px; font-size: 11px; white-space: nowrap; }
+.daki-gallery-filter-status { margin: 8px 0 0; color: #888; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.daki-gallery-filter-status:empty { display: none; }
+.daki-gallery-filter-controls [hidden] { display: none !important; }
+body.gallery-layout-modern .daki-filter-sort > .daki-filter-label { width: auto; font-size: 10px !important; }
+@media (max-width: 600px) {
+    .daki-gallery-filter-controls .daki-filter-tags { flex-basis: 100%; }
+    .daki-filter-sort { flex: 1 1 200px; }
+    .daki-filter-sort .filter-select { flex: 1; width: 0; }
+    .daki-filter-recommendations { flex-wrap: wrap; }
+}

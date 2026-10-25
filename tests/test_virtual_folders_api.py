@@ -175,6 +175,11 @@ class VirtualFoldersApiTests(unittest.TestCase):
         self.assertEqual(folder_summary.status_code, 200)
         self.assertEqual(folder_summary.get_json()["total_matches"], 1)
         self.assertEqual(folder_summary.get_json()["thumb"], "1_Solo/b.png")
+        paths = self.client.get(
+            f"/api/gallery/virtual_folders/{root['id']}/uncategorized_summary?include_paths=1"
+        ).get_json()
+        self.assertEqual(paths['image_paths'], ['1_Solo/b.png'])
+        self.assertNotIn('image_paths', folder_summary.get_json())
 
 
 if __name__ == "__main__":

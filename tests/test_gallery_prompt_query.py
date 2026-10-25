@@ -115,6 +115,69 @@ class GalleryPromptQueryDbTests(unittest.TestCase):
         rows = self.db.search_gallery_prompt_index_profile(profile["id"], "%blue eyes%")
         self.assertEqual([row["rel_path"] for row in rows], ["2_Solo/blue.png"])
 
+    def test_positive_search_excludes_negative_but_general_search_keeps_it(self):
+        self.db.upsert_gallery_prompt_records(
+            [
+                {
+                    "rel_path": "3_Solo/positive.png",
+                    "folder_path": "3_Solo",
+                    "file_name": "positive.png",
+                    "mode": "general",
+                    "prompt_text": "hero negative_only",
+                    "normalized_text": "hero negative only",
+                    "positive_prompt_text": "hero",
+                    "positive_normalized_text": "hero",
+                },
+                {
+                    "rel_path": "3_Solo/negative.png",
+                    "folder_path": "3_Solo",
+                    "file_name": "negative.png",
+                    "mode": "general",
+                    "prompt_text": "negative_only",
+                    "normalized_text": "negative only",
+                    "positive_prompt_text": "",
+                    "positive_normalized_text": "",
+                },
+            ]
+        )
+
+        positive_rows = self.db.search_gallery_prompt_index(
+            "negative_only", positive_only=True
+        )
+        self.assertEqual(positive_rows, [])
+        general_rows = self.db.search_gallery_prompt_index("negative_only")
+        self.assertEqual(
+            [row["rel_path"] for row in general_rows],
+            ["3_Solo/negative.png", "3_Solo/positive.png"],
+        )
+
+    def test_empty_positive_row_counts_as_indexed_but_never_matches(self):
+        self.db.upsert_gallery_prompt_records(
+            [
+                {
+                    "rel_path": "3_Solo/empty-positive.png",
+                    "folder_path": "3_Solo",
+                    "file_name": "empty-positive.png",
+                    "mode": "general",
+                    "prompt_text": "negative_only",
+                    "normalized_text": "negative only",
+                    "positive_prompt_text": "",
+                    "positive_normalized_text": "",
+                }
+            ]
+        )
+
+        status = self.db.get_gallery_prompt_index_status(
+            "", "all", positive_only=True
+        )
+        self.assertGreaterEqual(status["indexed_images"], 1)
+        self.assertEqual(
+            self.db.search_gallery_prompt_index(
+                "negative_only", positive_only=True
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

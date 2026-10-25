@@ -1,0 +1,30 @@
+.daki-personal-placeholder { aspect-ratio: 3 / 4; display: grid; place-items: center; min-height: 180px; color: #999; font-size: 14px; background: var(--card); }
+.gallery-fixed-size-grid .daki-personal-placeholder { height: var(--gallery-fixed-image-height, 360px); aspect-ratio: auto; }
+.daki-personal-history { margin-top: 28px; }
+.daki-personal-dialog { width: min(850px, calc(100vw - 32px)); padding: 0; overscroll-behavior: contain; }
+.daki-personal-header { padding: 22px 26px 18px; border-bottom: 1px solid #ffffff1a; }
+.daki-personal-header h2 { margin: 0 0 6px; }
+.daki-personal-header p { margin: 0; }
+.daki-personal-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 20px; padding: 22px 26px; }
+.daki-personal-dialog .daki-personal-field { min-width: 0; margin: 0; font-size: 12px; font-weight: 600; color: #c7c9d0; }
+.daki-personal-field:has(#dakiPersonal-source_path), .daki-personal-prompts, .daki-personal-advanced, .daki-personal-status { grid-column: 1 / -1; }
+.daki-personal-dialog :is(input, select, textarea) { min-width: 0; font-size: 13px; font-weight: 400; }
+.daki-personal-dialog input[type=number] { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; font: inherit; font-size: 13px; }
+.daki-personal-dialog .daki-personal-field > button { margin-top: 8px; padding: 6px 10px; font-size: 12px; }
+.daki-personal-source-note { font-weight: 400; margin: 6px 0 0; line-height: 1.6; }
+.daki-personal-prompts { border: 1px solid #ffffff26; border-radius: 10px; background: var(--bg); overflow: hidden; }
+.daki-personal-prompt-panel { padding: 12px 14px; }
+.daki-personal-prompt-panel textarea { min-height: 180px; line-height: 1.7; }
+.daki-personal-advanced { border-top: 1px solid #ffffff1a; padding-top: 12px; }
+.daki-personal-advanced summary { cursor: pointer; color: #bbb; font-size: 13px; }
+.daki-personal-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.daki-personal-dialog .daki-personal-status { margin: 0; color: var(--thumb); overflow-wrap: anywhere; }
+.daki-personal-status:empty { display: none; }
+.daki-personal-actions { position: sticky; bottom: 0; margin: 0; padding: 16px 26px; background: var(--card); border-top: 1px solid #ffffff1a; }
+@media (max-width: 600px) {
+    .daki-personal-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 24px); }
+    .daki-personal-header, .daki-personal-body { padding: 18px; }
+    .daki-personal-body { grid-template-columns: minmax(0, 1fr); }
+    .daki-personal-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .daki-personal-actions { padding: 14px 18px; }
+}

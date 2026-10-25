@@ -1,8 +1,9 @@
 import os
+import sqlite3
 import tempfile
 import unittest
 
-from utils import HistoryDB
+from utils import HistoryDB, parse_gallery_prompt_search_query
 
 
 class VirtualFoldersDbTests(unittest.TestCase):
@@ -380,6 +381,119 @@ class VirtualFoldersDbTests(unittest.TestCase):
             ).fetchone()[0],
             built_at,
         )
+
+    def test_virtual_folder_cache_uses_positive_prompt_only(self):
+        self.db.upsert_gallery_prompt_records(
+            [
+                {
+                    "rel_path": "1_Solo/base.png",
+                    "folder_path": "1_Solo",
+                    "file_name": "base.png",
+                    "mode": "general",
+                    "prompt_text": "hero negative_only",
+                    "normalized_text": "hero negative only",
+                    "positive_prompt_text": "hero",
+                    "positive_normalized_text": "hero",
+                },
+                {
+                    "rel_path": "1_Solo/negative.png",
+                    "folder_path": "1_Solo",
+                    "file_name": "negative.png",
+                    "mode": "general",
+                    "prompt_text": "negative_only",
+                    "normalized_text": "negative only",
+                    "positive_prompt_text": "",
+                    "positive_normalized_text": "",
+                },
+            ]
+        )
+
+        negative_folder = self.db.create_gallery_virtual_folder(
+            "Negative", "negative_only"
+        )
+        negative_result = self.db.resolve_gallery_virtual_folder_cache(
+            negative_folder,
+            parse_gallery_prompt_search_query("negative_only"),
+        )
+        self.assertEqual(negative_result["total_matches"], 0)
+
+        hero_folder = self.db.create_gallery_virtual_folder("Hero", "hero")
+        hero_result = self.db.resolve_gallery_virtual_folder_cache(
+            hero_folder,
+            parse_gallery_prompt_search_query("hero"),
+        )
+        self.assertEqual(
+            [row["rel_path"] for row in hero_result["rows"]],
+            ["1_Solo/base.png"],
+        )
+
+    def test_prompt_semantics_migration_clears_indexes_but_keeps_virtual_folders(self):
+        self.db.upsert_gallery_prompt_records(
+            [
+                {
+                    "rel_path": "1_Solo/legacy.png",
+                    "folder_path": "1_Solo",
+                    "file_name": "legacy.png",
+                    "mode": "general",
+                    "prompt_text": "red negative_only",
+                    "normalized_text": "red negative only",
+                    "positive_prompt_text": "red",
+                    "positive_normalized_text": "red",
+                }
+            ]
+        )
+        profile = self.db.upsert_gallery_prompt_index_profile(
+            "Legacy profile", "all", [], ["1_Solo/legacy.png"]
+        )
+        folder = self.db.create_gallery_virtual_folder("Saved", "red")
+        self.db.resolve_gallery_virtual_folder_cache(
+            folder, [[{"text": "red", "partial": False}]]
+        )
+        db_path = self.db.db_path
+        self.db.close()
+
+        legacy = sqlite3.connect(db_path)
+        try:
+            legacy.execute(
+                "UPDATE gallery_prompt_index SET positive_prompt_text = NULL, positive_normalized_text = NULL"
+            )
+            legacy.execute(
+                "UPDATE gallery_index_state SET value = ? WHERE key = ?",
+                ("legacy-v0", "prompt_index_semantics_version"),
+            )
+            legacy.commit()
+        finally:
+            legacy.close()
+
+        self.db = HistoryDB(db_path)
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM gallery_prompt_index").fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM gallery_prompt_index_profiles").fetchone()[0],
+            1,
+        )
+        saved_profile = self.db.list_gallery_prompt_index_profiles()[0]
+        self.assertEqual(saved_profile['id'], profile['id'])
+        self.assertEqual(saved_profile['name'], 'Legacy profile')
+        self.assertEqual((saved_profile['image_count'], saved_profile['text_bytes'], saved_profile['built_at']),
+                         (0, 0, 0))
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM gallery_prompt_index_profile_items").fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM gallery_virtual_folder_cache_meta").fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM gallery_virtual_folder_cache_items").fetchone()[0],
+            0,
+        )
+        saved = self.db.get_gallery_virtual_folder(folder["id"])
+        self.assertEqual(saved["name"], "Saved")
+        self.assertEqual(saved["query"], "red")
 
 
 if __name__ == "__main__":

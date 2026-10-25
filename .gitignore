@@ -23,6 +23,7 @@ lab_config.json
 quality_presets.json
 tag_dictionary_user_overrides.json
 canvas_saved_setups.json
+daki_projects.json
 data/tag_categories_ko.json
 
 # Generated/imported output and user image library
@@ -39,12 +40,20 @@ docs/
 tests/
 !tests/
 !tests/*.py
+!tests/*.js
 patch_notes/
 canvas_imports/
 daki_generated_temp/
+daki_style_tests/
+daki_imported_styles/
+daki_personal_styles/
+daki_worldcups/
+daki_drafts/
+daki_tag_examples/
 output/
 TOTAL_CLASSIFIED/
 tools/downloads/
+upscale_models/
 
 # OS/editor noise
 .DS_Store

@@ -1,0 +1,247 @@
+/* Shared styles for the gallery and canvas upscale dialogs only. */
+.gallery-upscale-card,
+.reference-gen-upscale-card {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 32px);
+    overflow: hidden;
+    min-width: 0;
+}
+
+.gallery-upscale-card {
+    box-sizing: border-box;
+    width: min(598px, calc(100vw - 32px));
+}
+
+.reference-gen-upscale-card {
+    box-sizing: border-box;
+    width: min(728px, calc(100vw - 32px));
+}
+
+.reference-gen-upscale-layer {
+    padding: 16px;
+}
+
+.gallery-upscale-header,
+.reference-gen-upscale-card > .canvas-modal-header,
+.gallery-upscale-actions,
+.reference-gen-upscale-actions {
+    flex: 0 0 auto;
+    min-width: 0;
+}
+
+.gallery-upscale-dialog-body,
+.reference-gen-upscale-dialog-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.gallery-upscale-dialog-body > .gallery-upscale-section,
+.reference-gen-upscale-dialog-body > .reference-gen-upscale-section {
+    min-width: 0;
+}
+
+.gallery-upscale-dialog-body > .gallery-upscale-section[hidden],
+.reference-gen-upscale-dialog-body > .reference-gen-upscale-section[hidden] {
+    display: none !important;
+}
+
+.gallery-upscale-dialog-body select,
+.reference-gen-upscale-dialog-body select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.gallery-upscale-dialog-body select option,
+.reference-gen-upscale-dialog-body select option {
+    white-space: normal;
+}
+
+.upscale-model-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    margin-top: 10px;
+    padding: 12px;
+    border: 1px solid var(--border-color, #333344);
+    border-radius: 10px;
+    background: var(--card-bg, #1c1c27);
+    color: var(--text-main, #fff);
+    overflow-wrap: anywhere;
+}
+
+.upscale-model-panel[hidden],
+.upscale-model-panel [hidden] {
+    display: none !important;
+}
+
+.upscale-model-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+    font-size: 12px;
+}
+
+.upscale-model-heading strong {
+    flex: 1 1 180px;
+    min-width: 0;
+    color: var(--text-main, #fff);
+    line-height: 1.5;
+}
+
+.upscale-model-state {
+    flex: 0 0 auto;
+    padding: 3px 8px;
+    border: 1px solid var(--border-color, #333344);
+    border-radius: 999px;
+    color: var(--text-muted, #a0a0b0);
+    background: rgba(0, 0, 0, 0.18);
+    line-height: 1.35;
+}
+
+.upscale-model-state[data-state="installed"] {
+    color: #00b894;
+    border-color: rgba(0, 184, 148, 0.45);
+}
+
+.upscale-model-state[data-state="downloading"] {
+    color: var(--accent-blue, #55efc4);
+    border-color: var(--accent-blue, #55efc4);
+}
+
+.upscale-model-state[data-state="error"],
+.upscale-model-state[data-state="unknown"] {
+    color: #ff8c8c;
+    border-color: rgba(255, 77, 77, 0.55);
+}
+
+.upscale-model-description,
+.upscale-model-message,
+.upscale-model-progress-text,
+.upscale-nai-steps,
+.upscale-nai-note {
+    min-width: 0;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.upscale-model-description,
+.upscale-nai-note {
+    color: var(--text-muted, #a0a0b0);
+}
+
+.upscale-model-message {
+    color: var(--text-main, #e5e7eb);
+}
+
+.upscale-model-progress-area {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.upscale-model-progress {
+    width: 100%;
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(128, 128, 144, 0.25);
+}
+
+.upscale-model-progress-bar {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent-blue, #55efc4);
+    transition: width 160ms ease;
+}
+
+.upscale-model-progress-text {
+    color: var(--text-muted, #a0a0b0);
+}
+
+.upscale-model-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+.upscale-model-actions button {
+    flex: 0 0 auto;
+    min-height: 34px;
+    max-width: 100%;
+    padding: 7px 11px;
+    border: 1px solid var(--border-color, #333344);
+    border-radius: 8px;
+    background: rgba(128, 128, 144, 0.16);
+    color: var(--text-main, #fff);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.upscale-model-actions button:hover:not(:disabled) {
+    border-color: var(--accent-blue, #55efc4);
+}
+
+.upscale-model-actions button:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+#galleryUpscaleStart:disabled,
+#referenceGenUpscaleStart:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.upscale-model-website {
+    align-self: flex-start;
+    color: var(--accent-blue, #55efc4);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.upscale-nai-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color, #333344);
+}
+
+.upscale-nai-preview > strong {
+    color: var(--text-main, #fff);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.upscale-nai-steps {
+    color: var(--text-main, #e5e7eb);
+}
+
+@media (max-height: 620px) {
+    .gallery-upscale-card,
+    .reference-gen-upscale-card {
+        max-height: calc(100vh - 32px);
+    }
+}

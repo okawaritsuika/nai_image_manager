@@ -1,0 +1,381 @@
+.daki-project-settings-dialog {
+    box-sizing: border-box;
+    width: min(920px, calc(100vw - 32px));
+    max-width: calc(100vw - 32px);
+    max-height: min(820px, calc(100vh - 32px));
+    max-height: min(820px, calc(100dvh - 32px));
+    overflow: hidden;
+    padding: 0;
+    border: 1px solid var(--border-color, #ffffff24);
+    border-radius: 14px;
+    background: var(--card-bg, var(--card, #252630));
+    color: var(--text-main, var(--text, #f2f3f5));
+    font-family: var(--font-family, inherit);
+}
+.daki-project-settings-dialog::backdrop { background: #090a0dcc; }
+.daki-project-settings-dialog[open] { display: flex; flex-direction: column; }
+.daki-project-settings-dialog,
+.daki-project-settings-dialog * { box-sizing: border-box; }
+.daki-project-settings-header,
+.daki-project-settings-footer {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+}
+.daki-project-settings-header { justify-content: space-between; }
+.daki-project-settings-header h2 {
+    min-width: 0;
+    margin: 0;
+    font-size: 20px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-close {
+    display: flex;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--border-color, #ffffff24);
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font-size: 22px;
+    line-height: 1;
+}
+.daki-project-settings-body {
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 0 20px 20px;
+    overscroll-behavior: contain;
+}
+.daki-project-settings-summary,
+.daki-project-settings-help,
+.daki-project-settings-status {
+    min-width: 0;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-summary {
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color, #ffffff20);
+    border-radius: 8px;
+    background: var(--bg-color, var(--bg, #1d1e26));
+}
+.daki-project-settings-section {
+    min-width: 0;
+    margin: 0 0 16px;
+    padding: 14px;
+    border: 1px solid var(--border-color, #ffffff20);
+    border-radius: 10px;
+    background: var(--bg-color, var(--bg, #1d1e26));
+}
+.daki-project-settings-section h3 {
+    min-width: 0;
+    margin: 0 0 10px;
+    font-size: 15px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-style-controls {
+    display: grid;
+    grid-template-columns: minmax(0, .8fr) minmax(0, 1fr) minmax(0, 1.2fr);
+    align-items: end;
+    gap: 12px;
+    min-width: 0;
+}
+.daki-project-settings-field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 5px;
+}
+.daki-project-settings-field > label {
+    min-width: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-field input,
+.daki-project-settings-field select,
+.daki-project-settings-field textarea,
+.daki-project-settings-generation input,
+.daki-project-settings-generation select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    border: 1px solid var(--border-color, #ffffff30);
+    border-radius: 7px;
+    background: var(--card-bg, var(--card, #252630));
+    color: var(--text-main, var(--text, #f2f3f5));
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.45;
+}
+.daki-project-settings-field input,
+.daki-project-settings-field select,
+.daki-project-settings-generation input,
+.daki-project-settings-generation select { min-height: 36px; padding: 7px 9px; }
+.daki-project-settings-field textarea {
+    min-height: 90px;
+    max-height: 260px;
+    padding: 8px;
+    resize: vertical;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+.daki-project-settings-field input:focus,
+.daki-project-settings-field select:focus,
+.daki-project-settings-field textarea:focus,
+.daki-project-settings-generation input:focus,
+.daki-project-settings-generation select:focus,
+.daki-project-settings-dialog button:focus-visible {
+    outline: 2px solid var(--accent-blue, var(--accent, #4e9cff));
+    outline-offset: 2px;
+}
+.daki-project-settings-catalog-status {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 10px;
+    min-width: 0;
+    margin-top: 8px;
+}
+.daki-project-settings-status { color: var(--text-muted, #bec4d1); }
+.daki-project-settings-status[hidden] { display: none !important; }
+.daki-project-settings-secondary,
+.daki-project-settings-primary {
+    display: inline-flex;
+    flex: 0 0 auto;
+    min-width: 0;
+    min-height: 34px;
+    align-items: center;
+    justify-content: center;
+    padding: 7px 12px;
+    border: 1px solid var(--border-color, #ffffff30);
+    border-radius: 8px;
+    background: var(--card-bg, var(--card, #252630));
+    color: var(--text-main, var(--text, #f2f3f5));
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+.daki-project-settings-primary {
+    border-color: var(--accent-blue, var(--accent, #4e9cff));
+    background: var(--accent-blue, var(--accent, #4e9cff));
+    color: var(--accent-text, #fff);
+}
+.daki-project-settings-dialog button:disabled { opacity: .55; cursor: default; }
+.daki-project-settings-dialog [hidden],
+.daki-project-settings-generation[hidden] { display: none !important; }
+.daki-project-settings-preview-grid,
+.daki-project-settings-prompt-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    min-width: 0;
+    margin-top: 12px;
+}
+.daki-project-settings-preview {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--border-color, #ffffff1a);
+    border-radius: 8px;
+}
+.daki-project-settings-preview h4 {
+    margin: 0 0 6px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.daki-project-settings-preview-text {
+    max-height: 120px;
+    min-height: 28px;
+    margin: 0;
+    overflow: auto;
+    color: var(--text-main, var(--text, #f2f3f5));
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-face {
+    display: grid;
+    align-self: start;
+    align-content: start;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+    margin: 0;
+    padding: 10px;
+    border: 1px solid var(--border-color, #ffffff1a);
+    border-radius: 8px;
+}
+.daki-project-settings-face legend {
+    max-width: 100%;
+    padding: 0 5px;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-prompt-tabs {
+    display: flex;
+    min-width: 0;
+    gap: 6px;
+}
+.daki-project-settings-prompt-tab {
+    display: inline-flex;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 32px;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color, #ffffff30);
+    border-radius: 7px;
+    background: var(--card-bg, var(--card, #252630));
+    color: var(--text-main, var(--text, #f2f3f5));
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+}
+.daki-project-settings-prompt-tab[aria-selected="true"] {
+    border-color: var(--accent-blue, var(--accent, #4e9cff));
+    background: var(--accent-blue, var(--accent, #4e9cff));
+    color: var(--accent-text, #fff);
+}
+.daki-project-settings-prompt-panel,
+.daki-project-settings-characters,
+.daki-project-settings-character-rows,
+.daki-project-settings-character-row { min-width: 0; }
+.daki-project-settings-prompt-panel[hidden] { display: none !important; }
+.daki-project-settings-characters {
+    display: grid;
+    gap: 8px;
+}
+.daki-project-settings-characters h4 {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-character-rows {
+    display: grid;
+    gap: 8px;
+}
+.daki-project-settings-character-row {
+    display: grid;
+    gap: 5px;
+}
+.daki-project-settings-character-heading {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+}
+.daki-project-settings-character-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-character-remove {
+    flex: 0 0 auto;
+    min-height: 30px;
+    padding: 4px 8px;
+}
+.daki-project-settings-character-textarea {
+    width: 100%;
+    min-width: 0;
+    min-height: 76px;
+    max-height: 220px;
+    padding: 8px;
+    border: 1px solid var(--border-color, #ffffff30);
+    border-radius: 7px;
+    background: var(--card-bg, var(--card, #252630));
+    color: var(--text-main, var(--text, #f2f3f5));
+    font-family: var(--font-family, inherit);
+    font-size: 13px;
+    line-height: 1.45;
+    resize: vertical;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+.daki-project-settings-character-textarea:focus,
+.daki-project-settings-prompt-tab:focus-visible {
+    outline: 2px solid var(--accent-blue, var(--accent, #4e9cff));
+    outline-offset: 2px;
+}
+.daki-project-settings-style-clear { margin-top: 8px; }
+.daki-project-settings-help {
+    color: var(--text-muted, #bec4d1);
+}
+.daki-project-settings-checkbox {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-checkbox input { flex: 0 0 auto; margin: 3px 0 0; }
+.daki-project-settings-inpaint > .daki-project-settings-help { margin: 7px 0 10px; }
+.daki-project-settings-generation {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+    min-width: 0;
+}
+.daki-project-settings-generation > .clip-prompt-field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 5px;
+}
+.daki-project-settings-generation label,
+.daki-project-settings-generation small {
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-settings-generation small { grid-column: 1 / -1; }
+.daki-project-settings-footer {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--border-color, #ffffff18);
+}
+.daki-project-settings-main-status { margin: 0 0 8px; }
+
+@media (max-width: 700px) {
+    .daki-project-settings-prompt-grid { grid-template-columns: minmax(0, 1fr); }
+    .daki-project-settings-style-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .daki-project-settings-style-controls > .daki-project-settings-field:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 560px) {
+    .daki-project-settings-header,
+    .daki-project-settings-footer { padding: 14px 16px; }
+    .daki-project-settings-body { padding: 0 16px 16px; }
+    .daki-project-settings-section { padding: 11px; }
+    .daki-project-settings-preview-grid,
+    .daki-project-settings-generation,
+    .daki-project-settings-style-controls { grid-template-columns: minmax(0, 1fr); }
+    .daki-project-settings-style-controls > .daki-project-settings-field:last-child { grid-column: auto; }
+}

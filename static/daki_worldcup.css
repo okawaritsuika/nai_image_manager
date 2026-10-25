@@ -1,0 +1,32 @@
+.daki-worldcup { width: min(1260px, calc(100vw - 32px)); padding: 22px; }
+.daki-worldcup-header { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+.daki-worldcup-header h2 { margin: 0 0 4px; }
+.daki-worldcup-header p { margin: 0; }
+.daki-worldcup-setup { max-width: 500px; margin: 26px auto; }
+.daki-worldcup .daki-tag-choices button[aria-pressed=true] { outline: 2px solid var(--accent); outline-offset: 2px; background: #14b8a644; }
+.daki-worldcup-progress { margin: 20px 0 14px; font-size: 15px !important; color: var(--text) !important; }
+.daki-worldcup-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.daki-worldcup-entry { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; }
+.daki-worldcup button.daki-worldcup-choice { padding: 0; overflow: hidden; background: var(--bg); border: 1px solid #ffffff30; }
+.daki-worldcup-choice img { display: block; width: 100%; height: min(57vh, 650px); object-fit: contain; }
+.daki-worldcup-choice strong { display: block; padding: 10px; font-weight: 500; overflow-wrap: anywhere; }
+.daki-worldcup-choice:hover { border-color: var(--accent) !important; }
+.daki-worldcup-choice:disabled { opacity: 1; cursor: default; }
+.daki-worldcup-winner { max-width: 580px; margin-inline: auto; grid-template-columns: minmax(0, 1fr); }
+.daki-worldcup-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 18px; }
+.daki-worldcup-preview { width: min(1500px, calc(100vw - 28px)); padding: 12px; }
+.daki-worldcup-preview img { display: block; width: 100%; height: 80vh; object-fit: contain; }
+.daki-worldcup-preview > button { display: block; margin: 0 0 10px auto; }
+.daki-worldcup-save-status { margin: 16px 0 8px; color: var(--thumb) !important; overflow-wrap: anywhere; }
+.daki-worldcup-save-status:empty { display: none; }
+.daki-worldcup-save-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.daki-worldcup-save-actions a { text-decoration: none; color: var(--text); font-size: 13px; }
+.daki-worldcup-completed-note { margin-bottom: 0; }
+.daki-worldcup-missing { display: grid; place-items: center; min-height: 200px; padding: 24px; color: #aaa; font-size: 14px; text-align: center; }
+.daki-worldcup-rank-card { position: relative; min-width: 0; }
+.daki-worldcup-rank-card > img { cursor: zoom-in; object-fit: contain; }
+.daki-worldcup-rank-card .daki-worldcup-rank { color: var(--accent); font-size: 14px; font-weight: 700; white-space: nowrap; }
+.daki-worldcup-rank-card .daki-worldcup-wins { grid-column: 1 / -1; color: #999; font-size: 11px; }
+.daki-worldcup-missing-card { aspect-ratio: 3 / 4; background: var(--card); }
+.gallery-fixed-size-grid .daki-worldcup-missing-card { height: var(--gallery-fixed-image-height, 360px); aspect-ratio: auto; }
+@media (max-width: 600px) { .daki-worldcup { padding: 16px; } .daki-worldcup-pair { gap: 8px; } .daki-worldcup-choice img { height: 43vh; } }

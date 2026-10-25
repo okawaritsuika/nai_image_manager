@@ -1,0 +1,30 @@
+.daki-draft-framing { width: min(960px, calc(100vw - 32px)); }
+.daki-draft-framing-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.daki-draft-framing-header h2 { margin: 0; }
+.daki-draft-framing-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .8fr); gap: 26px; margin-top: 20px; }
+.daki-dialog .daki-draft-framing-controls { display: block; min-width: 0; border: 0; padding: 0; margin: 0; }
+.daki-draft-framing-modes { display: grid; gap: 10px; }
+.daki-dialog .daki-draft-framing-mode { display: flex; align-items: flex-start; gap: 10px; padding: 13px; margin: 0; background: var(--bg); border: 1px solid #ffffff26; border-radius: 9px; cursor: pointer; }
+.daki-draft-framing-mode:has(input:checked) { border-color: var(--accent); }
+.daki-draft-framing-mode input[type=radio] { flex: 0 0 auto; width: auto; height: auto; margin: 4px 0 0; accent-color: var(--accent); }
+.daki-draft-framing-mode strong, .daki-draft-framing-mode small { display: block; }
+.daki-draft-framing-mode strong { font-size: 13px; }
+.daki-draft-framing-mode small { color: #aaa; font-size: 12px; margin-top: 3px; }
+.daki-draft-framing-dimensions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.daki-draft-framing-dimensions label { font-size: 12px; color: #bbb; }
+.daki-draft-framing-dimensions input { box-sizing: border-box; width: 100%; min-width: 0; margin-top: 7px; padding: 10px 12px; border: 1px solid #555; border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 14px; }
+.daki-draft-framing-presets { display: flex; gap: 8px; flex-wrap: wrap; }
+.daki-draft-framing-presets button { padding: 6px 10px; font-size: 12px; }
+.daki-dialog .daki-draft-framing-size { color: var(--text); font-size: 14px; font-weight: 700; }
+.daki-dialog .daki-draft-framing-summary { white-space: pre-line; color: #c7c9d0; line-height: 1.9; }
+.daki-draft-framing-preview-column { min-width: 0; text-align: center; }
+.daki-draft-framing-preview { display: flex; min-height: 160px; align-items: center; justify-content: center; padding: 14px; border: 1px solid #ffffff26; border-radius: 10px; background: var(--bg); }
+.daki-draft-framing-frame { position: relative; overflow: hidden; max-width: 100%; outline: 1px solid #888; background-color: #ddd; background-image: linear-gradient(45deg, #aaa 25%, transparent 25%), linear-gradient(-45deg, #aaa 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #aaa 75%), linear-gradient(-45deg, transparent 75%, #aaa 75%); background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0; }
+.daki-draft-framing-frame img { position: absolute; display: block; max-width: none; }
+.daki-dialog .daki-draft-framing-status { color: #f4bc80; overflow-wrap: anywhere; }
+.daki-draft-framing-status:empty { display: none; }
+@media (max-width: 650px) {
+    .daki-draft-framing { padding: 18px; }
+    .daki-draft-framing-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .daki-draft-framing-preview { min-height: 0; }
+}

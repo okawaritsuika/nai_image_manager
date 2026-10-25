@@ -5,14 +5,95 @@
     <title>NAI Image Server Archive</title>
     <link rel="stylesheet" href="/static/index.css">
     <link rel="stylesheet" href="/static/common_anlas_warning.css">
+    <link rel="stylesheet" href="/static/gallery_modern.css">
+    <link rel="stylesheet" href="/static/daki.css">
+    <link rel="stylesheet" href="/static/daki_project_details.css">
+    <link rel="stylesheet" href="/static/daki_project_settings.css">
+    <link rel="stylesheet" href="/static/daki_project_reference.css">
+    <link rel="stylesheet" href="/static/daki_project_style_picker.css">
+    <link rel="stylesheet" href="/static/daki_draft_folder_actions.css">
+    <link rel="stylesheet" href="/static/daki_image_import.css">
+    <link rel="stylesheet" href="/static/gallery_image_tools.css">
+    <link rel="stylesheet" href="/static/upscale_models.css">
+    <link rel="stylesheet" href="/static/daki_personal_styles.css">
+    <link rel="stylesheet" href="/static/daki_test_library.css">
+    <link rel="stylesheet" href="/static/daki_test_packs.css">
+    <link rel="stylesheet" href="/static/daki_test_targets.css">
+    <link rel="stylesheet" href="/static/daki_test_target_gallery.css">
+    <link rel="stylesheet" href="/static/daki_tag_browser.css">
+    <link rel="stylesheet" href="/static/daki_tag_examples.css">
+    <link rel="stylesheet" href="/static/daki_prompt_groups.css">
+    <link rel="stylesheet" href="/static/daki_draft_editor.css">
+    <link rel="stylesheet" href="/static/daki_draft_framing.css">
+    <link rel="stylesheet" href="/static/daki_drafts.css">
+    <link rel="stylesheet" href="/static/daki_worldcup.css">
+    <link rel="stylesheet" href="/static/daki_gallery_filters.css">
+    <link rel="stylesheet" href="/static/novelai_account.css">
+    <script src="/static/novelai_account.js" defer></script>
+    <script src="/static/canvas_composite.js" defer></script>
+    <script src="/static/daki_canvas_previews.js" defer></script>
+    <script src="/static/daki.js" defer></script>
+    <script src="/static/daki_project_details.js" defer></script>
+    <script src="/static/canvas_style_link.js" defer></script>
+    <script src="/static/daki_project_style_picker.js" defer></script>
+    <script src="/static/daki_project_settings.js" defer></script>
+    <script src="/static/canvas_inpaint_reference.js" defer></script>
+    <script src="/static/daki_project_reference.js" defer></script>
+    <script src="/static/daki_draft_folder_actions.js" defer></script>
+    <script src="/static/canvas_daki_prompt_rules.js" defer></script>
+    <script src="/static/daki_image_import_classification.js" defer></script>
+    <script src="/static/daki_image_import.js" defer></script>
+    <script src="/static/daki_test_target_gallery.js" defer></script>
+    <script src="/static/daki_test_targets.js" defer></script>
+    <script src="/static/daki_style_sync.js" defer></script>
+    <script src="/static/daki_style_sync_activity.js" defer></script>
+    <script src="/static/daki_test_packs.js" defer></script>
+    <script src="/static/daki_styles.js" defer></script>
+    <script src="/static/daki_personal_styles.js" defer></script>
+    <script src="/static/daki_test_library.js" defer></script>
+    <script src="/static/daki_worldcup.js" defer></script>
+    <script src="/static/daki_gallery_filters.js" defer></script>
+    <script src="/static/daki_tag_browser.js" defer></script>
+    <script src="/static/daki_prompt_groups.js" defer></script>
+    <script src="/static/daki_draft_editor.js" defer></script>
+    <script src="/static/daki_tag_examples.js" defer></script>
+    <script src="/static/daki_draft_framing.js" defer></script>
+    <script src="/static/daki_drafts.js" defer></script>
 </head>
 <body>
+    <div id="galleryLayoutSwitch" class="gallery-layout-switch" aria-label="갤러리 화면 선택">
+        <span class="gallery-layout-brand">NAI Image Manager <span>갤러리</span></span>
+        <div class="nai-header-account" aria-label="NovelAI 잔액">
+            <button type="button" id="naiAccountBadge" title="NovelAI 키와 잔액 설정 열기"><span id="naiQuotaLabel">할당량 —</span><span class="nai-account-divider">·</span><span id="naiAnlasLabel">Anlas —</span></button>
+            <button type="button" id="naiAccountRefresh" title="NovelAI 잔액 새로고침" aria-label="NovelAI 잔액 새로고침">↻</button>
+        </div>
+        <div class="gallery-layout-options" role="group" aria-label="화면 구성">
+            <button type="button" id="galleryLegacyLayoutBtn" data-gallery-layout="legacy" aria-pressed="true">기존 화면</button>
+            <button type="button" id="galleryModernLayoutBtn" data-gallery-layout="modern" aria-pressed="false">새 화면</button>
+        </div>
+        <span id="galleryLayoutSaveStatus" class="gallery-layout-save-status" role="status" aria-live="polite" hidden></span>
+    </div>
+    <div id="galleryModernLayout" class="gallery-modern-layout" hidden>
+        <aside class="gallery-modern-sidebar" aria-label="갤러리 탐색과 필터">
+            <details id="galleryModernNavSection" class="gallery-modern-navigation" open>
+                <summary>라이브러리</summary>
+                <div id="galleryModernNavigationBody"></div>
+            </details>
+            <details id="galleryModernFilterSection" class="gallery-modern-filter-section" open>
+                <summary>보기 및 필터</summary>
+                <div id="galleryModernFiltersBody"></div>
+            </details>
+            <details class="gallery-modern-character-section">
+                <summary>캐릭터 필터</summary>
+                <div id="galleryModernCharactersBody"></div>
+            </details>
+        </aside>
+        <main id="galleryModernMain" class="gallery-modern-main" aria-label="갤러리 이미지"></main>
+    </div>
     <div class="header-main">
         <div class="header-row">
             <div id="nav-tabs"></div>
             <div class="header-row-right">
-                <button onclick="location.href='/style-lab'" style="background: #6c5ce7; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(108, 92, 231, 0.3);">🧪 그림체 연구소</button> 
-                <button onclick="location.href='/daki-workshop'" style="background: #00b894; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(0, 184, 148, 0.3);">🛏️ 다키 제작소</button>
                 <button onclick="location.href='/canvas'" style="background: #6366f1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);">🖼️ 캔버스</button>
 
                 <div class="gallery-header-tools-wrap">
@@ -34,15 +115,15 @@
                             🏷️ 태그 모드
                         </button>
                         <button onclick="openGalleryCharacterNameManager()" title="캐릭터 이름 한글 표기 관리" style="background: #14b8a6; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);">🔤 이름</button>
-                        <button onclick="startGalleryIndexRebuild()"
-                                title="갤러리 인덱스 수동 갱신"
+                        <button onclick="openGalleryIndexModal()"
+                                title="이미지·폴더 목록 갱신 · 프롬프트 검색 인덱스는 별도"
                                 style="background: #22c55e; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(34, 197, 94, 0.3);">
-                            🔄 인덱스 갱신
+                            🔄 갤러리 목록 갱신
                         </button>
                         <button onclick="openGalleryPromptIndexModal()"
-                                title="프롬프트 검색 인덱스 관리"
+                                title="빠른 프롬프트 검색과 자동완성용 인덱스 관리"
                                 style="background: #0ea5e9; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(14, 165, 233, 0.3);">
-                            🔎 프롬프트 인덱스
+                            🔎 프롬프트 검색 인덱스
                         </button>
                         <button onclick="openGalleryVirtualFolderManager()" title="가상 폴더 관리" style="background: #7c3aed; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px;">🗂️ 가상 폴더</button>
                         <button onclick="toggleStats()" title="통계 보기" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">📊 통계</button>
@@ -55,15 +136,22 @@
                         </button>
                     </div>
                 </div>
-                <div style="font-weight:900; font-size: 13px; margin-right: 10px;">
+                <div class="gallery-selection-counts" style="font-weight:900; font-size: 13px; margin-right: 10px;">
                     대표: <span id="count-thm" style="color:var(--thumb);">0</span> |
                     삭제: <span id="count-del" style="color:var(--accent);">0</span>
                 </div>
-                <button id="applyBtn" class="copy-btn-mega" onclick="applyChanges()" style="padding: 8px 20px; font-size: 13px;">🚀 서버에 즉시 반영하기</button>
-                <label style="background: #1a1a24; padding: 8px 15px; border-radius: 25px; border: 1px solid #ff4d4d; display: flex; gap: 8px; align-items: center; cursor: pointer; color: #ff4d4d; font-size: 12px; font-weight: bold; box-shadow: 0 0 10px rgba(255, 77, 77, 0.1);">
+                <button id="applyBtn" class="copy-btn-mega" onclick="applyChanges()" title="선택한 대표 이미지 변경과 삭제를 적용합니다." style="padding: 8px 20px; font-size: 13px;">선택한 변경 적용</button>
+                <label class="gallery-reasons-control" style="background: #1a1a24; padding: 8px 15px; border-radius: 25px; border: 1px solid #ff4d4d; display: flex; gap: 8px; align-items: center; cursor: pointer; color: #ff4d4d; font-size: 12px; font-weight: bold; box-shadow: 0 0 10px rgba(255, 77, 77, 0.1);">
                     <input type="checkbox" id="toggle-reasons" checked onchange="toggleReasons()" style="accent-color: #ff4d4d; width: 14px; height: 14px; cursor: pointer;">
                     사유 보기
                 </label>
+                <div class="gallery-image-tools-controls" aria-label="이미지 형식과 WebP 도구">
+                    <label class="gallery-image-tools-format-toggle" for="toggle-image-formats">
+                        <input type="checkbox" id="toggle-image-formats" checked>
+                        형식 보기
+                    </label>
+                    <button type="button" id="galleryWebpCurrentFolder" class="gallery-image-tools-folder-button">현재 폴더 WebP</button>
+                </div>
             </div>
         </div>
 
@@ -76,12 +164,19 @@
                     <label style="display:flex; align-items:center; gap:4px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="dakiFilter" value="hide" class="view-radio" onchange="setDakiFilter('hide')"><div class="view-circle" style="background:#f44; width:12px; height:12px;"></div>제외</label>
                     <label style="display:flex; align-items:center; gap:4px; cursor:pointer; color:#39ff14; font-size:11px;"><input type="radio" name="dakiFilter" value="only" class="view-radio" onchange="setDakiFilter('only')"><div class="view-circle" style="background:#39ff14; width:12px; height:12px;"></div>다키만</label>
                 </div>
+                <div class="gallery-model-controls" style="background: #101820; padding: 6px 15px; border-radius: 25px; border: 1px solid #00a8cc; display: flex; gap: 12px; align-items: center;">
+                    <span style="font-size: 10px; font-weight: bold; color: #00d9ff;">MODEL</span>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#00d9ff; font-size:11px; font-weight:bold;"><input type="radio" name="modelFamily" value="v5" class="view-radio" onchange="onGalleryModelFamilyChange()"><div class="view-circle" style="background:#00d9ff; width:12px; height:12px;"></div>V5</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#00d9ff; font-size:11px; font-weight:bold;"><input type="radio" name="modelFamily" value="v4_5" class="view-radio" onchange="onGalleryModelFamilyChange()"><div class="view-circle" style="background:#00d9ff; width:12px; height:12px;"></div>V4.5</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="modelFamily" value="other" class="view-radio" onchange="onGalleryModelFamilyChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>그 외</label>
+                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="modelFamily" value="all" class="view-radio" checked onchange="onGalleryModelFamilyChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>모두</label>
+                </div>
                 <div class="gallery-sort-view-controls" style="background: #1a1a24; padding: 6px 15px; border-radius: 25px; border: 1px solid #333; display: flex; gap: 12px; align-items: center;">
                     <span style="font-size: 10px; font-weight: bold; color: #888;">SORT</span>
                     <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="name" class="view-radio" checked onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>이름순</label>
                     <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="count" class="view-radio" onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>갯수순</label>
-                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="newest" class="view-radio" onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>최신순</label>
-                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="oldest" class="view-radio" onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>오래된순</label>
+                    <label title="파일 생성 시간 기준 · 만화는 페이지 순서 유지" style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="newest" class="view-radio" onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>최신순 (생성)</label>
+                    <label title="파일 생성 시간 기준 · 만화는 페이지 순서 유지" style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#ccc; font-size:11px;"><input type="radio" name="sortMode" value="oldest" class="view-radio" onchange="onGallerySortChange()"><div class="view-circle" style="background:#888; width:12px; height:12px;"></div>오래된순 (생성)</label>
                     <div style="width:1px; height:12px; background:#444; margin: 0 5px;"></div>
                     <span style="font-size: 10px; font-weight: bold; color: #888;">VIEW</span>
                     <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#39ff14; font-size:11px; font-weight:bold;"><input type="radio" name="viewMode" value="general" class="view-radio" checked onchange="loadData()"><div class="view-circle" style="background:#39ff14; width:12px; height:12px;"></div>일반</label>
@@ -157,17 +252,30 @@
                           placeholder="정확 일치 · 공백/쉼표=AND · %문구%=부분 일치 · ||=OR (예: 프롬프트1, 프롬프트2 || 프롬프트3)"
                           oninput="handleGalleryPromptSearchInput()"
                           onkeydown="handleGalleryPromptSearchKeydown(event)"></textarea>
-                <button type="button" onclick="runGalleryPromptSearch()">검색</button>
+                <button id="galleryPromptSearchRunBtn" type="button" onclick="runGalleryPromptSearch()">검색</button>
                 <button type="button" onclick="clearGalleryPromptSearch()">초기화</button>
                 <button id="galleryPromptAddVirtualFolderBtn" type="button" onclick="openGalleryVirtualFolderCreateFromPrompt()">가상 폴더 추가</button>
             </div>
             <div id="galleryPromptAutocomplete" class="gallery-prompt-autocomplete"></div>
-            <div id="galleryPromptSearchStatus" class="gallery-prompt-search-status">프롬프트 검색 대기 중</div>
+            <div class="gallery-prompt-search-status-row">
+                <div id="galleryPromptSearchStatus" class="gallery-prompt-search-status" role="status">프롬프트 검색 대기 중</div>
+                <button id="galleryPromptSearchCancelBtn" class="gallery-prompt-search-cancel" type="button" onclick="cancelGalleryPromptSearch()" hidden>검색 취소</button>
+            </div>
         </div>
     </div>
     </div>
 
     <div id="content"><div class="loading-text">서버에서 구조를 불러오는 중입니다...<br>🚀</div></div>
+    <section id="dakiLibrary" aria-labelledby="dakiTitle" hidden>
+        <div class="daki-library-path"><a href="#gallery">갤러리</a><span> / </span><a href="#daki">Daki</a></div>
+        <div class="daki-toolbar">
+            <h1 id="dakiTitle" class="section-title">Daki 프로젝트</h1>
+            <button id="dakiCreate" class="nav-btn" type="button" disabled>＋ 프로젝트 추가</button>
+        </div>
+        <div class="daki-library-description"><a id="dakiBack" href="#daki" hidden>← 프로젝트 목록</a><p id="dakiSubtitle">앞면과 뒷면에 사용할 그림을 모아 보세요.</p></div>
+        <p id="dakiPageStatus" role="status" aria-live="polite"></p>
+        <div id="dakiContent"></div>
+    </section>
 
     <div id="reviewBoard"><div class="rv-header"><span>작업 리스트 확인</span><span onclick="toggleRv()" style="cursor:pointer; font-size:24px;">&times;</span></div><div class="rv-body" id="rvBody"></div></div>
     <button id="viewRvBtn" onclick="toggleRv()">👁️ 리뷰 보드</button>
@@ -181,8 +289,27 @@
     <nav id="galleryScrollNavigation" class="gallery-scroll-nav" aria-label="갤러리 페이지 내비게이션">
         <div class="gallery-scroll-nav-dots"></div>
     </nav>
-    <div id="zoomLayer" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:9000; align-items:center; justify-content:center; cursor:zoom-out;" onclick="closeZoom()">
-        <img id="zoomImg" style="max-width:95%; max-height:95%; object-fit:contain; box-shadow: 0 0 30px rgba(0,0,0,0.5);">
+    <div id="zoomLayer" role="dialog" aria-modal="true" aria-label="이미지 확대 보기 · 좌우 화살표로 이동 · Esc로 닫기" tabindex="-1" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:9000; align-items:center; justify-content:center; cursor:zoom-out;" onclick="closeZoom()">
+        <div class="gallery-zoom-image-stage"><img id="zoomImg" alt="확대 이미지"></div>
+        <div id="galleryZoomToolbar" class="gallery-zoom-toolbar" onclick="event.stopPropagation()">
+            <div class="gallery-zoom-heading">
+                <span id="galleryZoomPosition"></span>
+                <span id="galleryZoomFileName"></span>
+                <button type="button" onclick="closeZoom()"><kbd>Esc</kbd> 닫기</button>
+            </div>
+            <div id="galleryZoomTagPicker" class="gallery-zoom-tag-picker" hidden>
+                <label for="galleryZoomTagSelect">↑로 붙일 태그</label>
+                <select id="galleryZoomTagSelect" onchange="selectGalleryTagForAssignment(this.value); document.getElementById('zoomLayer').focus({preventScroll:true})"></select>
+                <span id="galleryZoomTagPreview" class="gallery-zoom-tag-preview"></span>
+            </div>
+            <div class="gallery-zoom-key-guide" aria-label="키보드 방향키 안내">
+                <span class="gallery-zoom-key-prev"><kbd>←</kbd> 이전 그림</span>
+                <button id="galleryZoomTagAction" class="gallery-zoom-key-tag" type="button" onclick="runGalleryZoomAction('tag')"><kbd>↑</kbd><span>태그 모드 꺼짐</span></button>
+                <span class="gallery-zoom-key-next"><kbd>→</kbd> 다음 그림</span>
+                <button id="galleryZoomDeleteAction" class="gallery-zoom-key-delete" type="button" onclick="runGalleryZoomAction('delete')"><kbd>↓</kbd><span>화살표 삭제 꺼짐</span></button>
+            </div>
+            <div id="galleryZoomActionStatus" class="gallery-zoom-action-status" role="status" aria-live="polite">키보드 ← →로 그림을 넘기세요.</div>
+        </div>
     </div>
 
     <div id="galleryUpscaleLayer" class="gallery-upscale-layer">
@@ -195,9 +322,12 @@
                 <button class="gallery-upscale-close" onclick="closeGalleryUpscaleModal()">×</button>
             </div>
 
-            <div class="gallery-upscale-section">
-                <label>목표 해상도</label>
+            <div class="gallery-upscale-dialog-body">
+            <div class="gallery-upscale-section" id="galleryUpscaleResolutionSection">
+                <label>확대 배수 또는 목표 해상도</label>
                 <div class="gallery-upscale-preset-row">
+                    <button type="button" onclick="applyGalleryUpscaleMultiplierPreset(2)">2배</button>
+                    <button type="button" onclick="applyGalleryUpscaleMultiplierPreset(4)">4배</button>
                     <button type="button" onclick="applyGalleryUpscalePreset(2500, 8000)">
                         2500 × 8000
                     </button>
@@ -225,6 +355,10 @@
                 </div>
 
                 <label class="gallery-upscale-check">
+                    <input id="galleryUpscaleFit516" type="checkbox" onchange="updateGalleryUpscaleRatioInfo()">
+                    <span>5:16 자동 맞춤 · 선택한 배수로 확대 후 중앙 자르기</span>
+                </label>
+                <label class="gallery-upscale-check">
                     <input id="galleryUpscaleRatioLock" type="checkbox" checked>
                     <span>원본 비율 유지</span>
                 </label>
@@ -240,13 +374,41 @@
                     <option value="realcugan" selected>Real-CUGAN / 애니 그림 추천</option>
                     <option value="waifu2x">Waifu2x CUNet / 선화 보존·노이즈 억제</option>
                     <option value="lanczos">Lanczos / 엔진 없을 때 임시 리사이즈</option>
+                    <option value="illustrationjanai">중간 확대 · IllustrationJaNai V3detail FDAT M 4×</option>
+                    <option value="animesharp">최종 확대 · AnimeSharp V4 RCAN 2×</option>
+                    <option value="nai">NovelAI · 5:16 자동 맞춤</option>
                 </select>
-                <div class="gallery-upscale-help">
-                    Real-CUGAN은 디테일 복원, Waifu2x는 원본 선화와 색 보존에 적합합니다.
+                <div id="galleryUpscaleModelPanel" class="upscale-model-panel" aria-live="polite">
+                    <div class="upscale-model-heading">
+                        <strong id="galleryUpscaleModelName">Real-CUGAN</strong>
+                        <span id="galleryUpscaleModelState" class="upscale-model-state" data-state="loading">확인 중</span>
+                    </div>
+                    <p id="galleryUpscaleModelDescription" class="upscale-model-description"></p>
+                    <p id="galleryUpscaleModelMessage" class="upscale-model-message" role="status"></p>
+                    <div id="galleryUpscaleModelProgressArea" class="upscale-model-progress-area" hidden>
+                        <div class="upscale-model-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                            <div id="galleryUpscaleModelProgressBar" class="upscale-model-progress-bar"></div>
+                        </div>
+                        <span id="galleryUpscaleModelProgressText" class="upscale-model-progress-text"></span>
+                    </div>
+                    <div class="upscale-model-actions">
+                        <button id="galleryUpscaleModelDownload" type="button" hidden>다운로드</button>
+                        <button id="galleryUpscaleModelCancel" type="button" hidden>다운로드 취소</button>
+                        <button id="galleryUpscaleModelDelete" type="button" hidden>설치 삭제</button>
+                        <button id="galleryUpscaleModelRetry" type="button" hidden>다시 확인</button>
+                        <button id="galleryUpscaleNaiRetry" type="button" hidden>미리보기 다시 시도</button>
+                    </div>
+                    <a id="galleryUpscaleWaifuWebsite" class="upscale-model-website" href="https://unlimited.waifu2x.net/" target="_blank" rel="noopener" hidden>waifu2x 웹사이트 열기</a>
+                    <p id="galleryUpscaleWaifuInfo" class="upscale-model-description" hidden>브라우저에서 처리하므로 PC 성능 영향을 받습니다. 이미지는 업로드되지 않고 브라우저에서 처리됩니다.</p>
+                    <div id="galleryUpscaleNaiPreview" class="upscale-nai-preview" hidden>
+                        <strong>NAI 업스케일 크기 미리보기</strong>
+                        <p id="galleryUpscaleNaiSteps" class="upscale-nai-steps"></p>
+                        <p class="upscale-nai-note">중앙을 잘라 5:16에 맞추고, 비율을 늘이지 않고 NAI 입력 크기로 조정합니다. 원본은 보존되며 결과는 요청 목표보다 작을 수 있습니다.</p>
+                    </div>
                 </div>
             </div>
 
-            <div class="gallery-upscale-section">
+            <div class="gallery-upscale-section" id="galleryUpscaleQualitySection">
                 <label>처리 방식</label>
 
                 <div class="gallery-upscale-quality-list">
@@ -279,13 +441,26 @@
                     목표 해상도는 그대로 유지됩니다. 처리 방식은 같은 해상도 안에서 속도, 선명도, 디테일 보존 정도를 조절합니다.
                 </div>
             </div>
+            </div>
 
             <div class="gallery-upscale-actions">
                 <button class="secondary" onclick="closeGalleryUpscaleModal()">닫기</button>
-                <button class="success" onclick="startGalleryUpscale()">업스케일 시작</button>
+                <button id="galleryUpscaleStart" class="success" onclick="startGalleryUpscale()">업스케일 시작</button>
             </div>
         </div>
     </div>
+
+    <aside id="galleryIndexJobPanel" class="gallery-index-job-panel" aria-label="작업 진행 상황" hidden>
+        <div class="gallery-index-job-header">
+            <strong><span class="gallery-index-job-indicator" aria-hidden="true"></span>진행 중 작업</strong>
+            <span>갤러리를 계속 이용할 수 있어요</span>
+        </div>
+        <div class="gallery-index-job-list">
+            <div id="galleryIndexJobBody" class="gallery-index-job-item" hidden></div>
+            <div id="galleryPromptIndexJobBody" class="gallery-index-job-item" hidden></div>
+            <div id="dakiStyleSyncJobBody" class="gallery-index-job-item" hidden></div>
+        </div>
+    </aside>
 
     <div id="galleryUpscaleJobPanel" class="gallery-upscale-job-panel">
         <div class="gallery-upscale-job-header">
@@ -297,7 +472,21 @@
 
 
     <script src="/static/common_anlas_warning.js"></script>
+    <script src="/static/gallery_catalog.js"></script>
+    <script src="/static/gallery_recycling.js"></script>
     <script src="/static/index.js"></script>
+    <script src="/static/gallery_image_tools.js"></script>
+    <script src="/static/gallery_index_jobs.js"></script>
+    <script src="/static/gallery_zoom.js"></script>
+    <script src="/static/generation_settings.js"></script>
+    <script src="/static/gallery_inpaint.js"></script>
+    <script src="/static/gallery_rules.js"></script>
+    <script src="/static/upscale_models.js"></script>
+    <script src="/static/gallery_upscale.js"></script>
+    <script src="/static/gallery_managers.js"></script>
+    <script src="/static/gallery_selection.js"></script>
+    <script src="/static/gallery_dates.js"></script>
+    <script src="/static/gallery_layout.js"></script>
     <div id="statsLayer">
         <div class="stats-card">
             <div class="stats-header">
@@ -615,7 +804,10 @@
         <button class="image-context-item" onclick="revealContextImage()">경로 탐색</button>
         <button class="image-context-item" onclick="openPromptViewer()">Prompt 보기</button>
         <button class="image-context-item" onclick="sendContextImageToCanvas()">캔버스로 가져오기</button>
-        <button class="image-context-item" onclick="openGalleryInpaintFromContext()">인페인팅</button>
+        <button id="galleryContextWebp" class="image-context-item" onclick="closeImageContextMenu(); openGalleryContextWebpDialog()">WebP 변환</button>
+        <button id="dakiContextAdd" class="image-context-item" hidden onclick="closeImageContextMenu(); Daki.openAdd(activeImageContext)">프로젝트에 추가 · Daki</button>
+        <button id="dakiPersonalStyleAdd" class="image-context-item" hidden onclick="closeImageContextMenu(); DakiPersonalStyles.openEditor({path: activeImageContext.path})">개인 그림체로 추가</button>
+        <button id="galleryContextInpaint" class="image-context-item" onclick="openContextImageInpaint()">인페인팅</button>
     </div>
     <div id="galleryMultiFolderContextMenu" class="gallery-multi-folder-context-menu">
         <button id="galleryMultiFolderOpenBtn" type="button" onclick="openSelectedGalleryFolders()">📂 선택한 폴더 열기</button>
@@ -745,9 +937,9 @@
             <label>Negative Prompt</label>
             <textarea id="galleryInpaintNegativePrompt" rows="4"></textarea>
 
-            <div style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px;">
+            <div id="galleryInpaintGenerationSettings" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px;">
                 <div>
-                    <label>Strength</label>
+                    <label>Inpainting Strength</label>
                     <input id="galleryInpaintStrength" type="number" value="0.65" min="0" max="1" step="0.01">
                 </div>
                 <div>
@@ -798,11 +990,27 @@
     <div id="galleryDesignSettingsLayer" class="gallery-design-settings-layer">
         <div class="gallery-design-settings-card">
             <div class="gallery-design-settings-header">
-                <span>⚙️ 갤러리 디자인 설정</span>
+                <span>⚙️ 갤러리 설정</span>
                 <button onclick="closeGalleryDesignSettings()">×</button>
             </div>
 
             <div class="gallery-design-settings-body">
+                <section id="naiAccountSettings" class="nai-account-settings" aria-labelledby="naiAccountTitle">
+                    <div class="nai-account-heading"><b id="naiAccountTitle">NovelAI</b><button type="button" id="naiSettingsRefresh">잔액 새로고침 ↻</button></div>
+                    <div class="nai-account-balances"><div><span>남은 할당량</span><strong id="naiSettingsQuota">—</strong></div><div><span>남은 Anlas</span><strong id="naiSettingsAnlas">—</strong></div></div>
+                    <p id="naiAccountDetail" class="nai-account-detail" role="status" aria-live="polite">계정 정보를 확인하고 있습니다.</p>
+                    <form id="naiKeyForm" autocomplete="off">
+                        <label for="naiApiKey">API 키 <span id="naiKeyHint">확인 중</span></label>
+                        <div class="nai-key-input-row"><input id="naiApiKey" type="password" autocomplete="new-password" spellcheck="false" placeholder="변경할 API 키 입력" aria-describedby="naiKeyHelp"><button type="button" id="naiKeyReveal" aria-pressed="false">표시</button><button type="submit" id="naiKeySave" class="nai-key-save">키 저장</button></div>
+                        <div class="nai-key-footer"><small id="naiKeyHelp">저장한 키는 공유 그림체 테스트와 인페인팅에 사용됩니다.</small><button type="button" id="naiKeyRemove">키 삭제</button></div>
+                        <p id="naiKeyStatus" role="status" aria-live="polite"></p>
+                    </form>
+                </section>
+                <label class="gallery-design-check-row">
+                    <input type="checkbox" id="dakiEnabledInput" disabled>
+                    <span><b>Daki 사용</b><small>라이브러리와 우클릭 메뉴에 Daki 프로젝트를 표시합니다. 꺼도 프로젝트와 후보는 보관됩니다.</small></span>
+                </label>
+                <div id="dakiSettingsStatus" class="daki-settings-status" role="status" aria-live="polite"></div>
                 <div class="gallery-design-setting-row">
                     <div>
                         <div class="gallery-design-setting-title">상단 탭 줄 수</div>
@@ -861,8 +1069,8 @@
 
                 <div class="gallery-design-setting-row gallery-design-setting-row--stacked-control">
                     <div>
-                        <div class="gallery-design-setting-title">이미지 점진 렌더링 단위</div>
-                        <div class="gallery-design-setting-desc">한 번에 화면에 추가할 이미지 수입니다. 스크롤하면 다음 묶음을 자동으로 표시합니다.</div>
+                        <div class="gallery-design-setting-title">스크롤할 때 추가할 이미지 수</div>
+                        <div class="gallery-design-setting-desc">다음 묶음의 크기입니다. 표시 중에도 조작할 수 있도록 작은 단위로 나누어 불러옵니다.</div>
                     </div>
                     <div class="gallery-design-setting-control">
                         <input type="number" id="galleryImageRenderBatchSizeInput" min="100" max="10000" step="100" value="1000" oninput="setGalleryImageRenderBatchSize(this.value)">
@@ -895,6 +1103,12 @@
                     </div>
                 </div>
 
+                <details class="gallery-legacy-access">
+                    <summary>이전 버전 자료</summary>
+                    <p>종료된 제작소의 이미지를 확인할 때만 여세요. 기존 파일과 설정은 그대로 보존됩니다.</p>
+                    <a href="/legacy-generation" target="_blank" rel="noopener">이전 생성 자료 열기 ↗</a>
+                </details>
+
                 <div class="gallery-design-settings-actions">
                     <button class="secondary" onclick="resetGalleryDesignSettings()">기본값</button>
                     <button onclick="closeGalleryDesignSettings()">닫기</button>
@@ -912,12 +1126,14 @@
             <button type="button" onclick="clearGalleryMultiFolderSelection()">취소</button>
         </div>
     </div>
+    <div class="gallery-mode-bars">
     <div id="galleryBulkDeleteBar" class="gallery-bulk-delete-bar">
         <div class="gallery-bulk-delete-info">
             <b>🧹 삭제 모드</b>
             <span id="galleryBulkDeleteCountText">선택 없음</span>
         </div>
         <div class="gallery-bulk-delete-actions">
+            <button id="galleryZoomDeleteModeBtn" type="button" class="secondary" aria-pressed="false" onclick="toggleGalleryZoomActionMode('delete')">↓ 화살표 삭제 OFF</button>
             <button type="button" class="secondary" onclick="clearGalleryBulkDeleteSelection()">선택 해제</button>
             <button type="button" class="danger" onclick="applyGalleryBulkDeleteSelection()">선택 항목 휴지통으로</button>
             <button type="button" onclick="toggleGalleryBulkDeleteMode()">닫기</button>
@@ -929,9 +1145,11 @@
             <span id="galleryTagAssignmentModeBarText">선택 없음</span>
         </div>
         <div class="gallery-tag-assignment-actions">
+            <button id="galleryZoomTagModeBtn" type="button" class="secondary" aria-pressed="false" onclick="toggleGalleryZoomActionMode('tag')">↑ 화살표 태그 OFF</button>
             <button type="button" class="secondary" onclick="clearGalleryTagAssignmentSelection()">선택 해제</button>
             <button type="button" onclick="toggleGalleryTagAssignmentMode()">닫기</button>
         </div>
+    </div>
     </div>
     <div id="galleryBulkDeleteConfirmLayer" class="gallery-bulk-delete-confirm-layer"
         onclick="if (event.target === this) closeGalleryBulkDeleteConfirm()">
@@ -974,21 +1192,55 @@
     <div id="galleryRadialTagMenu" class="gallery-radial-tag-menu"
          role="menu" aria-label="다이얼 태그 선택" aria-hidden="true"></div>
 
-    <div id="galleryPromptIndexModal" class="gallery-prompt-index-layer" style="display:none;">
-        <div class="gallery-prompt-index-card">
-            <div class="gallery-prompt-index-header">
-                <span>프롬프트 인덱스 관리</span>
-                <button type="button" onclick="closeGalleryPromptIndexModal()">×</button>
+    <div id="galleryIndexModal" class="gallery-index-layer" style="display:none;" aria-hidden="true">
+        <section class="gallery-index-card" role="dialog" aria-modal="true" aria-labelledby="galleryIndexTitle" aria-describedby="galleryIndexDescription" tabindex="-1">
+            <div class="gallery-index-header">
+                <div class="gallery-index-heading">
+                    <span class="gallery-index-icon" aria-hidden="true">↻</span>
+                    <div>
+                        <h2 id="galleryIndexTitle">갤러리 목록 갱신</h2>
+                        <p id="galleryIndexDescription">이미지·폴더 목록을 최신 상태로 정리합니다. 검색과 자동완성은 ‘프롬프트 검색 인덱스’에서 별도로 준비하세요.</p>
+                    </div>
+                </div>
+                <button type="button" class="gallery-index-close" onclick="closeGalleryIndexModal()" aria-label="갤러리 목록 갱신 창 닫기">×</button>
             </div>
-            <div id="galleryPromptIndexModalBody" class="gallery-prompt-index-body"></div>
-            <div class="gallery-prompt-index-actions">
-                <button type="button" id="galleryPromptIndexMissingBtn" onclick="startGalleryPromptIndexBuild('missing')">새 파일만 추가</button>
-                <button type="button" onclick="startGalleryPromptIndexBuild(false)">프롬프트 인덱스 갱신</button>
-                <button type="button" onclick="startGalleryPromptIndexBuild(true)">프롬프트 인덱스 재생성</button>
-                <button type="button" class="danger" onclick="deleteGalleryPromptIndex()">프롬프트 인덱스 삭제</button>
-                <button type="button" class="secondary" onclick="closeGalleryPromptIndexModal()">닫기</button>
+            <div id="galleryIndexModalBody" class="gallery-index-body"></div>
+            <div class="gallery-index-footer">
+                <p class="gallery-index-note">갱신 중에도 갤러리를 이용할 수 있으며, 진행 상황은 화면 아래에 표시됩니다.</p>
+                <div class="gallery-index-actions">
+                    <button type="button" class="secondary" onclick="closeGalleryIndexModal()">갤러리 계속 보기</button>
+                    <button type="button" id="galleryIndexBuildBtn" class="primary" onclick="startGalleryIndexRebuild()">갤러리 목록 갱신 시작</button>
+                </div>
             </div>
-        </div>
+        </section>
+    </div>
+
+    <div id="galleryPromptIndexModal" class="gallery-prompt-index-layer gallery-index-layer" style="display:none;" aria-hidden="true">
+        <section class="gallery-prompt-index-card gallery-index-card" role="dialog" aria-modal="true" aria-labelledby="galleryPromptIndexTitle" aria-describedby="galleryPromptIndexDescription" tabindex="-1">
+            <div class="gallery-prompt-index-header gallery-index-header">
+                <div class="gallery-index-heading">
+                    <span class="gallery-index-icon" aria-hidden="true">⌕</span>
+                    <div>
+                        <h2 id="galleryPromptIndexTitle">프롬프트 검색 인덱스</h2>
+                        <p id="galleryPromptIndexDescription">프롬프트를 미리 읽어 빠른 검색과 자동완성에 사용할 데이터를 만듭니다.</p>
+                    </div>
+                </div>
+                <button type="button" class="gallery-index-close" onclick="closeGalleryPromptIndexModal()" aria-label="프롬프트 검색 인덱스 창 닫기">×</button>
+            </div>
+            <div id="galleryPromptIndexModalBody" class="gallery-prompt-index-body gallery-index-body"></div>
+            <div class="gallery-index-footer">
+                <p class="gallery-index-note">창을 닫아도 인덱스 작업은 계속됩니다. 화면 아래에서 진행 상황을 확인하세요.</p>
+                <div class="gallery-prompt-index-actions gallery-index-actions">
+                    <button type="button" id="galleryPromptIndexMissingBtn" class="primary" onclick="startGalleryPromptIndexBuild('missing')">새 파일만 추가</button>
+                    <button type="button" id="galleryPromptIndexBuildBtn" onclick="startGalleryPromptIndexBuild(false)">검색 인덱스 갱신</button>
+                    <button type="button" id="galleryPromptIndexRebuildBtn" onclick="startGalleryPromptIndexBuild(true)">전체 재생성</button>
+                    <button type="button" id="galleryPromptIndexDeleteBtn" class="danger" onclick="deleteGalleryPromptIndex()">인덱스 삭제</button>
+                </div>
+                <div class="gallery-index-actions gallery-index-return">
+                    <button type="button" class="secondary" onclick="closeGalleryPromptIndexModal()">갤러리 계속 보기</button>
+                </div>
+            </div>
+        </section>
     </div>
 
     <div id="galleryVirtualFolderLayer" class="gallery-virtual-folder-layer" style="display:none;" aria-hidden="true">
@@ -1002,7 +1254,7 @@
                 <div class="gallery-virtual-folder-create-form">
                     <input id="galleryVirtualFolderNameInput" type="text" placeholder="폴더 이름" maxlength="200">
                     <div class="gallery-virtual-folder-query-field">
-                        <input id="galleryVirtualFolderQueryInput" type="text" placeholder="저장할 프롬프트 (선택)" oninput="updateGalleryVirtualFolderAutocomplete('create')" onkeydown="handleGalleryVirtualFolderAutocompleteKeydown(event, 'create')" autocomplete="off">
+                        <input id="galleryVirtualFolderQueryInput" type="text" placeholder="저장할 프롬프트 (선택)" aria-describedby="galleryVirtualFolderQuerySyntaxHelp" oninput="updateGalleryVirtualFolderAutocomplete('create')" onkeydown="handleGalleryVirtualFolderAutocompleteKeydown(event, 'create')" autocomplete="off">
                         <div id="galleryVirtualFolderAutocomplete" class="gallery-prompt-autocomplete gallery-virtual-folder-autocomplete" role="listbox" aria-label="가상 폴더 프롬프트 자동완성"></div>
                     </div>
                     <select id="galleryVirtualFolderParentInput"><option value="">루트에 추가</option></select>
@@ -1010,6 +1262,19 @@
                     <button type="button" onclick="createGalleryVirtualFolderFromManager()">추가</button>
                 </div>
                 <div class="gallery-virtual-folder-fields-help">프롬프트를 입력하면 검색 결과를 동적으로 묶습니다. 비워 둔 폴더는 수동으로 사용할 수 있습니다.</div>
+                <p id="galleryVirtualFolderQuerySyntaxHelp" class="gallery-virtual-folder-query-help-inline">쉼표·공백·줄바꿈=모두 포함, ||=하나 이상, %문구%=부분 일치 (예: %hair%). 여러 단어 태그는 blue_hair처럼 입력하세요.</p>
+                <details class="gallery-virtual-folder-query-help">
+                    <summary>프롬프트 입력 방법</summary>
+                    <div class="gallery-virtual-folder-query-help-body">
+                        <p>쉼표·공백·줄바꿈은 AND로 묶고, ||는 OR 그룹을 나눕니다.</p>
+                        <ul>
+                            <li><code>watercolor, sketch</code> — 두 태그 모두 포함</li>
+                            <li><code>watercolor || sketch</code> — 둘 중 하나 포함</li>
+                            <li><code>watercolor, sketch || ink</code> — 앞의 두 태그 모두 포함하거나 ink 포함</li>
+                        </ul>
+                        <p><code>%hair%</code>는 hair 부분 일치입니다. 여러 단어 태그는 <code>blue_hair</code>처럼 밑줄로 연결하세요.</p>
+                    </div>
+                </details>
                 <div id="galleryVirtualFolderManagerTree" class="gallery-virtual-folder-manager-tree"></div>
             </div>
             <div class="gallery-virtual-folder-footer"><button type="button" class="gallery-virtual-folder-secondary" onclick="closeGalleryVirtualFolderManager()">닫기</button></div>
@@ -1030,9 +1295,10 @@
                     </label>
                     <label class="gallery-virtual-folder-editor-field">저장할 프롬프트
                         <div class="gallery-virtual-folder-query-field">
-                            <textarea id="galleryVirtualFolderEditorQueryInput" rows="3" placeholder="선택 사항" oninput="updateGalleryVirtualFolderAutocomplete('editor')" onkeydown="handleGalleryVirtualFolderAutocompleteKeydown(event, 'editor')" autocomplete="off"></textarea>
+                            <textarea id="galleryVirtualFolderEditorQueryInput" rows="3" placeholder="선택 사항" aria-describedby="galleryVirtualFolderEditorQuerySyntaxHelp" oninput="updateGalleryVirtualFolderAutocomplete('editor')" onkeydown="handleGalleryVirtualFolderAutocompleteKeydown(event, 'editor')" autocomplete="off"></textarea>
                             <div id="galleryVirtualFolderEditorAutocomplete" class="gallery-prompt-autocomplete gallery-virtual-folder-autocomplete" role="listbox" aria-label="가상 폴더 편집 프롬프트 자동완성"></div>
                         </div>
+                        <p id="galleryVirtualFolderEditorQuerySyntaxHelp" class="gallery-virtual-folder-query-help-inline">쉼표·공백·줄바꿈=모두 포함, ||=하나 이상, %문구%=부분 일치 (예: %hair%). 여러 단어 태그는 blue_hair처럼 입력하세요.</p>
                     </label>
                     <label class="gallery-virtual-folder-editor-field">검색 범위
                         <textarea id="galleryVirtualFolderEditorScopeInput" rows="3" placeholder='JSON 배열 또는 한 경로 (비워 두면 전체)'></textarea>

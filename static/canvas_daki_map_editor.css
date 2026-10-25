@@ -1,0 +1,543 @@
+.canvas-daki-map-dialog {
+    box-sizing: border-box;
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+    width: calc(100vw - 24px);
+    height: calc(100dvh - 24px);
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+    min-width: 0;
+    margin: auto;
+    padding: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    color: var(--text-main);
+    font: inherit;
+}
+
+.canvas-daki-map-dialog[open] {
+    display: flex;
+}
+
+.canvas-daki-map-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.58);
+}
+
+.canvas-daki-map-header,
+.canvas-daki-map-footer,
+.canvas-daki-map-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.canvas-daki-map-header {
+    justify-content: space-between;
+}
+
+.canvas-daki-map-header h2 {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    color: var(--text-main);
+    font-size: 18px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.canvas-daki-map-footer {
+    justify-content: flex-end;
+}
+
+.canvas-daki-map-dialog button,
+.canvas-daki-map-dialog select,
+.canvas-daki-map-dialog input {
+    box-sizing: border-box;
+    max-width: 100%;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-main);
+    font: inherit;
+}
+
+.canvas-daki-map-dialog button {
+    flex: 0 0 auto;
+    min-height: 36px;
+    padding: 6px 10px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.canvas-daki-map-dialog button:hover:not(:disabled) {
+    border-color: var(--accent-blue);
+}
+
+.canvas-daki-map-dialog button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.canvas-daki-map-dialog button:focus-visible,
+.canvas-daki-map-dialog select:focus-visible,
+.canvas-daki-map-dialog input:focus-visible,
+.canvas-daki-map-rect:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+}
+
+.canvas-daki-map-body {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    align-items: stretch;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior: contain;
+}
+
+.canvas-daki-map-preview {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.canvas-daki-map-controls {
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.canvas-daki-map-zoom-toolbar {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 32px;
+}
+
+.canvas-daki-map-dialog .canvas-daki-map-zoom-toolbar button,
+.canvas-daki-map-zoom-select {
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.canvas-daki-map-dialog .canvas-daki-map-zoom-toolbar button {
+    min-width: 32px;
+}
+
+.canvas-daki-map-zoom-select {
+    flex: 0 1 auto;
+    width: auto;
+    min-width: 120px;
+}
+
+.canvas-daki-map-stage {
+    position: relative;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 220px;
+    overflow: auto;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    overscroll-behavior: contain;
+}
+
+.canvas-daki-map-space {
+    position: relative;
+    display: grid;
+    place-items: center;
+    box-sizing: border-box;
+    min-width: 100%;
+    min-height: 100%;
+}
+
+.canvas-daki-map-frame {
+    position: relative;
+    flex: 0 0 auto;
+    max-width: none;
+    max-height: none;
+    overflow: hidden;
+    touch-action: none;
+}
+
+.canvas-daki-map-image,
+.canvas-daki-map-overlays {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.canvas-daki-map-image {
+    object-fit: fill;
+    user-select: none;
+    pointer-events: none;
+}
+
+.canvas-daki-map-overlays {
+    overflow: visible;
+    touch-action: none;
+}
+
+.canvas-daki-map-rect {
+    position: absolute;
+    box-sizing: border-box;
+    min-width: 1px;
+    min-height: 1px;
+    border: 2px solid var(--region-color, var(--accent-blue));
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--region-color, var(--accent-blue)) 12%, transparent);
+    opacity: 1;
+    cursor: move;
+    touch-action: none;
+    user-select: none;
+}
+
+.canvas-daki-map-rect.is-selected-part {
+    background: color-mix(in srgb, var(--region-color, var(--accent-blue)) 24%, transparent);
+}
+
+.canvas-daki-map-rect.is-selected-rect {
+    border-width: 3px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+
+.canvas-daki-map-handle {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    min-height: 16px !important;
+    padding: 0 !important;
+    border: 2px solid var(--card-bg) !important;
+    border-radius: 50% !important;
+    background: var(--accent-blue) !important;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+    cursor: nwse-resize !important;
+    touch-action: none;
+}
+
+.canvas-daki-map-handle.handle-nw,
+.canvas-daki-map-handle.handle-ne {
+    top: 0;
+}
+
+.canvas-daki-map-handle.handle-sw,
+.canvas-daki-map-handle.handle-se {
+    bottom: 0;
+}
+
+.canvas-daki-map-handle.handle-nw,
+.canvas-daki-map-handle.handle-sw {
+    left: 0;
+}
+
+.canvas-daki-map-handle.handle-ne,
+.canvas-daki-map-handle.handle-se {
+    right: 0;
+}
+
+.canvas-daki-map-handle.handle-ne,
+.canvas-daki-map-handle.handle-sw {
+    cursor: nesw-resize !important;
+}
+
+.canvas-daki-map-field,
+.canvas-daki-map-number-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+    color: var(--text-main);
+    line-height: 1.4;
+}
+
+.canvas-daki-map-field {
+    margin-bottom: 10px;
+}
+
+.canvas-daki-map-field > span,
+.canvas-daki-map-number-field > span {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.canvas-daki-map-field select {
+    flex: 1 1 150px;
+    width: 1px;
+    min-width: 0;
+    min-height: 36px;
+    padding: 6px 8px;
+}
+
+.canvas-daki-map-actions {
+    margin: 4px 0 12px;
+}
+
+.canvas-daki-map-number-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+    min-width: 0;
+}
+
+.canvas-daki-map-number-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+}
+
+.canvas-daki-map-number-field > span {
+    line-height: 1.4;
+    overflow-wrap: normal;
+    word-break: keep-all;
+}
+
+.canvas-daki-map-number-field input {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    padding: 6px 8px;
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+.canvas-daki-map-number-field input::-webkit-inner-spin-button,
+.canvas-daki-map-number-field input::-webkit-outer-spin-button {
+    margin: 0;
+    appearance: none;
+}
+
+.canvas-daki-map-help,
+.canvas-daki-map-note {
+    margin: 12px 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+.canvas-daki-map-note {
+    margin-top: 6px;
+    font-size: 12px;
+}
+
+.canvas-daki-map-reset {
+    max-width: 100%;
+    white-space: normal;
+}
+
+.canvas-daki-map-apply {
+    border-color: var(--accent-blue) !important;
+    background: var(--accent-blue) !important;
+    color: #fff !important;
+}
+
+@media (max-width: 640px) {
+    .canvas-daki-map-body {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(220px, 1fr) minmax(0, 1fr);
+        gap: 12px;
+    }
+
+    .canvas-daki-map-stage {
+        min-height: 220px;
+    }
+}
+
+@media (min-width: 641px) and (max-width: 900px) {
+    .canvas-daki-map-body {
+        grid-template-columns: minmax(0, 1fr) 240px;
+    }
+}
+
+.canvas-daki-map-inline {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    color: var(--text-main);
+    font: inherit;
+}
+
+.canvas-daki-map-inline .canvas-daki-map-header h2 {
+    font-size: 18px;
+}
+
+.canvas-daki-map-inline-body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.canvas-daki-map-inline .canvas-daki-map-controls {
+    flex: 0 0 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: visible;
+}
+
+.canvas-daki-map-inline button,
+.canvas-daki-map-inline select,
+.canvas-daki-map-inline input,
+.canvas-daki-map-inline textarea {
+    box-sizing: border-box;
+    max-width: 100%;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-main);
+    font: inherit;
+}
+
+.canvas-daki-map-inline button {
+    flex: 0 0 auto;
+    min-height: 34px;
+    padding: 5px 9px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.canvas-daki-map-inline button:hover:not(:disabled) {
+    border-color: var(--accent-blue);
+}
+
+.canvas-daki-map-inline button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.canvas-daki-map-inline button:focus-visible,
+.canvas-daki-map-inline select:focus-visible,
+.canvas-daki-map-inline input:focus-visible,
+.canvas-daki-map-inline textarea:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+}
+
+.canvas-daki-map-inline .canvas-daki-map-zoom-toolbar {
+    flex: 0 0 auto;
+    gap: 6px;
+    min-height: 32px;
+}
+
+.canvas-daki-map-inline .canvas-daki-map-zoom-toolbar button {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.canvas-daki-map-inline .canvas-daki-map-field select {
+    min-height: 34px;
+    font-size: 13px;
+}
+
+.canvas-daki-map-inline .canvas-daki-map-actions {
+    margin: 4px 0 10px;
+}
+
+.canvas-daki-map-custom-form {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+    margin: 0 0 10px;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+}
+
+.canvas-daki-map-custom-form[hidden] {
+    display: none;
+}
+
+.canvas-daki-map-custom-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    min-width: 0;
+    color: var(--text-main);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.canvas-daki-map-custom-field input,
+.canvas-daki-map-custom-field select,
+.canvas-daki-map-custom-field textarea {
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    padding: 6px 8px;
+    font: inherit;
+}
+
+.canvas-daki-map-custom-field textarea {
+    resize: vertical;
+}
+
+.canvas-daki-map-custom-help,
+.canvas-daki-map-custom-error,
+.canvas-daki-map-empty {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.canvas-daki-map-custom-error:not(:empty) {
+    color: var(--danger-color, #dc2626);
+}
+
+.canvas-daki-map-add-custom {
+    width: 100%;
+    margin: -4px 0 10px;
+    font-size: 12px !important;
+}
+
+.canvas-daki-map-inline-overlay {
+    z-index: 300;
+    box-sizing: content-box;
+    overflow: visible;
+    background: transparent;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.canvas-daki-map-empty[hidden] {
+    display: none;
+}

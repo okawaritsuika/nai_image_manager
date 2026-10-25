@@ -1,0 +1,112 @@
+.canvas-connection-tools,
+.canvas-connection-tools *,
+.canvas-project-popover,
+.canvas-project-popover * { box-sizing: border-box; }
+.canvas-connection-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.canvas-connection-tools > #canvasStyleLinkBtn,
+.canvas-project-connect { flex: 0 0 auto; white-space: nowrap; }
+.canvas-project-inline { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; }
+.canvas-project-connect { height: 34px; padding: 8px 10px; border-radius: 8px; background: var(--accent-blue); color: white; font-size: 12px; line-height: 18px; }
+.canvas-project-connect:hover { background: var(--accent-blue-hover); }
+.canvas-project-status { position: relative; flex: 0 1 260px; width: 260px; max-width: 100%; min-width: 0; }
+.canvas-project-status[hidden],
+.canvas-project-dialog [hidden] { display: none !important; }
+#canvasProjectSummary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    height: 44px;
+    min-width: 0;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--btn-secondary);
+    cursor: pointer;
+    list-style: none;
+}
+#canvasProjectSummary::-webkit-details-marker { display: none; }
+#canvasProjectSummary::marker { content: ""; }
+#canvasProjectSummary:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.canvas-project-side { flex: 0 0 auto; padding: 2px 7px; border-radius: 99px; background: color-mix(in srgb, var(--accent-blue) 24%, var(--bg-color)); color: #d8d2ff; font-size: 11px; font-weight: 700; line-height: 1.5; }
+.canvas-project-summary-names { display: flex; flex: 1 1 auto; flex-direction: column; gap: 1px; min-width: 0; overflow: hidden; line-height: 1.2; }
+.canvas-project-summary-project { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-project-summary-label { display: block; min-width: 0; overflow: hidden; color: var(--text-main); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-project-summary-state { flex: 0 0 auto; color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.canvas-project-summary-state::before { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: currentColor; content: ""; vertical-align: middle; }
+.canvas-project-chevron { flex: 0 0 auto; color: var(--text-muted); font-size: 14px; line-height: 1; }
+#canvasProjectBar[data-state="saved"] .canvas-project-summary-state { color: var(--success); }
+#canvasProjectBar[data-state="pending"] .canvas-project-summary-state,
+#canvasProjectBar[data-state="saving"] .canvas-project-summary-state { color: color-mix(in srgb, var(--accent-blue) 38%, var(--text-main)); }
+#canvasProjectBar[data-state="error"] #canvasProjectSummary,
+#canvasProjectBar[data-state="conflict"] #canvasProjectSummary { border-color: color-mix(in srgb, #ffb4ab 58%, var(--border-color)); }
+#canvasProjectBar[data-state="error"] .canvas-project-summary-state,
+#canvasProjectBar[data-state="conflict"] .canvas-project-summary-state { color: #ffb4ab; }
+.canvas-project-popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 2000;
+    display: none;
+    flex-direction: column;
+    gap: 0;
+    width: min(360px, calc(100vw - 48px));
+    max-height: min(560px, calc(100dvh - 180px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-main);
+    background: var(--card-bg);
+    color: var(--text-main);
+    box-shadow: var(--shadow-md);
+}
+.canvas-project-status[open] > .canvas-project-popover { display: flex; }
+.canvas-project-status:not([open]) > .canvas-project-popover { display: none !important; }
+.canvas-project-popover-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border-color); }
+.canvas-project-popover-header strong { min-width: 0; font-size: 13px; line-height: 1.5; }
+.canvas-project-close { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--border-color); border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.canvas-project-close:hover { background: var(--btn-secondary-hover); color: var(--text-main); }
+.canvas-project-popover-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px; font-size: 12px; line-height: 1.5; }
+.canvas-project-popover-body > * { max-width: 100%; overflow-wrap: anywhere; }
+.canvas-project-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.canvas-project-section-label { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+.canvas-project-popover-body a { color: var(--text-main); font-size: 13px; font-weight: 600; line-height: 1.45; text-decoration: none; }
+.canvas-project-popover-body a:hover,
+.canvas-project-popover-body a:focus-visible { text-decoration: underline; text-underline-offset: 3px; }
+.canvas-project-canvas-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-color); }
+.canvas-project-current-canvas { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.canvas-project-detail-side { flex: 0 0 auto; padding: 2px 7px; border-radius: 99px; background: color-mix(in srgb, var(--accent-blue) 24%, var(--card-bg)); color: #d8d2ff; font-size: 10px; font-weight: 700; line-height: 1.5; }
+.canvas-project-canvas-name { min-width: 0; color: var(--text-main); font-size: 14px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.canvas-project-footer { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+.canvas-project-popover-body #canvasProjectMessage { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+#canvasProjectBar[data-state="error"] #canvasProjectMessage,
+#canvasProjectBar[data-state="conflict"] #canvasProjectMessage { color: #ffb4ab; }
+.canvas-project-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.canvas-project-actions button { flex: 0 0 auto; white-space: normal; }
+.canvas-project-popover .canvas-project-actions button { max-width: 100%; overflow-wrap: anywhere; font-size: 12px; line-height: 1.4; }
+.canvas-project-popover .canvas-project-actions { margin-top: 0; }
+.canvas-project-disconnect { border: 1px solid var(--border-color); background: transparent !important; color: var(--text-muted) !important; }
+.canvas-project-disconnect:hover { background: var(--btn-secondary-hover) !important; color: var(--text-main) !important; }
+.canvas-project-popover :focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.canvas-project-dialog :focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 3px; }
+.canvas-project-dialog { box-sizing: border-box; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; border: 1px solid var(--border-color); border-radius: var(--radius-main); background: var(--card-bg); color: var(--text-main); font: 13px/1.6 var(--font-family); box-shadow: var(--shadow-md); }
+.canvas-project-dialog::backdrop { background: #000b; }
+.canvas-project-dialog * { box-sizing: border-box; min-width: 0; }
+.canvas-project-dialog h2 { margin: 0 0 12px; font-size: 20px; line-height: 1.4; }
+.canvas-project-dialog p { overflow-wrap: anywhere; }
+.canvas-project-dialog label { display: block; margin: 14px 0; }
+.canvas-project-dialog :is(input[type="text"], select) { display: block; width: 100%; margin-top: 6px; padding: 10px 12px; font: inherit; background: var(--bg-color); color: var(--text-main); border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
+.canvas-project-dialog fieldset { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 8px 12px; margin: 14px 0; border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
+.canvas-project-dialog fieldset label { margin: 0; display: flex; align-items: center; gap: 6px; }
+.canvas-project-dialog input[type="radio"] { width: auto; margin: 0; flex: 0 0 auto; }
+.canvas-project-dialog .canvas-project-actions { justify-content: flex-end; margin-top: 18px; }
+.canvas-project-import-content { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.canvas-project-import-content h2 { margin: 0; }
+.canvas-project-import-content p { margin: 0; }
+.canvas-project-import-comparison { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.canvas-project-import-card { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-color); }
+.canvas-project-import-label { color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.canvas-project-import-card strong { min-width: 0; color: var(--text-main); font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-project-import-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px !important; }
+.canvas-project-import-actions button { flex: 0 0 auto; max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }

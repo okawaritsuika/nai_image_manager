@@ -1,0 +1,301 @@
+.daki-project-details-dialog {
+    width: min(1000px, calc(100vw - 32px));
+    max-width: calc(100vw - 32px);
+    max-height: min(820px, calc(100vh - 48px));
+    max-height: min(820px, calc(100dvh - 48px));
+    overflow: hidden;
+    padding: 0;
+    border: 1px solid #ffffff24;
+    border-radius: 16px;
+}
+.daki-project-details-dialog[open] { display: flex; flex-direction: column; }
+.daki-project-details-header {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 24px 24px 16px;
+}
+.daki-project-details-header h2 {
+    min-width: 0;
+    margin: 0;
+    font-size: 20px;
+    line-height: 1.4;
+}
+.daki-project-details-dialog .daki-project-details-close {
+    display: flex;
+    flex: 0 0 32px;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    font-size: 22px;
+    line-height: 1;
+}
+.daki-project-details-body {
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 0 24px 24px;
+}
+.daki-project-details-summary {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid #ffffff20;
+    border-radius: 10px;
+    background: var(--bg);
+}
+.daki-project-details-side {
+    max-width: 100%;
+    padding: 3px 8px;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+.daki-project-details-name {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.6;
+}
+.daki-project-details-metadata {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin: 12px 0 16px;
+}
+.daki-project-details-cell {
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid #ffffff1a;
+    border-radius: 8px;
+    background: var(--bg);
+}
+.daki-project-details-cell dt {
+    margin: 0;
+    color: #bec4d1;
+    font-size: 11px;
+    line-height: 1.5;
+}
+.daki-project-details-cell dd {
+    min-width: 0;
+    margin: 3px 0 0;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-details-workspace {
+    display: grid;
+    grid-template-columns: minmax(220px, .9fr) minmax(0, 1.1fr);
+    align-items: start;
+    gap: 16px;
+    min-width: 0;
+}
+.daki-project-details-preview-section,
+.daki-project-details-layers { min-width: 0; }
+.daki-project-details-workspace h3 {
+    margin: 0 0 8px;
+    font-size: 15px;
+    line-height: 1.5;
+}
+.daki-project-details-preview {
+    display: flex;
+    width: 100%;
+    height: min(400px, 45vh);
+    height: min(400px, 45dvh);
+    min-height: 280px;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 1px solid #ffffff1a;
+    border-radius: 8px;
+    background-color: #252630;
+    background-image: linear-gradient(45deg, #343541 25%, transparent 25%),
+        linear-gradient(-45deg, #343541 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #343541 75%),
+        linear-gradient(-45deg, transparent 75%, #343541 75%);
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    background-size: 16px 16px;
+    color: #bec4d1;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+.daki-project-details-preview > .daki-canvas-preview-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+.daki-project-details-preview-help {
+    margin: 8px 0;
+    color: #bec4d1;
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-details-dialog .daki-project-details-reset {
+    min-height: 32px;
+    max-width: 100%;
+    padding: 6px 10px;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.daki-project-details-reset[hidden] { display: none !important; }
+.daki-project-details-status {
+    min-width: 0;
+    margin: 0 0 8px;
+    color: #bec4d1;
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+.daki-project-details-list {
+    height: min(400px, 45vh);
+    height: min(400px, 45dvh);
+    min-height: 280px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border: 1px solid #ffffff1a;
+    border-radius: 8px;
+    list-style: none;
+    overscroll-behavior: contain;
+}
+.daki-project-details-list[hidden] { display: none !important; }
+.daki-project-details-row {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 10px 8px 0;
+    border-bottom: 1px solid #ffffff12;
+}
+.daki-project-details-thumbnail {
+    display: flex;
+    flex: 0 0 72px;
+    width: 72px;
+    height: 80px;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 1px solid #ffffff16;
+    border-radius: 6px;
+    background: var(--bg);
+    color: #9ca2b0;
+    font-size: 10px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+.daki-project-details-layer-thumbnail,
+.daki-project-details-thumbnail > .daki-canvas-preview-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+.daki-project-details-thumbnail-placeholder { padding: 4px; }
+.daki-project-details-layer-info {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+}
+.daki-project-details-layer-name {
+    min-width: 0;
+    max-width: 100%;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-details-layer-meta {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 2px 7px;
+    color: #bec4d1;
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-details-layer-type,
+.daki-project-details-layer-visibility,
+.daki-project-details-layer-exclusion { min-width: 0; overflow-wrap: anywhere; }
+.daki-project-details-dialog .daki-project-details-visibility-control {
+    display: flex;
+    min-width: 42px;
+    min-height: 28px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin: 0;
+    color: #bec4d1;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.daki-project-details-visibility-toggle {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: var(--accent);
+}
+.daki-project-details-visibility-toggle:disabled { cursor: not-allowed; }
+.daki-project-details-retry {
+    max-width: 100%;
+    min-height: 36px;
+    margin-top: 10px;
+    padding: 7px 11px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.daki-project-details-retry[hidden] { display: none !important; }
+.daki-project-details-footer {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 16px 24px 20px;
+    border-top: 1px solid #ffffff20;
+}
+.daki-project-details-footer > button {
+    min-width: 88px;
+    max-width: 100%;
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 13px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}

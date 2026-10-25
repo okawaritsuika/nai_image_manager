@@ -1,0 +1,24 @@
+.daki-test-packs-dialog { box-sizing: border-box; flex-direction: column; width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; padding: 0; }
+.daki-test-packs-dialog[open] { display: flex; }
+.daki-test-packs-header { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; padding: 20px 24px; border-bottom: 1px solid #ffffff20; }
+.daki-test-packs-header h2 { min-width: 0; flex: 1 1 auto; margin: 0; overflow-wrap: anywhere; line-height: 1.4; }
+.daki-test-packs-close { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; min-width: 38px; min-height: 38px; }
+.daki-test-packs-body { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 14px; overflow-y: auto; padding: 20px 24px; }
+.daki-test-packs-note, .daki-test-packs-status, .daki-test-packs-progress-detail, .daki-test-packs-empty { min-width: 0; margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-test-packs-note, .daki-test-packs-progress-detail { color: #aab1bd; }
+.daki-test-packs-toolbar { display: flex; flex-wrap: wrap; gap: 10px; }
+.daki-test-packs-toolbar button, .daki-test-packs-actions button, .daki-test-packs-body > button { max-width: 100%; min-height: 38px; flex: 0 0 auto; white-space: normal; overflow-wrap: anywhere; }
+.daki-test-packs-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.daki-test-packs-dialog .daki-test-packs-row { display: grid; min-width: 0; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 0 !important; padding: 12px; border: 1px solid #ffffff20; border-radius: 9px; background: var(--bg); cursor: pointer; }
+.daki-test-packs-row > input { width: 18px; height: 18px; flex: 0 0 18px; margin: 0; accent-color: var(--accent); }
+.daki-test-packs-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.daki-test-packs-name { min-width: 0; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.daki-test-packs-count { color: #aab1bd; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.daki-test-packs-badge { max-width: 100%; padding: 4px 8px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-size: 11px; line-height: 1.4; white-space: nowrap; }
+.daki-test-packs-badge.is-installed { border-color: #ffffff30; color: #aab1bd; }
+.daki-test-packs-status { color: var(--thumb); }
+.daki-test-packs-progress { width: 100%; height: 10px; }
+.daki-test-packs-progress-detail { font-size: 12px; }
+.daki-test-packs-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin: 0; padding: 16px 24px; border-top: 1px solid #ffffff20; }
+.daki-test-packs-actions button { min-height: 38px; }
+.daki-test-packs-dialog button:disabled { opacity: .5; cursor: not-allowed; }

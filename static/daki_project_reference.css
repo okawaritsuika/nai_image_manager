@@ -1,0 +1,276 @@
+.daki-project-reference,
+.daki-project-reference *,
+.daki-project-reference-dialog,
+.daki-project-reference-dialog * {
+    box-sizing: border-box;
+}
+
+.daki-project-reference {
+    min-width: 0;
+    margin: 0 0 12px;
+    padding: 12px;
+    border: 1px solid #ffffff20;
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+}
+
+.daki-project-reference-header {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.daki-project-reference-title {
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.daki-project-reference-content {
+    display: flex;
+    min-width: 0;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.daki-project-reference-preview {
+    display: flex;
+    width: 88px;
+    height: 88px;
+    flex: 0 0 88px;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 1px solid #ffffff20;
+    border-radius: 7px;
+    background: var(--bg);
+    color: #aab1bd;
+    font-size: 10px;
+    line-height: 1.4;
+    text-align: center;
+}
+
+.daki-project-reference-preview-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.daki-project-reference-preview-empty,
+.daki-project-reference-preview-error {
+    max-width: 100%;
+    padding: 5px;
+    overflow-wrap: anywhere;
+}
+
+.daki-project-reference-info {
+    min-width: 0;
+    flex: 1 1 220px;
+}
+
+.daki-project-reference-name {
+    min-width: 0;
+    margin: 0 0 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.daki-project-reference-help {
+    min-width: 0;
+    margin: 0;
+    color: #aab1bd;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.daki-project-reference-controls {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.daki-project-reference-button {
+    min-height: 32px;
+    max-width: 100%;
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border: 1px solid #ffffff30;
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.daki-project-reference-button:hover:not(:disabled) {
+    border-color: #b299e5;
+}
+
+.daki-project-reference-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
+.daki-project-reference-primary {
+    border-color: #b299e5;
+    background: #b299e5;
+    color: #191321;
+    font-weight: 600;
+}
+
+.daki-project-reference-primary:hover:not(:disabled) {
+    border-color: #b299e5;
+    background: #c3aeed;
+}
+
+.daki-project-reference-button:disabled {
+    opacity: .5;
+    cursor: wait;
+}
+
+.daki-project-reference-file,
+.daki-project-reference [hidden],
+.daki-project-reference-dialog [hidden] {
+    display: none !important;
+}
+
+.daki-project-reference-status {
+    min-width: 0;
+    margin: 8px 0 0;
+    color: #aab1bd;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.daki-project-reference-status:empty {
+    display: none;
+}
+
+.daki-project-reference-status.is-error {
+    color: #f4a3a3;
+}
+
+.daki-dialog.daki-project-reference-dialog {
+    display: flex;
+    width: min(960px, calc(100vw - 32px));
+    max-width: none;
+    max-height: calc(100vh - 32px);
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+    border: 1px solid #555;
+    border-radius: 12px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.6;
+    box-shadow: 0 20px 80px #0008;
+}
+
+.daki-dialog.daki-project-reference-dialog:not([open]) {
+    display: none;
+}
+
+.daki-project-reference-dialog::backdrop {
+    background: #000b;
+}
+
+.daki-project-reference-dialog-header,
+.daki-project-reference-dialog-footer {
+    display: flex;
+    min-width: 0;
+    flex: 0 0 auto;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 16px;
+}
+
+.daki-project-reference-dialog-header {
+    justify-content: space-between;
+    border-bottom: 1px solid #ffffff20;
+}
+
+.daki-project-reference-dialog .daki-project-reference-dialog-title {
+    min-width: 0;
+    flex: 1 1 auto;
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.daki-project-reference-dialog .daki-project-reference-dialog-close {
+    min-height: 32px;
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.daki-project-reference-dialog-body {
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: auto;
+    padding: 12px;
+}
+
+.daki-project-reference-dialog-image {
+    display: block;
+    max-width: 100%;
+    max-height: calc(100vh - 180px);
+    object-fit: contain;
+    margin: auto;
+}
+
+.daki-project-reference-dialog-error {
+    margin: 0;
+    color: #f4a3a3;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.daki-project-reference-dialog-footer {
+    justify-content: flex-end;
+    border-top: 1px solid #ffffff20;
+}
+
+.daki-project-reference-dialog .daki-project-reference-button {
+    min-height: 32px;
+    padding: 6px 10px;
+    border-radius: 7px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.daki-project-reference-dialog-original {
+    min-width: 0;
+    margin-right: auto;
+    color: var(--accent);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+

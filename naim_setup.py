@@ -11,21 +11,16 @@ import urllib.request
 import urllib.error
 import zipfile
 import hashlib
+from naim.upscale_catalog import ASSETS as UPSCALE_ASSET_CATALOG
 
 
 REALCUGAN_VERSION = "20220728"
 REALCUGAN_ZIP_NAME = f"realcugan-ncnn-vulkan-{REALCUGAN_VERSION}-windows.zip"
-REALCUGAN_DOWNLOAD_URL = (
-    f"https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/"
-    f"{REALCUGAN_VERSION}/{REALCUGAN_ZIP_NAME}"
-)
+REALCUGAN_DOWNLOAD_URL = UPSCALE_ASSET_CATALOG['realcugan']['downloads'][0]['url']
 WAIFU2X_VERSION = "20250915"
 WAIFU2X_ZIP_NAME = f"waifu2x-ncnn-vulkan-{WAIFU2X_VERSION}-windows.zip"
-WAIFU2X_DOWNLOAD_URL = (
-    f"https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/"
-    f"{WAIFU2X_VERSION}/{WAIFU2X_ZIP_NAME}"
-)
-WAIFU2X_SHA256 = "7425be94b94e4c8f37a1e433ac0e0100c43790e2c37418f4b65d8235adfbdc87"
+WAIFU2X_DOWNLOAD_URL = UPSCALE_ASSET_CATALOG['waifu2x']['downloads'][0]['url']
+WAIFU2X_SHA256 = UPSCALE_ASSET_CATALOG['waifu2x']['downloads'][0]['sha256']
 GIT_DOWNLOAD_URL = "https://git-scm.com/download/win"
 
 
@@ -105,7 +100,7 @@ class NaiaSetupManager:
     def check_core_installed_for(self, python_exe):
         return self.check_imports(
             python_exe,
-            "import flask, requests; from PIL import Image"
+            "import flask, requests, numpy; from PIL import Image"
         )
 
     def check_ai_installed_for(self, python_exe):
@@ -227,7 +222,7 @@ class NaiaSetupManager:
             "4. 갤러리 업스케일이 필요하면 [3단계]를 실행합니다. (선택)\n\n"
             "※ 서버 실행 기준:\n"
             "   .venv가 있으면 .venv Python 사용 / .venv가 없으면 시스템 Python 사용\n"
-            "※ 따라서 시스템 Python에 이미 flask, requests, pillow가 있으면 .venv를 만들 필요가 없습니다."
+            "※ 따라서 시스템 Python에 이미 flask, requests, pillow, numpy가 있으면 .venv를 만들 필요가 없습니다."
         )
 
         tk.Label(
@@ -624,7 +619,8 @@ class NaiaSetupManager:
             "설치할 패키지:\n"
             "- flask\n"
             "- requests\n"
-            "- pillow\n\n"
+            "- pillow\n"
+            "- numpy (캔버스 보정)\n\n"
             "계속할까요?"
         )
 
@@ -657,6 +653,7 @@ class NaiaSetupManager:
         self.log("   - flask")
         self.log("   - requests")
         self.log("   - pillow")
+        self.log("   - numpy (캔버스 보정)")
 
         cmd_pip = [
             target_python,
@@ -669,7 +666,8 @@ class NaiaSetupManager:
             "wheel",
             "flask",
             "requests",
-            "pillow"
+            "pillow",
+            "numpy"
         ]
 
         self.run_cmd_thread(
@@ -911,6 +909,7 @@ class NaiaSetupManager:
                         zip_name=REALCUGAN_ZIP_NAME,
                         target_dir=self.realcugan_dir,
                         executable_name="realcugan-ncnn-vulkan.exe",
+                        expected_sha256=UPSCALE_ASSET_CATALOG['realcugan']['downloads'][0]['sha256'],
                     )
                 else:
                     self.log(f"✅ Real-CUGAN 설치 확인: {self.realcugan_exe}")

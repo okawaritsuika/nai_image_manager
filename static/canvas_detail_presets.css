@@ -1,0 +1,69 @@
+#clipDetailPresetPicker { min-width: 0; margin-top: 8px; }
+.canvas-detail-preset-picker { min-width: 0; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-color); color: var(--text-main); }
+.canvas-detail-preset-picker-header { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.canvas-detail-preset-picker-header details { flex: 1 1 auto; min-width: 0; }
+.canvas-detail-preset-picker summary { min-width: 0; cursor: pointer; color: var(--text-main); font-size: 12px; font-weight: 600; line-height: 1.5; }
+.canvas-detail-preset-manage-trigger { flex: 0 0 auto; min-height: 28px; padding: 4px 9px; font-size: 11px; }
+.canvas-detail-preset-picker-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-top: 8px; }
+.canvas-detail-preset-help, .canvas-detail-preset-state, .canvas-detail-preset-status { min-width: 0; margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-retry { align-self: flex-start; min-height: 29px; padding: 4px 9px; font-size: 11px; }
+.canvas-detail-preset-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 0.7fr); gap: 5px 8px; min-width: 0; }
+.canvas-detail-preset-filters label { grid-row: 1; margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+.canvas-detail-preset-filters input, .canvas-detail-preset-filters select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 32px; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--card-bg); color: var(--text-main); font: 13px/1.5 var(--font-family); }
+.canvas-detail-preset-chip-list { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; max-height: 220px; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 1px; }
+.canvas-detail-preset-chip { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; max-width: 100%; min-height: 30px; padding: 5px 9px; border: 1px solid var(--border-color); border-radius: 999px; background: var(--btn-secondary); color: var(--text-main); font: 12px/1.5 var(--font-family); cursor: pointer; }
+.canvas-detail-preset-chip:hover:not(:disabled) { border-color: var(--accent-blue); background: color-mix(in srgb, var(--accent-blue) 16%, var(--btn-secondary)); }
+.canvas-detail-preset-chip:disabled { opacity: .55; cursor: not-allowed; }
+.canvas-detail-preset-chip-name { min-width: 0; overflow-wrap: anywhere; }
+.canvas-detail-preset-badge { flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--accent-blue) 25%, var(--bg-color)); color: var(--text-main); font-size: 10px; line-height: 1.5; }
+.canvas-detail-preset-picker :focus-visible, .canvas-detail-preset-overlay :focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+
+.canvas-detail-preset-overlay { position: fixed; inset: 0; z-index: 26000; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 20px; box-sizing: border-box; background: rgba(0, 0, 0, .68); }
+.canvas-detail-preset-overlay[hidden] { display: none; }
+.canvas-detail-preset-dialog { display: flex; flex-direction: column; box-sizing: border-box; width: min(920px, 100%); max-height: min(850px, calc(100dvh - 40px)); min-width: 0; overflow: hidden; border: 1px solid var(--border-color); border-radius: var(--radius-main, 12px); background: var(--card-bg); color: var(--text-main); font: 13px/1.5 var(--font-family); box-shadow: var(--shadow-md, 0 8px 20px rgba(0, 0, 0, .4)); }
+.canvas-detail-preset-dialog-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 16px 20px; border-bottom: 1px solid var(--border-color); }
+.canvas-detail-preset-dialog-header h2 { min-width: 0; margin: 0; color: var(--text-main); font-size: 18px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-close { flex: 0 0 auto; min-height: 32px; padding: 6px 10px; }
+.canvas-detail-preset-dialog-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 20px; }
+.canvas-detail-preset-context { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; margin-bottom: 10px; }
+.canvas-detail-preset-context-label { flex: 0 0 auto; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.canvas-detail-preset-context strong { min-width: 0; color: var(--text-main); font-size: 13px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-warning { margin: 0 0 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border-color)); border-radius: var(--radius-sm); color: var(--text-main); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-scope-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; width: min(360px, 100%); min-width: 0; margin-bottom: 10px; }
+.canvas-detail-preset-scope-row label, .canvas-detail-preset-form-group label { display: block; min-width: 0; margin: 0; color: var(--text-muted); font-size: 12px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-scope-row select, .canvas-detail-preset-form input, .canvas-detail-preset-form textarea { box-sizing: border-box; display: block; width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-color); color: var(--text-main); font: 13px/1.5 var(--font-family); }
+.canvas-detail-preset-manager-status-row { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; box-sizing: border-box; width: 100%; min-width: 0; margin: 0; padding: 8px 20px; border-bottom: 1px solid var(--border-color); }
+.canvas-detail-preset-manager-status, .canvas-detail-preset-form-message { min-width: 0; margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-manager-status[data-state="error"], .canvas-detail-preset-form-message { color: color-mix(in srgb, var(--danger) 82%, var(--text-main)); }
+.canvas-detail-preset-manager-status[data-state="conflict"] { color: #ffcc80; }
+.canvas-detail-preset-manager-status-row button { flex: 0 0 auto; min-height: 30px; padding: 5px 9px; font-size: 11px; }
+.canvas-detail-preset-list-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; margin-top: 10px; }
+.canvas-detail-preset-list-heading h3 { min-width: 0; margin: 0; font-size: 14px; line-height: 1.5; }
+.canvas-detail-preset-list-heading button { flex: 0 0 auto; min-height: 30px; padding: 5px 9px; }
+.canvas-detail-preset-manager-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 8px; max-height: 240px; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 1px; }
+.canvas-detail-preset-manager-card { display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-color); }
+.canvas-detail-preset-manager-card.is-selected { border-color: var(--accent-blue); box-shadow: inset 0 0 0 1px var(--accent-blue); }
+.canvas-detail-preset-manager-card-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.canvas-detail-preset-manager-name { min-width: 0; color: var(--text-main); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-manager-category { flex: 0 0 auto; max-width: 100%; color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-manager-preview { display: -webkit-box; min-width: 0; margin: 0; overflow: hidden; color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.canvas-detail-preset-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.canvas-detail-preset-actions > button, .canvas-detail-preset-delete-confirm button { flex: 0 0 auto; min-height: 29px; max-width: 100%; padding: 4px 8px; font-size: 11px; overflow-wrap: anywhere; }
+.canvas-detail-preset-delete-confirm { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; padding-top: 4px; color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-detail-preset-form { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding-top: 8px; }
+.canvas-detail-preset-name-category { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; min-width: 0; }
+.canvas-detail-preset-form-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.canvas-detail-preset-form textarea { min-height: 80px; max-height: 200px; resize: vertical; overflow-wrap: anywhere; }
+.canvas-detail-preset-form :is(input, textarea):focus-visible, .canvas-detail-preset-scope-row select:focus-visible { border-color: var(--accent-blue); }
+.canvas-detail-preset-form :is(input, textarea)[aria-invalid="true"] { border-color: var(--danger); }
+.canvas-detail-preset-dialog-footer { display: flex; flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; gap: 8px; min-width: 0; padding: 12px 20px; border-top: 1px solid var(--border-color); }
+.canvas-detail-preset-dialog-footer button { flex: 0 0 auto; min-height: 34px; padding: 7px 12px; }
+.canvas-detail-preset-dialog :disabled { opacity: .6; cursor: not-allowed; }
+
+@media (max-width: 600px) {
+    .canvas-detail-preset-overlay { padding: 12px; }
+    .canvas-detail-preset-dialog { max-height: calc(100dvh - 24px); }
+    .canvas-detail-preset-dialog-header, .canvas-detail-preset-dialog-body, .canvas-detail-preset-dialog-footer, .canvas-detail-preset-manager-status-row { padding-right: 14px; padding-left: 14px; }
+    .canvas-detail-preset-name-category { grid-template-columns: minmax(0, 1fr); }
+    .canvas-detail-preset-actions { align-items: stretch; }
+}

@@ -1,0 +1,21 @@
+.daki-prompt-groups { display: grid; gap: 8px; min-width: 0; padding-top: 8px; color: var(--text); font: 12px/1.6 "Segoe UI", "Malgun Gothic", sans-serif; }
+.daki-prompt-groups [hidden] { display: none !important; }
+.daki-prompt-groups-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.daki-prompt-groups .daki-prompt-group-name { box-sizing: border-box; flex: 1 1 140px; width: auto; min-width: 0; max-width: 100%; height: 32px; padding: 6px 9px; background: var(--bg); color: var(--text); border: 1px solid #ffffff30; border-radius: 7px; font: inherit; }
+.daki-prompt-groups button { box-sizing: border-box; flex: 0 0 auto; min-height: 32px; max-width: 100%; padding: 5px 9px; background: var(--bg); color: var(--text); border: 1px solid #ffffff30; border-radius: 7px; font: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.daki-prompt-groups button:hover { border-color: var(--accent); }
+.daki-prompt-groups :is(input, textarea, button):disabled { opacity: .55; cursor: not-allowed; }
+.daki-prompt-groups :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.daki-prompt-groups-hint, .daki-prompt-groups-status { margin: 0; color: #aaa; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-prompt-groups-status { color: var(--thumb); }
+.daki-prompt-groups-status:empty { display: none; }
+.daki-prompt-groups-view { display: grid; gap: 8px; min-width: 0; }
+.daki-prompt-groups textarea { box-sizing: border-box; display: block; width: 100%; min-width: 0; min-height: 56px; margin: 0; padding: 9px 10px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid #ffffff30; border-radius: 8px; font: 13px/1.65 "Segoe UI", "Malgun Gothic", sans-serif; overflow-wrap: anywhere; }
+.daki-prompt-groups textarea.daki-prompt-group-text { min-height: 72px; }
+.daki-prompt-group { min-width: 0; border: 1px solid #ffffff26; border-radius: 8px; background: var(--card, var(--bg)); }
+.daki-prompt-group-summary { display: flex; align-items: center; min-width: 0; min-height: 38px; padding: 7px 10px; color: var(--thumb); font-size: 12px; line-height: 1.6; font-weight: 700; overflow-wrap: anywhere; cursor: pointer; }
+.daki-prompt-group-summary::before { content: "▸"; flex: 0 0 16px; color: #aaa; }
+.daki-prompt-group[open] > .daki-prompt-group-summary::before { content: "▾"; }
+.daki-prompt-group[open] { padding-bottom: 8px; }
+.daki-prompt-group[open] > .daki-prompt-group-summary { margin-bottom: 8px; border-bottom: 1px solid #ffffff1a; }
+.daki-prompt-group-content { display: grid; gap: 8px; min-width: 0; padding: 0 8px; }

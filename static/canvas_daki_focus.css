@@ -1,0 +1,123 @@
+.canvas-daki-focus[hidden] { display: none !important; }
+#canvasDakiMapPanel[hidden] { display: none !important; }
+#canvasDakiMapPanel { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
+.canvas-daki-map-editing .canvas-layer-panel { overflow: hidden; }
+.canvas-daki-map-editing .canvas-layer-panel > :not(#canvasDakiMapPanel),
+.canvas-daki-map-editing .canvas-workspace .selection-area-layer,
+.canvas-daki-map-editing .canvas-workspace .multi-layer-transform-box,
+.canvas-daki-map-editing .canvas-workspace .canvas-resize-handle,
+.canvas-daki-map-editing .canvas-workspace .image-resize-handle,
+.canvas-daki-map-editing .canvas-workspace .image-resize-clamped-handle,
+.canvas-daki-map-editing .canvas-workspace .canvas-clip-output-panel,
+.canvas-daki-map-editing .canvas-workspace .canvas-pinned-reference-panel { display: none !important; }
+.canvas-daki-focus {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-main);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.canvas-workspace-shell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-main);
+    background: radial-gradient(circle at top, rgba(108, 92, 231, .15), transparent 38%), #08080d;
+}
+.canvas-workspace-shell > .canvas-workspace {
+    flex: 1 1 auto;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+#canvasDakiFocus {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    z-index: 1000;
+    width: max-content;
+    max-width: min(300px, calc(100% - 24px));
+    align-items: flex-start;
+    gap: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    pointer-events: none;
+}
+#canvasDakiFocus[data-side="right"] { left: auto; right: 12px; align-items: flex-end; }
+#canvasDakiFocus button,
+#canvasDakiFocus select { pointer-events: auto; }
+.canvas-daki-hud-header { display: flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }
+.canvas-daki-hud .canvas-daki-hud-toggle {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 30px;
+}
+.canvas-daki-hud .canvas-daki-hud-move { width: 30px; min-height: 30px; padding: 4px; }
+.canvas-daki-hud-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-daki-hud-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
+.canvas-daki-hud-controls[hidden] { display: none; }
+[data-side="right"] > .canvas-daki-hud-controls { justify-content: flex-end; }
+.canvas-daki-hud-controls select { box-sizing: border-box; width: auto; max-width: 100%; min-width: 0; min-height: 30px; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--btn-secondary); color: var(--text-main); font: inherit; }
+.canvas-daki-hud-controls button { max-width: 100%; min-height: 30px; }
+.canvas-daki-focus button { flex: 0 0 auto; padding: 5px 8px; font-size: 12px; line-height: 1.4; white-space: normal; }
+.canvas-daki-focus .secondary { background: var(--btn-secondary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; }
+.canvas-daki-focus-field { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.canvas-daki-focus-field > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.canvas-daki-focus-field input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 auto; margin: 0; accent-color: var(--accent-blue); }
+.canvas-daki-focus-field select,
+.canvas-daki-focus-field textarea { box-sizing: border-box; min-width: 0; max-width: 100%; padding: 7px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-main); font: inherit; }
+.canvas-daki-focus-field select { flex: 0 1 150px; }
+.canvas-daki-focus-field:has(textarea) { flex-direction: column; align-items: stretch; }
+.canvas-daki-focus-field textarea { width: 100%; min-height: 60px; resize: vertical; }
+.canvas-daki-focus-field :disabled { opacity: .55; }
+.canvas-daki-focus-caption { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.canvas-daki-focus-error { margin: 0 0 8px; color: #ffb4ab; overflow-wrap: anywhere; }
+.canvas-daki-focus details { min-width: 0; }
+.canvas-daki-focus summary { cursor: pointer; color: var(--text-muted); overflow-wrap: anywhere; }
+.canvas-daki-prompt-section { min-width: 0; }
+.canvas-daki-prompt-section > summary { color: var(--text-main); font-size: 13px; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
+.canvas-daki-prompt-section-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin-top: 10px; }
+.canvas-daki-prompt-section:not([open]) > .canvas-daki-prompt-section-body { display: none; }
+.canvas-daki-focus-settings { padding: 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--card-bg); }
+.canvas-daki-focus-settings > summary { color: var(--text-main); font-weight: 700; }
+.canvas-daki-focus-settings[open] > :not(summary) { margin-top: 10px; }
+.canvas-daki-focus-extra { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin-top: 10px; }
+.canvas-daki-focus-groups { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.canvas-daki-focus .clip-control-group-header { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.canvas-daki-focus .clip-control-group-name { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.canvas-daki-focus .canvas-daki-auto-expand { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; min-height: 32px; text-align: left; }
+.canvas-daki-auto-name { flex: 0 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.canvas-daki-auto-count, .canvas-daki-auto-chevron { flex: 0 0 auto; white-space: nowrap; }
+.canvas-daki-auto-chevron { margin-left: auto; }
+.canvas-daki-auto-state { grid-column: 1; grid-row: 2; min-width: 0; color: var(--text-muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.canvas-daki-focus .canvas-daki-auto-group.off { opacity: 1; border-style: dashed; }
+.canvas-daki-auto-group.off > .clip-control-group-header { background: var(--bg-color); border-bottom-style: dashed; }
+.canvas-daki-auto-group.off .canvas-daki-auto-state { color: var(--text-muted); }
+.canvas-daki-auto-items { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; min-width: 0; }
+.canvas-daki-auto-items[hidden] { display: none; }
+.canvas-daki-focus .clip-control-chip { max-width: 100%; min-width: 0; }
+.canvas-daki-focus .clip-control-chip > span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.canvas-daki-focus .clip-control-chip strong { flex: 0 0 auto; font-size: 9px; color: var(--text-muted); }
+.canvas-daki-focus .clip-control-chip-remove { flex: 0 0 auto; }
+.canvas-daki-focus .canvas-daki-excluded { opacity: .68; }
+.canvas-daki-kept { border-color: var(--accent-blue); background: color-mix(in srgb, var(--accent-blue) 15%, var(--card-bg)); }
+.canvas-daki-keep-indicator { flex: 0 0 auto; padding: 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--accent-blue) 25%, var(--card-bg)); color: var(--text-main); font-size: 10px; line-height: 1.35; white-space: nowrap; }
+.canvas-daki-focus-preview { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.canvas-daki-focus :focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }

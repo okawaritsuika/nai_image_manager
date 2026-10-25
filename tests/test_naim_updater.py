@@ -2,6 +2,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -9,6 +10,55 @@ import naim_updater
 
 
 class NaimUpdaterTests(unittest.TestCase):
+    def test_failed_rollback_retains_backup_for_recovery(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            install, payload, backup = root / "install", root / "payload", root / "backup"
+            for folder in (install, payload, backup):
+                folder.mkdir()
+            (install / "app.bin").write_bytes(b"old")
+            (payload / "app.bin").write_bytes(b"new")
+            self.write_managed_manifest(install, ["app.bin"])
+            self.write_managed_manifest(payload, ["app.bin"])
+            real_copy = naim_updater.shutil.copy2
+
+            def fail_restore(source, target):
+                if Path(source).parent == backup:
+                    raise OSError("restore locked")
+                return real_copy(source, target)
+
+            with mock.patch.object(naim_updater.tempfile, "mkdtemp", return_value=str(backup)), \
+                 mock.patch.object(naim_updater.shutil, "copy2", side_effect=fail_restore):
+                with self.assertRaises(RuntimeError):
+                    naim_updater.apply_staged_update(
+                        payload, install, copy_file=mock.Mock(side_effect=OSError("update failed"))
+                    )
+            self.assertEqual((backup / "app.bin").read_bytes(), b"old")
+
+    def test_backup_failure_does_not_delete_unbacked_installation_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            install, payload = root / "install", root / "payload"
+            install.mkdir()
+            payload.mkdir()
+            for name in ("a.bin", "b.bin"):
+                (install / name).write_bytes(b"old-" + name.encode())
+                (payload / name).write_bytes(b"new")
+            self.write_managed_manifest(install, ["a.bin", "b.bin"])
+            self.write_managed_manifest(payload, ["a.bin", "b.bin"])
+            original = {p.name: p.read_bytes() for p in install.iterdir()}
+            real_copy = naim_updater.shutil.copy2
+
+            def fail_backup(source, target):
+                if Path(source) == install / "a.bin":
+                    raise OSError("backup failed")
+                return real_copy(source, target)
+
+            with mock.patch.object(naim_updater.shutil, "copy2", side_effect=fail_backup):
+                with self.assertRaises(OSError):
+                    naim_updater.apply_staged_update(payload, install)
+            self.assertEqual({p.name: p.read_bytes() for p in install.iterdir()}, original)
+
     def write_managed_manifest(self, folder, paths):
         Path(folder, naim_updater.MANAGED_MANIFEST).write_text(
             json.dumps({"version": "test", "files": paths}),
@@ -61,6 +111,19 @@ class NaimUpdaterTests(unittest.TestCase):
             (install / "app.bin").write_bytes(b"old-app")
             (install / "stale.dll").write_bytes(b"old-stale")
             (install / "gallery_config.json").write_bytes(b'{"private": true}')
+            (install / "daki_projects.json").write_bytes(b'{"enabled": false, "projects": []}')
+            (install / "daki_style_tests" / "sample").mkdir(parents=True)
+            (install / "daki_style_tests" / "sample" / "batch.json").write_bytes(b'{"completed": 1}')
+            (install / "daki_imported_styles").mkdir()
+            (install / "daki_imported_styles" / "catalog.json").write_bytes(b'{"styles": []}')
+            (install / "daki_personal_styles").mkdir()
+            (install / "daki_personal_styles" / "catalog.json").write_bytes(b'{"styles": [{"name":"personal ink"}]}')
+            (install / "daki_worldcups").mkdir()
+            (install / "daki_worldcups" / "record.json").write_bytes(b'{"winner":"synthetic.png"}')
+            (install / "daki_drafts" / "synthetic").mkdir(parents=True)
+            (install / "daki_drafts" / "synthetic" / "draft.json").write_bytes(b'{"status":"completed"}')
+            (install / "daki_tag_examples").mkdir()
+            (install / "daki_tag_examples" / "catalog.json").write_bytes(b'{"examples":[]}')
             (install / "TOTAL_CLASSIFIED").mkdir()
             (install / "TOTAL_CLASSIFIED" / "image.png").write_bytes(b"private-image")
             self.write_managed_manifest(install, ["app.bin", "stale.dll"])
@@ -76,6 +139,13 @@ class NaimUpdaterTests(unittest.TestCase):
             self.assertEqual((install / "new.dll").read_bytes(), b"new-dll")
             self.assertFalse((install / "stale.dll").exists())
             self.assertEqual((install / "gallery_config.json").read_bytes(), b'{"private": true}')
+            self.assertEqual((install / "daki_projects.json").read_bytes(), b'{"enabled": false, "projects": []}')
+            self.assertEqual((install / "daki_style_tests" / "sample" / "batch.json").read_bytes(), b'{"completed": 1}')
+            self.assertEqual((install / "daki_imported_styles" / "catalog.json").read_bytes(), b'{"styles": []}')
+            self.assertEqual((install / "daki_personal_styles" / "catalog.json").read_bytes(), b'{"styles": [{"name":"personal ink"}]}')
+            self.assertEqual((install / "daki_worldcups" / "record.json").read_bytes(), b'{"winner":"synthetic.png"}')
+            self.assertEqual((install / "daki_drafts" / "synthetic" / "draft.json").read_bytes(), b'{"status":"completed"}')
+            self.assertEqual((install / "daki_tag_examples" / "catalog.json").read_bytes(), b'{"examples":[]}')
             self.assertEqual((install / "TOTAL_CLASSIFIED" / "image.png").read_bytes(), b"private-image")
 
     def test_legacy_update_without_old_manifest_keeps_unknown_files(self):
@@ -103,11 +173,13 @@ class NaimUpdaterTests(unittest.TestCase):
             payload = root / "payload"
             install.mkdir()
             payload.mkdir()
-            (payload / "gallery_config.json").write_text("{}", encoding="utf-8")
-            self.write_managed_manifest(payload, ["gallery_config.json"])
-
-            with self.assertRaises(ValueError):
-                naim_updater.apply_staged_update(payload, install)
+            for name in ("gallery_config.json", "daki_projects.json", "daki_personal_styles/catalog.json"):
+                with self.subTest(name=name):
+                    (payload / name).parent.mkdir(parents=True, exist_ok=True)
+                    (payload / name).write_text("{}", encoding="utf-8")
+                    self.write_managed_manifest(payload, [name])
+                    with self.assertRaises(ValueError):
+                        naim_updater.apply_staged_update(payload, install)
 
     def test_apply_update_rejects_environment_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>이전 생성 자료 · NAI Image Manager</title>
+    <link rel="stylesheet" href="/static/legacy_generation.css">
+</head>
+<body>
+    <header>
+        <a href="/" class="brand">NAI Image Manager</a>
+        <nav aria-label="주요 화면"><a href="/">갤러리</a><a href="/canvas">캔버스</a></nav>
+    </header>
+    <main>
+        <h1>이전 생성 자료</h1>
+        <p class="intro">그림체 연구소와 다키 제작소의 생성 기능은 종료되었습니다. 기존 이미지와 설정은 보존되어 있으며, 이곳에서 저장된 이미지를 열 수 있습니다. 캔버스 편집과 인페인팅은 계속 사용할 수 있습니다.</p>
+        <div class="toolbar">
+            <label for="archiveSource">자료 위치</label>
+            <select id="archiveSource"><option value="output">저장한 생성 이미지</option><option value="daki">다키 제작소에 남은 이미지</option></select>
+            <span class="hint">파일명 순 · 한 페이지에 최대 48개</span>
+        </div>
+        <p id="archiveStatus" role="status" aria-live="polite">자료를 확인하고 있습니다.</p>
+        <div id="archiveItems" class="items"></div>
+        <div class="pagination" aria-label="자료 페이지">
+            <button id="previousPage" type="button" disabled>이전</button>
+            <span id="pageLabel">1페이지</span>
+            <button id="nextPage" type="button" disabled>다음</button>
+        </div>
+    </main>
+    <script src="/static/legacy_generation.js"></script>
+</body>
+</html>

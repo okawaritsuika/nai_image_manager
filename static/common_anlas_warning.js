@@ -65,8 +65,10 @@
         return layer;
     }
 
-    function showAnlasWarningModal({ width, height, steps = 28, title = 'Anlas 사용 경고', detail = '' } = {}) {
-        const cost = getExpectedAnlasCost(width, height, steps);
+    function showAnlasWarningModal({ width, height, steps = 28, title = 'Anlas 사용 경고', detail = '', requests, parent, signal } = {}) {
+        if (signal?.aborted) return Promise.resolve(false);
+        const selected = requests || [{width, height, steps}];
+        const cost = selected.reduce((total, item) => total + getExpectedAnlasCost(item.width, item.height, item.steps), 0);
 
         if (cost <= 0) {
             return Promise.resolve(true);
@@ -74,6 +76,8 @@
 
         return new Promise((resolve) => {
             const layer = ensureAnlasWarningLayer();
+            // A native dialog lives above body overlays; keep its warning in the same top layer.
+            if (parent) parent.appendChild(layer);
 
             const titleEl = document.getElementById('globalAnlasWarningTitle');
             const descEl = document.getElementById('globalAnlasWarningDesc');
@@ -89,20 +93,28 @@
                 cancelBtn.onclick = null;
                 okBtn.onclick = null;
                 document.removeEventListener('keydown', onKeyDown);
+                signal?.removeEventListener('abort', onAbort);
+                if (parent) document.body.appendChild(layer);
                 resolve(Boolean(ok));
             };
 
             const onKeyDown = (event) => {
                 if (event.key === 'Escape') {
+                    if (parent) event.preventDefault();
                     close(false);
                 }
             };
+            const onAbort = () => close(false);
 
             titleEl.innerText = title;
             descEl.innerText = detail || '이 요청은 무료 범위를 벗어나 Anlas가 소모될 수 있습니다. 계속 진행할까요?';
-            sizeEl.innerText = `${width} × ${height}`;
-            stepsEl.innerText = String(steps);
-            costEl.innerText = `${cost} Anlas`;
+            const sizes = [...new Set(selected.map(item => `${item.width} × ${item.height}`))];
+            const counts = selected.map(item => Number(item.steps) || 28);
+            sizeEl.innerText = sizes.length === 1 ? sizes[0] : '여러 크기';
+            if (selected.length > 1) sizeEl.innerText += ` · ${selected.length}장`;
+            stepsEl.innerText = Math.min(...counts) === Math.max(...counts)
+                ? String(counts[0]) : `${Math.min(...counts)}~${Math.max(...counts)}`;
+            costEl.innerText = `${cost} Anlas${selected.length > 1 ? ' (합계)' : ''}`;
 
             cancelBtn.onclick = () => close(false);
             okBtn.onclick = () => close(true);
@@ -114,6 +126,7 @@
             };
 
             document.addEventListener('keydown', onKeyDown);
+            signal?.addEventListener('abort', onAbort, {once: true});
             layer.style.display = 'flex';
         });
     }

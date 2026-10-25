@@ -1,3 +1,4 @@
+from tests.frontend_sources import read_page_scripts
 import pathlib
 import unittest
 
@@ -8,7 +9,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class GalleryVirtualFolderStaticTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.js = (ROOT / "static" / "index.js").read_text(encoding="utf-8")
+        cls.js = read_page_scripts(ROOT, "index.html")
         cls.css = (ROOT / "static" / "index.css").read_text(encoding="utf-8")
         cls.html = (ROOT / "index.html").read_text(encoding="utf-8")
 
@@ -154,6 +155,7 @@ class GalleryVirtualFolderStaticTests(unittest.TestCase):
         self.assertIn("handleGalleryVirtualFolderAutocompleteKeydown(event, 'create')", self.html)
         self.assertIn("handleGalleryVirtualFolderAutocompleteKeydown(event, 'editor')", self.html)
         self.assertIn("/api/gallery/prompt_index/autocomplete?q=", self.js)
+        self.assertIn("source=virtual_folder", self.js)
         self.assertIn("getGalleryVirtualFolderAutocompleteScopePath", self.js)
         self.assertIn("getGalleryVirtualFolderAutocompleteMode", self.js)
         self.assertIn("setTimeout(async () =>", self.js)
@@ -173,7 +175,7 @@ class GalleryVirtualFolderStaticTests(unittest.TestCase):
         self.assertIn("function isGalleryVirtualContainerNode(node)", self.js)
         self.assertIn("resolve?summary=1&ts=", self.js)
         self.assertIn("if (currentNode.isGalleryVirtualFolder && currentNode.query && !isVirtualContainer)", self.js)
-        self.assertIn(": isVirtualContainer\n            ? []", self.js)
+        self.assertIn(": isVirtualContainer || (currentNode.isGalleryVirtualFolder && !currentNode.query)\n            ? []", self.js)
         self.assertIn("&& !isVirtualContainer) {", self.js)
         self.assertIn("new IntersectionObserver", self.js)
         self.assertIn("galleryVirtualSummaryObservers.add(observer)", self.js)
@@ -191,7 +193,7 @@ class GalleryVirtualFolderStaticTests(unittest.TestCase):
         self.assertIn("min=\"100\" max=\"10000\" step=\"100\"", self.html)
         self.assertIn("const orderedImages = [...(images || [])].sort", self.js)
         self.assertIn("galleryImageOrder === 'oldest'", self.js)
-        self.assertIn("const appendImageBatch = (startIndex, endIndex)", self.js)
+        self.assertIn("const appendImageBatch = (startIndex, endIndex, remountTarget = null)", self.js)
         self.assertIn("typeof IntersectionObserver !== 'undefined'", self.js)
         self.assertIn("galleryImageRenderSessions.forEach(session => session.cleanup?.())", self.js)
         self.assertNotIn("gallery-image-order-control", self.js)
