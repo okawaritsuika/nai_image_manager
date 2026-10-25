@@ -64,6 +64,7 @@
         let formatRevision = 0;
         let formatRequestId = 0;
         let dialog = null;
+        let jobNotice = null;
         let selectedPaths = [];
         let baseSelectedPaths = [];
         let allowTagExclusions = false;
@@ -78,7 +79,16 @@
         let pollTimer = null;
         let pollAbort = null;
         let pollRevision = 0;
+        let pageActive = true;
         let startPending = false;
+        let keepOriginal = true;
+        let progressView = false;
+        let selectedProjectContext = null;
+        let jobTargetPath = '';
+        let startRequestError = '';
+        let pendingTotal = 0;
+        let pendingKeepOriginal = true;
+        const dismissedJobIds = new Set();
         const refreshedJobs = new Set();
 
         function weakReference(value) {
@@ -435,7 +445,27 @@
             const tagSummary = makeElement('p', 'gallery-image-tools-tag-summary');
             tagSummary.setAttribute('aria-live', 'polite');
             tagExclusion.append(tagTitle, tagHelp, allTaggedLabel, tagOptions, tagEmpty, tagSummary);
-            const warning = makeElement('p', 'gallery-image-tools-warning', '원본을 검증된 WebP로 교체합니다. 메타데이터와 연결은 유지됩니다. 이미 WebP인 그림은 건너뜁니다.');
+            const storage = makeElement('fieldset', 'gallery-image-tools-storage');
+            storage.appendChild(makeElement('legend', '', '어떻게 저장할까요?'));
+            for (const [value, title, description] of [
+                [true, '원본 유지 + WebP 추가', '원본과 기존 연결을 유지하고, 같은 폴더에 WebP를 추가합니다. 저장 공간이 더 필요합니다.'],
+                [false, '원본을 WebP로 교체', '변환 결과를 검증한 뒤 원본을 삭제하고, 기존 연결을 WebP로 갱신합니다.']
+            ]) {
+                const card = makeElement('label', 'gallery-image-tools-storage-card');
+                const input = makeElement('input', `gallery-image-tools-storage-${value ? 'add' : 'replace'}`);
+                input.type = 'radio'; input.name = 'galleryWebpStorage'; input.value = String(value);
+                input.checked = value === keepOriginal;
+                const copy = makeElement('span', 'gallery-image-tools-storage-copy');
+                copy.append(makeElement('strong', '', title), makeElement('span', '', description));
+                card.append(input, copy);
+                storage.appendChild(card);
+                input.addEventListener('change', () => {
+                    if (!input.checked || startPending || job?.status === 'running') return;
+                    keepOriginal = value;
+                    updateStartButton();
+                });
+            }
+            const warning = makeElement('p', 'gallery-image-tools-warning', '메타데이터를 보존합니다. 이미 WebP인 그림과 같은 이름의 WebP가 있는 그림은 건너뜁니다.');
             const scope = makeElement('p', 'gallery-image-tools-scope');
             const jobSection = makeElement('section', 'gallery-image-tools-job');
             const jobTitle = makeElement('h3', 'gallery-image-tools-section-title', '실행 준비');
@@ -445,6 +475,7 @@
             progress.max = 1; progress.value = 0; progress.setAttribute('aria-label', 'WebP 변환 진행');
             const progressText = makeElement('p', 'gallery-image-tools-progress-text');
             progressText.setAttribute('aria-live', 'polite');
+            const jobTarget = makeElement('p', 'gallery-image-tools-job-target');
             const counters = makeElement('div', 'gallery-image-tools-counters');
             for (const [key, label] of [['converted', '변환'], ['skipped', '건너뜀'], ['failed', '실패']]) {
                 const counter = makeElement('div', `gallery-image-tools-stat gallery-image-tools-stat-${key}`);
@@ -453,28 +484,160 @@
             }
             const bytes = makeElement('p', 'gallery-image-tools-bytes');
             const details = makeElement('ol', 'gallery-image-tools-details');
-            jobSection.append(jobTitle, status, progress, progressText, counters, bytes, details);
-            body.append(location, quality, tagExclusion, scope, warning, jobSection);
+            jobSection.append(jobTitle, jobTarget, status, progress, progressText, counters, bytes, details);
+            body.append(location, storage, quality, tagExclusion, scope, warning, jobSection);
 
             const footer = makeElement('footer', 'gallery-image-tools-footer');
             const cancel = makeElement('button', 'gallery-image-tools-cancel', '중지');
             cancel.type = 'button';
+            const back = makeElement('button', 'gallery-image-tools-back', '설정으로 돌아가기');
+            back.type = 'button';
+            back.hidden = true;
             const start = makeElement('button', 'gallery-image-tools-start daki-primary', 'WebP로 변환');
             start.type = 'button';
-            footer.append(cancel, start);
+            footer.append(cancel, back, start);
 
             dialog.append(header, body, footer);
             doc.body.appendChild(dialog);
             close.addEventListener('click', closeDialog);
             start.addEventListener('click', startConversion);
             cancel.addEventListener('click', cancelConversion);
+            back.addEventListener('click', () => {
+                setProgressView(false);
+                updateStartButton();
+            });
             allTaggedInput.addEventListener('change', () => {
                 excludeAllTagged = Boolean(allTaggedInput.checked);
                 updateTagExclusions({renderOptions: false});
             });
-            dialog.addEventListener('close', stopPolling);
-            dialog.addEventListener('cancel', () => stopPolling());
+            dialog.addEventListener('close', () => {
+                if (!isDialogOpen()) {
+                    updateJobNotice();
+                    schedulePolling();
+                } else {
+                    updateJobNotice();
+                }
+            });
             return dialog;
+        }
+
+        function makeJobNotice() {
+            if (jobNotice || !doc?.createElement || !doc.body) return jobNotice;
+            jobNotice = makeElement('section', 'gallery-webp-job-notice');
+            jobNotice.setAttribute('aria-label', 'WebP 변환 진행 상황');
+            jobNotice.setAttribute('role', 'status');
+            jobNotice.setAttribute('aria-live', 'polite');
+            const title = makeElement('h2', 'gallery-webp-job-notice-title', 'WebP 변환');
+            const status = makeElement('p', 'gallery-webp-job-notice-status');
+            const target = makeElement('p', 'gallery-webp-job-notice-target');
+            const progress = makeElement('progress', 'gallery-webp-job-notice-progress');
+            progress.max = 1;
+            progress.value = 0;
+            progress.setAttribute('aria-label', 'WebP 변환 진행');
+            const counters = makeElement('p', 'gallery-webp-job-notice-counters');
+            const reason = makeElement('p', 'gallery-webp-job-notice-reason');
+            const actions = makeElement('div', 'gallery-webp-job-notice-actions');
+            const details = makeElement('button', 'gallery-webp-job-notice-details', '자세히');
+            details.type = 'button';
+            details.hidden = false;
+            const stop = makeElement('button', 'gallery-webp-job-notice-stop', '중지');
+            stop.type = 'button';
+            const close = makeElement('button', 'gallery-webp-job-notice-close', '닫기');
+            close.type = 'button';
+            actions.append(details, stop, close);
+            jobNotice.append(title, status, target, progress, counters, reason, actions);
+            doc.body.appendChild(jobNotice);
+            details.addEventListener('click', openJobDetails);
+            stop.addEventListener('click', cancelConversion);
+            close.addEventListener('click', dismissJobNotice);
+            return jobNotice;
+        }
+
+        function updateJobNotice() {
+            const notice = makeJobNotice();
+            if (!notice) return;
+            const id = String(job?.id || '');
+            const running = job?.status === 'running';
+            const terminal = Boolean(id && job?.status && job.status !== 'idle' && !running);
+            const dismissed = terminal && dismissedJobIds.has(id);
+            const visible = !isDialogOpen() && (startPending || running || Boolean(startRequestError) || (terminal && !dismissed));
+            notice.hidden = !visible;
+            if (!visible) return;
+
+            const pending = startPending;
+            const value = pending ? {
+                status: 'running', total: pendingTotal, processed: 0,
+                converted: 0, skipped: 0, failed: 0,
+            } : job || {};
+            const total = Math.max(0, Number(value.total) || 0);
+            const processed = Math.max(0, Number(value.processed) || 0);
+            const progress = notice.querySelector('.gallery-webp-job-notice-progress');
+            if (progress) {
+                progress.max = Math.max(1, total);
+                if (pending || (running && total === 1 && processed === 0)) {
+                    progress.removeAttribute('value');
+                } else {
+                    progress.value = Math.min(processed, total || processed);
+                    progress.setAttribute('value', String(progress.value));
+                }
+            }
+            const status = notice.querySelector('.gallery-webp-job-notice-status');
+            if (status) {
+                const modalStatus = dialog?.querySelector('.gallery-image-tools-status')?.textContent || '';
+                status.textContent = pending
+                    ? '서버에 변환 작업을 요청하는 중입니다. 창을 닫아도 요청과 변환은 계속됩니다.'
+                    : startRequestError || modalStatus || (running ? '변환 중입니다. 창을 닫아도 계속됩니다.' : '변환 결과가 준비되었습니다.');
+                status.classList.toggle('is-error', Boolean(startRequestError) || Boolean(dialog?.querySelector('.gallery-image-tools-status')?.classList.contains('is-error')));
+            }
+            const target = notice.querySelector('.gallery-webp-job-notice-target');
+            if (target) {
+                const path = String(pending ? jobTargetPath || selectedPaths[0] || '' : getJobTargetPath());
+                target.textContent = path;
+                target.title = path;
+                target.hidden = !path;
+            }
+            const counters = notice.querySelector('.gallery-webp-job-notice-counters');
+            let failed = 0;
+            let skipped = 0;
+            if (counters) {
+                const converted = Math.max(0, Number(value.converted) || 0);
+                skipped = Math.max(0, Number(value.skipped) || 0);
+                failed = Math.max(0, Number(value.failed) || 0);
+                const percent = total ? Math.floor(Math.min(processed, total) * 100 / total) : 0;
+                counters.textContent = `처리 ${processed.toLocaleString()} / ${total.toLocaleString()}장 · ${percent}% · 변환 ${converted.toLocaleString()} · 건너뜀 ${skipped.toLocaleString()} · 실패 ${failed.toLocaleString()}`;
+            }
+            const reason = notice.querySelector('.gallery-webp-job-notice-reason');
+            if (reason) {
+                const first = Array.isArray(value.details) ? value.details[0] : null;
+                const message = String(first?.message || first?.reason || '').trim();
+                reason.textContent = message;
+                reason.hidden = !message || failed === 0;
+            }
+            const stop = notice.querySelector('.gallery-webp-job-notice-stop');
+            if (stop) stop.hidden = !running || Boolean(job?.cancel_requested) || !job?.id;
+            const close = notice.querySelector('.gallery-webp-job-notice-close');
+            if (close) close.hidden = !(terminal || startRequestError);
+        }
+
+        function dismissJobNotice() {
+            const id = String(job?.id || '');
+            if (id && job?.status && job.status !== 'idle' && job.status !== 'running') dismissedJobIds.add(id);
+            startRequestError = '';
+            updateJobNotice();
+        }
+
+        function openJobDetails() {
+            if (!showDialog()) return;
+            setProgressView(true);
+            if (startPending) {
+                renderJob({status: 'running', total: pendingTotal, processed: 0,
+                    converted: 0, skipped: 0, failed: 0, source_bytes: 0, target_bytes: 0,
+                    details: [], cancel_requested: false, keep_original: pendingKeepOriginal});
+                setStatus('서버에 변환 작업을 요청하는 중입니다.');
+            } else if (job && job.status !== 'idle' && !startRequestError) {
+                renderJob(job);
+            }
+            updateStartButton();
         }
 
         function query(selector) {
@@ -490,6 +653,25 @@
             if (!status) return;
             status.textContent = message || '';
             status.classList.toggle('is-error', Boolean(isError));
+            updateJobNotice();
+        }
+
+        function setProgressView(value) {
+            progressView = Boolean(value) && !allowTagExclusions;
+            if (dialog) dialog.classList.toggle('is-progress-view', progressView);
+        }
+
+        function snapshotProjectContext(value) {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+            let prototype;
+            try { prototype = Object.getPrototypeOf(value); }
+            catch (_) { return null; }
+            if (prototype !== Object.prototype && prototype !== null) return null;
+            return {projectId: value.projectId, side: value.side, candidateId: value.candidateId};
+        }
+
+        function getJobTargetPath() {
+            return String(jobPaths[0] || jobTargetPath || selectedPaths[0] || '');
         }
 
         function updateStartButton() {
@@ -497,8 +679,34 @@
             if (button) {
                 const invalidCount = selectedPaths.length === 0 || selectedPaths.length > MAX_WEBP_PATHS;
                 button.disabled = startPending || invalidCount || job?.status === 'running';
+                button.textContent = !allowTagExclusions && keepOriginal ? 'WebP 추가 저장' : 'WebP로 교체';
+                button.hidden = progressView;
             }
+            const back = query('.gallery-image-tools-back');
+            if (back) {
+                back.hidden = !progressView;
+                back.disabled = startPending || job?.status === 'running';
+            }
+            const subtitle = query('.gallery-image-tools-subtitle');
+            if (subtitle) subtitle.textContent = progressView
+                ? '변환 진행 상황과 결과를 확인합니다.'
+                : '이미지를 더 작은 WebP 파일로 저장합니다.';
+            const panel = query('.gallery-image-tools-job');
+            if (panel) panel.setAttribute('aria-busy', String(startPending || job?.status === 'running'));
+            const target = query('.gallery-image-tools-job-target');
+            if (target) {
+                const path = getJobTargetPath();
+                target.textContent = path;
+                target.title = path;
+            }
+            const storage = query('.gallery-image-tools-storage');
+            if (storage) { storage.hidden = allowTagExclusions; storage.disabled = startPending || job?.status === 'running'; }
+            const add = query('.gallery-image-tools-storage-add');
+            const replace = query('.gallery-image-tools-storage-replace');
+            if (add) add.checked = keepOriginal;
+            if (replace) replace.checked = !keepOriginal;
             updateExclusionControls();
+            updateJobNotice();
         }
 
         function readAttachedTags(paths) {
@@ -644,6 +852,13 @@
         function setSelectedPaths(paths, scopeText = '', location = currentLocation(), allowExclusions = false) {
             baseSelectedPaths = uniquePaths(paths);
             allowTagExclusions = Boolean(allowExclusions);
+            setProgressView(false);
+            if (!startPending && job?.status !== 'running') {
+                jobPaths = [];
+                jobTargetPath = '';
+                startRequestError = '';
+            }
+            keepOriginal = !allowTagExclusions;
             excludedTagIds = new Set();
             excludeAllTagged = false;
             conversionFinishedForSelection = false;
@@ -658,7 +873,7 @@
             const scope = query('.gallery-image-tools-scope');
             if (scope) scope.textContent = scopeText;
             const progress = query('.gallery-image-tools-progress');
-            if (progress) { progress.max = 1; progress.value = 0; }
+            if (progress) { progress.max = 1; progress.value = 0; progress.setAttribute('value', '0'); }
             const progressText = query('.gallery-image-tools-progress-text');
             if (progressText) progressText.textContent = '';
             const details = query('.gallery-image-tools-details');
@@ -679,10 +894,13 @@
                 if (typeof dialog.showModal === 'function') dialog.showModal();
                 else { dialog.setAttribute('open', ''); dialog.open = true; }
             }
+            updateJobNotice();
             return true;
         }
 
-        async function openForPaths(paths, scopeText = '', location = currentLocation(), allowExclusions = false) {
+        async function openForPaths(paths, scopeText = '', location = currentLocation(), allowExclusions = false,
+                                    projectContext = null) {
+            selectedProjectContext = snapshotProjectContext(projectContext);
             setSelectedPaths(paths, scopeText, location, allowExclusions);
             if (!showDialog()) return;
             stopPolling();
@@ -695,12 +913,13 @@
             return openForPaths(paths, scopeText, currentLocation(), true);
         }
 
-        function openContext(path) {
+        function openContext(path, projectContext = null) {
             if (!path) {
+                selectedProjectContext = null;
                 setStatus('선택한 그림 경로를 확인할 수 없습니다.', true);
                 return Promise.resolve();
             }
-            return openForPaths([path], '선택한 그림 한 장만 변환', selectedImageLocation(path));
+            return openForPaths([path], '선택한 그림 한 장만 변환', selectedImageLocation(path), false, projectContext);
         }
 
         function jobError(payload, response) {
@@ -710,9 +929,15 @@
         function setJob(value) {
             if (!value || typeof value !== 'object') return;
             job = value;
+            if (value.status !== 'idle') startRequestError = '';
+            if (value.status === 'running') {
+                setProgressView(true);
+                if (jobPaths[0]) jobTargetPath = jobPaths[0];
+                else if (!jobTargetPath) jobTargetPath = selectedPaths[0] || '';
+            }
             renderJob(value);
             updateStartButton();
-            if (value.status === 'running' && isDialogOpen()) schedulePolling();
+            if (value.status === 'running') schedulePolling();
             else stopPolling();
         }
 
@@ -730,13 +955,28 @@
             const progress = query('.gallery-image-tools-progress');
             if (progress) {
                 progress.max = Math.max(1, total);
-                progress.value = Math.min(processed, total || processed);
+                const indeterminate = progressView && value.status === 'running' && total === 1 && processed === 0;
+                if (indeterminate) {
+                    progress.removeAttribute('value');
+                } else {
+                    progress.value = Math.min(processed, total || processed);
+                    progress.setAttribute('value', String(progress.value));
+                }
                 progress.hidden = idle;
             }
             const progressText = query('.gallery-image-tools-progress-text');
             if (progressText) {
-                progressText.textContent = idle ? '' : `${processed.toLocaleString()} / ${total.toLocaleString()}`;
+                const percent = total ? Math.floor(Math.min(processed, total) * 100 / total) : 0;
+                progressText.textContent = idle ? '' : progressView
+                    ? `${processed.toLocaleString()} / ${total.toLocaleString()}장 · ${percent}%`
+                    : `${processed.toLocaleString()} / ${total.toLocaleString()}`;
                 progressText.hidden = idle;
+            }
+            const jobTarget = query('.gallery-image-tools-job-target');
+            if (jobTarget) {
+                const path = getJobTargetPath();
+                jobTarget.textContent = path;
+                jobTarget.title = path;
             }
             const counters = query('.gallery-image-tools-counters');
             if (counters) counters.hidden = idle;
@@ -746,7 +986,9 @@
             }
             const bytes = query('.gallery-image-tools-bytes');
             if (bytes) {
-                bytes.textContent = idle ? '' : `원본 ${formatMiB(value.source_bytes)} → WebP ${formatMiB(value.target_bytes)}`;
+                bytes.textContent = idle ? '' : value.keep_original
+                    ? `원본 유지 · WebP ${formatMiB(value.target_bytes)} 추가`
+                    : `원본 ${formatMiB(value.source_bytes)} → WebP ${formatMiB(value.target_bytes)}`;
                 bytes.hidden = idle;
             }
             const details = query('.gallery-image-tools-details');
@@ -772,10 +1014,23 @@
                 details.hidden = rows.length === 0;
             }
             const cancel = query('.gallery-image-tools-cancel');
-            if (cancel) cancel.disabled = value.status !== 'running' || !value.id;
+            const cancelRequested = Boolean(value.cancel_requested);
+            if (cancel) cancel.disabled = value.status !== 'running' || !value.id || cancelRequested;
             if (value.status === 'error') setStatus('변환 작업이 실패했습니다. 대상을 확인한 뒤 다시 실행할 수 있습니다.', true);
             else if (value.status === 'cancelled') setStatus('변환 작업이 중지되었습니다.');
-            else if (value.status === 'completed') setStatus('변환 작업이 완료되었습니다.');
+            else if (value.status === 'completed') {
+                const failed = Math.max(0, Number(value.failed) || 0);
+                const skipped = Math.max(0, Number(value.skipped) || 0);
+                const converted = Math.max(0, Number(value.converted) || 0);
+                if (failed) setStatus(`변환 작업이 끝났습니다. ${failed.toLocaleString()}장 실패 · ${converted.toLocaleString()}장 변환 · ${skipped.toLocaleString()}장 건너뜀.`, true);
+                else if (total > 0 && skipped >= total && converted === 0) {
+                    const first = Array.isArray(value.details) ? value.details[0] : null;
+                    const reason = String(first?.message || first?.reason || '').trim();
+                    setStatus(reason ? `변환 안 됨 · ${reason}` : '모든 대상이 건너뛰어졌습니다.');
+                }
+                else setStatus('변환 작업이 완료되었습니다.');
+            }
+            else if (value.status === 'running' && cancelRequested) setStatus('중지 요청됨 · 현재 파일 정리 중');
             else if (value.status === 'running') setStatus('변환 중입니다. 창을 닫아도 서버 작업은 계속됩니다.');
             else if (value.status === 'idle' && selectedPaths.length > MAX_WEBP_PATHS) {
                 setStatus(`한 번에 최대 ${MAX_WEBP_PATHS.toLocaleString()}장까지 선택할 수 있습니다.`, true);
@@ -807,7 +1062,7 @@
         }
 
         function schedulePolling() {
-            if (pollTimer !== null || !isDialogOpen() || job?.status !== 'running') return;
+            if (!pageActive || pollTimer !== null || job?.status !== 'running') return;
             pollTimer = host.setTimeout(() => {
                 pollTimer = null;
                 pollJobStatus();
@@ -823,7 +1078,7 @@
         }
 
         async function pollJobStatus() {
-            if (!isDialogOpen() || job?.status !== 'running') return;
+            if (job?.status !== 'running') return;
             const revision = pollRevision;
             const controller = typeof host.AbortController === 'function' ? new host.AbortController() : null;
             pollAbort = controller;
@@ -832,7 +1087,7 @@
                     cache: 'no-store', ...(controller ? {signal: controller.signal} : {})
                 });
                 const payload = await response.json();
-                if (revision !== pollRevision || !isDialogOpen()) return;
+                if (revision !== pollRevision) return;
                 if (!response.ok || payload?.status !== 'success' || !payload.job) {
                     throw new Error(jobError(payload, response));
                 }
@@ -898,7 +1153,6 @@
             refreshedJobs.add(id);
             conversionFinishedForSelection = true;
             const paths = jobPaths.length ? jobPaths.slice() : collectPaths();
-            jobPaths = [];
             if (Number(value.converted) > 0) await refreshAfterConversion(paths);
             updateStartButton();
         }
@@ -915,25 +1169,47 @@
                 qualityInput?.focus();
                 return;
             }
-            startPending = true;
-            updateStartButton();
-            setStatus('서버에 변환 작업을 요청하는 중입니다.');
+            jobRequestRevision++;
+            jobStatusAbort?.abort();
+            jobStatusAbort = null;
             const submittedPaths = selectedPaths.slice();
+            const submittedContext = snapshotProjectContext(selectedProjectContext);
+            jobPaths = [];
+            jobTargetPath = submittedPaths[0] || '';
+            pendingTotal = submittedPaths.length;
+            pendingKeepOriginal = keepOriginal;
+            startRequestError = '';
+            startPending = true;
+            if (!allowTagExclusions) {
+                setProgressView(true);
+                renderJob({status: 'running', total: selectedPaths.length, processed: 0,
+                    converted: 0, skipped: 0, failed: 0, source_bytes: 0, target_bytes: 0,
+                    details: [], cancel_requested: false, keep_original: keepOriginal});
+                setStatus('서버에 변환 작업을 요청하는 중입니다.');
+            }
+            updateStartButton();
+            if (allowTagExclusions) setStatus('서버에 변환 작업을 요청하는 중입니다.');
             try {
                 const response = await host.fetch('/api/gallery/webp', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({paths: submittedPaths, quality})
+                    body: JSON.stringify({paths: submittedPaths, quality,
+                        ...(!allowTagExclusions ? {keep_original: keepOriginal} : {}),
+                        ...(submittedContext ? {projectContext: submittedContext} : {})})
                 });
                 const payload = await response.json();
                 if (!response.ok || payload?.status !== 'success' || !payload.job) {
                     throw new Error(jobError(payload, response));
                 }
+                startPending = false;
                 jobPaths = submittedPaths;
+                jobTargetPath = submittedPaths[0] || '';
+                startRequestError = '';
                 conversionFinishedForSelection = false;
                 setJob(payload.job);
                 if (payload.job.status !== 'running') await handleJobFinished(payload.job);
             } catch (error) {
-                setStatus(`변환을 시작하지 못했습니다: ${error.message || error}`, true);
+                startRequestError = `변환을 시작하지 못했습니다: ${error.message || error}`;
+                setStatus(startRequestError, true);
             } finally {
                 startPending = false;
                 updateStartButton();
@@ -959,18 +1235,19 @@
             } catch (error) {
                 setStatus(`중지 요청 실패: ${error.message || error}`, true);
                 if (button) button.disabled = false;
-                if (job?.status === 'running' && isDialogOpen()) schedulePolling();
+                if (job?.status === 'running') schedulePolling();
             }
         }
 
         function closeDialog() {
-            stopPolling();
             jobRequestRevision++;
             jobStatusAbort?.abort();
             jobStatusAbort = null;
             if (!dialog) return;
             if (typeof dialog.close === 'function' && isDialogOpen()) dialog.close();
             else { dialog.open = false; dialog.removeAttribute('open'); }
+            updateJobNotice();
+            if (!isDialogOpen()) schedulePolling();
         }
 
         function invalidate(paths) {
@@ -1002,6 +1279,7 @@
         }
 
         function cleanup() {
+            pageActive = false;
             formatRevision++;
             formatRequestId++;
             formatObserver?.disconnect();
@@ -1020,13 +1298,15 @@
 
         function restoreAfterPageShow(event) {
             if (!event?.persisted) return;
+            pageActive = true;
             const checkbox = doc?.getElementById('toggle-image-formats');
             if (checkbox) checkbox.checked = enabled;
             if (enabled) {
                 installFormatObserver();
                 applyEnabledToCards();
             }
-            if (job?.status === 'running' && isDialogOpen()) schedulePolling();
+            updateJobNotice();
+            if (job?.status === 'running') schedulePolling();
         }
 
         function initialize() {

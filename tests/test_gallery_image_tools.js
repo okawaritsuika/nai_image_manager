@@ -468,6 +468,9 @@ test('current-folder modal shows exact lazy target count and posts quality 90 wi
     await f.tools.openCurrentFolder();
     const dialog = f.doc.getElementById('galleryImageToolsDialog');
     assert.equal(dialog.open, true);
+    assert.equal(dialog.classList.contains('is-progress-view'), false);
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').hidden, true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-start').hidden, false);
     assert.equal(dialog.querySelector('.gallery-image-tools-target').textContent, '변환 대상 2장');
     assert.equal(dialog.querySelector('.gallery-image-tools-scope').textContent, '표시된 그림만 변환 · 하위 폴더 제외');
     const quality = dialog.querySelector('.gallery-image-tools-quality input');
@@ -493,6 +496,166 @@ test('current-folder modal shows exact lazy target count and posts quality 90 wi
     assert.deepEqual(JSON.parse(cancel.options.body), {id: 'job-started'});
     f.tools.close();
     assert.equal(f.timers.size, 0);
+});
+
+test('individual conversion immediately opens progress, shows server results, and returns to unchanged settings', async () => {
+    let resolvePost;
+    let statusCalls = 0;
+    const path = 'folder/' + 'very-long-image-name-'.repeat(8) + '.png';
+    const f = fixture();
+    f.host.fetch = async (url, options = {}) => {
+        f.requests.push({url, options});
+        if (url === '/api/gallery/webp' && options.method === 'POST') {
+            return new Promise(resolve => { resolvePost = resolve; });
+        }
+        if (url === '/api/gallery/webp') {
+            statusCalls++;
+            return response({status: 'success', job: statusCalls === 1 ? idleJob() : {
+                ...idleJob(), id: 'progress-job', status: 'completed', total: 1, processed: 1,
+                converted: 1, skipped: 0, failed: 0, source_bytes: 2048, target_bytes: 1024,
+            }});
+        }
+        return response({status: 'success', formats: {}});
+    };
+
+    await f.tools.openContext(path);
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    const quality = dialog.querySelector('.gallery-image-tools-quality input');
+    quality.value = '75';
+    const startPromise = dialog.querySelector('.gallery-image-tools-start').fire('click');
+    await turn();
+
+    assert.equal(dialog.classList.contains('is-progress-view'), true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-start').hidden, true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').hidden, false);
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').disabled, true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-subtitle').textContent, '변환 진행 상황과 결과를 확인합니다.');
+    assert.equal(dialog.querySelector('.gallery-image-tools-job-target').textContent, path);
+    assert.equal(dialog.querySelector('.gallery-image-tools-job-target').title, path);
+    assert.equal(dialog.querySelector('.gallery-image-tools-status').textContent, '서버에 변환 작업을 요청하는 중입니다.');
+    assert.equal(dialog.querySelector('.gallery-image-tools-job').getAttribute('aria-busy'), 'true');
+    assert.equal(dialog.querySelector('.gallery-image-tools-progress-text').textContent, '0 / 1장 · 0%');
+    assert.equal(dialog.querySelector('.gallery-image-tools-progress').getAttribute('value'), null);
+    assert.equal(dialog.querySelector('.gallery-image-tools-stat-converted .gallery-image-tools-stat-value').textContent, '0');
+
+    resolvePost(response({status: 'success', job: {
+        ...idleJob(), id: 'progress-job', status: 'running', total: 1, processed: 0,
+    }}));
+    await startPromise;
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').disabled, true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-progress').getAttribute('value'), null);
+
+    f.runTimers();
+    await turn();
+    await turn();
+    assert.equal(f.tools.job.status, 'completed');
+    assert.equal(dialog.querySelector('.gallery-image-tools-progress-text').textContent, '1 / 1장 · 100%');
+    assert.equal(dialog.querySelector('.gallery-image-tools-stat-converted .gallery-image-tools-stat-value').textContent, '1');
+    assert.equal(dialog.querySelector('.gallery-image-tools-job').getAttribute('aria-busy'), 'false');
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').disabled, false);
+    assert.equal(dialog.classList.contains('is-progress-view'), true);
+
+    await dialog.querySelector('.gallery-image-tools-back').fire('click');
+    assert.equal(dialog.classList.contains('is-progress-view'), false);
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').hidden, true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-start').hidden, false);
+    assert.equal(dialog.querySelector('.gallery-image-tools-subtitle').textContent, '이미지를 더 작은 WebP 파일로 저장합니다.');
+    assert.equal(quality.value, '75');
+    f.tools.close();
+});
+
+test('individual POST failure stays in progress view and enables return without changing settings', async () => {
+    const f = fixture();
+    f.host.fetch = async (url, options = {}) => {
+        f.requests.push({url, options});
+        if (url === '/api/gallery/webp' && options.method === 'POST') {
+            return response({status: 'error', message: 'synthetic POST failure'}, 503);
+        }
+        if (url === '/api/gallery/webp') return response({status: 'success', job: idleJob()});
+        return response({status: 'success', formats: {}});
+    };
+    await f.tools.openContext('failure.png');
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    const quality = dialog.querySelector('.gallery-image-tools-quality input');
+    quality.value = '73';
+    const replace = dialog.querySelector('.gallery-image-tools-storage-replace');
+    replace.checked = true;
+    await replace.fire('change');
+
+    await dialog.querySelector('.gallery-image-tools-start').fire('click');
+
+    assert.equal(dialog.classList.contains('is-progress-view'), true);
+    assert.equal(f.tools.job.status, 'idle');
+    assert.match(dialog.querySelector('.gallery-image-tools-status').textContent, /synthetic POST failure/);
+    assert.equal(dialog.querySelector('.gallery-image-tools-status').classList.contains('is-error'), true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-job').getAttribute('aria-busy'), 'false');
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').disabled, false);
+    await dialog.querySelector('.gallery-image-tools-back').fire('click');
+    assert.equal(dialog.classList.contains('is-progress-view'), false);
+    assert.equal(quality.value, '73');
+    assert.equal(replace.checked, true);
+    f.tools.close();
+});
+
+test('individual terminal results distinguish failed and all-skipped jobs', async () => {
+    for (const [name, counts, expected] of [
+        ['failed', {converted: 0, skipped: 0, failed: 1}, /1장 실패/],
+        ['all skipped', {converted: 0, skipped: 1, failed: 0}, /모든 대상이 건너뛰어졌습니다/],
+    ]) {
+        const f = fixture({webpStartResponse: () => ({
+            ...idleJob(), id: `terminal-${name}`, status: 'completed', total: 1, processed: 1, ...counts,
+        })});
+        await f.tools.openContext(`${name}.png`);
+        const dialog = f.doc.getElementById('galleryImageToolsDialog');
+        await dialog.querySelector('.gallery-image-tools-start').fire('click');
+        assert.equal(dialog.classList.contains('is-progress-view'), true);
+        assert.match(dialog.querySelector('.gallery-image-tools-status').textContent, expected);
+        assert.equal(dialog.querySelector('.gallery-image-tools-back').disabled, false);
+        if (name === 'failed') assert.equal(dialog.querySelector('.gallery-image-tools-status').classList.contains('is-error'), true);
+        f.tools.close();
+    }
+});
+
+test('cancel_requested keeps stop disabled while the server finishes the current file', async () => {
+    const f = fixture({webpCancelResponse: job => ({...job, status: 'running', cancel_requested: true})});
+    await f.tools.openContext('cancel.png');
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    await dialog.querySelector('.gallery-image-tools-start').fire('click');
+    await dialog.querySelector('.gallery-image-tools-cancel').fire('click');
+    assert.equal(dialog.querySelector('.gallery-image-tools-status').textContent, '중지 요청됨 · 현재 파일 정리 중');
+    assert.equal(dialog.querySelector('.gallery-image-tools-cancel').disabled, true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').disabled, true);
+    f.tools.close();
+});
+
+test('project context is snapshotted for individual requests and cleared by general and folder opens', async () => {
+    const f = fixture({webpStartResponse: () => ({
+        ...idleJob(), id: 'context-job', status: 'completed', total: 1, processed: 1, skipped: 1,
+    })});
+    const projectContext = {projectId: 'project-one', side: 'front', candidateId: 'candidate-one', ignored: 'extra'};
+    await f.tools.openContext('project/candidate.png', projectContext);
+    projectContext.projectId = 'changed-project';
+    projectContext.side = 'back';
+    projectContext.candidateId = 'changed-candidate';
+    await f.doc.getElementById('galleryImageToolsDialog').querySelector('.gallery-image-tools-start').fire('click');
+    const projectRequest = f.requests.find(item => item.url === '/api/gallery/webp' && item.options.method === 'POST');
+    assert.deepEqual(JSON.parse(projectRequest.options.body).projectContext, {
+        projectId: 'project-one', side: 'front', candidateId: 'candidate-one',
+    });
+    f.tools.close();
+
+    await f.tools.openContext('plain.png');
+    await f.doc.getElementById('galleryImageToolsDialog').querySelector('.gallery-image-tools-start').fire('click');
+    const contextlessRequest = f.requests.filter(item => item.url === '/api/gallery/webp' && item.options.method === 'POST')[1];
+    assert.equal(Object.hasOwn(JSON.parse(contextlessRequest.options.body), 'projectContext'), false);
+    f.tools.close();
+
+    addGalleryPaths(f, ['folder/one.png']);
+    await f.tools.openCurrentFolder();
+    await f.doc.getElementById('galleryImageToolsDialog').querySelector('.gallery-image-tools-start').fire('click');
+    const folderRequest = f.requests.filter(item => item.url === '/api/gallery/webp' && item.options.method === 'POST')[2];
+    assert.equal(Object.hasOwn(JSON.parse(folderRequest.options.body), 'projectContext'), false);
+    f.tools.close();
 });
 
 test('current-folder tag exclusions support multiple tags, all-tag mode, and reset on reopen', async () => {
@@ -591,7 +754,38 @@ test('individual conversion hides folder tag exclusions and submits its selected
     assert.equal(dialog.querySelector('.gallery-image-tools-tag-exclusion').hidden, true);
     await dialog.querySelector('.gallery-image-tools-start').fire('click');
     const request = f.requests.find(item => item.url === '/api/gallery/webp' && item.options.method === 'POST');
-    assert.deepEqual(JSON.parse(request.options.body), {paths: ['one.png'], quality: 90});
+    assert.deepEqual(JSON.parse(request.options.body), {paths: ['one.png'], quality: 90, keep_original: true});
+    f.tools.close();
+});
+
+test('individual modal offers replacement, disables storage during execution, and resets to addition', async () => {
+    const f = fixture();
+    await f.tools.openContext('one.png');
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    const storage = dialog.querySelector('.gallery-image-tools-storage');
+    const replace = dialog.querySelector('.gallery-image-tools-storage-replace');
+    assert.equal(storage.hidden, false);
+    assert.equal(dialog.querySelector('.gallery-image-tools-storage-add').checked, true);
+    replace.checked = true;
+    await replace.fire('change');
+    assert.equal(dialog.querySelector('.gallery-image-tools-start').textContent, 'WebP로 교체');
+    await dialog.querySelector('.gallery-image-tools-start').fire('click');
+    const request = f.requests.find(item => item.options.method === 'POST');
+    assert.equal(JSON.parse(request.options.body).keep_original, false);
+    assert.equal(storage.disabled, true);
+    f.tools.close();
+    await f.tools.openContext('another.png');
+    assert.equal(dialog.querySelector('.gallery-image-tools-storage-add').checked, true);
+    f.tools.close();
+});
+
+test('addition progress reports extra storage instead of savings', async () => {
+    const f = fixture({webpStartResponse: () => ({...idleJob(), id: 'added', status: 'completed',
+        processed: 1, total: 1, converted: 1, keep_original: true, target_bytes: 1024 * 1024})});
+    await f.tools.openContext('one.png');
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    await dialog.querySelector('.gallery-image-tools-start').fire('click');
+    assert.equal(dialog.querySelector('.gallery-image-tools-bytes').textContent, '원본 유지 · WebP 1.00 MiB 추가');
     f.tools.close();
 });
 
@@ -766,6 +960,11 @@ test('WebP modal styles keep the body as the scroll owner and adapt quality cont
     assert.match(css, /\.gallery-image-tools-dialog \.gallery-image-tools-body\s*\{[^}]*min-height:\s*0[^}]*overflow:\s*auto/s);
     assert.match(css, /\.gallery-image-tools-dialog \.gallery-image-tools-quality\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto/s);
     assert.match(css, /@media\s*\(max-width:\s*480px\)[\s\S]*?\.gallery-image-tools-quality\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+    assert.match(css, /\.gallery-image-tools-dialog\.is-progress-view\s+\.gallery-image-tools-body\s*>\s*:is\([^}]*gallery-image-tools-warning\)\s*\{\s*display:\s*none;/);
+    assert.match(css, /\.gallery-image-tools-dialog\.is-progress-view\s+\.gallery-image-tools-job\s*\{\s*order:\s*-1;/);
+    assert.match(css, /\.gallery-image-tools-job-target\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/s);
+    assert.match(css, /\.gallery-image-tools-dialog\.is-progress-view\s+\.gallery-image-tools-progress\s*\{[^}]*height:\s*12px/s);
+    assert.match(css, /\.gallery-image-tools-dialog\.is-progress-view\s+\.gallery-image-tools-progress-text\s*\{[^}]*font-size:\s*18px[^}]*font-weight:\s*700/s);
     assert.match(css, /\.gallery-image-tools-dialog \.gallery-image-tools-tag-exclusion\s*\{[^}]*padding:\s*16px[^}]*border-radius:\s*12px/s);
     assert.match(css, /\.gallery-image-tools-dialog \.gallery-image-tools-tag-options\s*\{[^}]*flex-wrap:\s*wrap[^}]*max-height:\s*160px[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/s);
     assert.match(css, /\.gallery-image-tools-dialog \.gallery-image-tools-tag-name\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s);
@@ -789,6 +988,9 @@ test('reopening restores the active server job and polling refreshes its termina
     await f.tools.openContext('one.png');
     const dialog = f.doc.getElementById('galleryImageToolsDialog');
     assert.equal(f.tools.job.id, 'restored-job');
+    assert.equal(dialog.classList.contains('is-progress-view'), true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-job-target').textContent, 'one.png');
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').disabled, true);
     assert.equal(dialog.querySelector('.gallery-image-tools-start').disabled, true);
     assert.match(dialog.querySelector('.gallery-image-tools-status').textContent, /창을 닫아도 서버 작업은 계속됩니다/);
     assert.equal(f.timers.size, 1);
@@ -797,13 +999,267 @@ test('reopening restores the active server job and polling refreshes its termina
     await turn();
     await turn();
     assert.equal(f.tools.job.status, 'completed');
+    assert.equal(dialog.classList.contains('is-progress-view'), true);
     assert.match(dialog.querySelector('.gallery-image-tools-progress-text').textContent, /^2 \/ 2/);
+    assert.equal(dialog.querySelector('.gallery-image-tools-back').disabled, false);
     assert.equal(dialog.querySelector('.gallery-image-tools-section-title').textContent, '최근 변환 결과');
     assert.equal(dialog.querySelector('.gallery-image-tools-stat-converted .gallery-image-tools-stat-value').textContent, '2');
     assert.equal(dialog.querySelector('.gallery-image-tools-bytes').hidden, false);
     assert.equal(loaded, 1);
     assert.equal(f.timers.size, 0);
     f.tools.close();
+});
+
+test('a delayed close event after reopening does not stop the new job polling timer', async () => {
+    const f = fixture();
+    f.host.fetch = async (url, options = {}) => {
+        f.requests.push({url, options});
+        if (url === '/api/gallery/webp') {
+            return response({status: 'success', job: {
+                ...idleJob(), id: 'still-running', status: 'running', total: 2, processed: 1,
+            }});
+        }
+        return response({status: 'success', formats: {}});
+    };
+
+    await f.tools.openContext('one.png');
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    assert.equal(f.timers.size, 1);
+    f.tools.close();
+    assert.equal(f.timers.size, 1);
+    assert.equal(f.doc.body.querySelector('.gallery-webp-job-notice').hidden, false);
+
+    await f.tools.openContext('one.png');
+    assert.equal(dialog.open, true);
+    assert.equal(f.timers.size, 1);
+    await dialog.fire('close');
+    assert.equal(f.timers.size, 1);
+
+    f.tools.close();
+    assert.equal(f.timers.size, 1);
+    f.fireWindowEvent('pagehide');
+    assert.equal(f.timers.size, 0);
+});
+
+test('a delayed initial idle response cannot overwrite a job started from the same dialog', async () => {
+    let resolveInitial;
+    let initialSignal;
+    const f = fixture();
+    f.host.fetch = async (url, options = {}) => {
+        f.requests.push({url, options});
+        if (url === '/api/gallery/webp' && options.method === 'POST') {
+            return response({status: 'success', job: {
+                ...idleJob(), id: 'race-job', status: 'running', total: 1, processed: 0,
+            }});
+        }
+        if (url === '/api/gallery/webp') {
+            initialSignal = options.signal;
+            return new Promise(resolve => { resolveInitial = resolve; });
+        }
+        return response({status: 'success', formats: {}});
+    };
+    const opening = f.tools.openContext('race/source.png');
+    await turn();
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    await dialog.querySelector('.gallery-image-tools-start').fire('click');
+    assert.equal(f.tools.job.id, 'race-job');
+    assert.equal(f.timers.size, 1);
+    assert.equal(initialSignal.aborted, true);
+
+    resolveInitial(response({status: 'success', job: idleJob()}));
+    await opening;
+    assert.equal(f.tools.job.id, 'race-job');
+    assert.equal(f.tools.job.status, 'running');
+    assert.equal(f.timers.size, 1);
+    f.tools.close();
+    assert.equal(f.doc.body.querySelector('.gallery-webp-job-notice').hidden, false);
+    f.fireWindowEvent('pagehide');
+});
+
+test('closed modal keeps polling, shows result notice, refreshes the gallery, and supports details and dismissal', async () => {
+    let statusCalls = 0;
+    let loaded = 0;
+    const f = fixture({onLoadData: () => { loaded++; }});
+    f.host.fetch = async (url, options = {}) => {
+        f.requests.push({url, options});
+        if (url === '/api/gallery/webp' && options.method === 'POST') {
+            return response({status: 'success', job: {
+                ...idleJob(), id: 'background-job', status: 'running', total: 2, processed: 0,
+            }});
+        }
+        if (url === '/api/gallery/webp') {
+            statusCalls++;
+            return response({status: 'success', job: statusCalls === 1 ? idleJob() : {
+                ...idleJob(), id: 'background-job', status: 'completed', total: 2, processed: 2,
+                converted: 1, skipped: 1, failed: 0,
+            }});
+        }
+        return response({status: 'success', formats: {}});
+    };
+    await f.tools.openContext('background/source.png');
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    await dialog.querySelector('.gallery-image-tools-start').fire('click');
+    f.tools.close();
+
+    const notice = f.doc.body.querySelector('.gallery-webp-job-notice');
+    assert.equal(f.timers.size, 1);
+    assert.equal(notice.hidden, false);
+    assert.equal(notice.getAttribute('role'), 'status');
+    assert.equal(notice.getAttribute('aria-label'), 'WebP 변환 진행 상황');
+    assert.equal(notice.querySelector('.gallery-webp-job-notice-target').textContent, 'background/source.png');
+    assert.match(notice.querySelector('.gallery-webp-job-notice-counters').textContent, /처리 0 \/ 2장 · 0%/);
+    assert.equal(notice.querySelector('.gallery-webp-job-notice-details').hidden, false);
+    assert.equal(notice.querySelector('.gallery-webp-job-notice-stop').hidden, false);
+    assert.equal(notice.querySelector('.gallery-webp-job-notice-close').hidden, true);
+
+    f.runTimers();
+    await turn();
+    await turn();
+    assert.equal(f.tools.job.status, 'completed');
+    assert.equal(notice.hidden, false);
+    assert.match(notice.querySelector('.gallery-webp-job-notice-counters').textContent, /처리 2 \/ 2장 · 100% · 변환 1 · 건너뜀 1 · 실패 0/);
+    assert.equal(notice.querySelector('.gallery-webp-job-notice-stop').hidden, true);
+    assert.equal(notice.querySelector('.gallery-webp-job-notice-close').hidden, false);
+    assert.equal(loaded, 1);
+
+    await notice.querySelector('.gallery-webp-job-notice-details').fire('click');
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.classList.contains('is-progress-view'), true);
+    assert.equal(notice.hidden, true);
+    assert.equal(dialog.querySelector('.gallery-image-tools-job-target').textContent, 'background/source.png');
+    f.tools.close();
+    assert.equal(notice.hidden, false);
+
+    await notice.querySelector('.gallery-webp-job-notice-close').fire('click');
+    assert.equal(notice.hidden, true);
+    await f.tools.openContext('background/another.png');
+    f.tools.close();
+    assert.equal(notice.hidden, true, 're-polling the dismissed terminal job must not show it again');
+});
+
+test('pending POST remains visible after close and reports both success and failure', async () => {
+    let resolvePost;
+    const pending = fixture();
+    pending.host.fetch = async (url, options = {}) => {
+        pending.requests.push({url, options});
+        if (url === '/api/gallery/webp' && options.method === 'POST') {
+            return new Promise(resolve => { resolvePost = resolve; });
+        }
+        if (url === '/api/gallery/webp') return response({status: 'success', job: idleJob()});
+        return response({status: 'success', formats: {}});
+    };
+    await pending.tools.openContext('pending/success.png');
+    const pendingDialog = pending.doc.getElementById('galleryImageToolsDialog');
+    const startPromise = pendingDialog.querySelector('.gallery-image-tools-start').fire('click');
+    await turn();
+    pending.tools.close();
+    const pendingNotice = pending.doc.body.querySelector('.gallery-webp-job-notice');
+    assert.equal(pendingNotice.hidden, false);
+    assert.match(pendingNotice.querySelector('.gallery-webp-job-notice-status').textContent, /창을 닫아도 요청과 변환은 계속됩니다/);
+    assert.equal(pendingNotice.querySelector('.gallery-webp-job-notice-target').textContent, 'pending/success.png');
+    resolvePost(response({status: 'success', job: {
+        ...idleJob(), id: 'pending-success', status: 'running', total: 1, processed: 0,
+    }}));
+    await startPromise;
+    assert.equal(pending.tools.job.status, 'running');
+    assert.equal(pendingNotice.hidden, false);
+    assert.equal(pending.timers.size, 1);
+    pending.fireWindowEvent('pagehide');
+
+    let resolveFailure;
+    const failed = fixture();
+    failed.host.fetch = async (url, options = {}) => {
+        failed.requests.push({url, options});
+        if (url === '/api/gallery/webp' && options.method === 'POST') {
+            return new Promise(resolve => { resolveFailure = resolve; });
+        }
+        if (url === '/api/gallery/webp') return response({status: 'success', job: idleJob()});
+        return response({status: 'success', formats: {}});
+    };
+    await failed.tools.openContext('pending/failure.png');
+    const failedDialog = failed.doc.getElementById('galleryImageToolsDialog');
+    const failedStart = failedDialog.querySelector('.gallery-image-tools-start').fire('click');
+    await turn();
+    failed.tools.close();
+    resolveFailure(response({status: 'error', message: 'synthetic request failure'}, 503));
+    await failedStart;
+    const failedNotice = failed.doc.body.querySelector('.gallery-webp-job-notice');
+    assert.equal(failedNotice.hidden, false);
+    assert.match(failedNotice.querySelector('.gallery-webp-job-notice-status').textContent, /synthetic request failure/);
+    assert.equal(failedNotice.querySelector('.gallery-webp-job-notice-close').hidden, false);
+    await failedNotice.querySelector('.gallery-webp-job-notice-close').fire('click');
+    assert.equal(failedNotice.hidden, true);
+});
+
+test('Escape close does not cancel the server job; only the notice stop action posts cancellation', async () => {
+    const f = fixture();
+    let statusCalls = 0;
+    f.host.fetch = async (url, options = {}) => {
+        f.requests.push({url, options});
+        if (url === '/api/gallery/webp') {
+            statusCalls++;
+            return response({status: 'success', job: statusCalls === 1 ? {
+                ...idleJob(), id: 'escape-job', status: 'running', total: 1, processed: 0,
+            } : idleJob()});
+        }
+        if (url === '/api/gallery/webp/cancel') return response({status: 'success', job: {
+            ...idleJob(), id: 'escape-job', status: 'cancelled', total: 1, processed: 0, cancel_requested: true,
+        }});
+        return response({status: 'success', formats: {}});
+    };
+    await f.tools.openContext('escape.png');
+    const dialog = f.doc.getElementById('galleryImageToolsDialog');
+    await dialog.fire('cancel');
+    dialog.close();
+    const notice = f.doc.body.querySelector('.gallery-webp-job-notice');
+    assert.equal(f.requests.filter(item => item.url === '/api/gallery/webp/cancel').length, 0);
+    assert.equal(notice.hidden, false);
+    assert.equal(f.timers.size, 1);
+
+    await notice.querySelector('.gallery-webp-job-notice-stop').fire('click');
+    assert.equal(f.requests.filter(item => item.url === '/api/gallery/webp/cancel').length, 1);
+    assert.equal(f.tools.job.status, 'cancelled');
+    assert.equal(notice.querySelector('.gallery-webp-job-notice-stop').hidden, true);
+    assert.equal(notice.querySelector('.gallery-webp-job-notice-close').hidden, false);
+});
+
+test('pagehide aborts background polling and persisted pageshow resumes it while closed', async () => {
+    let resolvePoll;
+    let pollSignal;
+    let statusCalls = 0;
+    const f = fixture();
+    f.host.fetch = async (url, options = {}) => {
+        f.requests.push({url, options});
+        if (url === '/api/gallery/webp') {
+            statusCalls++;
+            if (statusCalls === 1) return response({status: 'success', job: {
+                ...idleJob(), id: 'bfcache-job', status: 'running', total: 2, processed: 1,
+            }});
+            pollSignal = options.signal;
+            return new Promise(resolve => { resolvePoll = resolve; });
+        }
+        return response({status: 'success', formats: {}});
+    };
+    await f.tools.openContext('bfcache.png');
+    f.tools.close();
+    assert.equal(f.timers.size, 1);
+    f.runTimers();
+    await turn();
+    assert.equal(typeof resolvePoll, 'function');
+    f.fireWindowEvent('pagehide');
+    assert.equal(pollSignal.aborted, true);
+    assert.equal(f.timers.size, 0);
+
+    f.fireWindowEvent('pageshow', {persisted: true});
+    assert.equal(f.timers.size, 1);
+    resolvePoll(response({status: 'success', job: {
+        ...idleJob(), id: 'bfcache-job', status: 'running', total: 2, processed: 2,
+    }}));
+    await turn();
+    await turn();
+    assert.equal(f.timers.size, 1, 'the stale poll response must not replace the resumed timer');
+    f.fireWindowEvent('pagehide');
+    assert.equal(f.timers.size, 0);
 });
 
 test('empty and over-limit current folders cannot start a conversion', async () => {
@@ -912,7 +1368,7 @@ test('a pending POST keeps its submitted path snapshot when the open modal selec
     await turn();
     assert.equal(typeof resolvePost, 'function');
     const submitted = JSON.parse(f.requests.find(item => item.url === '/api/gallery/webp' && item.options.method === 'POST').options.body);
-    assert.deepEqual(submitted, {paths: ['first.png'], quality: 90});
+    assert.deepEqual(submitted, {paths: ['first.png'], quality: 90, keep_original: true});
 
     await f.tools.openContext('second.png');
     resolvePost(response({status: 'success', job: {
@@ -920,6 +1376,8 @@ test('a pending POST keeps its submitted path snapshot when the open modal selec
     }}));
     await startPromise;
     assert.deepEqual(f.updatedPaths, ['first.png']);
+    assert.equal(dialog.querySelector('.gallery-image-tools-job-target').textContent, 'first.png',
+        'the terminal result keeps the submitted job path after the modal selection changes');
     f.tools.close();
 });
 

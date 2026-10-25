@@ -14,8 +14,13 @@ from PIL import Image
 
 import app
 from naim.daki_image_refs import PROJECT_EXPORT_PREFIX, resolve_daki_image_reference
-from naim.images.canvas_export import save_project_candidate_image
+from naim.images.canvas_export import (
+    project_export_image_path,
+    save_project_candidate_image,
+    save_project_webp_candidate,
+)
 from naim.images.project_results import (
+    process_project_webp_conversion,
     process_project_upscale_job,
     validate_project_image_context,
 )
@@ -189,6 +194,153 @@ class ProjectImageResultStorageTests(unittest.TestCase):
                 )
         self.assertEqual(len(self.store.get_project(self.project['id'])['candidates']['front']), 1)
         self.assertEqual(list((self.export_root / self.project['id']).glob('*')), [])
+
+    def test_webp_candidate_save_rerolls_uuid_when_any_export_suffix_exists(self):
+        source_webp = self.gallery / 'source.webp'
+        Image.new('RGB', (32, 48), (10, 20, 30)).save(source_webp, format='WEBP')
+        source_webp.with_suffix('.json').write_bytes(b'{"source":true}')
+        collision = Path(project_export_image_path(
+            self.export_root, self.project['id'], 'a' * 32,
+        )).with_suffix('.json')
+        collision.parent.mkdir(parents=True)
+        collision.write_bytes(b'owned by an existing export')
+
+        with mock.patch('naim.images.canvas_export.uuid.uuid4',
+                        side_effect=[mock.Mock(hex='a' * 32), mock.Mock(hex='b' * 32),
+                                     mock.Mock(hex='c' * 32)]):
+            saved = save_project_webp_candidate(
+                self.store, self.export_root, self.project['id'], 'front', source_webp,
+            )
+
+        expected = f'{PROJECT_EXPORT_PREFIX}/{self.project["id"]}/{"b" * 32}.png'
+        self.assertEqual(saved['path'], expected)
+        self.assertEqual(collision.read_bytes(), b'owned by an existing export')
+        actual, _ = self.store.resolve_image(saved['path'])
+        self.assertTrue(actual.endswith('.webp'))
+        self.assertEqual(Path(actual).with_suffix('.json').read_bytes(), b'{"source":true}')
+        self.assertEqual(len(self.store.get_project(self.project['id'])['candidates']['front']), 2)
+
+    def test_project_webp_conversion_adds_same_side_candidate_and_preserves_sources(self):
+        back = self.store.add_candidate(self.project['id'], 'source.png', 'back')['candidates']['back'][0]
+        self.source.with_suffix('.txt').write_bytes(b'synthetic sidecar bytes\x00')
+        source_json = self.source.with_suffix('.json').read_bytes()
+        source_text = self.source.with_suffix('.txt').read_bytes()
+
+        result = process_project_webp_conversion(
+            self.store, self.export_root, self.context(), 'source.png', 84, threading.Event(),
+        )
+
+        self.assertEqual(result['status'], 'converted', result)
+        self.assertEqual(result['destination'], 'project')
+        self.assertEqual(result['side'], 'front')
+        self.assertEqual(result['projectName'], 'Synthetic project')
+        self.assertTrue(result['result_path'].startswith(f'{PROJECT_EXPORT_PREFIX}/'))
+        self.assertEqual(result['path'], result['result_path'])
+        self.assertEqual(self.source.read_bytes(), self.original)
+        self.assertEqual(self.source.with_suffix('.json').read_bytes(), source_json)
+        self.assertEqual(self.source.with_suffix('.txt').read_bytes(), source_text)
+
+        project = self.store.get_project(self.project['id'])
+        self.assertEqual(len(project['candidates']['front']), 2)
+        self.assertEqual(project['candidates']['front'][0]['id'], self.front_candidate['id'])
+        self.assertEqual(len(project['candidates']['back']), 1)
+        self.assertEqual(project['candidates']['back'][0]['id'], back['id'])
+        new_candidate = project['candidates']['front'][1]
+        exported = validate_project_image_context(
+            self.store, self.context(new_candidate), result['result_path'],
+        )
+        self.assertTrue(exported['sourceFullPath'].endswith('.webp'))
+        saved_webp = Path(exported['sourceFullPath'])
+        self.assertEqual(saved_webp.with_suffix('.json').read_bytes(), source_json)
+        self.assertEqual(saved_webp.with_suffix('.txt').read_bytes(), source_text)
+        with Image.open(saved_webp) as image:
+            self.assertEqual(image.format, 'WEBP')
+            image.verify()
+        self.assertEqual(load_prompt_sidecar(saved_webp)['basePrompt'], 'synthetic source prompt')
+
+    def test_existing_webp_project_candidate_is_skipped_without_adding_an_export(self):
+        source_webp = self.gallery / 'already.webp'
+        Image.new('RGB', (32, 48), (10, 20, 30)).save(source_webp, format='WEBP')
+        project = self.store.add_candidate(self.project['id'], 'already.webp', 'front')
+        candidate = project['candidates']['front'][-1]
+        context = self.context(candidate)
+
+        result = process_project_webp_conversion(
+            self.store, self.export_root, context, candidate['path'], 84, threading.Event(),
+        )
+
+        self.assertEqual(result['status'], 'skipped')
+        self.assertIn('이미 WebP', result['reason'])
+        self.assertEqual(len(self.store.get_project(self.project['id'])['candidates']['front']), 2)
+        self.assertFalse(self.export_root.exists())
+
+    def test_webp_candidate_registration_failure_removes_only_new_export_files(self):
+        def convert_copy(source_path, **options):
+            self.assertFalse(options['lossless'])
+            self.assertEqual(options['quality'], 84)
+            target = Path(source_path).with_suffix('.webp')
+            Image.new('RGB', (32, 48), (1, 2, 3)).save(target, format='WEBP')
+            return {'status': 'converted', 'source_bytes': Path(source_path).stat().st_size,
+                    'target_bytes': target.stat().st_size}
+
+        with mock.patch('naim.images.project_results.convert_image_to_webp', side_effect=convert_copy), \
+             mock.patch.object(self.store, 'add_candidate', side_effect=OSError('synthetic write failure')):
+            with self.assertRaisesRegex(OSError, 'synthetic write failure'):
+                process_project_webp_conversion(
+                    self.store, self.export_root, self.context(), 'source.png', 84, threading.Event(),
+                )
+        self.assertEqual(self.source.read_bytes(), self.original)
+        self.assertEqual(len(self.store.get_project(self.project['id'])['candidates']['front']), 1)
+        self.assertEqual(list((self.export_root / self.project['id']).glob('*')), [])
+
+    def test_invalid_project_candidate_does_not_start_conversion(self):
+        invalid_context = {**self.context(), 'candidateId': 'e' * 32}
+        with mock.patch('naim.images.project_results.convert_image_to_webp',
+                        side_effect=AssertionError('conversion started')):
+            with self.assertRaises(DakiNotFoundError):
+                process_project_webp_conversion(
+                    self.store, self.export_root, invalid_context, 'source.png', 84, threading.Event(),
+                )
+        self.assertFalse(self.export_root.exists())
+        self.assertEqual(self.source.read_bytes(), self.original)
+
+    def test_cancel_after_encoding_skips_project_persistence(self):
+        cancel = threading.Event()
+
+        def converted_then_cancelled(source_path, **_options):
+            target = Path(source_path).with_suffix('.webp')
+            Image.new('RGB', (32, 48), (1, 2, 3)).save(target, format='WEBP')
+            cancel.set()
+            return {'status': 'converted', 'source_bytes': Path(source_path).stat().st_size,
+                    'target_bytes': target.stat().st_size}
+
+        with mock.patch('naim.images.project_results.convert_image_to_webp',
+                        side_effect=converted_then_cancelled):
+            result = process_project_webp_conversion(
+                self.store, self.export_root, self.context(), 'source.png', 84, cancel,
+            )
+        self.assertEqual(result['status'], 'skipped')
+        self.assertEqual(len(self.store.get_project(self.project['id'])['candidates']['front']), 1)
+        self.assertFalse(self.export_root.exists())
+        self.assertEqual(self.source.read_bytes(), self.original)
+
+    def test_candidate_removed_during_encoding_prevents_export_registration(self):
+        def convert_then_remove_candidate(source_path, **_options):
+            target = Path(source_path).with_suffix('.webp')
+            Image.new('RGB', (32, 48), (1, 2, 3)).save(target, format='WEBP')
+            self.store.remove_candidate(self.project['id'], self.front_candidate['id'])
+            return {'status': 'converted', 'source_bytes': Path(source_path).stat().st_size,
+                    'target_bytes': target.stat().st_size}
+
+        with mock.patch('naim.images.project_results.convert_image_to_webp',
+                        side_effect=convert_then_remove_candidate):
+            with self.assertRaises(DakiNotFoundError):
+                process_project_webp_conversion(
+                    self.store, self.export_root, self.context(), 'source.png', 84, threading.Event(),
+                )
+        self.assertEqual(self.store.get_project(self.project['id'])['candidates']['front'], [])
+        self.assertFalse(self.export_root.exists())
+        self.assertEqual(self.source.read_bytes(), self.original)
 
 
 class ProjectImageResultRouteTests(unittest.TestCase):

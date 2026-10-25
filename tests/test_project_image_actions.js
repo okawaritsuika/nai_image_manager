@@ -159,6 +159,18 @@ function openMenu(f, path, context = projectContext) {
     }, path, `/image/${path}`, context);
 }
 
+test('WebP context action passes the selected project side and candidate', () => {
+    const f = fixture();
+    const calls = [];
+    f.window.GalleryImageTools = {openContext: (...args) => calls.push(args)};
+    openMenu(f, 'gallery/project.png', projectContext);
+    f.context.openGalleryContextWebpDialog();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['gallery/project.png', projectContext]]);
+    openMenu(f, 'gallery/ordinary.png', null);
+    f.context.openGalleryContextWebpDialog();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls[1])), ['gallery/ordinary.png', null]);
+});
+
 function inpaintSession(overrides = {}) {
     return {
         originalPath: '__daki_personal__/same-image.png',

@@ -1,12 +1,18 @@
 """Validation and persistence for images produced from Daki candidates."""
 import os
 import re
+import shutil
 import tempfile
+from pathlib import Path
 
 from PIL import Image
 
 import upscale_logic
-from naim.images.canvas_export import save_project_candidate_image
+from naim.images.canvas_export import save_project_candidate_image, save_project_webp_candidate
+from naim.images.webp_conversion import (
+    _digest_file, _identity, convert_image_to_webp, webp_target_path,
+)
+from naim.storage.image_files import IMAGE_FILES_LOCK
 from naim.storage.daki_projects import DakiNotFoundError
 
 
@@ -67,6 +73,79 @@ def validate_project_image_context(store, project_context, source_path):
         'sourceFullPath': candidate_full_path,
         'sourceRelativePath': candidate_relative_path or source_relative_path,
     }
+
+
+def process_project_webp_conversion(store, export_root, project_context, source_path, quality, cancel_event):
+    """Convert a copied project candidate and add its WebP without replacing the source."""
+    validated = validate_project_image_context(store, project_context, source_path)
+    source = Path(validated['sourceFullPath'])
+    if cancel_event is not None and cancel_event.is_set():
+        return {'status': 'skipped', 'source_bytes': 0, 'target_bytes': 0,
+                'reason': 'WebP 변환이 취소되어 원본을 유지합니다.'}
+
+    with tempfile.TemporaryDirectory(prefix='naim_project_webp_') as temp_dir:
+        temp_source = Path(temp_dir) / source.name
+        with IMAGE_FILES_LOCK:
+            if source.is_symlink() or not source.is_file():
+                raise FileNotFoundError('후보의 원본 이미지를 찾을 수 없습니다.')
+            source_stat = source.stat()
+            source_identity = _identity(source_stat)
+            source_digest = _digest_file(source)
+            if _identity(source.stat()) != source_identity or _digest_file(source) != source_digest:
+                return {'status': 'skipped', 'source_bytes': source_stat.st_size, 'target_bytes': 0,
+                        'reason': '변환 중 원본 이미지가 변경되어 원본을 유지합니다.'}
+
+            shutil.copy2(source, temp_source)
+            for suffix in ('.json', '.txt'):
+                source_sidecar = source.with_suffix(suffix)
+                if not os.path.lexists(source_sidecar):
+                    continue
+                if source_sidecar.is_symlink() or not source_sidecar.is_file():
+                    raise ValueError('이미지 메타데이터 보조 파일은 일반 파일이어야 합니다.')
+                shutil.copy2(source_sidecar, temp_source.with_suffix(suffix))
+
+            if (_identity(source.stat()) != source_identity
+                    or _digest_file(source) != source_digest
+                    or _digest_file(temp_source) != source_digest):
+                return {'status': 'skipped', 'source_bytes': source_stat.st_size, 'target_bytes': 0,
+                        'reason': '변환 중 원본 이미지가 변경되어 원본을 유지합니다.'}
+
+        result = convert_image_to_webp(
+            str(temp_source), lossless=False, quality=quality, cancel_event=cancel_event,
+        )
+        if result.get('status') != 'converted':
+            return result
+
+        temp_webp = Path(webp_target_path(temp_source))
+        with IMAGE_FILES_LOCK:
+            latest = validate_project_image_context(store, project_context, source_path)
+            if _canonical_path(latest['sourceFullPath']) != _canonical_path(source):
+                result.update(status='skipped', reason='프로젝트 후보 이미지가 변경되어 원본을 유지합니다.')
+                return result
+            if (source.is_symlink() or not source.is_file()
+                    or _identity(source.stat()) != source_identity
+                    or _digest_file(source) != source_digest):
+                result.update(status='skipped', reason='변환 중 원본 이미지가 변경되어 원본을 유지합니다.')
+                return result
+            if cancel_event is not None and cancel_event.is_set():
+                result.update(status='skipped', reason='WebP 변환이 취소되어 원본을 유지합니다.')
+                return result
+
+            saved = save_project_webp_candidate(
+                store, export_root, project_context['projectId'], validated['side'], str(temp_webp),
+            )
+            result.update({
+                'result_path': saved['path'],
+                'result_src': saved['src'],
+                'path': saved['path'],
+                'src': saved['src'],
+                'destination': 'project',
+                'projectId': saved['projectId'],
+                'projectName': saved['projectName'],
+                'side': saved['side'],
+                'projectContext': validated['projectContext'],
+            })
+            return result
 
 
 def process_project_upscale_job(job, progress_callback, *, store, export_root,

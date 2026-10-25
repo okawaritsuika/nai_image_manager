@@ -9,10 +9,13 @@ from flask import Flask
 from PIL import Image
 
 from naim.images.gallery_conversion import gallery_image_processor
+from naim.images.project_results import validate_project_image_context
+from naim.daki_image_refs import PROJECT_EXPORT_PREFIX, resolve_daki_image_reference
 from naim.images.webp_conversion import convert_image_to_webp, resolve_webp_image, webp_target_path
 from naim.jobs.image_conversion import ImageConversionJobs
 from naim.storage.catalog_image_conversion import CatalogImageReferences
 from naim.storage.history import HistoryDB
+from naim.storage.daki_projects import DakiProjectsStore
 from naim.web.image_conversion import register_image_conversion_routes
 from naim.web.lifecycle import register_job_shutdown
 
@@ -45,6 +48,92 @@ class ImageConversionAPITests(unittest.TestCase):
         register_image_conversion_routes(self.app, self.jobs, resolve)
         self.client = self.app.test_client()
 
+    def project_api(self):
+        exports = self.root / 'exports'
+
+        def resolve(path):
+            if path.startswith(PROJECT_EXPORT_PREFIX + '/'):
+                return resolve_daki_image_reference(path, None, project_exports_root=exports)
+            return self.resolve(path)
+
+        store = DakiProjectsStore(self.root / 'projects.json', resolve)
+        project = store.create_project('Synthetic project', 'a.png', 'front')
+        context = {'projectId': project['id'], 'side': 'front',
+                   'candidateId': project['candidates']['front'][0]['id']}
+        jobs = ImageConversionJobs(gallery_image_processor(
+            resolve, lambda: self.gallery, lambda: self.tags,
+            project_store=store, project_export_root=exports))
+        self.addCleanup(jobs.shutdown)
+        app = Flask(__name__)
+        register_image_conversion_routes(app, jobs, resolve,
+            validate_project_context=lambda ctx, path: validate_project_image_context(store, ctx, path))
+        return app.test_client(), jobs, store, context, resolve
+
+    def test_project_addition_is_registered_on_the_same_side(self):
+        client, jobs, store, context, resolve = self.project_api()
+        original = (self.gallery / 'a.png').read_bytes()
+        response = client.post('/api/gallery/webp', json={
+            'paths': ['a.png'], 'keep_original': True, 'projectContext': context})
+        self.assertEqual(response.status_code, 200, response.json)
+        jobs.thread.join(10)
+        self.assertEqual(jobs.snapshot()['converted'], 1, jobs.snapshot())
+        self.assertEqual(jobs.snapshot()['projectContext'], context)
+        project = store.get_project(context['projectId'])
+        self.assertEqual(len(project['candidates']['front']), 2)
+        self.assertEqual(project['candidates']['back'], [])
+        self.assertEqual(project['candidates']['front'][0]['id'], context['candidateId'])
+        result_path = project['candidates']['front'][1]['path']
+        full, _ = resolve(result_path)
+        with Image.open(full) as image:
+            self.assertEqual(image.format, 'WEBP')
+        self.assertEqual((self.gallery / 'a.png').read_bytes(), original)
+        self.assertFalse((self.gallery / 'a.webp').exists())
+
+    def test_project_replacement_keeps_the_existing_candidate(self):
+        client, jobs, store, context, resolve = self.project_api()
+        response = client.post('/api/gallery/webp', json={
+            'paths': ['a.png'], 'keep_original': False, 'projectContext': context})
+        self.assertEqual(response.status_code, 200)
+        jobs.thread.join(10)
+        self.assertEqual(jobs.snapshot()['converted'], 1, jobs.snapshot())
+        candidates = store.get_project(context['projectId'])['candidates']['front']
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]['id'], context['candidateId'])
+        with Image.open(resolve(candidates[0]['path'])[0]) as image:
+            self.assertEqual(image.format, 'WEBP')
+
+    def test_project_jpeg_addition_preserves_sidecar_and_back_side(self):
+        client, jobs, store, context, resolve = self.project_api()
+        project = store.add_candidate(context['projectId'], 'b.jpg', 'back')
+        context = {**context, 'side': 'back', 'candidateId': project['candidates']['back'][0]['id']}
+        original = (self.gallery / 'b.jpg').read_bytes()
+        sidecar = b'{"basePrompt":"synthetic photo"}'
+        (self.gallery / 'b.json').write_bytes(sidecar)
+        response = client.post('/api/gallery/webp', json={
+            'paths': ['b.jpg'], 'keep_original': True, 'projectContext': context})
+        self.assertEqual(response.status_code, 200)
+        jobs.thread.join(10)
+        self.assertEqual(jobs.snapshot()['converted'], 1, jobs.snapshot())
+        project = store.get_project(context['projectId'])
+        self.assertEqual(len(project['candidates']['front']), 1)
+        self.assertEqual(len(project['candidates']['back']), 2)
+        full, _ = resolve(project['candidates']['back'][1]['path'])
+        self.assertEqual(Path(full).with_suffix('.json').read_bytes(), sidecar)
+        self.assertEqual((self.gallery / 'b.jpg').read_bytes(), original)
+
+    def test_invalid_project_requests_do_not_start_conversion(self):
+        client, jobs, store, context, _ = self.project_api()
+        original = (self.gallery / 'a.png').read_bytes()
+        for payload, expected in [
+            ({'paths': ['a.png'], 'projectContext': None}, 400),
+            ({'paths': ['a.png', 'b.jpg'], 'projectContext': context}, 400),
+            ({'paths': ['b.jpg'], 'projectContext': context}, 400),
+            ({'paths': ['a.png'], 'projectContext': {**context, 'candidateId': 'f' * 32}}, 404),
+        ]:
+            self.assertEqual(client.post('/api/gallery/webp', json=payload).status_code, expected)
+        self.assertEqual(jobs.snapshot()['status'], 'idle')
+        self.assertEqual((self.gallery / 'a.png').read_bytes(), original)
+
     def test_actual_header_batch_conversion_and_existing_references(self):
         response = self.client.post('/api/gallery/image-formats', json={'paths': ['a.png', 'b.jpg', '../outside.png']})
         self.assertEqual(response.json['formats'], {'a.png': 'PNG', 'b.jpg': 'JPEG', '../outside.png': 'UNKNOWN'})
@@ -73,10 +162,45 @@ class ImageConversionAPITests(unittest.TestCase):
     def test_validation_failure_is_read_only(self):
         original = (self.gallery / 'a.png').read_bytes()
         for payload in (None, [], {}, {'paths': []}, {'paths': ['a.png'], 'quality': True},
-                        {'paths': ['a.png'], 'quality': 101}, {'paths': [123]}):
+                        {'paths': ['a.png'], 'quality': 101}, {'paths': [123]},
+                        {'paths': ['a.png'], 'keep_original': 'false'},
+                        {'paths': ['a.png'], 'keep_original': 1}):
             self.assertEqual(self.client.post('/api/gallery/webp', json=payload).status_code, 400)
         self.assertEqual((self.gallery / 'a.png').read_bytes(), original)
         self.assertEqual(self.client.post('/api/gallery/image-formats', json={'paths': ['a.png'] * 201}).status_code, 400)
+
+    def test_addition_keeps_original_tags_and_indexes_both_files(self):
+        db = HistoryDB(self.gallery / 'naia_history.db')
+        db.upsert_gallery_image_file(self.gallery / 'a.png', classified_root=self.gallery)
+        db.close()
+        original = (self.gallery / 'a.png').read_bytes()
+        tags = self.tags.read_bytes()
+        response = self.client.post('/api/gallery/webp', json={
+            'paths': ['a.png', 'b.jpg'], 'quality': 90, 'keep_original': True})
+        self.assertEqual(response.status_code, 200)
+        self.jobs.thread.join(10)
+        state = self.jobs.snapshot()
+        self.assertEqual((state['converted'], state['failed']), (2, 0), state)
+        self.assertTrue(state['keep_original'])
+        self.assertEqual((self.gallery / 'a.png').read_bytes(), original)
+        self.assertEqual(self.tags.read_bytes(), tags)
+        self.assertTrue((self.gallery / 'b.jpg').is_file())
+        self.assertTrue((self.gallery / 'b.jpg.webp').is_file())
+        db = HistoryDB(self.gallery / 'naia_history.db')
+        try:
+            self.assertTrue(db.gallery_image_record_exists('a.png'))
+            self.assertTrue(db.gallery_image_record_exists('a.webp'))
+            self.assertTrue(db.gallery_image_record_exists('b.jpg.webp'))
+            self.assertIsNone(db.conn.execute(
+                "SELECT name FROM sqlite_master WHERE name='gallery_webp_conversions'").fetchone())
+        finally:
+            db.close()
+        webp = (self.gallery / 'a.webp').read_bytes()
+        self.client.post('/api/gallery/webp', json={'paths': ['a.png'], 'keep_original': True})
+        self.jobs.thread.join(10)
+        self.assertEqual(self.jobs.snapshot()['skipped'], 1)
+        self.assertEqual((self.gallery / 'a.webp').read_bytes(), webp)
+        self.assertEqual((self.gallery / 'a.png').read_bytes(), original)
 
     def test_duplicate_start_and_stale_cancel_do_not_change_active_job(self):
         entered, release = threading.Event(), threading.Event()
@@ -117,6 +241,16 @@ class ImageConversionAPITests(unittest.TestCase):
         self.jobs.thread.join(10)
         state = self.jobs.snapshot()
         self.assertEqual((state['processed'], state['failed'], state['converted']), (2, 1, 1), state)
+
+    def test_encoder_failure_is_counted_as_failed_instead_of_skipped(self):
+        self.jobs.processor = lambda *args: {
+            'status': 'failed', 'source_bytes': 100, 'target_bytes': 0,
+            'reason': 'WebP 압축 한도를 초과했습니다(인코딩 오류 6). 원본은 유지했습니다.'}
+        self.client.post('/api/gallery/webp', json={'paths': ['a.png']})
+        self.jobs.thread.join(5)
+        state = self.client.get('/api/gallery/webp').json['job']
+        self.assertEqual((state['failed'], state['skipped'], state['processed']), (1, 0, 1))
+        self.assertIn('인코딩 오류 6', state['details'][0]['message'])
 
 
 class CatalogImageConversionTests(unittest.TestCase):

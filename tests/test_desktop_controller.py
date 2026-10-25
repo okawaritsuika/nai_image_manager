@@ -828,7 +828,7 @@ class DesktopControllerTests(unittest.TestCase):
                 dialog._update_quality()
                 self.assertEqual(str(dialog.quality_input.cget('state')), 'normal')
                 self.assertIn('예상', dialog.estimate_button.cget('text'))
-                self.assertIn('PNG 삭제', dialog.start_button.cget('text'))
+                self.assertEqual('WebP 변환…', dialog.start_button.cget('text'))
                 self.assertEqual(str(dialog.details.cget('state')), 'disabled')
             finally:
                 dialog.close()

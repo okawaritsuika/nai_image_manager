@@ -130,6 +130,60 @@ class GalleryTagCache:
         self.raw, self.config = raw, config
 
 
+def add_webp_gallery_image(db, root, source_path, target_path):
+    """Index an additional WebP without moving source references or tags.
+
+    Called under IMAGE_FILES_LOCK after publication. Return an undo callback
+    so cancellation or a final verification failure can remove the new record.
+    """
+    from PIL import Image
+
+    old_rel = os.path.relpath(source_path, root).replace('\\', '/')
+    new_rel = os.path.relpath(target_path, root).replace('\\', '/')
+    _contained_path(root, old_rel)
+    _contained_path(root, new_rel)
+    if Path(target_path).absolute() != webp_target_path(Path(source_path).absolute()):
+        raise ValueError('WebP 추가 경로가 올바르지 않습니다.')
+    cursor = db.conn.execute('SELECT * FROM gallery_images WHERE rel_path = ?', (new_rel,))
+    columns = [column[0] for column in cursor.description]
+    previous = cursor.fetchone()
+    source_cursor = db.conn.execute('SELECT * FROM gallery_images WHERE rel_path = ?', (old_rel,))
+    source_row = source_cursor.fetchone()
+    source_record = dict(zip((column[0] for column in source_cursor.description), source_row)) if source_row else {}
+    # Reuse the ordinary file index writer, preserving classification fields.
+    overrides = {key: source_record[key] for key in (
+        'mode', 'rating', 'brand', 'character_names', 'is_dakimakura', 'reason', 'model_family'
+    ) if key in source_record}
+    # Supplying verified dimensions avoids a separate metadata-cache write
+    # outside the new gallery record's rollback boundary.
+    with Image.open(target_path) as image:
+        overrides.update(width=image.width, height=image.height)
+    folder = os.path.dirname(new_rel).replace('\\', '/')
+    if os.path.basename(folder) == '_upscaled':
+        folder = os.path.dirname(folder).replace('\\', '/')
+
+    def undo():
+        try:
+            with db.conn:
+                if previous is None:
+                    db.conn.execute('DELETE FROM gallery_images WHERE rel_path = ?', (new_rel,))
+                else:
+                    names = ','.join('"' + column + '"' for column in columns)
+                    placeholders = ','.join('?' for _ in columns)
+                    db.conn.execute(f'INSERT OR REPLACE INTO gallery_images ({names}) VALUES ({placeholders})', previous)
+            db.refresh_gallery_folder_summaries([folder])
+        except Exception as error:
+            raise WebpReferenceRollbackError('추가 이미지 인덱스 복구 실패로 원본과 WebP를 보존합니다.') from error
+
+    try:
+        db.upsert_gallery_image_file(target_path, classified_root=root, **overrides)
+        db.refresh_gallery_folder_summaries([folder])
+    except Exception:
+        undo()
+        raise
+    return undo
+
+
 def migrate_webp_references(db, root, source_path, target_path, tags_path, *, tags_cache=None):
     """Commit path/hash references and return an idempotent undo callback.
 

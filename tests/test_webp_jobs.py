@@ -14,6 +14,39 @@ def write_header(path, width=64, height=64):
 
 
 class WebPJobsTests(unittest.TestCase):
+    def test_encoder_failure_is_counted_as_failed_instead_of_skipped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'sample.png').write_bytes(b'synthetic')
+            reason = 'WebP 인코딩 실패(오류 6)로 원본을 유지했습니다.'
+            jobs = WebPCompressionJobs(lambda: root, lambda *args: {
+                'status': 'failed', 'source_bytes': 100, 'target_bytes': 0, 'reason': reason})
+            jobs.start(lossless=False, quality=90)
+            jobs.thread.join(3)
+            state = jobs.snapshot()
+            self.assertEqual((state['processed'], state['failed'], state['skipped']), (1, 1, 0))
+            self.assertEqual(state['details'][0]['message'], reason)
+
+    def test_keep_original_processor_indexes_webp_without_migrating_references(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'sample.png'
+            target = root / 'sample.webp'
+            db = mock.Mock()
+            cancel_event = threading.Event()
+            undo = mock.Mock()
+            with mock.patch.object(webp_compression, 'add_webp_gallery_image', return_value=undo) as add, \
+                 mock.patch.object(webp_compression, 'migrate_webp_references') as migrate, \
+                 mock.patch.object(webp_compression, 'convert_png_to_webp', return_value={'status': 'converted'}) as convert:
+                processor = webp_compression.gallery_processor(db, root, root / 'tags.json', keep_original=True)
+                result = processor(source, True, 90, cancel_event)
+                callback = convert.call_args.kwargs['before_delete']
+                self.assertIs(callback(str(source), str(target)), undo)
+            self.assertEqual(result, {'status': 'converted'})
+            self.assertTrue(convert.call_args.kwargs['keep_original'])
+            add.assert_called_once_with(db, root, str(source), str(target))
+            migrate.assert_not_called()
+
     def test_estimate_samples_evenly_and_keeps_originals_and_existing_webp(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

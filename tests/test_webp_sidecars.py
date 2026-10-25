@@ -38,6 +38,32 @@ class WebPSidecarTests(unittest.TestCase):
         self.assertEqual((self.root / "sample.jpg.json").read_bytes(), json_bytes)
         self.assertEqual((self.root / "sample.jpg.txt").read_bytes(), text_bytes)
 
+    def test_keep_original_keeps_jpeg_and_copies_sidecars(self):
+        source = self.make_jpeg()
+        original_image = source.read_bytes()
+        original_stat = source.stat()
+        json_bytes = b'{"synthetic":"retained source"}\r\n'
+        text_bytes = b"synthetic retained prompt\n"
+        source_json = self.root / "sample.json"
+        source_txt = self.root / "sample.txt"
+        source_json.write_bytes(json_bytes)
+        source_txt.write_bytes(text_bytes)
+
+        result = conversion.convert_image_to_webp(source, keep_original=True)
+
+        self.assertEqual(result["status"], "converted", result)
+        self.assertEqual(source.read_bytes(), original_image)
+        current_stat = source.stat()
+        for attribute in ("st_mtime_ns", "st_ctime_ns", "st_size", "st_mode"):
+            self.assertEqual(getattr(current_stat, attribute), getattr(original_stat, attribute), attribute)
+        if hasattr(original_stat, "st_birthtime_ns"):
+            self.assertEqual(current_stat.st_birthtime_ns, original_stat.st_birthtime_ns)
+        self.assertTrue((self.root / "sample.jpg.webp").is_file())
+        self.assertEqual(source_json.read_bytes(), json_bytes)
+        self.assertEqual(source_txt.read_bytes(), text_bytes)
+        self.assertEqual((self.root / "sample.jpg.json").read_bytes(), json_bytes)
+        self.assertEqual((self.root / "sample.jpg.txt").read_bytes(), text_bytes)
+
     def test_png_api_leaves_same_stem_sidecars_in_place(self):
         source = self.root / "sample.png"
         Image.new("RGBA", (8, 6), (50, 100, 150, 220)).save(source)
@@ -92,6 +118,11 @@ class WebPSidecarTests(unittest.TestCase):
         self.assertFalse((self.root / "sample.jpg.txt").exists())
 
     def test_reference_callback_failure_rolls_back_new_sidecars(self):
+        for keep_original in (False, True):
+            with self.subTest(keep_original=keep_original):
+                self._assert_reference_callback_failure(keep_original)
+
+    def _assert_reference_callback_failure(self, keep_original):
         source = self.make_jpeg()
         source_json = self.root / "sample.json"
         source_json.write_bytes(b'{"synthetic":1}')
@@ -101,7 +132,9 @@ class WebPSidecarTests(unittest.TestCase):
         def fail_callback(*_):
             raise RuntimeError("synthetic reference failure")
 
-        result = conversion.convert_image_to_webp(source, before_delete=fail_callback)
+        result = conversion.convert_image_to_webp(
+            source, before_delete=fail_callback, keep_original=keep_original,
+        )
 
         self.assertEqual(result["status"], "skipped")
         self.assertIn("synthetic reference failure", result["reason"])

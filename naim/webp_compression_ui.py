@@ -1,4 +1,5 @@
 """Desktop controls for verified, offline gallery PNG compression."""
+from functools import partial
 import os
 import tkinter as tk
 from tkinter import scrolledtext, ttk
@@ -8,6 +9,37 @@ from naim import desktop_dialogs as messagebox
 from naim import desktop_theme as theme
 from naim.jobs.webp_compression import WebPCompressionJobs, gallery_processor
 from naim.paths import get_app_dir
+
+
+def choose_webp_storage(parent):
+    """Choose whether converted WebP files supplement or replace PNGs."""
+    window = messagebox._window(parent, 'WebP 저장 방식 선택')
+    body = messagebox._body(window)
+    messagebox._text(body, 'WebP 저장 방식 선택', fg=theme.ACCENT,
+                     font=(*theme.FONT, 'bold')).pack(anchor='w', pady=(0, 8))
+    result = {'choice': None}
+
+    def choose(value):
+        result['choice'] = value
+        window.destroy()
+
+    for value, title, description, label in (
+        ('keep_original', '원본 유지 + WebP 추가',
+         '원본 PNG와 기존 갤러리 연결을 유지하고 WebP를 추가합니다. 디스크 사용량이 늘어납니다.',
+         '원본 유지 + WebP 추가'),
+        ('replace_original', '원본을 WebP로 교체',
+         '변환과 메타데이터 검증이 끝나면 PNG를 삭제하고 기존 갤러리 연결을 WebP로 갱신합니다.',
+         '원본을 WebP로 교체'),
+    ):
+        card = messagebox._card(body, title)
+        messagebox._text(card, description, fg=theme.MUTED).pack(
+            anchor='w', fill='x', pady=(0, 6))
+        theme.button(card, label, lambda value=value: choose(value), primary=True).pack(fill='x')
+
+    cancel = theme.button(body, '취소', lambda: choose(None), width=10)
+    cancel.pack(anchor='e')
+    messagebox._wait_modal(window, parent, cancel, lambda: choose(None))
+    return result['choice']
 
 
 class WebPCompressionDialog:
@@ -33,7 +65,8 @@ class WebPCompressionDialog:
         theme.label(content, self.gallery_root, fg=theme.MUTED,
                     wraplength=570, justify='left').pack(anchor='w', pady=(6, 4))
         theme.label(content, '하위 폴더·휴지통·업스케일 포함 · JPG와 기존 WebP는 유지\n'
-                 '메타데이터 보존 검증 후 PNG를 삭제합니다. 실패·이름 중복 파일은 원본을 유지합니다.\n'
+                 '변환·메타데이터 보존 검증 후 실행 직전 선택한 방식으로 처리합니다.\n'
+                 '원본 교체를 선택한 경우만 PNG를 삭제하며, 실패·이름 중복 파일은 원본을 유지합니다.\n'
                  'PNG 고유 메타데이터는 보관되지만, 다른 프로그램에서 표시되지 않을 수 있습니다.\n'
                  'PC 성능·여유 메모리에 맞춰 여러 장을 동시에 압축합니다.\n'
                  '실제 변환은 웹 서버를 중지한 뒤 실행하세요. 완료 후 갤러리를 새로고침하세요.',
@@ -55,7 +88,7 @@ class WebPCompressionDialog:
         self.estimate_button = theme.button(content, '예상 용량 계산 (원본 유지)',
                                             lambda: self.start(estimate=True))
         self.estimate_button.pack(fill='x', pady=(0, 5))
-        self.start_button = theme.button(content, '변환 후 PNG 삭제', self.start, primary=True)
+        self.start_button = theme.button(content, 'WebP 변환…', self.start, primary=True)
         self.start_button.pack(fill='x')
         theme.label(content, textvariable=self.status, fg=theme.ACCENT,
                     wraplength=570, justify='left').pack(anchor='w', pady=10)
@@ -90,11 +123,19 @@ class WebPCompressionDialog:
         if not os.path.isdir(self.gallery_root):
             messagebox.showwarning('갤러리 확인', '갤러리 폴더가 없습니다.', parent=self.window)
             return
+        keep_original = False
+        if not estimate:
+            choice = choose_webp_storage(self.window)
+            if choice is None:
+                return
+            keep_original = choice == 'keep_original'
         self.running = True
         self.jobs = None
         self.worker_error = ''
+        self.keep_original = keep_original
         options = (self.mode.get() == 'lossless', quality, estimate)
-        if not self.controller._launch_job('webp', self._worker, args=options):
+        worker = partial(self._worker, keep_original=keep_original)
+        if not self.controller._launch_job('webp', worker, args=options):
             self.running = False
             return
         self.job_token = self.controller._job_token
@@ -107,14 +148,15 @@ class WebPCompressionDialog:
         self.status.set('PNG 목록 수집 중…')
         self.window.after(150, self._poll)
 
-    def _worker(self, lossless, quality, estimate, job_token=None):
+    def _worker(self, lossless, quality, estimate, job_token=None, keep_original=False):
         db = None
         try:
             processor = None
             if not estimate:
                 db = utils.HistoryDB(os.path.join(self.gallery_root, 'naia_history.db'))
                 processor = gallery_processor(db, self.gallery_root,
-                                              os.path.join(get_app_dir(), 'gallery_image_tags.json'))
+                                              os.path.join(get_app_dir(), 'gallery_image_tags.json'),
+                                              keep_original=keep_original)
             self.jobs = WebPCompressionJobs(lambda: self.gallery_root, processor)
             self.jobs.start(lossless=lossless, quality=quality, estimate=estimate)
             while self.jobs.thread.is_alive():
@@ -140,14 +182,19 @@ class WebPCompressionDialog:
             phase = {'cancelled': '중지됨', 'error': '오류'}.get(state.get('status'), '완료')
         elif state.get('cancel_requested'):
             phase = '중지 요청됨 · 처리 중인 파일 정리 중'
-        change = f'{saved:,.2f} MiB 절약' if saved >= 0 else f'{-saved:,.2f} MiB 증가'
         before = state.get('source_bytes', 0)
         after = state.get('target_bytes', 0)
-        percent = (before - after) * 100 / before if before else 0
-        ratio = f'{percent:.1f}% 감소' if percent >= 0 else f'{-percent:.1f}% 증가'
-        summary = (f'{phase}: {processed:,} / {total:,} · 변환 {converted:,} · 건너뜀 {skipped:,} · 실패 {failed:,}\n'
-                   f'변환한 파일: {before / (1024 * 1024):,.2f} MiB → {after / (1024 * 1024):,.2f} MiB\n'
-                   f'{change} · {ratio}')
+        if getattr(self, 'keep_original', False):
+            summary = (f'{phase}: {processed:,} / {total:,} · 변환 {converted:,} · 건너뜀 {skipped:,} · 실패 {failed:,}\n'
+                       f'원본 PNG {before / (1024 * 1024):,.2f} MiB 유지 · 추가 WebP {after / (1024 * 1024):,.2f} MiB\n'
+                       f'원본 유지 · WebP {after / (1024 * 1024):,.2f} MiB 추가')
+        else:
+            percent = (before - after) * 100 / before if before else 0
+            change = f'{saved:,.2f} MiB 절약' if saved >= 0 else f'{-saved:,.2f} MiB 증가'
+            ratio = f'{percent:.1f}% 감소' if percent >= 0 else f'{-percent:.1f}% 증가'
+            summary = (f'{phase}: {processed:,} / {total:,} · 변환 {converted:,} · 건너뜀 {skipped:,} · 실패 {failed:,}\n'
+                       f'변환한 파일: {before / (1024 * 1024):,.2f} MiB → {after / (1024 * 1024):,.2f} MiB\n'
+                       f'{change} · {ratio}')
         if state.get('estimate'):
             sampled, sample_total = state.get('sampled', 0), state.get('sample_total', 0)
             summary = f'예상 용량 계산: 표본 {sampled} / {sample_total}장 · 전체 PNG {total:,}장'

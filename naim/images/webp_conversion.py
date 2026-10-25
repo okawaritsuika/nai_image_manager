@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import struct
 import tempfile
@@ -469,19 +470,22 @@ def resolve_webp_image(source_path):
 
 
 def _convert_image_to_webp(source_path, *, png_only, lossless=True, quality=90, before_delete=None,
-                           dry_run=False, cancel_event=None):
+                           dry_run=False, cancel_event=None, keep_original=False):
     """Convert one source image and delete it only after pixels/metadata are verified.
 
-    ``before_delete(source, target)`` may update path references after WebP is
-    published. It returns a rollback callable, used if a later check or source
-    deletion fails; a callback that raises must undo its own partial changes.
+    ``before_delete(source, target)`` keeps its historical name for compatibility
+    and may update path references after WebP is published. It returns a rollback
+    callable, used if a later check fails; a callback that raises must undo its
+    own partial changes. The callback runs whether or not the source is retained.
     ``dry_run`` encodes and verifies a temporary WebP, returning ``estimated``
     and actual encoded byte counts without publishing, callbacks or deletion.
+    ``keep_original=True`` publishes the verified WebP without deleting the source.
     Preparation may run concurrently. Publication, reference updates, source
     deletion and their rollback serialize under ``IMAGE_FILES_LOCK``. Optional
     ``cancel_event`` is checked between stages; a running native encode finishes
-    before cancellation is observed. Cancellation returns ``skipped``.
-    Returns ``status``, byte counts and an optional human-readable ``reason``.
+    before cancellation is observed. Cancellation returns ``skipped``. Encoder
+    failures return ``failed``; unsupported inputs and other safe skips return
+    ``skipped``. Results include byte counts and an optional human-readable ``reason``.
     """
     source = Path(source_path).absolute()
     target = webp_target_path(source)
@@ -499,6 +503,8 @@ def _convert_image_to_webp(source_path, *, png_only, lossless=True, quality=90, 
                 raise ValueError("이미 WebP 파일이라 변환을 건너뜁니다.")
             if not png_only and source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".gif"}:
                 raise ValueError("PNG, JPEG, BMP 또는 정지 GIF 파일만 변환합니다.")
+            if not isinstance(keep_original, bool):
+                raise ValueError("원본 보존 설정이 올바르지 않습니다.")
             if not isinstance(lossless, bool) or isinstance(quality, bool) or not isinstance(quality, (int, float)) or not 0 <= quality <= 100:
                 raise ValueError("WebP 압축 설정이 올바르지 않습니다.")
             source_stat = source.stat()
@@ -534,9 +540,22 @@ def _convert_image_to_webp(source_path, *, png_only, lossless=True, quality=90, 
             with tempfile.NamedTemporaryFile(dir=source.parent, prefix=".naim-webp-", suffix=".tmp", delete=False) as stream:
                 temporary = Path(stream.name)
             _check_cancelled(cancel_event)
-            rgba.save(temporary, "WEBP", lossless=lossless, quality=quality,
-                      method=_LOSSLESS_ENCODER_METHOD if lossless else _LOSSY_ENCODER_METHOD,
-                      exact=True, alpha_quality=100, **native)
+            encoder_options = {
+                "lossless": lossless,
+                "quality": quality,
+                "method": _LOSSLESS_ENCODER_METHOD if lossless else _LOSSY_ENCODER_METHOD,
+                "exact": True,
+                "alpha_quality": 100,
+            }
+            try:
+                rgba.save(temporary, "WEBP", **encoder_options, **native)
+            except ValueError as error:
+                if lossless or str(error).strip().lower() != "encoding error 6":
+                    raise
+                _check_cancelled(cancel_event)
+                # Retry only VP8's partition-0 overflow with the same quality and metadata.
+                encoder_options["method"] = 4
+                rgba.save(temporary, "WEBP", **encoder_options, **native)
             _check_cancelled(cancel_event)
             _append_archive(temporary, archive, rgba.size, rgba.getchannel("A").getextrema()[0] < 255)
             _check_cancelled(cancel_event)
@@ -572,11 +591,22 @@ def _convert_image_to_webp(source_path, *, png_only, lossless=True, quality=90, 
                 raise ValueError("변환 중 WebP가 변경되어 원본을 유지합니다.")
             result["target_bytes"] = target.stat().st_size
             _check_cancelled(cancel_event)
-            source.unlink()
+            if not keep_original:
+                source.unlink()
             result["status"] = "converted"
             return result
         except Exception as error:
-            result["reason"] = str(error)
+            encoding_error = (re.fullmatch(r"encoding error ([0-9]+)", str(error).strip().lower())
+                              if isinstance(error, ValueError) else None)
+            if encoding_error:
+                code = encoding_error.group(1)
+                result["status"] = "failed"
+                result["reason"] = (
+                    "WebP 압축 한도를 초과해 변환하지 못했습니다(인코딩 오류 6). 원본은 유지했습니다."
+                    if code == "6" else f"WebP 인코딩 실패(오류 {code})로 원본을 유지했습니다."
+                )
+            else:
+                result["reason"] = str(error)
             if getattr(error, "retain_target", False):
                 published = False
             if callable(rollback):
@@ -602,20 +632,21 @@ def _convert_image_to_webp(source_path, *, png_only, lossless=True, quality=90, 
 
 
 def convert_png_to_webp(source_path, *, lossless=True, quality=90, before_delete=None,
-                        dry_run=False, cancel_event=None):
+                        dry_run=False, cancel_event=None, keep_original=False):
     """Convert one PNG using its complete original PNG metadata archive."""
     return _convert_image_to_webp(
         source_path, png_only=True, lossless=lossless, quality=quality,
         before_delete=before_delete, dry_run=dry_run, cancel_event=cancel_event,
+        keep_original=keep_original,
     )
 
 
 def convert_image_to_webp(source_path, *, lossless=False, quality=90, before_delete=None,
-                          dry_run=False, cancel_event=None):
+                          dry_run=False, cancel_event=None, keep_original=False):
     """Convert one supported still image, preserving its native metadata."""
     return _convert_image_to_webp(
         source_path, png_only=False, lossless=lossless, quality=quality,
         before_delete=lambda source, target: _with_image_sidecars(
             Path(source), Path(target), before_delete),
-        dry_run=dry_run, cancel_event=cancel_event,
+        dry_run=dry_run, cancel_event=cancel_event, keep_original=keep_original,
     )

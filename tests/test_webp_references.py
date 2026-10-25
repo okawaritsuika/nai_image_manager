@@ -8,7 +8,7 @@ from unittest import mock
 
 from naim.storage.history import HistoryDB
 from naim.storage.webp_conversion import (
-    GalleryTagCache, WebpReferenceRollbackError, migrate_webp_references, resolve_converted_gallery_path,
+    GalleryTagCache, WebpReferenceRollbackError, add_webp_gallery_image, migrate_webp_references, resolve_converted_gallery_path,
 )
 
 
@@ -32,6 +32,25 @@ class WebpReferencesTests(unittest.TestCase):
 
     def migrate(self, **options):
         return migrate_webp_references(self.db, self.root, self.source, self.target, self.tags, **options)
+
+    def test_addition_registration_and_undo_preserve_source_and_tags(self):
+        from PIL import Image
+        Image.new('RGB', (16, 24)).save(self.source, 'PNG')
+        Image.new('RGB', (16, 24)).save(self.target, 'WEBP')
+        self.db.upsert_gallery_image_file(self.source, classified_root=self.root,
+                                         reason='synthetic', model_family='v5')
+        source_record = self.db.conn.execute('SELECT * FROM gallery_images WHERE rel_path = ?', (self.old,)).fetchone()
+        tag_bytes = self.tags.read_bytes()
+        undo = add_webp_gallery_image(self.db, self.root, self.source, self.target)
+        self.assertTrue(self.db.gallery_image_record_exists(self.new))
+        self.assertEqual(self.db.conn.execute('SELECT reason, model_family FROM gallery_images WHERE rel_path = ?',
+                                             (self.new,)).fetchone(), ('synthetic', 'v5'))
+        self.assertEqual(self.tags.read_bytes(), tag_bytes)
+        undo()
+        undo()
+        self.assertFalse(self.db.gallery_image_record_exists(self.new))
+        self.assertEqual(self.db.conn.execute('SELECT * FROM gallery_images WHERE rel_path = ?', (self.old,)).fetchone(), source_record)
+        self.assertEqual(self.tags.read_bytes(), tag_bytes)
 
     def populate(self):
         connection = self.db.conn

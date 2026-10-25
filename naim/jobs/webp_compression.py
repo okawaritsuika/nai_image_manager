@@ -6,7 +6,8 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from naim.images.webp_conversion import convert_png_to_webp
-from naim.storage.webp_conversion import GalleryTagCache, migrate_webp_references
+from naim.storage.webp_conversion import (GalleryTagCache, add_webp_gallery_image,
+                                          migrate_webp_references)
 
 
 _MAX_IN_FLIGHT_PIXELS = 16 * 1024 * 1024
@@ -36,7 +37,7 @@ def _available_memory():
     return None
 
 
-def gallery_processor(db, root, tags_path):
+def gallery_processor(db, root, tags_path, *, keep_original=False):
     """Bind the conversion and reference transaction to one offline gallery."""
     tags_cache = GalleryTagCache(tags_path)
 
@@ -44,13 +45,16 @@ def gallery_processor(db, root, tags_path):
         def prepare_delete(source, target):
             if cancel_event.is_set():
                 raise InterruptedError('압축 중지 요청')
+            if keep_original:
+                return add_webp_gallery_image(db, root, source, target)
             return migrate_webp_references(db, root, source, target, tags_path,
                                            tags_cache=tags_cache)
 
         # The converter holds IMAGE_FILES_LOCK only during publication, reference
         # updates, deletion and rollback. Encoding can proceed on other workers.
         return convert_png_to_webp(path, lossless=lossless, quality=quality,
-                                   before_delete=prepare_delete, cancel_event=cancel_event)
+                                   before_delete=prepare_delete, cancel_event=cancel_event,
+                                   keep_original=keep_original)
     return process
 
 
@@ -274,6 +278,8 @@ class WebPCompressionJobs:
                             self.state['converted'] += 1
                             self.state['source_bytes'] += result['source_bytes']
                             self.state['target_bytes'] += result['target_bytes']
+                        elif result['status'] == 'failed':
+                            self.state['failed'] += 1
                         else:
                             self.state['skipped'] += 1
                     if result['status'] != 'converted':

@@ -4703,7 +4703,7 @@ function markGalleryImageUpdated(path) {
 
 function openGalleryContextWebpDialog() {
     const path = activeImageContext?.path;
-    if (path) window.GalleryImageTools?.openContext(path);
+    if (path) window.GalleryImageTools?.openContext(path, normalizeDakiProjectContext(activeImageContext?.projectContext));
 }
 
 function closeImageContextMenu() {

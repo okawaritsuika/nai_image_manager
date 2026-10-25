@@ -27,19 +27,27 @@ class ImageConversionJobs:
         with self.lock:
             return deepcopy(self.state)
 
-    def start(self, paths, quality=90):
+    def start(self, paths, quality=90, keep_original=False, project_context=None):
         paths = image_paths(paths)
         if type(quality) is not int or not 1 <= quality <= 100:
             raise ValueError('품질은 1~100의 정수여야 합니다.')
+        if type(keep_original) is not bool:
+            raise ValueError('원본 유지 여부를 선택해 주세요.')
+        if project_context is not None:
+            if not isinstance(project_context, dict) or len(paths) != 1:
+                raise ValueError('프로젝트 이미지는 한 장씩 변환해 주세요.')
+            project_context = deepcopy(project_context)
         with self.lock:
             if self.closing or (self.thread is not None and self.thread.is_alive()):
                 raise RuntimeError('이미 WebP 변환이 실행 중이거나 종료 중입니다.')
             self.event.clear()
             self.state = {'id': uuid.uuid4().hex, 'status': 'running', 'total': len(paths),
                           'processed': 0, 'converted': 0, 'skipped': 0, 'failed': 0,
-                          'source_bytes': 0, 'target_bytes': 0, 'quality': quality,
+                          'source_bytes': 0, 'target_bytes': 0, 'quality': quality, 'keep_original': keep_original,
                           'details': [], 'cancel_requested': False}
-            self.thread = threading.Thread(target=self._run, args=(paths, quality),
+            if project_context is not None:
+                self.state['projectContext'] = deepcopy(project_context)
+            self.thread = threading.Thread(target=self._run, args=(paths, quality, keep_original, project_context),
                                            name='naim-image-webp', daemon=True)
             try:
                 self.thread.start()
@@ -48,7 +56,7 @@ class ImageConversionJobs:
                 raise
             return deepcopy(self.state)
 
-    def _run(self, paths, quality):
+    def _run(self, paths, quality, keep_original, project_context):
         try:
             # Encoding one image at a time bounds RAM and leaves the web/UI
             # threads available; cancellation is checked between encoder stages.
@@ -56,8 +64,11 @@ class ImageConversionJobs:
                 if self.event.is_set():
                     break
                 try:
-                    result = self.processor(path, quality, self.event)
-                    outcome = 'converted' if result['status'] == 'converted' else 'skipped'
+                    options = {'keep_original': True} if keep_original else {}
+                    if project_context is not None:
+                        options['project_context'] = project_context
+                    result = self.processor(path, quality, self.event, **options)
+                    outcome = result['status'] if result['status'] in ('converted', 'failed') else 'skipped'
                     message = result.get('reason', '')
                 except Exception:
                     outcome, message = 'failed', '그림 또는 연결 정보를 확인하지 못해 원본을 유지했습니다.'
@@ -67,7 +78,8 @@ class ImageConversionJobs:
                     self.state[outcome] += 1
                     before = result.get('source_bytes', 0)
                     self.state['source_bytes'] += before
-                    self.state['target_bytes'] += result.get('target_bytes', 0) if outcome == 'converted' else before
+                    after = result.get('target_bytes', 0) if outcome == 'converted' else (0 if keep_original else before)
+                    self.state['target_bytes'] += after
                     if message and len(self.state['details']) < 30:
                         self.state['details'].append({'path': path, 'message': message})
             with self.lock:

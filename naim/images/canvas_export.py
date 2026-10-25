@@ -3,7 +3,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import uuid
+
+from PIL import Image
 
 from naim.daki_image_refs import PROJECT_EXPORT_PREFIX
 from naim.images.prompt_metadata import (
@@ -140,6 +143,87 @@ def save_project_candidate_image(store, export_root, project_id, side, image, pr
         except Exception:
             _remove_owned_file(image_path, image_owned)
             _remove_owned_file(sidecar_path, sidecar_owned)
+            raise
+
+
+def save_project_webp_candidate(store, export_root, project_id, side, source_path):
+    """Copy a verified WebP into a unique project export and link it as a candidate."""
+    project_id = _validate_export_id(project_id, '다키 프로젝트 ID')
+    side = _validate_project_side(side)
+    project = store.get_project(project_id)
+    source = Path(source_path)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError('저장할 WebP 파일이 올바르지 않습니다.')
+    with Image.open(source) as image:
+        if image.format != 'WEBP':
+            raise ValueError('프로젝트 후보로 저장할 파일은 검증된 WebP여야 합니다.')
+        image.verify()
+
+    source_sidecars = []
+    for suffix in ('.json', '.txt'):
+        sidecar = source.with_suffix(suffix)
+        if not os.path.lexists(sidecar):
+            continue
+        if sidecar.is_symlink() or not sidecar.is_file():
+            raise ValueError('이미지 메타데이터 보조 파일은 일반 파일이어야 합니다.')
+        source_sidecars.append(sidecar)
+
+    root = Path(export_root)
+    project_root = root / project_id
+    project_root.mkdir(parents=True, exist_ok=True)
+    while True:
+        export_id = uuid.uuid4().hex
+        image_path = Path(project_export_image_path(root, project_id, export_id))
+        webp_path = image_path.with_suffix('.webp')
+        json_path = image_path.with_suffix('.json')
+        text_path = image_path.with_suffix('.txt')
+        if any(os.path.lexists(path) for path in (image_path, webp_path, json_path, text_path)):
+            continue
+        try:
+            webp_descriptor = _reserve_file(webp_path)
+        except FileExistsError:
+            continue
+
+        owned = [webp_path]
+        retry = False
+        try:
+            with os.fdopen(webp_descriptor, 'wb') as target_stream, open(source, 'rb') as source_stream:
+                shutil.copyfileobj(source_stream, target_stream)
+            with Image.open(webp_path) as copied_image:
+                if copied_image.format != 'WEBP':
+                    raise ValueError('복사된 프로젝트 WebP를 확인할 수 없습니다.')
+                copied_image.verify()
+
+            for source_sidecar in source_sidecars:
+                target_sidecar = image_path.with_suffix(source_sidecar.suffix)
+                try:
+                    sidecar_descriptor = _reserve_file(target_sidecar)
+                except FileExistsError:
+                    retry = True
+                    break
+                owned.append(target_sidecar)
+                with open(source_sidecar, 'rb') as source_stream, os.fdopen(sidecar_descriptor, 'wb') as target_stream:
+                    shutil.copyfileobj(source_stream, target_stream)
+
+            if retry:
+                for path in owned:
+                    _remove_owned_file(path, True)
+                continue
+
+            reference = f'{PROJECT_EXPORT_PREFIX}/{project_id}/{export_id}.png'
+            saved_project = store.add_candidate(project_id, reference, side)
+            return {
+                'status': 'success',
+                'path': reference,
+                'src': '/image/' + reference,
+                'projectId': project_id,
+                'projectName': saved_project.get('name', project.get('name', '')),
+                'side': side,
+                'destination': 'project',
+            }
+        except Exception:
+            for path in owned:
+                _remove_owned_file(path, True)
             raise
 
 

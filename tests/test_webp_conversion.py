@@ -103,6 +103,159 @@ class WebPConversionTests(unittest.TestCase):
             conversion.restore_webp_metadata(output)
             self.assertEqual(output.info["Comment"], "synthetic metadata")
 
+    def test_vp8_partition_error_retries_once_with_method_four(self):
+        for keep_original in (False, True):
+            with self.subTest(keep_original=keep_original):
+                info = PngInfo()
+                info.add_text("Comment", "synthetic archive metadata")
+                icc_profile = b"synthetic ICC profile"
+                source = self.make_png(
+                    f"partition-{keep_original}.png", pnginfo=info, icc_profile=icc_profile,
+                )
+                original = source.read_bytes()
+                attempts = []
+                real_save = Image.Image.save
+
+                def fail_once(image, filename, format=None, **options):
+                    if format == "WEBP":
+                        attempts.append(dict(options))
+                        if len(attempts) == 1:
+                            raise ValueError("encoding error 6")
+                    return real_save(image, filename, format, **options)
+
+                def before_delete(source_path, _target_path):
+                    self.assertEqual(Path(source_path).read_bytes(), original)
+
+                callback = mock.Mock(side_effect=before_delete)
+                with mock.patch.object(Image.Image, "save", fail_once):
+                    result = conversion.convert_png_to_webp(
+                        source, lossless=False, quality=90, keep_original=keep_original,
+                        before_delete=callback,
+                    )
+
+                self.assertEqual(result["status"], "converted", result)
+                self.assertEqual([item["method"] for item in attempts], [0, 4])
+                for options in attempts:
+                    self.assertFalse(options["lossless"])
+                    self.assertEqual(options["quality"], 90)
+                    self.assertTrue(options["exact"])
+                    self.assertEqual(options["alpha_quality"], 100)
+                    self.assertEqual(options["icc_profile"], icc_profile)
+                self.assertEqual(source.exists(), keep_original)
+                if keep_original:
+                    self.assertEqual(source.read_bytes(), original)
+                target = source.with_suffix(".webp")
+                self.assertTrue(target.is_file())
+                with Image.open(target) as output:
+                    self.assertEqual(output.size, (32, 24))
+                    output.load()
+                    saved_info, _ = conversion._read_archive(output._decoder.get_chunk("NAIM"))
+                    self.assertEqual(saved_info["Comment"], "synthetic archive metadata")
+                    self.assertEqual(saved_info["icc_profile"], icc_profile)
+                callback.assert_called_once_with(str(source), str(target))
+                self.assertEqual(list(self.root.glob(".naim-webp-*")), [])
+
+    def test_retry_encoding_error_six_is_failed_and_keeps_source(self):
+        source = self.make_png()
+        original = source.read_bytes()
+        callback = mock.Mock()
+        attempts = []
+        real_save = Image.Image.save
+
+        def fail_every_webp_save(image, filename, format=None, **options):
+            if format == "WEBP":
+                attempts.append(options["method"])
+                raise ValueError("encoding error 6")
+            return real_save(image, filename, format, **options)
+
+        with mock.patch.object(Image.Image, "save", fail_every_webp_save):
+            result = conversion.convert_png_to_webp(
+                source, lossless=False, quality=90, before_delete=callback,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"],
+                         "WebP 압축 한도를 초과해 변환하지 못했습니다(인코딩 오류 6). 원본은 유지했습니다.")
+        self.assertEqual(attempts, [0, 4])
+        self.assertEqual(source.read_bytes(), original)
+        self.assertFalse(source.with_suffix(".webp").exists())
+        self.assertEqual(list(self.root.glob(".naim-webp-*")), [])
+        callback.assert_not_called()
+
+    def test_other_encoder_errors_are_failed_but_unrelated_value_errors_are_skipped(self):
+        for error, expected_status, expected_methods, expected_reason in (
+            ("encoding error 2", "failed", [0], "WebP 인코딩 실패(오류 2)로 원본을 유지했습니다."),
+            ("encoding error 6 extra", "skipped", [0], "encoding error 6 extra"),
+            ("synthetic encoder failure", "skipped", [0], "synthetic encoder failure"),
+        ):
+            with self.subTest(error=error):
+                source = self.make_png(f"error-{len(list(self.root.glob('*.png')))}.png")
+                original = source.read_bytes()
+                attempts = []
+                real_save = Image.Image.save
+
+                def fail_webp_save(image, filename, format=None, **options):
+                    if format == "WEBP":
+                        attempts.append(options["method"])
+                        raise ValueError(error)
+                    return real_save(image, filename, format, **options)
+
+                with mock.patch.object(Image.Image, "save", fail_webp_save):
+                    result = conversion.convert_png_to_webp(source, lossless=False, quality=90)
+
+                self.assertEqual(result["status"], expected_status)
+                self.assertEqual(result["reason"], expected_reason)
+                self.assertEqual(attempts, expected_methods)
+                self.assertEqual(source.read_bytes(), original)
+                self.assertFalse(source.with_suffix(".webp").exists())
+                self.assertEqual(list(self.root.glob(".naim-webp-*")), [])
+
+    def test_lossless_error_six_does_not_retry(self):
+        source = self.make_png()
+        original = source.read_bytes()
+        attempts = []
+        real_save = Image.Image.save
+
+        def fail_webp_save(image, filename, format=None, **options):
+            if format == "WEBP":
+                attempts.append(options["method"])
+                raise ValueError("encoding error 6")
+            return real_save(image, filename, format, **options)
+
+        with mock.patch.object(Image.Image, "save", fail_webp_save):
+            result = conversion.convert_png_to_webp(source, lossless=True)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(attempts, [1])
+        self.assertEqual(source.read_bytes(), original)
+        self.assertFalse(source.with_suffix(".webp").exists())
+        self.assertEqual(list(self.root.glob(".naim-webp-*")), [])
+
+    def test_cancellation_after_partition_error_skips_retry(self):
+        source = self.make_png()
+        original = source.read_bytes()
+        cancelled = threading.Event()
+        callback = mock.Mock()
+        attempts = []
+        real_save = Image.Image.save
+
+        def cancel_after_error(image, filename, format=None, **options):
+            if format == "WEBP":
+                attempts.append(options["method"])
+                cancelled.set()
+                raise ValueError("encoding error 6")
+            return real_save(image, filename, format, **options)
+
+        with mock.patch.object(Image.Image, "save", cancel_after_error):
+            result = conversion.convert_png_to_webp(
+                source, lossless=False, cancel_event=cancelled, before_delete=callback,
+            )
+
+        self.assert_preserved(source, original, result)
+        self.assertEqual(attempts, [0])
+        self.assertIn("취소", result["reason"])
+        callback.assert_not_called()
+
     def test_palette_transparency_roundtrip(self):
         path = self.root / "palette.png"
         image = Image.new("P", (8, 8))
@@ -141,6 +294,57 @@ class WebPConversionTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(source.read_bytes(), original)
         self.assertEqual(target.read_bytes(), b"existing output")
+
+    def test_keep_original_publishes_png_webp_and_preserves_source(self):
+        info = PngInfo()
+        info.add_text("synthetic", "keep source bytes")
+        source = self.make_png(pnginfo=info)
+        original = source.read_bytes()
+        before = source.stat()
+        callback = mock.Mock()
+
+        result = conversion.convert_png_to_webp(source, keep_original=True, before_delete=callback)
+
+        self.assertEqual(result["status"], "converted", result)
+        self.assertEqual(source.read_bytes(), original)
+        after = source.stat()
+        for attribute in ("st_mtime_ns", "st_ctime_ns", "st_size", "st_mode"):
+            self.assertEqual(getattr(after, attribute), getattr(before, attribute), attribute)
+        if hasattr(before, "st_birthtime_ns"):
+            self.assertEqual(after.st_birthtime_ns, before.st_birthtime_ns)
+        self.assertTrue(source.with_suffix(".webp").is_file())
+        callback.assert_called_once_with(str(source), str(source.with_suffix(".webp")))
+
+    def test_keep_original_rejects_non_bool_values_without_publishing(self):
+        convert = (
+            conversion._convert_image_to_webp,
+            conversion.convert_png_to_webp,
+            conversion.convert_image_to_webp,
+        )
+        for index, converter in enumerate(convert):
+            with self.subTest(converter=converter.__name__):
+                source = self.make_png(f"strict-{index}.png")
+                original = source.read_bytes()
+                if converter is conversion._convert_image_to_webp:
+                    result = converter(source, png_only=True, keep_original=1)
+                else:
+                    result = converter(source, keep_original=1)
+                self.assertEqual(result["status"], "skipped")
+                self.assertIn("원본 보존 설정", result["reason"])
+                self.assertEqual(source.read_bytes(), original)
+                self.assertFalse(source.with_suffix(".webp").exists())
+
+    def test_keep_original_existing_webp_collision_preserves_both_files(self):
+        source = self.make_png("collision-keep.png")
+        original = source.read_bytes()
+        target = source.with_suffix(".webp")
+        target.write_bytes(b"existing WebP")
+
+        result = conversion.convert_png_to_webp(source, keep_original=True)
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(target.read_bytes(), b"existing WebP")
 
     def test_crc_failure_keeps_original(self):
         source = self.make_png()
@@ -367,6 +571,11 @@ class WebPConversionTests(unittest.TestCase):
                 callback.assert_not_called()
 
     def test_cancellation_after_reference_update_rolls_back_under_lock(self):
+        for keep_original in (False, True):
+            with self.subTest(keep_original=keep_original):
+                self._assert_cancellation_after_reference_update(keep_original)
+
+    def _assert_cancellation_after_reference_update(self, keep_original):
         source = self.make_png()
         original = source.read_bytes()
         cancelled = threading.Event()
@@ -390,7 +599,9 @@ class WebPConversionTests(unittest.TestCase):
             return real_unlink(path, *args, **kwargs)
 
         with mock.patch.object(Path, "unlink", unlink):
-            result = conversion.convert_png_to_webp(source, before_delete=callback, cancel_event=cancelled)
+            result = conversion.convert_png_to_webp(
+                source, before_delete=callback, cancel_event=cancelled, keep_original=keep_original,
+            )
         self.assert_preserved(source, original, result)
         self.assertEqual(phases, ["references", "rollback", "cleanup", "cleanup"])
 

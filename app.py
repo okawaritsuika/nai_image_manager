@@ -3069,8 +3069,11 @@ from naim.web.image_conversion import register_image_conversion_routes
 
 IMAGE_CONVERSION_JOBS = ImageConversionJobs(gallery_image_processor(
     resolve_daki_image_path, lambda: CLASSIFIED_DIR, lambda: GALLERY_IMAGE_TAGS_FILE,
+    project_store=DAKI_PROJECTS,
+    project_export_root=lambda: os.path.join(CANVAS_IMPORT_DIR, 'project_exports'),
 ))
-register_image_conversion_routes(app, IMAGE_CONVERSION_JOBS, resolve_daki_image_path)
+register_image_conversion_routes(app, IMAGE_CONVERSION_JOBS, resolve_daki_image_path,
+    validate_project_context=lambda context, source: validate_project_image_context(DAKI_PROJECTS, context, source))
 atexit.register(IMAGE_CONVERSION_JOBS.shutdown)
 
 
