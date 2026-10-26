@@ -1,6 +1,6 @@
 param(
     [string]$Python = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe"),
-    [string]$Version = "1.3.1"
+    [string]$Version = "1.3.2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,7 +119,7 @@ $Manifest = [ordered]@{
     sha256 = $Hash
     size = $ZipItem.Length
     payload_root = "NAI_Image_Manager"
-    summary = "Preserves existing gallery indexes, speeds up large Daki projects, and adds project archive/delete controls."
+    summary = "Fixes Hugging Face downloads failing when SSLKEYLOGFILE points to an unavailable path, while preserving certificate verification."
 }
 [IO.File]::WriteAllText(
     (Join-Path $Root "release_manifest.json"),

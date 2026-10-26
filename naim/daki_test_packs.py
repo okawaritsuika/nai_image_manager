@@ -12,6 +12,7 @@ import zipfile
 
 from PIL import Image
 import requests
+from naim.hf_http import public_session
 
 from naim.daki_style_archive import (
     DakiStyleArchiveError, HF_REVISION_API_URL, HF_ARCHIVE_INFO_URL,
@@ -70,8 +71,7 @@ def latest_packs(stop_event=None):
     """Pin the manifest and every archive to one public Hugging Face revision."""
     _check_stop(stop_event)
     try:
-        with requests.Session() as session:
-            session.trust_env = False
+        with public_session() as session:
             raw = _read_metadata(session, HF_REVISION_API_URL, stop_event, '공유 테스트 버전을 확인하지 못했습니다.')
             _check_stop(stop_event)
             revision_doc = _metadata_json(raw, '공유 테스트 버전')

@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlsplit
 import zipfile
 
 import requests
+from naim.hf_http import public_session
 from naim.storage.daki_style_sources import source_url as canonical_source_url
 
 
@@ -134,9 +135,7 @@ def latest_archive_spec(stop_event=None, progress=None):
     if _stopped(stop_event):
         return None
     try:
-        with requests.Session() as session:
-            # Public metadata and archives must never inherit local credentials.
-            session.trust_env = False
+        with public_session() as session:
             revision_data = _read_metadata(
                 session, HF_REVISION_API_URL, stop_event, '최신 이미지팩 정보를 확인하지 못했습니다.'
             )
@@ -252,9 +251,7 @@ def _download(target, spec, stop_event, progress, url=None, *, label='이미지�
         return False
     if offset < spec['bytes']:
         try:
-            with requests.Session() as session:
-                # Public downloads must not pick up a user's .netrc credentials.
-                session.trust_env = False
+            with public_session() as session:
                 headers = {'Accept-Encoding': 'identity'}
                 if offset:
                     headers['Range'] = f'bytes={offset}-'
