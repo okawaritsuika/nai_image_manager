@@ -14,7 +14,7 @@ _TEST = re.compile(r'__daki_tests__/([a-f0-9]{32})/([A-Za-z0-9_-]{1,128})\.png\Z
 _PERSONAL = re.compile(r'__daki_personal__/(personal_[a-f0-9]{32})\.png\Z')
 _DRAFT = re.compile(r'__daki_drafts__/([a-f0-9]{32})\.png\Z')
 _EXPORT = re.compile(
-    re.escape(PROJECT_EXPORT_PREFIX) + r'/([a-f0-9]{32})/([a-f0-9]{32})\.png\Z'
+    re.escape(PROJECT_EXPORT_PREFIX) + r'/([a-f0-9]{32})/([a-f0-9]{32})\.(?:png|webp)\Z'
 )
 
 
@@ -48,6 +48,7 @@ def resolve_daki_image_reference(relative, manager, draft_manager=None, project_
     reference = parse_daki_image_reference(relative)
     if reference is None:
         return None
+    canonical_relative = relative
     try:
         if reference[0] == 'shared':
             path = manager.catalog.preview_path(reference[1], full=True)
@@ -65,16 +66,27 @@ def resolve_daki_image_reference(relative, manager, draft_manager=None, project_
             from naim.images.canvas_export import project_export_image_path
             root = Path(project_exports_root).resolve()
             source = Path(project_export_image_path(root, reference[1], reference[2]))
-            path = resolve_webp_image(source).resolve()
+            if relative.endswith('.webp'):
+                requested_webp = source.with_suffix('.webp')
+                path = resolve_webp_image(requested_webp)
+                if Path(path).absolute() != requested_webp.absolute():
+                    raise FileNotFoundError('프로젝트 통합 WebP 이미지를 찾을 수 없습니다.')
+            else:
+                path = resolve_webp_image(source)
+            path = Path(path).resolve()
             if not path.is_relative_to(root):
                 raise ValueError('프로젝트 통합 이미지 경로가 올바르지 않습니다.')
             if not path.is_file():
                 raise FileNotFoundError('프로젝트 통합 이미지를 찾을 수 없습니다.')
+            suffix = path.suffix.lower()
+            if suffix not in ('.png', '.webp'):
+                raise ValueError('프로젝트 통합 이미지 형식이 올바르지 않습니다.')
+            canonical_relative = f'{PROJECT_EXPORT_PREFIX}/{reference[1]}/{reference[2]}{suffix}'
         else:
             path = manager.image_path(reference[1], reference[2], full=True)
     except DakiNotFoundError as error:
         raise FileNotFoundError('공유 그림체 이미지를 찾을 수 없습니다.') from error
-    return str(path), relative
+    return str(path), canonical_relative
 
 
 def daki_image_prompt_fallback(relative, manager):

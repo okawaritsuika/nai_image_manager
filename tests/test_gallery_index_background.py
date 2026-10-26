@@ -58,9 +58,9 @@ class GalleryIndexBackgroundTests(unittest.TestCase):
             result[table] = rows
         return result
 
-    def worker(self, read_reason):
+    def worker(self, read_reason, extract_model_family=None):
         classified = self.root / 'images'
-        (classified / 'replacement').mkdir(parents=True)
+        (classified / 'replacement').mkdir(parents=True, exist_ok=True)
         (classified / 'replacement' / 'new.png').write_bytes(b'synthetic image placeholder')
         source = Path(__file__).resolve().parents[1] / 'app.py'
         function = next(node for node in ast.parse(source.read_text(encoding='utf-8-sig')).body
@@ -76,7 +76,8 @@ class GalleryIndexBackgroundTests(unittest.TestCase):
             'load_gallery_image_tags_config': lambda: {},
             'get_gallery_image_tag_for_path': lambda *args: 'synthetic-tag',
             'load_gallery_reason_text_for_image': read_reason,
-            'image_logic': types.SimpleNamespace(extract_model_family_from_file=lambda _: 'v5'),
+            'image_logic': types.SimpleNamespace(
+                extract_model_family_from_file=extract_model_family or (lambda _: 'v5')),
             'infer_gallery_mode_from_rel_path': lambda _: 'general',
             'get_file_creation_time': lambda path, fallback: 17,
         }
@@ -151,6 +152,65 @@ class GalleryIndexBackgroundTests(unittest.TestCase):
                 ('replacement/removed.png', ''),
             ])
         self.assertEqual(json.loads(tag_file.read_text(encoding='utf-8')), latest)
+
+    def test_rebuild_reuses_unchanged_catalog_rows_and_opens_only_changed_or_new_images(self):
+        image_dir = self.root / 'images' / 'replacement'
+        image_dir.mkdir(parents=True, exist_ok=True)
+        stable_families = {
+            'stable-v5.png': ('v5', 640, 480),
+            'stable-v4_5.png': ('v4_5', 800, 600),
+            'stable-other.png': ('other', 1024, 768),
+        }
+        for file_name, (family, width, height) in stable_families.items():
+            path = image_dir / file_name
+            path.write_bytes(b'synthetic image placeholder')
+            os.utime(path, (1_700_000_000, 1_700_000_000))
+            rel_path = f'replacement/{file_name}'
+            self.add_image(self.live, rel_path, os.path.getmtime(path))
+            with self.live.conn:
+                self.live.conn.execute(
+                    'UPDATE gallery_images SET model_family = ?, width = ?, height = ? WHERE rel_path = ?',
+                    (family, width, height, rel_path))
+        with self.live.conn:
+            self.live.conn.execute(
+                "UPDATE gallery_images SET model_family = NULL WHERE rel_path = 'replacement/stable-v5.png'")
+            self.live.conn.execute(
+                "DELETE FROM gallery_index_state WHERE key = 'legacy_gallery_model_default'")
+
+        changed_path = image_dir / 'changed.png'
+        changed_path.write_bytes(b'synthetic image placeholder')
+        changed_mtime = os.path.getmtime(changed_path)
+        self.add_image(self.live, 'replacement/changed.png', changed_mtime - 10)
+        with self.live.conn:
+            self.live.conn.execute(
+                "UPDATE gallery_images SET model_family = 'v4_5' WHERE rel_path = 'replacement/changed.png'")
+        self.add_image(self.live, 'replacement/removed.png', 1_700_000_000)
+
+        extracted = []
+
+        def extract(path):
+            extracted.append(Path(path).name)
+            return {'changed.png': 'other', 'new.png': 'v5'}[Path(path).name]
+
+        namespace = self.worker(lambda _: 'synthetic reason', extract_model_family=extract)
+        namespace['gallery_index_rebuild_worker']()
+
+        self.assertFalse(namespace['GALLERY_INDEX_REBUILD_JOB']['error'])
+        self.assertCountEqual(extracted, ['changed.png', 'new.png'])
+        rows = {
+            row[0]: row[1:]
+            for row in self.live.conn.execute(
+                'SELECT rel_path, model_family, width, height, reason FROM gallery_images')
+        }
+        for file_name, (family, width, height) in stable_families.items():
+            self.assertEqual(rows[f'replacement/{file_name}'],
+                             (family, width, height, 'synthetic reason'))
+        self.assertEqual(rows['replacement/changed.png'],
+                         ('other', None, None, 'synthetic reason'))
+        self.assertEqual(rows['replacement/new.png'],
+                         ('v5', None, None, 'synthetic reason'))
+        self.assertNotIn('replacement/removed.png', rows)
+        self.assertNotIn('previous/old.png', rows)
 
     def test_readers_see_old_or_complete_new_index_during_publication(self):
         staging = HistoryDB(self.root / 'staging.db')

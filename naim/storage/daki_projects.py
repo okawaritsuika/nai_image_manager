@@ -1,9 +1,11 @@
 """Daki project references, stored independently of the gallery's image files."""
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 import os
 from pathlib import Path, PurePosixPath
 import re
+import threading
 import unicodedata
 from urllib.parse import quote
 import uuid
@@ -25,6 +27,10 @@ SIDES = ('front', 'back')
 _CANVAS_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 _WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>:"/\\|?*')
 _SIDE_DISPLAY_NAMES = {'front': '앞면', 'back': '뒷면'}
+_CANVAS_PREVIEW_LAYER_FIELDS = (
+    'type', 'visible', 'src', 'x', 'y', 'layerWidth', 'layerHeight',
+    'imageWidth', 'imageHeight', 'pinnedReference', 'renderOnCanvas',
+)
 
 
 class DakiNotFoundError(LookupError):
@@ -55,6 +61,20 @@ def canvas_metadata(canvas):
     }
 
 
+def _project_summary(project):
+    summary = {
+        key: deepcopy(value)
+        for key, value in project.items()
+        if key not in ('canvasSettings', 'detailPromptPresets', 'canvases')
+    }
+    if 'canvases' in project:
+        summary['canvases'] = {
+            side: [canvas_metadata(canvas) for canvas in project['canvases'].get(side, [])]
+            for side in SIDES
+        }
+    return summary
+
+
 def _canvas_layer_count(state):
     def count_layers(layers):
         total = 0
@@ -65,6 +85,69 @@ def _canvas_layer_count(state):
         return total
 
     return count_layers(state['layers'])
+
+
+def _javascript_truthy(value):
+    """Match JavaScript truthiness for values read from ordinary JSON."""
+    if value is None:
+        return False
+    if isinstance(value, (bool, int, float, str)):
+        return bool(value)
+    # JavaScript arrays and objects are truthy, including empty ones.
+    return True
+
+
+def _canvas_preview_layers(layers):
+    """Copy drawable layers in order, omitting editor-only payload fields."""
+    result = []
+    pending = [(layers, result)]
+    while pending:
+        source_layers, target_layers = pending.pop()
+        if not isinstance(source_layers, list):
+            continue
+        for layer in source_layers:
+            if not isinstance(layer, dict) or not _javascript_truthy(layer.get('visible')):
+                continue
+            layer_type = layer.get('type')
+            if layer_type == 'image':
+                if _javascript_truthy(layer.get('pinnedReference')):
+                    continue
+            elif layer_type == 'clip':
+                if not _javascript_truthy(layer.get('renderOnCanvas')):
+                    continue
+            elif layer_type not in ('canvas', 'folder', 'selection'):
+                continue
+
+            projected = {
+                key: value for key, value in layer.items()
+                if key in _CANVAS_PREVIEW_LAYER_FIELDS
+                and isinstance(value, (str, int, float, bool, type(None)))
+            }
+            projected['visible'] = True
+            if layer_type == 'image':
+                projected['pinnedReference'] = False
+            if layer_type == 'clip':
+                projected['renderOnCanvas'] = True
+            target_layers.append(projected)
+            if layer_type in ('folder', 'selection'):
+                children = []
+                projected['children'] = children
+                pending.append((layer.get('children'), children))
+    return result
+
+
+def _canvas_preview(canvas):
+    state = canvas['state']
+    return {
+        **{key: canvas[key] for key in (
+            'id', 'name', 'side', 'revision', 'created_at', 'updated_at',
+        )},
+        'state': {
+            'width': state['width'],
+            'height': state['height'],
+            'layers': _canvas_preview_layers(state.get('layers')),
+        },
+    }
 
 
 def _validate_canvas_state(state):
@@ -220,6 +303,10 @@ class DakiProjectsStore:
         self.path_provider = path_provider
         self.resolve_source = resolve_source
         self.clean_path = clean_path
+        self._snapshot_lock = threading.RLock()
+        self._snapshot_path = None
+        self._snapshot_signature = None
+        self._snapshot_data = None
 
     @property
     def path(self):
@@ -233,6 +320,61 @@ class DakiProjectsStore:
         if not isinstance(data['enabled'], bool) or not isinstance(data['projects'], list):
             raise ValueError('저장된 다키 프로젝트 형식이 올바르지 않습니다.')
         return data
+
+    @staticmethod
+    def _file_signature(path):
+        resolved = Path(path).resolve()
+        stat = resolved.stat()
+        return (
+            os.path.normcase(os.path.abspath(os.fspath(resolved))),
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            stat.st_size,
+            getattr(stat, 'st_dev', None),
+            getattr(stat, 'st_ino', None),
+        )
+
+    def _clear_snapshot(self):
+        self._snapshot_path = None
+        self._snapshot_signature = None
+        self._snapshot_data = None
+
+    def _read_snapshot(self, path):
+        """Read or reuse the store's single validated, read-only JSON snapshot."""
+        store_path = Path(path)
+        with json_lock(store_path), self._snapshot_lock:
+            try:
+                before = self._file_signature(store_path)
+            except OSError:
+                self._clear_snapshot()
+                return self._load(store_path)
+
+            file_path = before[0]
+            if file_path != self._snapshot_path:
+                self._clear_snapshot()
+                self._snapshot_path = file_path
+            elif before == self._snapshot_signature:
+                return self._snapshot_data
+
+            try:
+                data = self._load(store_path)
+            except BaseException:
+                self._clear_snapshot()
+                raise
+
+            try:
+                after = self._file_signature(store_path)
+            except OSError:
+                self._clear_snapshot()
+                return data
+
+            if before == after:
+                self._snapshot_path = file_path
+                self._snapshot_signature = after
+                self._snapshot_data = data
+            else:
+                self._clear_snapshot()
+            return data
 
     @staticmethod
     def _find_project(data, project_id):
@@ -278,7 +420,7 @@ class DakiProjectsStore:
         return resolved_relative
 
     def settings(self):
-        return {'enabled': self._load(self.path)['enabled']}
+        return {'enabled': self._read_snapshot(self.path)['enabled']}
 
     def _path_variants(self, relative, cache):
         return _image_path_variants(relative, cache, self.resolve_image if self.resolve_source is not None else None)
@@ -293,14 +435,53 @@ class DakiProjectsStore:
             write_json(path, data, indent=2)
         return {'enabled': enabled}
 
-    def list_projects(self):
-        return deepcopy(self._load(self.path)['projects'])
+    def list_projects(self, *, summary=False):
+        projects = self._read_snapshot(self.path)['projects']
+        if summary:
+            return [_project_summary(project) for project in projects]
+        return deepcopy(projects)
 
-    def get_project(self, project_id):
-        return deepcopy(self._find_project(self._load(self.path), project_id))
+    def get_project(self, project_id, *, summary=False):
+        project = self._find_project(self._read_snapshot(self.path), project_id)
+        return _project_summary(project) if summary else deepcopy(project)
+
+    @contextmanager
+    def staged_project_removal(self, project_id):
+        """Remove one project while a caller stages its linked resources."""
+        store_path = self.path
+        with json_lock(store_path):
+            data = self._load(store_path)
+            project = self._find_project(data, project_id)
+            original_bytes = store_path.read_bytes()
+            removed_project = deepcopy(project)
+            updated_data = dict(data)
+            updated_data['projects'] = [
+                item for item in data['projects'] if item is not project
+            ]
+            write_json(store_path, updated_data, indent=2)
+            try:
+                yield removed_project
+            except BaseException:
+                try:
+                    write_json(store_path, data, indent=2)
+                except BaseException as rollback_error:
+                    try:
+                        backup_path = store_path.with_name(
+                            f'.{store_path.name}.project-removal-{uuid.uuid4().hex}.bak'
+                        )
+                        with backup_path.open('xb') as backup:
+                            backup.write(original_bytes)
+                            backup.flush()
+                            os.fsync(backup.fileno())
+                    except OSError:
+                        pass
+                    raise OSError(
+                        '프로젝트 삭제 중 오류가 발생해 프로젝트 정보를 복구하지 못했습니다.'
+                    ) from rollback_error
+                raise
 
     def get_canvas_settings(self, project_id):
-        project = self._find_project(self._load(self.path), project_id)
+        project = self._find_project(self._read_snapshot(self.path), project_id)
         if 'canvasSettings' not in project:
             return default_canvas_settings()
         return normalize_canvas_settings_record(project['canvasSettings'])
@@ -484,10 +665,14 @@ class DakiProjectsStore:
         return deepcopy(prepared)
 
     def get_canvas(self, project_id, canvas_id):
-        project = self._find_project(self._load(self.path), project_id)
+        return self.get_canvas_with_project(project_id, canvas_id)[1]
+
+    def get_canvas_with_project(self, project_id, canvas_id, *, preview=False):
+        project = self._find_project(self._read_snapshot(self.path), project_id)
         for canvas in _iter_canvas_records(project):
             if canvas.get('id') == canvas_id:
-                return deepcopy(canvas)
+                record = _canvas_preview(canvas) if preview else deepcopy(canvas)
+                return {'id': project['id'], 'name': project['name']}, record
         raise DakiNotFoundError('다키 캔버스를 찾을 수 없습니다.')
 
     def update_canvas(self, project_id, canvas_id, state, revision):
@@ -614,7 +799,7 @@ class DakiProjectsStore:
         exact folder and its descendants, so `group` does not match `group2`.
         """
         def references():
-            for project in self.list_projects():
+            for project in self._load(self.path)['projects']:
                 for side in SIDES:
                     for candidate in project['candidates'][side]:
                         yield {'project_id': project['id'], 'project_name': project['name'],

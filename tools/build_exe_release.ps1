@@ -1,6 +1,6 @@
 param(
     [string]$Python = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe"),
-    [string]$Version = "1.3.0"
+    [string]$Version = "1.3.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,7 +119,7 @@ $Manifest = [ordered]@{
     sha256 = $Hash
     size = $ZipItem.Length
     payload_root = "NAI_Image_Manager"
-    summary = "Adds daki projects, shared style workflows, canvas editing, WebP conversion, and expanded upscaling."
+    summary = "Preserves existing gallery indexes, speeds up large Daki projects, and adds project archive/delete controls."
 }
 [IO.File]::WriteAllText(
     (Join-Path $Root "release_manifest.json"),

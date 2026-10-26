@@ -6,6 +6,7 @@ from functools import lru_cache
 import io
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,8 +18,10 @@ from PIL import Image, ImageOps
 
 import utils
 from naim.daki_image_refs import (
+    PROJECT_EXPORT_PREFIX,
     daki_image_prompt_fallback, parse_daki_image_reference, resolve_daki_image_reference,
 )
+from naim.images.canvas_export import project_export_image_path
 from naim.daki_style_tests import DakiStyleTests
 from naim.daki_drafts import DakiDrafts
 from naim.images.previews import PreviewCache
@@ -28,6 +31,7 @@ from naim.images.prompt_metadata import (
 from naim.storage.daki_shared_styles import DakiSharedStyles
 from naim.storage.daki_personal_styles import DakiPersonalStyles
 from naim.storage.webp_conversion import resolve_converted_gallery_path
+from naim.storage.project_archives import record_archived_images, resolve_archived_image
 from naim.web.daki import register_daki_routes
 from tests.test_daki_style_tests import synthetic_request, synthetic_styles
 
@@ -85,7 +89,7 @@ class DakiImageReferenceTests(unittest.TestCase):
         self.app.config['TESTING'] = True
         names = {
             'clean_gallery_rel_path', 'resolve_gallery_file_path', 'resolve_gallery_image_path',
-            'resolve_daki_image_path', 'resolve_readable_gallery_image_path', 'serve_image',
+            'resolve_daki_image_path', 'resolve_project_image_reference', 'resolve_readable_gallery_image_path', 'serve_image',
             'get_requested_image_preview_max_side', 'build_cached_image_preview',
             'build_image_preview_bytes', 'serve_image_preview', 'get_prompt_info',
             'reveal_in_explorer', 'read_canvas_image_bytes',
@@ -102,6 +106,7 @@ class DakiImageReferenceTests(unittest.TestCase):
             'CANVAS_DISPLAY_PREVIEW_MAX_SIDE': 4096, 'IMAGE_PREVIEW_CACHE': PreviewCache(),
             'DAKI_STYLE_TESTS': self.manager, 'resolve_converted_gallery_path': resolve_converted_gallery_path,
             'DAKI_DRAFTS': self.drafts,
+            'resolve_archived_image': resolve_archived_image,
             'parse_daki_image_reference': parse_daki_image_reference,
             'resolve_daki_image_reference': resolve_daki_image_reference,
             'daki_image_prompt_fallback': daki_image_prompt_fallback,
@@ -174,6 +179,23 @@ class DakiImageReferenceTests(unittest.TestCase):
             self.reveal.assert_called_with(full, mode='select')
             data = self.namespace['read_canvas_image_bytes']('/image/' + path + '?preview=256')
             self.assertEqual(data, Path(full).read_bytes())
+
+    def test_archived_project_and_gallery_links_serve_the_preserved_picture(self):
+        relative = 'No_Metadata/프로젝트 보관/synthetic/image.png'
+        target = self.gallery / relative
+        target.parent.mkdir(parents=True)
+        Image.new('RGB', (8, 12), 'orange').save(target)
+        references = ['__daki_exports__/' + 'a' * 32 + '/' + 'b' * 32 + '.png',
+                      '__daki_drafts__/' + 'c' * 32 + '.png', 'original/moved.png']
+        with sqlite3.connect(self.gallery / 'naia_history.db') as connection:
+            record_archived_images(connection, [(path, relative) for path in references])
+        for path in references:
+            with self.subTest(path=path):
+                response = self.client.get('/image/' + path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data, target.read_bytes())
+                response.close()
+                self.assertEqual(self.namespace['read_canvas_image_bytes']('/image/' + path), target.read_bytes())
 
     def test_candidates_retain_reference_and_survive_reload_without_copying(self):
         for path in (self.shared, self.generated, self.personal, self.draft):
@@ -253,6 +275,79 @@ class DakiImageReferenceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         response.close()
         self.assertEqual(self.manager.personal_catalog.get_style(manual['id'])['positive'], 'ink')
+
+
+class ProjectExportWebPReferenceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.export_root = self.root / 'project_exports'
+        self.project_id = 'a' * 32
+        self.export_id = 'b' * 32
+        self.png_path = Path(project_export_image_path(
+            self.export_root, self.project_id, self.export_id,
+        ))
+        self.png_path.parent.mkdir(parents=True)
+        self.png_reference = f'{PROJECT_EXPORT_PREFIX}/{self.project_id}/{self.export_id}.png'
+        self.webp_reference = f'{PROJECT_EXPORT_PREFIX}/{self.project_id}/{self.export_id}.webp'
+
+    def save_png(self):
+        Image.new('RGB', (12, 8), (20, 60, 100)).save(self.png_path)
+        return self.png_path
+
+    def save_webp(self):
+        path = self.png_path.with_suffix('.webp')
+        Image.new('RGB', (12, 8), (100, 60, 20)).save(path, format='WEBP')
+        return path
+
+    def resolve(self, reference):
+        return resolve_daki_image_reference(
+            reference, None, project_exports_root=self.export_root,
+        )
+
+    def test_legacy_png_reference_to_webp_is_canonicalized_to_webp(self):
+        webp_path = self.save_webp()
+        parsed = parse_daki_image_reference(self.webp_reference)
+        self.assertEqual(parsed, ('export', self.project_id, self.export_id))
+        full_path, canonical = self.resolve(self.png_reference)
+        self.assertEqual(full_path, str(webp_path))
+        self.assertEqual(canonical, self.webp_reference)
+
+    def test_explicit_webp_reference_requires_and_returns_the_webp(self):
+        webp_path = self.save_webp()
+        full_path, canonical = self.resolve(self.webp_reference)
+        self.assertEqual(full_path, str(webp_path))
+        self.assertEqual(canonical, self.webp_reference)
+
+        webp_path.unlink()
+        self.save_png()
+        with self.assertRaises(FileNotFoundError):
+            self.resolve(f'{PROJECT_EXPORT_PREFIX}/{self.project_id}/{self.export_id}.webp')
+
+    def test_both_formats_resolve_to_the_requested_format(self):
+        png_path = self.save_png()
+        webp_path = self.save_webp()
+        self.assertEqual(self.resolve(self.png_reference), (str(png_path), self.png_reference))
+        self.assertEqual(self.resolve(self.webp_reference), (str(webp_path), self.webp_reference))
+
+    def test_legacy_png_reference_remains_canonical_when_png_exists(self):
+        png_path = self.save_png()
+        full_path, canonical = self.resolve(self.png_reference)
+        self.assertEqual(full_path, str(png_path))
+        self.assertEqual(canonical, self.png_reference)
+
+    def test_project_export_rejects_other_extensions_and_traversal(self):
+        invalid = (
+            f'{PROJECT_EXPORT_PREFIX}/{self.project_id}/{self.export_id}.jpg',
+            f'{PROJECT_EXPORT_PREFIX}/{self.project_id}/{self.export_id}.svg',
+            f'{PROJECT_EXPORT_PREFIX}/{self.project_id}/{self.export_id}.PNG',
+            f'{PROJECT_EXPORT_PREFIX}/{self.project_id}/../{self.export_id}.webp',
+            f'{PROJECT_EXPORT_PREFIX}/{self.project_id}/{self.export_id}.webp/extra',
+        )
+        for reference in invalid:
+            with self.subTest(reference=reference), self.assertRaises(ValueError):
+                self.resolve(reference)
 
 
 if __name__ == '__main__':

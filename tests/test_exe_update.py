@@ -9,7 +9,7 @@ import exe_update
 
 class ExeUpdateTests(unittest.TestCase):
     def test_app_version_is_current_release_version(self):
-        self.assertEqual(exe_update.APP_VERSION, "1.3.0")
+        self.assertEqual(exe_update.APP_VERSION, "1.3.1")
 
     def valid_manifest(self, **overrides):
         manifest = {

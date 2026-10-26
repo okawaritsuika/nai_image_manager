@@ -172,7 +172,7 @@ class DakiWebpReadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             catalog.example_path('synthetic_example', full=True)
 
-    def test_export_reference_stays_png_shaped_and_resolves_webp_then_original_wins(self):
+    def test_old_export_reference_resolves_actual_webp_then_original_wins(self):
         exports = self.root / 'exports'
         project_id, export_id = 'a' * 32, 'b' * 32
         directory = exports / project_id
@@ -181,7 +181,7 @@ class DakiWebpReadTests(unittest.TestCase):
         reference = f'__daki_exports__/{project_id}/{export_id}.png'
         webp = self.convert(source)
         self.assertEqual(resolve_daki_image_reference(reference, None, project_exports_root=exports),
-                         (str(webp), reference))
+                         (str(webp), reference.removesuffix('.png') + '.webp'))
 
         self.image(source)
         self.assertEqual(resolve_daki_image_reference(reference, None, project_exports_root=exports),

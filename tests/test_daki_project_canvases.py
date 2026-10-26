@@ -27,7 +27,7 @@ class DakiProjectCanvasTests(unittest.TestCase):
         self.store = DakiProjectsStore(lambda: self.path, self.resolver)
         self.app = Flask(__name__)
         self.app.config['TESTING'] = True
-        register_daki_routes(self.app, lambda: self.path, self.resolver)
+        self.route_store = register_daki_routes(self.app, lambda: self.path, self.resolver)
         self.client = self.app.test_client()
 
     @staticmethod
@@ -116,12 +116,18 @@ class DakiProjectCanvasTests(unittest.TestCase):
         for marker in ('promptInfo', 'unknownNestedField', 'points'):
             self.assertNotIn(marker, serialized)
 
-        get_response = self.client.get(
-            f"/api/daki/projects/{project['id']}/canvases/{second['id']}"
-        )
+        with mock.patch.object(
+                self.route_store, '_load', wraps=self.route_store._load) as load:
+            get_response = self.client.get(
+                f"/api/daki/projects/{project['id']}/canvases/{second['id']}"
+            )
+        self.assertEqual(load.call_count, 0, 'unchanged project summary and canvas reuse one parsed snapshot')
         self.assertEqual(get_response.status_code, 200)
         self.assertEqual(get_response.json['canvas'], second)
         self.assertEqual(get_response.json['project'], {'id': project['id'], 'name': 'Independent'})
+        fetched_canvas = self.store.get_canvas(project['id'], second['id'])
+        fetched_canvas['state']['masks'][0]['points'][0][0] = 999
+        self.assertEqual(self.store.get_canvas(project['id'], second['id']), second)
         self.assertEqual(list(self.store.canvas_states()), [first['state'], second['state'], back['state']])
 
     def test_canvas_update_revision_retry_and_existing_project_fields_are_preserved(self):

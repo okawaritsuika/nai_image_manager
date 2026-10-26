@@ -8,7 +8,7 @@ from urllib.parse import quote
 from flask import jsonify, request
 from PIL import Image
 
-from naim.images.previews import get_display_oriented_image_size
+from naim.images.dimensions import get_display_image_dimensions
 from naim.images.project_deletion import (
     ProjectImageReferencesConflict, delete_project_candidate_image,
 )
@@ -33,8 +33,7 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
         # Cache only derived metadata; source changes invalidate it without
         # adding dimensions to the saved project or loading browser originals.
         try:
-            with Image.open(path) as image:
-                return get_display_oriented_image_size(image)
+            return get_display_image_dimensions(path)
         except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
             return None, None
 
@@ -91,6 +90,13 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
                     missing = not stat.S_ISREG(file_stat.st_mode)
                     if not missing:
                         relative = actual_relative
+                        candidate['path'] = actual_relative
+                        if os.path.splitext(actual_relative)[1].lower() == '.webp':
+                            name = candidate.get('name')
+                            if isinstance(name, str):
+                                stem, extension = os.path.splitext(name)
+                                if extension.lower() in ('.png', '.jpg', '.jpeg'):
+                                    candidate['name'] = stem + '.webp'
                         if include_dimensions:
                             candidate['width'], candidate['height'] = image_dimensions(
                                 full_path, file_stat.st_mtime_ns, file_stat.st_size,
@@ -112,7 +118,10 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
                 candidate['src'] = '/image/' + quote(relative, safe='/')
         if 'canvases' in project:
             project['canvases'] = {
-                side: [canvas_metadata(canvas) for canvas in project['canvases'].get(side, [])]
+                side: [
+                    canvas_metadata(canvas) if 'state' in canvas else canvas
+                    for canvas in project['canvases'].get(side, [])
+                ]
                 for side in SIDES
             }
         return project
@@ -128,7 +137,8 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
     def projects():
         if request.method == 'GET':
             return jsonify({'status': 'success', 'projects': [
-                public_project(project, include_dimensions=False) for project in store.list_projects()
+                public_project(project, include_dimensions=False)
+                for project in store.list_projects(summary=True)
             ]})
         data = body()
         project = store.create_project(
@@ -139,7 +149,10 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
     @app.route('/api/daki/projects/<project_id>', methods=['GET'], endpoint='daki_project')
     @handle_errors
     def project(project_id):
-        return jsonify({'status': 'success', 'project': public_project(store.get_project(project_id))})
+        return jsonify({
+            'status': 'success',
+            'project': public_project(store.get_project(project_id, summary=True)),
+        })
 
     @app.route(
         '/api/daki/projects/<project_id>/canvas-settings',
@@ -200,11 +213,12 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
     @app.route('/api/daki/projects/<project_id>/canvases/<canvas_id>', methods=['GET'], endpoint='daki_canvas')
     @handle_errors
     def get_canvas(project_id, canvas_id):
-        project = store.get_project(project_id)
-        canvas = store.get_canvas(project_id, canvas_id)
+        project, canvas = store.get_canvas_with_project(
+            project_id, canvas_id, preview=request.args.get('preview') == '1',
+        )
         return jsonify({
             'status': 'success', 'canvas': canvas,
-            'project': {'id': project['id'], 'name': project['name']},
+            'project': project,
         })
 
     @app.route('/api/daki/projects/<project_id>/canvases/<canvas_id>', methods=['PUT'], endpoint='daki_update_canvas')

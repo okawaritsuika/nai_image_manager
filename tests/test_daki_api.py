@@ -9,6 +9,8 @@ from unittest import mock
 from flask import Flask
 from PIL import Image
 
+from naim.daki_image_refs import resolve_daki_image_reference
+from naim.images.canvas_export import project_export_image_path
 from naim.web.daki import register_daki_routes
 from tests.test_daki_projects import gallery_resolver
 
@@ -99,7 +101,8 @@ class DakiApiTests(unittest.TestCase):
         project_url = f"/api/daki/projects/{project['id']}"
         saved = self.path.read_bytes()
         original = self.source.read_bytes()
-        with mock.patch('naim.web.daki.Image.open', wraps=Image.open) as opened:
+        from naim.images.dimensions import get_display_image_dimensions
+        with mock.patch('naim.web.daki.get_display_image_dimensions', wraps=get_display_image_dimensions) as opened:
             self.assertEqual(self.client.get('/api/daki/projects').status_code, 200)
             opened.assert_not_called()
             for _ in range(2):
@@ -175,6 +178,11 @@ class DakiApiTests(unittest.TestCase):
         converted = self.source.with_suffix('.webp')
         Image.new('RGB', (4, 8)).save(converted)
         self.aliases[self.source.name] = converted.name
+        saved = json.loads(self.path.read_text(encoding='utf-8'))
+        stored_candidate = saved['projects'][0]['candidates']['front'][0]
+        stored_candidate['name'] = 'Custom render.PNG'
+        self.path.write_text(json.dumps(saved), encoding='utf-8')
+        candidate_id = stored_candidate['id']
         converted_mtime = datetime(2023, 6, 7, 8, 9, 10, 456000, tzinfo=timezone.utc).timestamp()
         os.utime(converted, (converted_mtime, converted_mtime))
         actual_mtime = os.stat(converted).st_mtime
@@ -182,6 +190,9 @@ class DakiApiTests(unittest.TestCase):
         with mock.patch('naim.web.daki.get_file_creation_time', return_value=creation_time) as get_creation_time:
             candidate = self.client.get(project_url).json['project']['candidates']['front'][0]
         self.assertFalse(candidate['missing'])
+        self.assertEqual(candidate['path'], converted.name)
+        self.assertEqual(candidate['id'], candidate_id)
+        self.assertEqual(candidate['name'], 'Custom render.webp')
         self.assertTrue(candidate['src'].endswith('.webp'))
         self.assertEqual((candidate['width'], candidate['height']), (4, 8))
         self.assertEqual(candidate['created_at'], '2021-02-03T04:05:06.789+00:00')
@@ -191,6 +202,65 @@ class DakiApiTests(unittest.TestCase):
         get_creation_time.assert_called_once_with(str(converted.resolve()), actual_mtime)
         references = self.client.post('/api/daki/references', json={'paths': [converted.name]}).json['references']
         self.assertEqual(len(references), 1)
+        saved_candidate = json.loads(self.path.read_text(encoding='utf-8'))['projects'][0]['candidates']['front'][0]
+        self.assertEqual(saved_candidate['path'], self.source.name)
+        self.assertEqual(saved_candidate['name'], 'Custom render.PNG')
+        self.assertEqual(saved_candidate['id'], candidate_id)
+
+        for saved_name in ('Custom render.webp', 'Custom render', '12'):
+            with self.subTest(saved_name=saved_name):
+                saved = json.loads(self.path.read_text(encoding='utf-8'))
+                saved['projects'][0]['candidates']['front'][0]['name'] = saved_name
+                self.path.write_text(json.dumps(saved), encoding='utf-8')
+                original_json = self.path.read_bytes()
+                candidate = self.client.get(project_url).json['project']['candidates']['front'][0]
+                self.assertEqual(candidate['name'], saved_name)
+                self.assertEqual(candidate['path'], converted.name)
+                self.assertEqual(self.path.read_bytes(), original_json)
+
+        for saved_name in ('Custom render.jpg', 'Custom render.jpeg'):
+            with self.subTest(saved_name=saved_name):
+                saved = json.loads(self.path.read_text(encoding='utf-8'))
+                saved['projects'][0]['candidates']['front'][0]['name'] = saved_name
+                self.path.write_text(json.dumps(saved), encoding='utf-8')
+                original_json = self.path.read_bytes()
+                candidate = self.client.get(project_url).json['project']['candidates']['front'][0]
+                self.assertEqual(candidate['name'], os.path.splitext(saved_name)[0] + '.webp')
+                self.assertEqual(self.path.read_bytes(), original_json)
+
+    def test_explicit_export_webp_is_selected_when_png_and_webp_both_exist(self):
+        export_root = self.root / 'project-exports'
+        project_id = 'a' * 32
+        export_id = 'b' * 32
+        png_path = Path(project_export_image_path(export_root, project_id, export_id))
+        png_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (4, 8), (10, 20, 30)).save(png_path)
+        webp_path = png_path.with_suffix('.webp')
+        Image.new('RGB', (9, 7), (30, 20, 10)).save(webp_path, format='WEBP')
+
+        def resolve_image(relative):
+            resolved = resolve_daki_image_reference(
+                relative, None, project_exports_root=export_root,
+            )
+            return resolved if resolved is not None else self.resolver(relative)
+
+        app = Flask(__name__)
+        app.config['TESTING'] = True
+        store = register_daki_routes(app, lambda: self.path, resolve_image)
+        client = app.test_client()
+        project = store.create_project('Both formats')
+        webp_relative = f'__daki_exports__/{project_id}/{export_id}.webp'
+        project = store.add_candidate(project['id'], webp_relative, 'front')
+
+        response = client.get(f"/api/daki/projects/{project['id']}")
+
+        self.assertEqual(response.status_code, 200)
+        candidate = response.json['project']['candidates']['front'][0]
+        self.assertEqual(candidate['path'], webp_relative)
+        self.assertTrue(candidate['src'].endswith('.webp'))
+        self.assertEqual((candidate['width'], candidate['height']), (9, 7))
+        self.assertTrue(png_path.exists())
+        self.assertTrue(webp_path.exists())
 
     def test_timestamp_failures_keep_candidate_with_null_dates(self):
         project = self.store.create_project('Timestamp failure', self.source.name, 'front')

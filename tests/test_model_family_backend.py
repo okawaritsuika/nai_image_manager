@@ -134,7 +134,7 @@ class GalleryModelFamilyMigrationTests(unittest.TestCase):
             images.extend(GalleryModelFamilyMigrationTests._flatten_images(child))
         return images
 
-    def test_old_database_migrates_and_invalidates_full_index(self):
+    def test_old_database_keeps_full_index_and_backfills_legacy_model_without_opening_images(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = os.path.join(directory, "legacy.sqlite")
             conn = sqlite3.connect(db_path)
@@ -149,26 +149,74 @@ class GalleryModelFamilyMigrationTests(unittest.TestCase):
                 CREATE TABLE gallery_index_state (
                     key TEXT PRIMARY KEY, value TEXT, updated_at REAL
                 );
-                INSERT INTO gallery_index_state VALUES ('full_index_built', '1', 1);
+                CREATE TABLE gallery_prompt_index_profiles (
+                    id TEXT PRIMARY KEY, name TEXT, mode TEXT, scope_paths_json TEXT,
+                    image_count INTEGER, text_bytes INTEGER, created_at REAL,
+                    updated_at REAL, built_at REAL
+                );
+                INSERT INTO gallery_prompt_index_profiles (
+                    id, name, mode, scope_paths_json, image_count, text_bytes,
+                    created_at, updated_at, built_at
+                ) VALUES ('profile-a', 'Saved profile', 'general', '[\"1_Solo\"]', 8, 123, 10, 11, 12);
+                INSERT INTO gallery_index_state VALUES ('full_index_built', '1', 987.25);
                 """
             )
+            conn.execute(
+                "INSERT INTO gallery_images VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("1_Solo/a.png", "1_Solo", "a.png", "general", "safe", "brand", "[\"char\"]",
+                 0, 1024, 1536, 123.5, "legacy reason", "legacy tag", 456.0),
+            )
+            conn.commit()
             conn.close()
 
-            db = utils.HistoryDB(db_path)
-            columns = {row[1] for row in db.conn.execute("PRAGMA table_info(gallery_images)")}
-            self.assertIn("model_family", columns)
-            self.assertEqual(db.get_gallery_index_state("full_index_built"), "0")
-            db.upsert_gallery_image_records([{
-                "rel_path": "1_Solo/a.png",
-                "folder_path": "1_Solo",
-                "file_name": "a.png",
-                "model_family": "v5",
-            }])
-            self.assertEqual(
-                db.conn.execute("SELECT model_family FROM gallery_images WHERE rel_path = '1_Solo/a.png'").fetchone()[0],
-                "v5",
+            with mock.patch("PIL.Image.open", side_effect=AssertionError("migration must not decode images")):
+                db = utils.HistoryDB(db_path)
+            try:
+                columns = {row[1] for row in db.conn.execute("PRAGMA table_info(gallery_images)")}
+                self.assertIn("model_family", columns)
+                self.assertEqual(
+                    db.conn.execute(
+                        "SELECT rel_path, folder_path, file_name, mode, rating, brand, character_names, "
+                        "is_dakimakura, width, height, mtime, reason, gallery_tag, model_family, updated_at "
+                        "FROM gallery_images WHERE rel_path = '1_Solo/a.png'"
+                    ).fetchone(),
+                    ("1_Solo/a.png", "1_Solo", "a.png", "general", "safe", "brand", '["char"]',
+                     0, 1024, 1536, 123.5, "legacy reason", "legacy tag", "v5", 456.0),
+                )
+                self.assertEqual(
+                    db.conn.execute(
+                        "SELECT value, updated_at FROM gallery_index_state WHERE key = 'full_index_built'"
+                    ).fetchone(),
+                    ("1", 987.25),
+                )
+                self.assertEqual(db.get_gallery_index_state("legacy_gallery_model_default"), "v5")
+                self.assertTrue(db.has_full_gallery_index())
+                self.assertTrue(db.has_usable_gallery_index())
+                self.assertEqual(
+                    db.conn.execute(
+                        "SELECT id, name, mode, scope_paths_json FROM gallery_prompt_index_profiles WHERE id = 'profile-a'"
+                    ).fetchone(),
+                    ("profile-a", "Saved profile", "general", '["1_Solo"]'),
+                )
+            finally:
+                db.close()
+
+            # Opening an already migrated database must not rewrite the image rows.
+            statements = []
+            original_connect = sqlite3.connect
+
+            def traced_connect(*args, **kwargs):
+                connection = original_connect(*args, **kwargs)
+                connection.set_trace_callback(statements.append)
+                return connection
+
+            with mock.patch("naim.storage.history.sqlite3.connect", side_effect=traced_connect):
+                reopened = utils.HistoryDB(db_path)
+            reopened.close()
+            self.assertFalse(
+                any(statement.lstrip().upper().startswith("UPDATE GALLERY_IMAGES") for statement in statements),
+                statements,
             )
-            db.close()
 
     def test_index_payload_filters_model_family(self):
         app_module = self._load_app_without_flask()

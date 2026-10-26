@@ -117,14 +117,13 @@ function link({projectId = PROJECT_ID, projectName = 'Synthetic Project', canvas
     return {projectId, canvasId, projectName, name, side, revision, unsaved};
 }
 
-function harness({search = '', confirm = true, state = canvasState('initial state', 100),
+function harness({search = '', state = canvasState('initial state', 100),
     width = state.width, height = state.height} = {}) {
     const requests = [];
     const responses = [];
     const applied = [];
     const snapshots = [];
     const toasts = [];
-    const confirms = [];
     const listeners = new Map();
     const elements = new Map();
     const header = element();
@@ -190,7 +189,6 @@ function harness({search = '', confirm = true, state = canvasState('initial stat
             const next = responses.shift();
             return typeof next === 'function' ? next(request) : next;
         },
-        confirm: message => { confirms.push(message); return confirm; },
         showToast: message => toasts.push(message),
         addEventListener: (type, callback) => listeners.set(type, callback),
         crypto: {randomUUID: () => 'cccccccc-cccc-cccc-cccc-cccccccccccc'}
@@ -199,7 +197,7 @@ function harness({search = '', confirm = true, state = canvasState('initial stat
     vm.createContext(context);
     vm.runInContext(source, context, {filename: 'canvas_project.js'});
     return {
-        context, requests, applied, snapshots, toasts, confirms, listeners, header, workspace,
+        context, requests, applied, snapshots, toasts, listeners, header, workspace,
         enqueue: item => responses.push(item),
         setState(next) {
             currentState = next;
@@ -225,6 +223,12 @@ function projectUrl() {
     return `?project=${PROJECT_ID}&canvas=${CANVAS_ID}`;
 }
 
+async function initializeAndAcceptReplacement(h) {
+    const pending = h.context.CanvasProject.initialize();
+    h.element('canvasProjectOpenWarningAccept')?.click();
+    await pending;
+}
+
 async function connectExistingCanvas(h, {projectId = OTHER_PROJECT_ID, projectName = 'Current Project',
     side = 'back'} = {}) {
     h.context.CanvasProject.restoreLocalLink(link({projectId, projectName, side}));
@@ -237,7 +241,7 @@ async function conflictedCanvas({name = 'Back master', side = 'back'} = {}) {
     const localState = canvasState('unresolved local edits', 900, 840, 1120);
     const h = harness({search: projectUrl(), state: canvasState('before open', 1)});
     h.enqueue(initializeResponse({state: original, revision: 11, side, name}));
-    await h.context.CanvasProject.initialize();
+    await initializeAndAcceptReplacement(h);
     h.setState(localState);
     h.enqueue(response({status: 'error', message: 'revision changed'}, {ok: false, status: 409}));
     h.context.CanvasProject.schedule(true);
@@ -329,9 +333,22 @@ test('URL initialization fetches and applies the project canvas, then stores a c
     const h = harness({search: projectUrl(), state: canvasState('old local canvas', 100), width: 640, height: 480});
     h.enqueue(initializeResponse({state: serverState, revision: 7, side: 'back', name: 'Back study'}));
 
-    await h.context.CanvasProject.initialize();
+    const pending = h.context.CanvasProject.initialize();
+    const dialog = h.dialog();
+    assert.equal(dialog.open, true);
+    assert.match(dialog.innerHTML, /프로젝트 캔버스를 열까요\?/);
+    assert.match(dialog.innerHTML, /현재 화면의 캔버스가 선택한 프로젝트 캔버스로 바뀝니다\./);
+    assert.match(dialog.innerHTML, /보관할 작업이 있다면 취소한 뒤 캔버스를 저장해 주세요\./);
+    assert.equal(h.element('canvasProjectOpenWarningDimensions').textContent, '현재 캔버스 크기: 640 × 480 px');
+    assert.equal(h.context.document.activeElement, h.element('canvasProjectOpenWarningCancel'));
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.applied.length, 0);
+    assert.equal(h.workspace.inert, true);
+    assert.equal(h.header.inert, true);
+    h.element('canvasProjectOpenWarningAccept').click();
+    await pending;
 
-    assert.deepEqual(h.confirms, ['프로젝트의 캔버스를 열까요? 현재 화면의 캔버스가 바뀝니다.']);
+    assert.equal(dialog.open, false);
     assert.equal(h.requests.length, 1);
     assert.equal(h.requests[0].method, 'GET');
     assert.equal(h.requests[0].url, `/api/daki/projects/${PROJECT_ID}/canvases/${CANVAS_ID}`);
@@ -347,14 +364,18 @@ test('URL initialization fetches and applies the project canvas, then stores a c
     assert.equal(h.status().dataset.state, 'saved');
     assert.equal(h.workspace.inert, false);
     assert.equal(h.header.inert, false);
+    assert.equal(h.context.document.activeElement.isConnected, true);
 });
 
 test('failed URL initialization preserves the current canvas and shows an error toast', async () => {
     const original = canvasState('keep current state', 11, 640, 480);
-    const h = harness({search: projectUrl(), state: original, confirm: true});
+    const h = harness({search: projectUrl(), state: original});
     h.enqueue(response({status: 'error', message: 'synthetic unavailable'}, {ok: false, status: 503}));
 
-    await h.context.CanvasProject.initialize();
+    const pending = h.context.CanvasProject.initialize();
+    assert.equal(h.requests.length, 0);
+    h.element('canvasProjectOpenWarningAccept').click();
+    await pending;
 
     assert.equal(h.requests.length, 1);
     assert.equal(h.applied.length, 0);
@@ -367,15 +388,92 @@ test('failed URL initialization preserves the current canvas and shows an error 
 
 test('declining the URL replacement prompt leaves the canvas untouched and makes no request', async () => {
     const original = canvasState('leave untouched', 12, 640, 480);
-    const h = harness({search: projectUrl(), state: original, confirm: false});
+    const h = harness({search: projectUrl(), state: original});
 
-    await h.context.CanvasProject.initialize();
+    const pending = h.context.CanvasProject.initialize();
+    assert.equal(h.requests.length, 0);
+    h.element('canvasProjectOpenWarningCancel').click();
+    await pending;
 
-    assert.equal(h.confirms.length, 1);
     assert.equal(h.requests.length, 0);
     assert.equal(h.applied.length, 0);
     assert.equal(h.currentState(), original);
     assert.equal(h.context.CanvasProject.localLink(), null);
+    assert.equal(h.workspace.inert, false);
+    assert.equal(h.header.inert, false);
+});
+
+test('replacement warning close, Escape, backdrop, and pagehide cancel once and never fetch the target', async () => {
+    for (const dismiss of [
+        (_dialog, h) => h.element('canvasProjectOpenWarningClose').click(),
+        dialog => dialog.close(),
+        dialog => dialog.dispatch('cancel', {preventDefault() { this.prevented = true; }}),
+        dialog => dialog.dispatch('click', {target: dialog}),
+        (_dialog, h) => h.listeners.get('pagehide')()
+    ]) {
+        const original = canvasState('keep this work', 12, 640, 480);
+        const h = harness({search: projectUrl(), state: original});
+        const pending = h.context.CanvasProject.initialize();
+        const dialog = h.dialog();
+        dismiss(dialog, h);
+        await pending;
+        assert.equal(h.requests.length, 0);
+        assert.equal(h.applied.length, 0);
+        assert.equal(h.currentState(), original);
+        assert.equal(h.workspace.inert, false);
+        assert.equal(h.header.inert, false);
+    }
+});
+
+test('late close events do not cancel a newly opened replacement warning', async () => {
+    const h = harness({search: projectUrl()});
+    const first = h.context.CanvasProject.initialize();
+    const dialog = h.dialog();
+    h.element('canvasProjectOpenWarningCancel').click();
+    await first;
+
+    const second = h.context.CanvasProject.initialize();
+    assert.equal(dialog.open, true);
+    dialog.dispatch('close');
+    assert.equal(dialog.open, true);
+    h.element('canvasProjectOpenWarningCancel').click();
+    await second;
+    assert.equal(h.requests.length, 0);
+});
+
+test('restoring an unsaved prior link keeps its autosave while waiting and does not fetch the target', async () => {
+    const state = canvasState('local work', 300, 640, 480);
+    const h = harness({search: projectUrl(), state});
+    h.context.CanvasProject.restoreLocalLink(link({projectId: OTHER_PROJECT_ID, unsaved: true}));
+    h.enqueue(success({canvas: {revision: 5}}));
+
+    const pending = h.context.CanvasProject.initialize();
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.requests[0].method, 'PUT');
+    assert.equal(h.requests[0].url, `/api/daki/projects/${OTHER_PROJECT_ID}/canvases/${CANVAS_ID}`);
+    assert.equal(h.applied.length, 0);
+    h.element('canvasProjectOpenWarningCancel').click();
+    await pending;
+    await h.context.CanvasProject.flush();
+
+    assert.deepEqual(h.requests.map(request => request.method), ['PUT']);
+    assert.equal(h.applied.length, 0);
+    assert.equal(h.currentState(), state);
+    assert.equal(h.context.CanvasProject.localLink().revision, 5);
+});
+
+test('repeated initialize calls share the pending replacement choice and keep surfaces inert until it settles', async () => {
+    const h = harness({search: projectUrl()});
+    const first = h.context.CanvasProject.initialize();
+    const second = h.context.CanvasProject.initialize();
+    assert.equal(second, first);
+    assert.equal(h.workspace.inert, true);
+    assert.equal(h.header.inert, true);
+    h.element('canvasProjectOpenWarningCancel').click();
+    await Promise.all([first, second]);
+    assert.equal(h.workspace.inert, false);
+    assert.equal(h.header.inert, false);
+    assert.equal(h.requests.length, 0);
 });
 
 test('a clean restored link refreshes from the server before editing resumes', async () => {
@@ -421,7 +519,7 @@ test('an unsaved restored link at the same URL keeps local state and PUTs it fir
 test('failed save keeps its binding through leave, then retry and successful leave clear it', async () => {
     const h = harness({search: projectUrl(), state: canvasState('old canvas', 1)});
     h.enqueue(initializeResponse({revision: 4}));
-    await h.context.CanvasProject.initialize();
+    await initializeAndAcceptReplacement(h);
     const edited = canvasState('new edit', 777);
     h.setState(edited);
     h.enqueue(response({status: 'error', message: 'temporary write failure'}, {ok: false, status: 503}));
@@ -465,7 +563,7 @@ test('revision conflict preserves the editable local state and never blindly ret
     const edited = canvasState('local work after load', 201);
     const h = harness({search: projectUrl(), state: canvasState('before open', 100)});
     h.enqueue(initializeResponse({state: initial, revision: 9}));
-    await h.context.CanvasProject.initialize();
+    await initializeAndAcceptReplacement(h);
     h.setState(edited);
     h.enqueue(response({status: 'error', message: 'revision changed'}, {ok: false, status: 409}));
 

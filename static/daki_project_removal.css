@@ -1,0 +1,186 @@
+.daki-project-remove-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    max-width: 100%;
+    min-height: 36px;
+    padding: 7px 11px;
+    border: 1px solid #ff8d9855;
+    border-radius: 8px;
+    background: var(--bg);
+    color: #ff8d98;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+.daki-project-remove-button:hover { border-color: #ff8d98; background: #ff8d9814; }
+
+.daki-project-removal-dialog {
+    display: none;
+    width: min(560px, calc(100vw - 32px));
+    max-width: calc(100vw - 32px);
+    max-height: calc(100dvh - 32px);
+    margin: auto;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid #ffffff24;
+    border-radius: 16px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    box-shadow: 0 20px 80px #0009;
+}
+.daki-project-removal-dialog[open] { display: flex; flex-direction: column; }
+.daki-project-removal-dialog::backdrop { background: #000b; }
+.daki-project-removal-header {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 24px 24px 16px;
+}
+.daki-project-removal-title { min-width: 0; margin: 0; font-size: 20px; line-height: 1.4; overflow-wrap: anywhere; }
+.daki-project-removal-close {
+    display: flex;
+    flex: 0 0 32px;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    border: 1px solid #ffffff30;
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+}
+.daki-project-removal-body {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 24px 20px;
+}
+.daki-project-removal-name {
+    margin: 0 0 10px;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.daki-project-removal-stats { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.daki-project-removal-stat {
+    max-width: 100%;
+    padding: 4px 9px;
+    border: 1px solid #ffffff20;
+    border-radius: 999px;
+    background: var(--bg);
+    color: #d5d7df;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.daki-project-removal-note,
+.daki-project-removal-settings-note {
+    margin: 10px 0 0;
+    color: #bec4d1;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+.daki-project-removal-options {
+    display: grid;
+    min-width: 0;
+    gap: 8px;
+    margin: 16px 0 0;
+    padding: 0;
+    border: 0;
+}
+.daki-project-removal-options legend { margin: 0 0 8px; padding: 0; color: #bec4d1; font-size: 12px; line-height: 1.5; }
+.daki-project-removal-option {
+    display: flex;
+    min-width: 0;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0;
+    padding: 12px;
+    border: 1px solid #ffffff24;
+    border-radius: 10px;
+    background: var(--bg);
+    cursor: pointer;
+}
+.daki-project-removal-option.is-selected { border-color: #b299e5; background: #b299e510; }
+.daki-project-removal-option input[type="radio"] { flex: 0 0 auto; margin: 3px 0 0; accent-color: #b299e5; }
+.daki-project-removal-option-copy { display: grid; min-width: 0; gap: 2px; color: #c5c8d2; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-project-removal-option-copy strong { color: var(--text); font-weight: 650; }
+.daki-project-removal-option:last-child .daki-project-removal-option-copy strong { color: #ffadb5; }
+.daki-project-removal-settings-note { margin-top: 12px; color: #ffadb5; }
+.daki-project-removal-reference-warning {
+    min-width: 0;
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px solid #ff8d9855;
+    border-radius: 10px;
+    background: #ff8d980b;
+}
+.daki-project-removal-reference-warning[hidden] { display: none; }
+.daki-project-removal-reference-intro { margin: 0; color: #ffadb5; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-project-removal-reference-list { display: grid; gap: 4px; margin: 8px 0 0; padding-left: 20px; color: #d7d8e0; font-size: 12px; line-height: 1.5; }
+.daki-project-removal-reference-list li { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.daki-project-removal-reference-count { margin: 4px 0 0; color: #c6a1a5; font-size: 12px; line-height: 1.5; }
+.daki-project-removal-reference-confirm { display: flex; min-width: 0; align-items: flex-start; gap: 8px; margin: 10px 0 0; color: #f0dadd; font-size: 12px; line-height: 1.6; cursor: pointer; overflow-wrap: anywhere; }
+.daki-project-removal-reference-confirm input { flex: 0 0 auto; margin: 3px 0 0; accent-color: #ff8d98; }
+.daki-project-removal-status { min-height: 0; margin: 10px 0 0; color: #ffadb5; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-line; }
+.daki-project-removal-status:empty { display: none; }
+.daki-project-removal-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 16px 24px 20px;
+    border-top: 1px solid #ffffff20;
+}
+.daki-project-removal-actions > button {
+    flex: 0 0 auto;
+    min-width: 88px;
+    max-width: 100%;
+    min-height: 40px;
+    padding: 8px 14px;
+    border: 1px solid #555;
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+.daki-project-removal-actions > .daki-project-removal-confirm {
+    border-color: #b299e5;
+    background: #b299e5;
+    color: #191321;
+    font-weight: 700;
+}
+.daki-project-removal-actions > .daki-project-removal-confirm.daki-project-removal-confirm-delete {
+    border-color: #ff8d98;
+    background: #ff8d98;
+    color: #281719;
+}
+.daki-project-removal-actions > button:disabled { opacity: .5; cursor: wait; }
+.daki-project-removal-dialog :focus-visible { outline: 2px solid #b299e5; outline-offset: 3px; }
+
+@media (max-width: 480px) {
+    .daki-project-removal-header { padding-right: 18px; padding-left: 18px; }
+    .daki-project-removal-body { padding-right: 18px; padding-left: 18px; }
+    .daki-project-removal-actions { padding-right: 18px; padding-left: 18px; }
+}

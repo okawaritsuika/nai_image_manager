@@ -212,7 +212,7 @@ class ProjectImageResultStorageTests(unittest.TestCase):
                 self.store, self.export_root, self.project['id'], 'front', source_webp,
             )
 
-        expected = f'{PROJECT_EXPORT_PREFIX}/{self.project["id"]}/{"b" * 32}.png'
+        expected = f'{PROJECT_EXPORT_PREFIX}/{self.project["id"]}/{"b" * 32}.webp'
         self.assertEqual(saved['path'], expected)
         self.assertEqual(collision.read_bytes(), b'owned by an existing export')
         actual, _ = self.store.resolve_image(saved['path'])
@@ -246,6 +246,7 @@ class ProjectImageResultStorageTests(unittest.TestCase):
         self.assertEqual(len(project['candidates']['back']), 1)
         self.assertEqual(project['candidates']['back'][0]['id'], back['id'])
         new_candidate = project['candidates']['front'][1]
+        self.assertTrue(new_candidate['path'].endswith('.webp'))
         exported = validate_project_image_context(
             self.store, self.context(new_candidate), result['result_path'],
         )

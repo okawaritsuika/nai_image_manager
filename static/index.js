@@ -3467,6 +3467,9 @@ async function loadData(options = {}) {
 
         buildFilterDropdowns(currentPath[currentPath.length - 1]);
         const rendering = renderView();
+        if (json.auto_rebuild_started || json.rebuild_running) {
+            pollGalleryIndexStatus();
+        }
         refreshGalleryPromptIndexStatus().catch(() => {});
 
         if (galleryPendingScrollY !== null) {

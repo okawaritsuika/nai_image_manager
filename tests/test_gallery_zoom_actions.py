@@ -17,6 +17,7 @@ from naim.storage.daki_projects import DakiProjectsStore
 from naim.storage.daki_personal_styles import DakiPersonalStyles
 from naim.storage.daki_tag_examples import DakiTagExamples
 from naim.storage.webp_conversion import resolve_converted_gallery_path, migrate_webp_references
+from naim.storage.project_archives import resolve_archived_image
 from naim.images.webp_conversion import convert_png_to_webp
 
 
@@ -38,6 +39,7 @@ class GalleryZoomTrashTests(unittest.TestCase):
         namespace = {'request': self.request, 'jsonify': lambda value: value, 'utils': utils,
                      'image_logic': image_logic, 'os': os, 'CLASSIFIED_DIR': str(self.root),
                      'resolve_converted_gallery_path': resolve_converted_gallery_path,
+                     'resolve_archived_image': resolve_archived_image,
                      'unquote': unquote, 'urlsplit': urlsplit, 'shutil': shutil,
                      'TRASH_DIR': str(self.root / '_TRASH'), 'GALLERY_INDEX_DB_LOCK': threading.RLock()}
         exec(compile(ast.Module(body=functions, type_ignores=[]), '<trash_gallery_image>', 'exec'), namespace)

@@ -8,11 +8,18 @@
         const controller = new root.AbortController();
         const signal = controller.signal;
         const entries = new Map();
+        const imageCache = new Map();
         const queue = [];
         const observed = new Map();
         let running = 0;
         let disposed = false;
         let observer = null;
+
+        function rememberImage(url, promise) {
+            imageCache.delete(url);
+            imageCache.set(url, promise);
+            while (imageCache.size > 8) imageCache.delete(imageCache.keys().next().value);
+        }
 
         function setBusy(container, busy) {
             container.setAttribute('aria-busy', String(busy));
@@ -74,7 +81,14 @@
 
         function loadImage(src, layer) {
             signal.throwIfAborted();
-            return new Promise((resolve, reject) => {
+            const url = addPreviewParameter(src, layer);
+            const cached = imageCache.get(url);
+            if (cached) {
+                rememberImage(url, cached);
+                return cached;
+            }
+            let imagePromise;
+            imagePromise = new Promise((resolve, reject) => {
                 const img = new root.Image();
                 let settled = false;
                 const cleanup = () => {
@@ -98,11 +112,16 @@
                 img.addEventListener('error', onError);
                 signal.addEventListener('abort', onAbort, {once: true});
                 try {
-                    img.src = addPreviewParameter(src, layer);
+                    img.src = url;
                 } catch (error) {
                     settle(reject, error);
                 }
+            }).catch(error => {
+                if (imageCache.get(url) === imagePromise) imageCache.delete(url);
+                throw error;
             });
+            rememberImage(url, imagePromise);
+            return imagePromise;
         }
 
         async function render(entry) {
@@ -110,7 +129,7 @@
             if (entry.kind === 'project') {
                 const {projectId, canvas} = entry;
                 const response = await root.fetch(
-                    `/api/daki/projects/${encodeURIComponent(projectId)}/canvases/${encodeURIComponent(canvas.id)}`,
+                    `/api/daki/projects/${encodeURIComponent(projectId)}/canvases/${encodeURIComponent(canvas.id)}?preview=1`,
                     {signal}
                 );
                 signal.throwIfAborted();
@@ -242,6 +261,7 @@
             observed.clear();
             queue.length = 0;
             entries.clear();
+            imageCache.clear();
             controller.abort();
         }
 

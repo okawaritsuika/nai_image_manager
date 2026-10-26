@@ -166,17 +166,25 @@ async function pollGalleryIndexStatus() {
         if (requestId !== galleryIndexStatusRequest) return;
         if (!res.ok || json.status === 'error') throw new Error(json.message || json.error || '인덱스 상태 조회 실패');
         renderGalleryIndexProgress(json);
-        if (json.running) {
+        if (json.running && !json.error) {
             galleryIndexStatusTimer = setTimeout(pollGalleryIndexStatus, 1000);
         } else if (!json.error && (json.full_index_built || json.done) && document.getElementById('galleryIndexProgress')) {
             // First-time creation has no gallery to preserve. Load it when ready.
             dismissGalleryIndexActivity('gallery');
             await loadData();
+        } else if (!json.error && document.getElementById('galleryIndexProgress')) {
+            // The initial-index page can be idle while its automatic rebuild starts.
+            galleryIndexStatusTimer = setTimeout(pollGalleryIndexStatus, 1000);
         }
     } catch (error) {
         if (requestId !== galleryIndexStatusRequest) return;
-        if (galleryIndexJobSnapshot?.running) {
-            renderGalleryIndexActivity('gallery', {...galleryIndexJobSnapshot, message: '진행 상태 연결을 다시 확인하고 있습니다.'});
+        const initialProgress = document.getElementById('galleryIndexProgress');
+        if (!galleryIndexJobSnapshot?.error && (initialProgress || galleryIndexJobSnapshot?.running)) {
+            const message = '진행 상태 연결을 다시 확인하고 있습니다.';
+            if (initialProgress) initialProgress.innerHTML = `<div class="gallery-index-job-message">${escapeHtml(message)}</div>${renderGalleryIndexMeter(galleryIndexJobSnapshot || {})}`;
+            if (galleryIndexJobSnapshot?.running) {
+                renderGalleryIndexActivity('gallery', {...galleryIndexJobSnapshot, message});
+            }
             galleryIndexStatusTimer = setTimeout(pollGalleryIndexStatus, 2000);
         }
         console.warn('Gallery index status refresh failed:', error);

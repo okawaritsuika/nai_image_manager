@@ -55,6 +55,9 @@ from naim.web.daki_tag_catalog import register_daki_tag_catalog_routes
 from naim.web.novelai_account import register_novelai_account_routes
 from naim.novelai_account import AccountLookupError, fetch_subscription
 from naim.daki_image_refs import resolve_daki_image_reference, daki_image_prompt_fallback, parse_daki_image_reference
+from naim.images.project_removal import remove_project as remove_daki_project
+from naim.storage.project_archives import resolve_archived_image
+from naim.web.project_removal import register_project_removal_routes
 
 
 app = Flask(__name__)
@@ -235,6 +238,12 @@ DAKI_DRAFTS = register_daki_draft_routes(
         + DAKI_TAG_EXAMPLES.references(paths=paths)
     ),
 )
+register_project_removal_routes(app, lambda project_id, action, **options: remove_daki_project(
+    DAKI_PROJECTS, DAKI_DRAFTS, project_id, action,
+    gallery_root=CLASSIFIED_DIR, db_factory=utils.HistoryDB, gallery_lock=GALLERY_INDEX_DB_LOCK,
+    references_provider=lambda paths: DAKI_PERSONAL_STYLES.references(paths=paths) + DAKI_TAG_EXAMPLES.references(paths=paths),
+    **options,
+))
 DAKI_TAG_CATALOG_DIR = os.path.join(os.path.dirname(CURRENT_DIR), 'dakiMaker', 'research', 'tag-catalog')
 DAKI_TAG_EXAMPLES = DakiTagExamples(
     lambda: os.path.join(CURRENT_DIR, 'daki_tag_examples'),
@@ -1215,7 +1224,7 @@ def get_gallery_image_page():
         return jsonify(status='error', message='잘못된 조회 요청입니다.'), 400
     db = utils.HistoryDB()
     try:
-        if not db.has_full_gallery_index():
+        if not db.has_usable_gallery_index():
             return jsonify(status='error', message='인덱스를 갱신한 뒤 다시 시도해 주세요.'), 409
         rows, next_cursor = gallery_image_page(db.conn, data.get('mode', 'general'),
             image_logic.normalize_model_family_filter(data.get('model_family', 'all')),
@@ -1278,11 +1287,13 @@ def get_data():
     try:
         db = utils.HistoryDB()
         has_full_index = db.has_full_gallery_index()
+        has_usable_index = db.has_usable_gallery_index()
         db.close()
     except Exception:
         has_full_index = False
+        has_usable_index = False
 
-    if has_full_index:
+    if has_usable_index:
         try:
             update_gallery_data_status(
                 phase="index",
@@ -1290,7 +1301,10 @@ def get_data():
                 index_mode="full_index"
             )
             payload = build_gallery_data_payload_from_index(mode, sort_by, model_family, summary_only=request.args.get("catalog") == "1")
-            index_mode = "full_index"
+            index_mode = "full_index" if has_full_index else "cached_index"
+            if not has_full_index:
+                auto_started, rebuild_running = start_gallery_index_rebuild_background(auto=True)
+                payload.update(auto_rebuild_started=bool(auto_started), rebuild_running=bool(rebuild_running))
         except Exception as e:
             print(f"gallery index fallback: {e}")
             if not allow_scan:
@@ -1535,7 +1549,16 @@ def gallery_index_rebuild_worker():
                 width = cached[0] if cached and cached[2] == mtime else None
                 height = cached[1] if cached and cached[2] == mtime else None
                 reason_text = load_gallery_reason_text_for_image(full_path)
-                model_family = image_logic.extract_model_family_from_file(full_path)
+                indexed = db.conn.execute(
+                    "SELECT mtime, model_family, width, height FROM gallery_images WHERE rel_path = ?",
+                    (rel_path,)
+                ).fetchone()
+                if indexed and indexed[0] == mtime and indexed[1] in {'v5', 'v4_5', 'other'}:
+                    model_family = indexed[1]
+                    width = width if width is not None else indexed[2]
+                    height = height if height is not None else indexed[3]
+                else:
+                    model_family = image_logic.extract_model_family_from_file(full_path)
 
                 batch.append({
                     "rel_path": rel_path,
@@ -1732,9 +1755,11 @@ def gallery_index_status():
     try:
         db = utils.HistoryDB()
         full_index_built = db.has_full_gallery_index()
+        index_available = db.has_usable_gallery_index()
         db.close()
     except Exception:
         full_index_built = False
+        index_available = False
 
     with GALLERY_INDEX_REBUILD_LOCK:
         payload = dict(GALLERY_INDEX_REBUILD_JOB)
@@ -1742,7 +1767,7 @@ def gallery_index_status():
     payload.update({
         "status": "success",
         "full_index_built": bool(full_index_built),
-        "index_mode_available": bool(full_index_built)
+        "index_mode_available": bool(index_available)
     })
     return jsonify(payload)
 
@@ -3042,19 +3067,32 @@ def resolve_gallery_file_path(relative):
     if os.path.exists(path):
         return path
     old_relative = os.path.relpath(path, CLASSIFIED_DIR).replace('\\', '/')
+    archived = resolve_archived_image(CLASSIFIED_DIR, old_relative, os.path.join(CLASSIFIED_DIR, 'naia_history.db'))
+    if archived:
+        return archived[0]
     return resolve_converted_gallery_path(
         CLASSIFIED_DIR, old_relative, os.path.join(CLASSIFIED_DIR, 'naia_history.db')
     ) or path
+
+
+def resolve_project_image_reference(relative):
+    try:
+        return resolve_daki_image_reference(relative, DAKI_STYLE_TESTS, DAKI_DRAFTS,
+            project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+    except FileNotFoundError:
+        archived = resolve_archived_image(CLASSIFIED_DIR, relative, os.path.join(CLASSIFIED_DIR, 'naia_history.db'))
+        if archived:
+            return archived
+        raise
 
 
 def resolve_daki_image_path(raw_path):
     # A saved candidate refers to one location. Rating-folder fallbacks could
     # silently replace a missing candidate with a different image of that name.
     relative = clean_gallery_rel_path(raw_path)
-    from naim.daki_image_refs import is_daki_image_reference, resolve_daki_image_reference
+    from naim.daki_image_refs import is_daki_image_reference
     if is_daki_image_reference(relative):
-        return resolve_daki_image_reference(relative, DAKI_STYLE_TESTS, DAKI_DRAFTS,
-                                            project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+        return resolve_project_image_reference(relative)
     full_path = resolve_gallery_file_path(relative)
     if not utils.is_subpath(os.path.realpath(full_path), os.path.realpath(CLASSIFIED_DIR)):
         raise ValueError('갤러리 안의 이미지 경로를 사용해 주세요.')
@@ -3080,8 +3118,7 @@ atexit.register(IMAGE_CONVERSION_JOBS.shutdown)
 @app.route('/image/<path:filename>')
 def serve_image(filename):
     try:
-        reference = resolve_daki_image_reference(clean_gallery_rel_path(filename), DAKI_STYLE_TESTS, DAKI_DRAFTS,
-                                                 project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+        reference = resolve_project_image_reference(clean_gallery_rel_path(filename))
         file_path = reference[0] if reference is not None else resolve_gallery_file_path(filename)
     except ValueError:
         return "Invalid path", 400
@@ -3098,10 +3135,16 @@ def serve_image(filename):
                 try:
                     project = DAKI_PROJECTS.get_project(parsed[1])
                     for candidates in project['candidates'].values():
-                        candidate = next((item for item in candidates if item['path'] == reference[1]), None)
+                        candidate = next((item for item in candidates
+                            if item['path'] == reference[1] or (
+                                item['path'].endswith(('.png', '.webp'))
+                                and item['path'].rsplit('.', 1)[0] == reference[1].rsplit('.', 1)[0])), None)
                         if candidate and isinstance(candidate.get('name'), str):
                             download_name = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]', '_',
                                                    candidate['name']).rstrip(' .') or None
+                            if (download_name and file_path.lower().endswith('.webp')
+                                    and os.path.splitext(download_name)[1].lower() in ('.png', '.jpg', '.jpeg')):
+                                download_name = os.path.splitext(download_name)[0] + '.webp'
                             break
                 except DakiNotFoundError:
                     pass
@@ -3203,8 +3246,7 @@ def resolve_readable_gallery_image_path(raw_path):
     # Daki source folders are readable by gallery tools, but must never flow
     # through the gallery's move, delete, upscale or overwrite resolvers.
     relative = clean_gallery_rel_path(raw_path)
-    reference = resolve_daki_image_reference(relative, DAKI_STYLE_TESTS, DAKI_DRAFTS,
-                                             project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+    reference = resolve_project_image_reference(relative)
     return reference if reference is not None else resolve_gallery_image_path(raw_path)
 
 def build_gallery_prompt_filter_text(prompt_info):
@@ -5574,8 +5616,7 @@ def read_canvas_image_bytes(image_ref):
 
     if parsed_path.startswith("/image/"):
         rel_path = unquote(parsed_path[len("/image/"):])
-        reference = resolve_daki_image_reference(rel_path, DAKI_STYLE_TESTS, DAKI_DRAFTS,
-                                                 project_exports_root=os.path.join(CANVAS_IMPORT_DIR, 'project_exports'))
+        reference = resolve_project_image_reference(rel_path)
         file_path = reference[0] if reference is not None else resolve_gallery_file_path(rel_path)
         with open(file_path, "rb") as f:
             return f.read()

@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+from urllib.parse import unquote
 
 from PIL import Image
 
@@ -251,6 +252,30 @@ class CanvasProjectExportStorageTests(unittest.TestCase):
 
 
 class CanvasProjectExportRouteTests(unittest.TestCase):
+    def test_converted_export_uses_webp_public_path_and_download_name_with_legacy_read_compatibility(self):
+        from naim.images.webp_conversion import convert_png_to_webp
+        response = self.client.post('/api/canvas/export_merged', json=self.body())
+        self.assertEqual(response.status_code, 200, response.json)
+        result = response.json
+        source, _ = resolve_daki_image_reference(
+            result['path'], None, project_exports_root=self.imports / 'project_exports')
+        converted = convert_png_to_webp(source)
+        self.assertEqual(converted['status'], 'converted', converted)
+        webp_reference = result['path'][:-4] + '.webp'
+        expected_name = result['name'][:-4] + '.webp'
+        project = self.client.get(f'/api/daki/projects/{self.project["id"]}').json['project']
+        candidate = project['candidates']['back'][0]
+        self.assertEqual(candidate['path'], webp_reference)
+        self.assertEqual(candidate['name'], expected_name)
+        for url in ('/image/' + webp_reference, result['src']):
+            served = self.client.get(url)
+            try:
+                self.assertEqual(served.status_code, 200)
+                self.assertEqual(served.mimetype, 'image/webp')
+                self.assertIn(expected_name, unquote(served.headers['Content-Disposition']))
+            finally:
+                served.close()
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

@@ -147,7 +147,7 @@ test('same project, canvas and revision share one request and one composite acro
     h.observers[0].trigger(first);
     await flush();
     assert.equal(h.requests.length, 1);
-    assert.equal(h.requests[0].url, '/api/daki/projects/project-a/canvases/shared');
+    assert.equal(h.requests[0].url, '/api/daki/projects/project-a/canvases/shared?preview=1');
     reply(h.requests[0], result('project-a', 'shared'));
     await flush();
     assert.equal(h.renderCalls.length, 1);
@@ -340,4 +340,151 @@ test('same-origin image and canvas-import sources get preview URLs only with sav
     assert.deepEqual(state.layers[0], {
         type: 'image', src: '/image/folder/sample.png?token=x&preview=128#part', layerWidth: 120, layerHeight: 80,
     });
+});
+
+test('concurrent previews share one pending image load for the same final URL', async () => {
+    const h = harness({intersection: false, imageAutoLoad: false, render: async ({state, loadImage}) => {
+        await loadImage(state.layers[0].src, state.layers[0]);
+        return 'data:image/png;base64,shared';
+    }});
+    const manager = h.create();
+    const layer = {type: 'image', src: '/image/shared.png', layerWidth: 100, layerHeight: 100};
+    const first = new Container(), second = new Container();
+    manager.observeState(first, {id: 'shared-first', savedAt: 1, state: {layers: [layer]}});
+    manager.observeState(second, {id: 'shared-second', savedAt: 2, state: {layers: [layer]}});
+    await flush();
+
+    assert.equal(h.renderCalls.length, 2);
+    assert.equal(h.images.length, 1);
+    h.images[0].listeners.get('load')();
+    await flush();
+    assert.equal(first.children[0].src, 'data:image/png;base64,shared');
+    assert.equal(second.children[0].src, 'data:image/png;base64,shared');
+});
+
+test('image cache stays at eight URLs, refreshes hits, and reloads the least recent URL after eviction', async () => {
+    const layers = [];
+    for (let index = 1; index <= 8; index++) {
+        layers.push({type: 'image', src: `/image/${index}.png`, layerWidth: 100, layerHeight: 100});
+    }
+    layers.push(layers[0]); // Refresh URL 1 so URL 2 becomes least recently used.
+    layers.push({type: 'image', src: '/image/9.png', layerWidth: 100, layerHeight: 100});
+    layers.push(layers[1]); // URL 2 was evicted and must be loaded again.
+    const h = harness({intersection: false, render: async ({state, loadImage}) => {
+        for (const layer of state.layers) await loadImage(layer.src, layer);
+        return 'data:image/png;base64,lru';
+    }});
+    const manager = h.create();
+    manager.observeState(new Container(), {id: 'lru', savedAt: 1, state: {layers}});
+    await flush();
+
+    assert.equal(h.images.length, 10);
+    assert.deepEqual(h.images.map(image => new URL(image.src).pathname), [
+        '/image/1.png', '/image/2.png', '/image/3.png', '/image/4.png', '/image/5.png',
+        '/image/6.png', '/image/7.png', '/image/8.png', '/image/9.png', '/image/2.png',
+    ]);
+});
+
+test('a failed image URL is removed from the cache so a later preview can retry it', async () => {
+    const h = harness({intersection: false, imageAutoLoad: false, render: async ({state, loadImage}) => {
+        await loadImage(state.layers[0].src, state.layers[0]);
+        return 'data:image/png;base64,retried';
+    }});
+    const manager = h.create();
+    const layer = {type: 'image', src: '/image/retry.png', layerWidth: 100, layerHeight: 100};
+    const failed = new Container();
+    manager.observeState(failed, {id: 'retry-first', savedAt: 1, state: {layers: [layer]}});
+    await flush();
+    h.images[0].listeners.get('error')();
+    await flush();
+    assert.equal(failed.textContent, '통합 그림을 표시할 수 없습니다.');
+
+    const retried = new Container();
+    manager.observeState(retried, {id: 'retry-second', savedAt: 2, state: {layers: [layer]}});
+    await flush();
+    assert.equal(h.images.length, 2);
+    h.images[1].listeners.get('load')();
+    await flush();
+    assert.equal(retried.children[0].src, 'data:image/png;base64,retried');
+});
+
+test('a failed evicted request cannot remove a newer pending request for the same URL', async () => {
+    let imageCount = 0;
+    let loadImageFromRender;
+    let announceReplacement;
+    const replacementStarted = new Promise(resolve => { announceReplacement = resolve; });
+    const h = harness({intersection: false, imageAutoLoad: () => {
+        imageCount++;
+        return imageCount !== 1 && imageCount !== 10;
+    }, render: async ({state, loadImage}) => {
+        loadImageFromRender = loadImage;
+        const layer = state.layers[0];
+        const original = loadImage(layer.src, layer);
+        original.catch(() => {});
+        for (let index = 1; index <= 8; index++) {
+            const other = {src: `/image/eviction-${index}.png`, layerWidth: 100, layerHeight: 100};
+            await loadImage(other.src, other);
+        }
+        const replacement = loadImage(layer.src, layer);
+        announceReplacement();
+        await Promise.allSettled([original, replacement]);
+        return 'data:image/png;base64,eviction-retry';
+    }});
+    const manager = h.create();
+    const layer = {type: 'image', src: '/image/eviction-target.png', layerWidth: 100, layerHeight: 100};
+    const node = new Container();
+    manager.observeState(node, {id: 'eviction-race', savedAt: 1, state: {layers: [layer]}});
+    await replacementStarted;
+    assert.equal(h.images.length, 10);
+
+    const shared = loadImageFromRender(layer.src, layer);
+    h.images[0].listeners.get('error')();
+    await flush();
+    const stillShared = loadImageFromRender(layer.src, layer);
+    assert.equal(h.images.length, 10);
+    h.images[9].listeners.get('load')();
+    await Promise.all([shared, stillShared]);
+    await flush();
+    assert.equal(node.children[0].src, 'data:image/png;base64,eviction-retry');
+});
+
+test('disposing with shared image waiters aborts and clears the pending cached image', async () => {
+    const h = harness({intersection: false, imageAutoLoad: false, render: async ({state, loadImage}) => {
+        await loadImage(state.layers[0].src, state.layers[0]);
+        return 'data:image/png;base64,too-late';
+    }});
+    const manager = h.create();
+    const layer = {type: 'image', src: '/image/pending.png', layerWidth: 100, layerHeight: 100};
+    const first = new Container(), second = new Container();
+    manager.observeState(first, {id: 'pending-first', savedAt: 1, state: {layers: [layer]}});
+    manager.observeState(second, {id: 'pending-second', savedAt: 2, state: {layers: [layer]}});
+    await flush();
+    assert.equal(h.images.length, 1);
+
+    manager.dispose();
+    await flush();
+    assert.equal(h.images[0].src, '');
+    assert.equal(h.images[0].listeners.size, 0);
+    assert.equal(first.textContent, '불러오는 중…');
+    assert.equal(second.textContent, '불러오는 중…');
+    assert.equal(first.children.length, 0);
+    assert.equal(second.children.length, 0);
+});
+
+test('separate preview managers load the same source independently', async () => {
+    const h = harness({intersection: false, render: async ({state, loadImage}) => {
+        await loadImage(state.layers[0].src, state.layers[0]);
+        return 'data:image/png;base64,manager-local';
+    }});
+    const layer = {type: 'image', src: '/image/manager-local.png', layerWidth: 100, layerHeight: 100};
+    const item = {id: 'same-saved', savedAt: 1, state: {layers: [layer]}};
+    const first = h.create();
+    first.observeState(new Container(), item);
+    await flush();
+    assert.equal(h.images.length, 1);
+
+    const second = h.create();
+    second.observeState(new Container(), item);
+    await flush();
+    assert.equal(h.images.length, 2);
 });

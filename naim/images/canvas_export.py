@@ -210,7 +210,7 @@ def save_project_webp_candidate(store, export_root, project_id, side, source_pat
                     _remove_owned_file(path, True)
                 continue
 
-            reference = f'{PROJECT_EXPORT_PREFIX}/{project_id}/{export_id}.png'
+            reference = f'{PROJECT_EXPORT_PREFIX}/{project_id}/{export_id}.webp'
             saved_project = store.add_candidate(project_id, reference, side)
             return {
                 'status': 'success',

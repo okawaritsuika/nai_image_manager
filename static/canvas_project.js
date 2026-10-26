@@ -12,6 +12,11 @@
     let exportChoiceResolver;
     let exportChoiceLink;
     let exportChoiceOpener;
+    let openWarningDialog;
+    let openWarningChoice;
+    let openWarningIgnoreCloseEvents = 0;
+    let pendingOpenWarningFocus;
+    let initializePromise;
     let importDialog;
     let importChoiceResolver;
     let importChoiceLink;
@@ -392,6 +397,85 @@
         });
     }
 
+    function finishOpenWarningChoice(shouldOpen) {
+        const choice = openWarningChoice;
+        if (!choice) return;
+        openWarningChoice = null;
+        pendingOpenWarningFocus = choice.opener;
+        if (openWarningDialog?.open) {
+            openWarningIgnoreCloseEvents += 1;
+            openWarningDialog.close();
+        }
+        choice.resolve(Boolean(shouldOpen));
+    }
+
+    function ensureOpenWarningDialog() {
+        if (openWarningDialog) return;
+        openWarningDialog = doc.createElement('dialog');
+        openWarningDialog.className = 'canvas-project-dialog canvas-project-open-warning';
+        openWarningDialog.setAttribute('aria-labelledby', 'canvasProjectOpenWarningTitle');
+        openWarningDialog.setAttribute('aria-describedby', 'canvasProjectOpenWarningDescription canvasProjectOpenWarningNotice');
+        openWarningDialog.innerHTML = `<div class="canvas-project-open-warning-shell">
+            <header class="canvas-project-open-warning-header">
+                <span class="canvas-project-open-warning-icon" aria-hidden="true">!</span>
+                <div class="canvas-project-open-warning-heading">
+                    <h2 id="canvasProjectOpenWarningTitle">프로젝트 캔버스를 열까요?</h2>
+                    <button id="canvasProjectOpenWarningClose" type="button" class="canvas-project-close" aria-label="닫기" title="닫기">×</button>
+                </div>
+            </header>
+            <div class="canvas-project-open-warning-body">
+                <p id="canvasProjectOpenWarningDescription">현재 화면의 캔버스가 선택한 프로젝트 캔버스로 바뀝니다.</p>
+                <p id="canvasProjectOpenWarningDimensions" class="canvas-project-open-warning-dimensions" hidden></p>
+                <p id="canvasProjectOpenWarningNotice" class="canvas-project-open-warning-notice">보관할 작업이 있다면 취소한 뒤 캔버스를 저장해 주세요.</p>
+            </div>
+            <footer class="canvas-project-open-warning-footer">
+                <button id="canvasProjectOpenWarningCancel" type="button" class="secondary">현재 작업 유지</button>
+                <button id="canvasProjectOpenWarningAccept" type="button">프로젝트 캔버스 열기</button>
+            </footer>
+        </div>`;
+        doc.body.appendChild(openWarningDialog);
+        byId('canvasProjectOpenWarningClose').onclick = () => finishOpenWarningChoice(false);
+        byId('canvasProjectOpenWarningCancel').onclick = () => finishOpenWarningChoice(false);
+        byId('canvasProjectOpenWarningAccept').onclick = () => finishOpenWarningChoice(true);
+        openWarningDialog.addEventListener('cancel', event => {
+            event.preventDefault();
+            finishOpenWarningChoice(false);
+        });
+        openWarningDialog.addEventListener('close', () => {
+            if (openWarningIgnoreCloseEvents) {
+                openWarningIgnoreCloseEvents -= 1;
+                return;
+            }
+            if (!openWarningDialog.open) finishOpenWarningChoice(false);
+        });
+        openWarningDialog.addEventListener('click', event => {
+            if (event.target === openWarningDialog) finishOpenWarningChoice(false);
+        });
+        // Keep canvas shortcuts and clipboard handlers from consuming modal input.
+        for (const type of ['keydown', 'paste', 'copy', 'cut']) {
+            openWarningDialog.addEventListener(type, event => event.stopPropagation());
+        }
+    }
+
+    function confirmCanvasReplacement() {
+        ensureOpenWarningDialog();
+        const width = Number(currentCanvasWidth);
+        const height = Number(currentCanvasHeight);
+        const dimensions = byId('canvasProjectOpenWarningDimensions');
+        if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+            dimensions.textContent = `현재 캔버스 크기: ${width} × ${height} px`;
+            dimensions.hidden = false;
+        } else {
+            dimensions.textContent = '';
+            dimensions.hidden = true;
+        }
+        return new Promise(resolve => {
+            openWarningChoice = {resolve, opener: doc.activeElement};
+            openWarningDialog.showModal();
+            byId('canvasProjectOpenWarningCancel').focus();
+        });
+    }
+
     async function initializeCanvas() {
         const params = new URLSearchParams(root.location.search);
         const targetProject = params.get('project');
@@ -406,7 +490,7 @@
             const same = restoredLink?.projectId === targetProject && restoredLink?.canvasId === targetCanvas;
             if (same && restoredLink.unsaved) return;
             if (!same && currentCanvasWidth && currentCanvasHeight
-                && !root.confirm('프로젝트의 캔버스를 열까요? 현재 화면의 캔버스가 바뀝니다.')) return;
+                && !await confirmCanvasReplacement()) return;
             if (!await leave()) return;
             try {
                 const result = await api(endpoint({projectId: targetProject, canvasId: targetCanvas}));
@@ -429,15 +513,25 @@
         restoredLink = null;
     }
 
-    async function initialize() {
+    function initialize() {
+        if (initializePromise) return initializePromise;
         const surfaces = [byId('canvasWorkspace'), doc.querySelector('.main-header')].filter(Boolean);
         const previous = surfaces.map(node => node.inert);
         surfaces.forEach(node => { node.inert = true; });
-        try { await initializeCanvas(); }
-        finally {
-            restoredLink = null;
-            surfaces.forEach((node, index) => { node.inert = previous[index]; });
-        }
+        let task;
+        task = (async () => {
+            try { await initializeCanvas(); }
+            finally {
+                restoredLink = null;
+                surfaces.forEach((node, index) => { node.inert = previous[index]; });
+                const focusTarget = pendingOpenWarningFocus;
+                pendingOpenWarningFocus = null;
+                if (focusTarget?.isConnected) focusTarget.focus();
+                if (initializePromise === task) initializePromise = null;
+            }
+        })();
+        initializePromise = task;
+        return task;
     }
 
     function syncMode() {
@@ -591,4 +685,5 @@
         autosave?.flush();
         if (autosave?.isUnsaved()) { event.preventDefault(); event.returnValue = ''; }
     });
+    root.addEventListener('pagehide', () => finishOpenWarningChoice(false));
 })(window);

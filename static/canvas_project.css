@@ -101,6 +101,18 @@
 .canvas-project-dialog fieldset label { margin: 0; display: flex; align-items: center; gap: 6px; }
 .canvas-project-dialog input[type="radio"] { width: auto; margin: 0; flex: 0 0 auto; }
 .canvas-project-dialog .canvas-project-actions { justify-content: flex-end; margin-top: 18px; }
+.canvas-project-open-warning[open] { display: flex; flex-direction: column; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; padding: 0; }
+.canvas-project-open-warning-shell { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; }
+.canvas-project-open-warning-header { display: flex; flex: 0 0 auto; align-items: flex-start; gap: 12px; min-width: 0; padding: 20px; }
+.canvas-project-open-warning-icon { display: flex; flex: 0 0 34px; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; background: color-mix(in srgb, #ffb4ab 14%, var(--bg-color)); color: #ffb4ab; font-size: 18px; font-weight: 700; line-height: 1; }
+.canvas-project-open-warning-heading { display: flex; flex: 1 1 auto; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
+.canvas-project-open-warning-heading h2 { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 20px; line-height: 1.4; overflow-wrap: anywhere; }
+.canvas-project-open-warning-body { display: flex; flex: 1 1 auto; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; overflow: auto; padding: 0 20px 20px; font-size: 13px; line-height: 1.6; }
+.canvas-project-open-warning-body p { margin: 0; overflow-wrap: anywhere; }
+.canvas-project-open-warning-dimensions { color: var(--text-muted); font-size: 12px; }
+.canvas-project-open-warning-notice { padding: 10px 12px; border-left: 3px solid #ffb4ab; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: color-mix(in srgb, #ffb4ab 12%, var(--bg-color)); color: #ffb4ab; }
+.canvas-project-open-warning-footer { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; min-width: 0; padding: 20px; border-top: 1px solid var(--border-color); }
+.canvas-project-open-warning-footer button { flex: 0 0 auto; min-height: 40px; max-width: 100%; padding: 10px 14px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .canvas-project-import-content { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .canvas-project-import-content h2 { margin: 0; }
 .canvas-project-import-content p { margin: 0; }

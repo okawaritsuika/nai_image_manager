@@ -8,6 +8,8 @@ from unittest import mock
 from flask import Flask
 from PIL import Image
 
+from naim.daki_image_refs import resolve_daki_image_reference
+from naim.images.canvas_export import project_export_image_path
 from naim.web.daki import register_daki_routes
 from tests.test_daki_projects import gallery_resolver
 
@@ -190,6 +192,71 @@ class ProjectCandidateImageDeletionTests(unittest.TestCase):
         self.assertTrue(legacy.with_suffix('.json').exists())
         self.assertEqual(converted_unrelated.read_text(encoding='utf-8'), 'unrelated')
         self.assertEqual(self.deletion_notifications, [(str(converted), 'converted.webp')])
+
+    def test_project_export_png_alias_and_explicit_webp_share_delete_references(self):
+        export_root = self.root / 'project-exports'
+        export_project_id = 'a' * 32
+        export_id = 'b' * 32
+        png_path = Path(project_export_image_path(export_root, export_project_id, export_id))
+        png_path.parent.mkdir(parents=True, exist_ok=True)
+        webp_path = png_path.with_suffix('.webp')
+        Image.new('RGB', (3, 2), (12, 34, 56)).save(webp_path, format='WEBP')
+        webp_json = webp_path.with_suffix('.json')
+        webp_txt = webp_path.with_suffix('.txt')
+        webp_json.write_text('{"prompt":"synthetic"}', encoding='utf-8')
+        webp_txt.write_text('synthetic prompt', encoding='utf-8')
+        unrelated_png = self.image('unrelated.png', (90, 80, 70))
+        unrelated_png_bytes = unrelated_png.read_bytes()
+
+        def resolve_image(relative):
+            resolved = resolve_daki_image_reference(
+                relative, None, project_exports_root=export_root,
+            )
+            return resolved if resolved is not None else self.resolver(relative)
+
+        _, client, store = self.register(resolve_image)
+        legacy_relative = f'__daki_exports__/{export_project_id}/{export_id}.png'
+        webp_relative = f'__daki_exports__/{export_project_id}/{export_id}.webp'
+        legacy_project = store.create_project('Legacy alias')
+        legacy_project = store.add_candidate(legacy_project['id'], legacy_relative, 'front')
+        legacy_candidate = legacy_project['candidates']['front'][0]
+        explicit_project = store.create_project('Explicit WebP')
+        explicit_project = store.add_candidate(explicit_project['id'], webp_relative, 'back')
+        explicit_candidate = explicit_project['candidates']['back'][0]
+
+        saved = json.loads(self.path.read_text(encoding='utf-8'))
+        legacy_record = next(item for item in saved['projects'] if item['id'] == legacy_project['id'])
+        legacy_record['candidates']['front'][0]['path'] = legacy_relative
+        self.path.write_text(json.dumps(saved), encoding='utf-8')
+
+        rejected = client.post(self.delete_url(legacy_project['id'], legacy_candidate['id']), json={})
+
+        self.assertEqual(rejected.status_code, 409)
+        references = rejected.json['references']
+        self.assertIn({
+            'project_id': explicit_project['id'], 'project_name': 'Explicit WebP',
+            'side': 'back', 'path': webp_relative,
+        }, references)
+        self.assertTrue(webp_path.exists())
+        self.assertTrue(webp_json.exists())
+        self.assertTrue(webp_txt.exists())
+        self.assertEqual(store.get_project(legacy_project['id'])['candidates']['front'][0]['path'], legacy_relative)
+        self.assertEqual(store.get_project(explicit_project['id'])['candidates']['back'][0]['id'], explicit_candidate['id'])
+
+        deleted = client.post(
+            self.delete_url(legacy_project['id'], legacy_candidate['id']), json={'confirm_daki': True},
+        )
+
+        self.assertEqual(deleted.status_code, 200)
+        self.assertFalse(webp_path.exists())
+        self.assertFalse(webp_json.exists())
+        self.assertFalse(webp_txt.exists())
+        self.assertFalse(png_path.exists())
+        self.assertTrue(unrelated_png.exists())
+        self.assertEqual(unrelated_png.read_bytes(), unrelated_png_bytes)
+        self.assertEqual(store.get_project(legacy_project['id'])['candidates']['front'], [])
+        self.assertEqual(store.get_project(explicit_project['id'])['candidates']['back'][0]['id'], explicit_candidate['id'])
+        self.assertEqual(self.deletion_notifications, [(str(webp_path), webp_relative)])
 
     def test_injected_resolver_can_delete_private_project_export_without_gallery_root(self):
         private = self.root / 'private-exports'

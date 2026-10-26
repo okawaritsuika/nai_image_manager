@@ -184,20 +184,34 @@ class HistoryDB:
                     updated_at REAL
                 )
             ''')
-            # Additive migration for existing gallery databases.  A newly
-            # created table already has the column; an old full index must be
-            # rebuilt so NULL legacy rows cannot be mistaken for a real family.
+            # Preserve the usable 1.2 catalog. Legacy entries have no model
+            # information; the upgrade policy treats only those entries as V5
+            # without reopening every image. Already identified models survive.
             model_family_added = False
             try:
                 self.conn.execute("ALTER TABLE gallery_images ADD COLUMN model_family TEXT")
                 model_family_added = True
             except sqlite3.OperationalError:
                 pass
-            if model_family_added:
+            if self.get_gallery_index_state("legacy_gallery_model_default") != "v5":
                 now = time.time()
+                legacy_rows = self.conn.execute(
+                    "SELECT 1 FROM gallery_images WHERE model_family IS NULL LIMIT 1"
+                ).fetchone()
+                if (not model_family_added and legacy_rows
+                        and self.get_gallery_index_state("full_index_built") == "0"
+                        and self.get_gallery_index_state("gallery_index_reset_for_reclassify") != "1"):
+                    # Early 1.3 invalidated the completion flag, but retained
+                    # the old rows. Serve that snapshot during a cheap refresh;
+                    # do not pretend an interrupted/partial index is complete.
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO gallery_index_state VALUES (?, ?, ?)",
+                        ("legacy_gallery_index_available", "1", now)
+                    )
+                self.conn.execute("UPDATE gallery_images SET model_family = 'v5' WHERE model_family IS NULL")
                 self.conn.execute(
                     "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
-                    ("full_index_built", "0", now)
+                    ("legacy_gallery_model_default", "v5", now)
                 )
             gallery_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(gallery_images)")}
             if "ctime" not in gallery_columns:
@@ -311,6 +325,7 @@ class HistoryDB:
                     ("prompt_index_semantics_version", GALLERY_PROMPT_INDEX_SEMANTICS_VERSION, now),
                 )
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_images_folder_path ON gallery_images(folder_path)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_images_folder_page ON gallery_images(folder_path, rel_path)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_images_mode ON gallery_images(mode)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_folders_parent_path ON gallery_folders(parent_path)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_folders_mode ON gallery_folders(mode)")
@@ -409,6 +424,7 @@ class HistoryDB:
                 self.conn.execute("DELETE FROM processed_files")
                 self.conn.execute("DELETE FROM gallery_images")
                 self.conn.execute("DELETE FROM gallery_folders")
+                self.conn.execute("DELETE FROM gallery_index_state WHERE key = 'legacy_gallery_index_available'")
                 self.conn.execute(
                     "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
                     ("full_index_built", "0", now)
@@ -651,10 +667,18 @@ class HistoryDB:
     def has_full_gallery_index(self):
         return self.get_gallery_index_state("full_index_built", "0") == "1"
 
+    def has_usable_gallery_index(self):
+        if self.has_full_gallery_index():
+            return True
+        return (self.get_gallery_index_state("legacy_gallery_index_available") == "1"
+                and self.get_gallery_index_state("gallery_index_reset_for_reclassify") != "1"
+                and self.conn.execute("SELECT 1 FROM gallery_images LIMIT 1").fetchone() is not None)
+
     def clear_gallery_index(self):
         with self.conn:
             self.conn.execute("DELETE FROM gallery_images")
             self.conn.execute("DELETE FROM gallery_folders")
+            self.conn.execute("DELETE FROM gallery_index_state WHERE key = 'legacy_gallery_index_available'")
             self.conn.execute(
                 "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
                 ("full_index_built", "0", time.time())
@@ -730,6 +754,7 @@ class HistoryDB:
                     "INSERT OR REPLACE INTO gallery_index_state (key, value, updated_at) VALUES (?, ?, ?)",
                     [("full_index_built", "1", now), ("partial_index_updated_at", str(now), now)]
                 )
+                self.conn.execute("DELETE FROM gallery_index_state WHERE key = 'legacy_gallery_index_available'")
         finally:
             if attached:
                 self.conn.execute("DETACH DATABASE gallery_rebuild")

@@ -4,17 +4,18 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function setup() {
+function setup({initialPlaceholder = false} = {}) {
     const elements = new Map();
     for (const id of ['content', 'galleryIndexModal', 'galleryIndexModalBody', 'galleryIndexBuildBtn', 'galleryIndexJobPanel', 'galleryIndexJobBody', 'galleryPromptIndexJobBody']) {
         elements.set(id, {innerHTML: '', hidden: true, style: {}, setAttribute() {}, querySelector: () => null});
     }
+    if (initialPlaceholder) elements.set('galleryIndexProgress', {innerHTML: ''});
     elements.get('content').innerHTML = '<button>existing gallery folder</button>';
     const timers = [];
     let loads = 0;
     const context = vm.createContext({console, document: {getElementById: id => elements.get(id) || null},
         escapeHtml: value => String(value), showToast() {}, loadData: async () => {loads++;},
-        setTimeout: callback => {timers.push(callback); return timers.length;}, clearTimeout() {}});
+        setTimeout: (callback, delay) => {timers.push({callback, delay}); return timers.length;}, clearTimeout() {}});
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/gallery_index_jobs.js'), 'utf8'), context);
     return {context, elements, timers, loads: () => loads};
 }
@@ -82,4 +83,81 @@ test('status failure retries without replacing gallery or losing running progres
     assert.equal(timers.length, 1);
     assert.match(elements.get('content').innerHTML, /existing gallery folder/);
     assert.match(elements.get('galleryIndexJobBody').innerHTML, /다시 확인/);
+});
+
+test('first status network failure retries and initial index completion loads once', async () => {
+    const {context, elements, timers, loads} = setup({initialPlaceholder: true});
+    context.console = {warn() {}};
+    let firstRequest = true;
+    context.fetch = async () => {
+        if (firstRequest) {
+            firstRequest = false;
+            throw new Error('synthetic offline');
+        }
+        return {ok: true, json: async () => ({running: false, done: true, full_index_built: true})};
+    };
+
+    await context.pollGalleryIndexStatus();
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delay, 2000);
+    assert.match(elements.get('galleryIndexProgress').innerHTML, /다시 확인/);
+    await timers[0].callback();
+    assert.equal(loads(), 1);
+    assert.match(elements.get('content').innerHTML, /existing gallery folder/);
+});
+
+test('idle initial index status keeps polling until it finishes', async () => {
+    const {context, timers, loads} = setup({initialPlaceholder: true});
+    const responses = [
+        {running: false, done: false, full_index_built: false},
+        {running: false, done: true, full_index_built: true}
+    ];
+    context.fetch = async () => ({ok: true, json: async () => responses.shift()});
+
+    await context.pollGalleryIndexStatus();
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delay, 1000);
+    await timers[0].callback();
+    assert.equal(loads(), 1);
+});
+
+test('idle status and failure without an initial placeholder do not retry', async () => {
+    const {context, timers} = setup();
+    context.console = {warn() {}};
+    context.fetch = async () => {throw new Error('synthetic offline');};
+
+    await context.pollGalleryIndexStatus();
+    assert.equal(timers.length, 0);
+
+    context.fetch = async () => ({ok: true, json: async () => ({running: false, done: false, full_index_built: false})});
+    await context.pollGalleryIndexStatus();
+    assert.equal(timers.length, 0);
+});
+
+test('terminal job error stops status polling', async () => {
+    const {context, elements, timers, loads} = setup({initialPlaceholder: true});
+    context.fetch = async () => ({ok: true, json: async () => ({running: false, error: 'index build failed'})});
+
+    await context.pollGalleryIndexStatus();
+    assert.equal(timers.length, 0);
+    assert.match(elements.get('galleryIndexProgress').innerHTML, /index build failed/);
+    assert.equal(loads(), 0);
+});
+
+test('superseded status failure cannot schedule a retry', async () => {
+    const {context, timers} = setup({initialPlaceholder: true});
+    context.console = {warn() {}};
+    let rejectFirst;
+    let calls = 0;
+    context.fetch = () => {
+        calls++;
+        if (calls === 1) return new Promise((_, reject) => {rejectFirst = reject;});
+        return Promise.resolve({ok: true, json: async () => ({running: false, error: 'terminal'})});
+    };
+
+    const stalePoll = context.pollGalleryIndexStatus();
+    await context.pollGalleryIndexStatus();
+    rejectFirst(new Error('superseded offline'));
+    await stalePoll;
+    assert.equal(timers.length, 0);
 });

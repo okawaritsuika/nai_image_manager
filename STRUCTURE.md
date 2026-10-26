@@ -29,12 +29,12 @@
 - 추가 모드는 `naim/storage/webp_conversion.py`의 `add_webp_gallery_image`로 새 WebP만 기존 갤러리 인덱스에 등록한다. 원본 파일·태그·별칭·프로젝트 연결은 이동하지 않으며, 취소·검증 실패 시 새 등록을 되돌린다. 추가 모드의 용량 표시는 절약량이 아닌 추가 WebP 용량이다. 파일 이름과 이름 충돌 시 건너뛰기 정책은 교체 모드와 같다.
 - 우클릭 개별 변환은 시작 요청 즉시 같은 모달을 진행 화면으로 전환한다. 서버의 처리 장수·진행률·성공/건너뜀/실패와 용량을 표시하고, 한 장을 처리하는 동안에는 대기 중인 진행바를 보여 준다. 완료·중지·요청 실패 후 결과를 유지하며 설정으로 돌아가 재시도할 수 있다. 실행 중 닫았다 다시 열면 진행 화면으로 복원한다. 현재 폴더 일괄 변환과 리모콘의 진행 화면은 기존 동작을 유지한다.
 - 갤러리 모달을 닫아도 상태 조회는 계속되며 페이지 우측 하단의 WebP 진행 카드로 진행·결과를 확인한다. ‘자세히’로 모달을 다시 열고 ‘중지’로만 취소를 요청한다. 페이지 이탈 때는 상태 조회만 정리하고 서버 작업은 유지한다. 건너뜀 결과에는 가능한 경우 서버가 반환한 이유를 표시한다.
-- 프로젝트 후보의 우클릭은 기존 `projectContext`(프로젝트·면·후보 ID)를 WebP 요청에 함께 보낸다. `naim/images/project_results.py`가 후보와 원본 일치를 검증하고, **원본 유지 + 추가**는 임시 사본을 변환한 뒤 `naim/images/canvas_export.py`의 `save_project_webp_candidate`로 같은 면에 영구 WebP 후보를 추가한다. 실제 파일은 고유한 `.webp`, 가상 주소는 기존 `__daki_exports__/...png` 형식을 유지한다. 교체는 기존 후보와 주소를 유지한다. 프로젝트 없는 변환·리모콘·프로젝트 저장 스키마는 그대로다.
+- 프로젝트 후보의 우클릭은 기존 `projectContext`(프로젝트·면·후보 ID)를 WebP 요청에 함께 보낸다. `naim/images/project_results.py`가 후보와 원본 일치를 검증하고, **원본 유지 + 추가**는 임시 사본을 변환한 뒤 `naim/images/canvas_export.py`의 `save_project_webp_candidate`로 같은 면에 영구 WebP 후보를 추가한다. 실제 파일과 새 저장 주소 모두 `.webp`를 사용한다. 기존 프로젝트 내보내기의 `.png` 주소도 계속 읽되 실제 WebP라면 API의 `path`·`src`와 이미지 확장자가 있는 표시·다운로드 이름은 `.webp`로 반환한다. 교체는 기존 후보 ID와 저장된 연결을 유지하며 기존 JSON을 일괄 변경하지 않는다. 프로젝트 없는 변환·리모콘·프로젝트 저장 스키마는 그대로다.
 - `static/gallery_image_tools.js/.css`가 사유 보기 옆 형식 체크박스, 실제 파일 헤더 배지, 우클릭 개별 변환과 현재 폴더 일괄 변환을 소유한다. 모달을 열 때 `static/index.js`의 `getGalleryWebpLocation()` 또는 Daki 제목으로 대상 폴더·경로·장수를 고정해 표시한다. 현재 필터에 표시된 이미지가 대상이며 하위 폴더는 제외한다. 표시 설정은 `naim_show_image_formats_v1`, 품질 기본값은 90이다.
 - 폴더 변환의 태그 제외는 기존 `getGalleryTagState()`·`getGalleryImageTagId()`의 갤러리 지정 태그를 사용한다. 특정 태그 복수 선택 또는 태그가 있는 모든 그림 제외 후 남은 경로만 기존 변환 API로 보낸다. 전체·제외·변환 장수를 즉시 표시하고 시작 직전에 다시 계산하며, 실행 중에는 선택을 고정한다. 제외 선택은 모달을 새로 열 때 초기화하고 개별 변환에는 적용하지 않는다. 태그 저장 형식과 원본 태그는 변경하지 않는다.
 - `naim/web/image_conversion.py`는 형식 조회 및 시작·상태·취소 HTTP 경계, `naim/jobs/image_conversion.py`는 단일 백그라운드 작업, `naim/images/gallery_conversion.py`는 기존 갤러리 경로·DB·태그 갱신 연결을 담당한다. `app.py`는 등록과 의존성 연결만 하며 `naim/web/lifecycle.py`의 기존 종료 흐름에 포함한다.
 - `naim/images/webp_conversion.py`는 PNG/JPEG/BMP/정지 GIF를 검증 후 WebP로 교체한다. PNG는 `name.webp`, 그 외는 같은 이름의 PNG와 충돌하지 않도록 `name.jpg.webp` 형태를 사용한다. 원본 메타데이터와 투명도·파일 시각을 보존하며 JPG 등의 JSON/TXT 보조 파일은 새 이름으로 안전 복사한다. 기존 PNG 전용 API와 리모콘 무손실 기본값은 유지한다.
-- Daki 시안·테스트·공유 그림체·태그 사전·프로젝트 내보내기 읽기는 기존 PNG 모양 가상 ID를 유지하고 정확한 WebP 대체 파일을 해석한다. 새 이미지의 저장 형식 선택은 각 생성 기능이 소유하며, 이 교체 기능은 선택한 기존 이미지만 처리한다.
+- Daki 시안·테스트·공유 그림체·태그 사전 읽기는 기존 PNG 모양 가상 ID를 유지하고 정확한 WebP 대체 파일을 해석한다. 프로젝트 내보내기는 `.png`·`.webp` 주소를 모두 허용한다. 명시적인 `.webp` 주소는 PNG로 대체하지 않으며, 두 파일이 모두 존재하면 요청한 확장자의 파일을 읽는다. 새 이미지의 저장 형식 선택은 각 생성 기능이 소유하며, 이 교체 기능은 선택한 기존 이미지만 처리한다.
 - `tools/convert_daki_webp.py`는 명시한 저장 폴더를 오프라인으로 변환한다. `naim/storage/catalog_image_conversion.py`가 카탈로그 JSON, HTML 내 data JSON, CSV examples의 이미지 링크와 해당 image_sha256만 원자 갱신한다. 레시피와 job_sha256, 알 수 없는 필드는 보존한다. 편집·생성이 멈춘 상태에서 사용한다.
 - 검증 경계: 격리 `test_*webp*.py`, `test_image_conversion_api.py`, 관련 Daki 읽기 테스트와 `tests/test_gallery_image_tools.js`. 실제 UI는 사용자 자료 없는 합성 서버에서 기존/새 화면, 1280×900·800×900으로 확인한다. 프로세스 강제 종료·전원 손실까지 원자성을 보장하는 다중 파일 트랜잭션은 기존 한계로 유지한다.
 
@@ -382,6 +382,8 @@ EXE 검사는 두 실제 spec을 합성 사전 데이터로 빌드하여 서버 
 
 2026-09-06 핵심 최적화: `naim/gallery/catalog.py`가 기존 인덱스의 폴더 요약·최대 512장 페이지/선택 경로 조회를 담당한다. `app.py`의 `catalog=1`과 `/api/gallery/images`를 `static/gallery_catalog.js`/`static/index.js`가 사용한다. 가상 폴더도 요약과 결과별 조회를 사용하며 기존 전체 응답 API는 호환 경로로 유지한다. 회귀는 `tests/test_gallery_catalog.py`, `tests/test_gallery_catalog.js`, `tests/test_gallery_virtual_loading.js`.
 
+1.2 갤러리 업그레이드는 `HistoryDB.create_table()`에서 완료 표시를 유지하고 모델 정보가 없는 기존 행만 V5로 보완한다. 초기 1.3에서 완료 표시가 해제된 목록은 `has_usable_gallery_index()`로 먼저 제공하고 백그라운드에서 확인하며, 실제 전체 확인이 끝날 때까지 완료로 표시하지 않는다. 목록 갱신은 경로·수정 시각이 같은 모델 정보를 재사용하고, 폴더 페이지 조회는 `(folder_path, rel_path)` 인덱스를 사용한다. 회귀는 `tests/test_gallery_upgrade.py`, `tests/test_gallery_index_background.py`, `tests/test_gallery_page_performance.py`, `tests/test_gallery_index_jobs.js`.
+
 카드 해제·복원은 `static/gallery_recycling.js`, 실제 카드 생성·논리 순서는 `static/index.js`가 소유한다. `static/index.css`는 재활용 카드의 실제 높이 측정을 보장한다. 회귀는 `tests/test_gallery_recycling.js`. 대용량 재현은 `tools/check_gallery_scale.py`, 완료 검증은 `REMAINING_SCOPE_COMPLETION_2026-09-06.md`를 확인한다.
 
 - 작은 카드의 배치는 `static/index.css`, `static/gallery_modern.css`, `static/daki.css`가 담당한다. 일반 카드의 내부 폭 220px 이하, 프로젝트 카드 280px 이하에서는 28px 아이콘 버튼을 한 줄로 표시하고 `title`과 `aria-label`로 기능을 안내한다. 캔버스 상세·열기·삭제는 하단 조작부를 공유하며 큰 카드에서는 텍스트를 표시한다. 이름·날짜는 줄바꿈하고 프로젝트 카드 높이는 내용에 맞춰 늘어난다. `static/index.js`의 `getGalleryEffectiveColumnCount(grid)`는 저장된 크기 설정을 유지하면서 실제 사용 폭과 최소 카드 폭 120px로 열 수를 제한한다. `static/daki.js`도 같은 배치 계산을 재사용한다. 회귀: `tests/test_gallery_rendering.js`, `tests/test_daki.js`.
@@ -403,3 +405,13 @@ EXE 검사는 두 실제 spec을 합성 사전 데이터로 빌드하여 서버 
 - `naim/images/inpaint_reference.py`는 설정 검증, `reference_fit_box`의 전체 이미지 축소·흰 여백 배치, 왼쪽 이미지·검은 마스크 합성, 응답 크기 검사·참조 부분 제거와 요청용 `split screen` 추가를 담당한다. 확대 없는 최소 배율, 치수의 반올림, 중앙 위치의 내림을 사용한다. `app.py`의 `/api/canvas/inpaint`는 선택적 `reference`를 받고, 응답을 원본 크기로 자른 다음 기존 마스크 합성과 PNG 저장을 진행한다. 저장된 프롬프트에는 임시 배치 태그를 덧붙이지 않는다.
 - 프로젝트 `canvasSettings.inpaintReference`는 기존 GET/PUT·revision·원자 저장을 재사용한다. 필드가 없는 기존 편집 요청은 저장된 참고 설정을 유지하고 명시적 null은 해제한다. 캔버스에는 버튼으로 한 번 복사하며 이후 자동 동기화하지 않는다. `project_canvas_import_refs`는 프로젝트 설정만 참조하는 업로드 이미지도 보호한다.
 - 회귀: `test_inpaint_reference.py`, 격리 `test_canvas_inpaint_reference_api.py`, `test_project_canvas_settings.py`, JS `test_canvas_inpaint_reference.js`·`test_canvas_inpaint_reference_bridge.js`·`test_canvas_selection_size.js`. 합성 이미지와 모의 생성 응답을 사용하며 실제 유료 생성은 실행하지 않는다.
+
+# 프로젝트 보관·삭제 및 조회
+
+- `static/daki_project_removal.js/.css`가 프로젝트 상세 화면의 삭제 창을 소유한다. 기본 선택은 그림 보관이며, 그림까지 삭제할 때 다른 항목의 참조가 있으면 추가 확인을 요구한다. `naim/web/project_removal.py`의 POST `/api/daki/projects/<id>/delete`는 `action: archive|delete`, 선택적 `confirm_daki: boolean`을 받는다.
+- `naim/images/project_removal.py`는 후보 그림과 연결된 시안 폴더의 미채택 결과까지 처리한다. 보관은 원본·JSON·TXT를 재압축 없이 갤러리 `No_Metadata/프로젝트 보관`으로 옮기며, 성인 분류 폴더는 유지한다. 공유·개인 그림체 라이브러리 원본은 유지한다. 프로젝트 설정과 편집 캔버스는 두 선택 모두 제거한다.
+- 프로젝트 JSON과 시안 폴더는 각 저장 소유자의 `staged_project_removal`에서 오류 시 복구한다. `naim/storage/project_archives.py`는 기존 DB의 선택적 별칭 테이블을 통해 다른 프로젝트와 캔버스의 이전 그림 주소를 계속 읽는다. 보관한 그림만 인덱스에 추가하며 전체 갤러리를 다시 색인하지 않는다.
+- 프로젝트 목록·상세는 `DakiProjectsStore`의 `summary=True` 조회로 캔버스 본문 복사를 생략한다. 개별 캔버스는 `get_canvas_with_project`로 JSON을 한 번 읽는다. 기존 저장 형식과 기본 전체 조회는 유지한다. `static/canvas_project.js/.css`의 교체 경고는 취소·Escape에서 현재 작업을 유지한다.
+- 큰 프로젝트 조회는 저장소별 최신 JSON 스냅샷 하나를 재사용하며, 경로·파일 식별자·수정 시간·크기가 바뀌면 다시 읽는다. 저장·삭제는 기존 원자 저장 경로를 유지한다. 카드 미리보기의 GET 캔버스 요청만 `?preview=1`로 표시할 레이어·좌표·이미지 주소를 받고, 편집용 기본 응답은 전체 데이터를 유지한다. `static/daki_canvas_previews.js`는 같은 페이지에서 최대 8개 이미지 로드를 공유하고 페이지 종료 시 해제한다.
+- `naim/images/dimensions.py`는 PNG/WebP 크기와 EXIF 회전을 픽셀 디코딩 없이 읽는다. 프로젝트 상세는 기존 크기 캐시를 유지하면서 이 함수를 사용한다. `test_image_dimensions.py`, `test_daki_read_cache.py`, `test_daki_preview_api.py`, `test_daki_canvas_previews.js`가 원본 보존·저장 후 갱신·기존 편집 응답·미리보기 호환성을 검증한다. 합성 대용량 측정과 화면 검증은 `.qa/measure_project_large_files.py`, `.qa/serve_project_speed.py`에서 수행한다.
+- 회귀: `test_project_removal.py`, `test_project_removal_storage.py`, `test_daki_project_removal.js`, `test_daki_read_performance.py`, `test_daki_image_refs.py`, `test_canvas_project.js`. 격리 UI 검증은 `.qa/serve_project_removal.py`에서 합성 자료와 비삭제 응답으로 수행한다.

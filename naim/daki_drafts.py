@@ -1,4 +1,5 @@
 """Persist explicit image drafts separately from shared-style comparison batches."""
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
@@ -594,6 +595,165 @@ class DakiDrafts:
                 except OSError:
                     result['warning'] = '시안 폴더는 삭제했지만 일부 시안 파일 정리를 마치지 못했습니다.'
             return result
+
+    @contextmanager
+    def staged_project_removal(self, project_id):
+        """Stage every ordinary draft owned by a project's linked folders."""
+        project_id = self._project_id(project_id)
+        if not project_id:
+            raise ValueError('프로젝트 정보를 확인해 주세요.')
+
+        with self.lock:
+            root = self._root()
+            catalog = self._load_catalog(root)
+            target_folders = [
+                folder for folder in catalog['folders']
+                if folder.get('project_id') == project_id
+            ]
+            if not target_folders:
+                yield []
+                return
+
+            target_folder_ids = {folder['id'] for folder in target_folders}
+            catalog_without_targets = dict(catalog)
+            catalog_without_targets['folders'] = [
+                folder for folder in catalog['folders']
+                if folder.get('project_id') != project_id
+            ]
+            catalog_path = self._catalog_path(root)
+            try:
+                original_catalog_bytes = catalog_path.read_bytes()
+            except FileNotFoundError:
+                original_catalog_bytes = None
+
+            owned = []
+            if root.exists():
+                for entry in root.iterdir():
+                    if not DRAFT_ID.fullmatch(entry.name):
+                        continue
+                    if entry.is_symlink():
+                        raise ValueError('허용되지 않는 시안 경로입니다.')
+                    if not entry.is_dir():
+                        continue
+                    directory = self._directory(root, entry.name)
+                    if entry.resolve() != entry or directory != entry or directory.parent != root:
+                        raise ValueError('허용되지 않는 시안 경로입니다.')
+                    manifest = entry / 'draft.json'
+                    if manifest.is_symlink():
+                        raise ValueError('허용되지 않는 시안 경로입니다.')
+                    try:
+                        record = self._load(root, entry.name)
+                    except FileNotFoundError:
+                        # Failed initial writes may leave only an empty directory.
+                        if not any(entry.iterdir()):
+                            continue
+                        raise ValueError('저장된 시안 형식을 확인해 주세요.') from None
+
+                    if record.get('folder_id') not in target_folder_ids:
+                        continue
+                    purpose = record.get('purpose', 'draft')
+                    if purpose != 'draft':
+                        raise ValueError('일반 시안 폴더에 다른 종류의 시안이 연결되어 있습니다.')
+                    for child in entry.iterdir():
+                        if (child.is_symlink() or not child.is_file()
+                                or child.resolve().parent != directory):
+                            raise ValueError('허용되지 않는 시안 경로입니다.')
+                    owned.append((entry.name, directory, record))
+
+            active_id = None
+            if self._active is not None and self._active[0] == root:
+                active_id = self._active[1]
+            if (active_id is not None
+                    and any(draft_id == active_id for draft_id, _, _ in owned)):
+                raise DakiStyleTestConflict(
+                    '생성 중인 시안이 있어 프로젝트를 삭제할 수 없습니다.'
+                )
+            if any(record['status'] == 'running' for _, _, record in owned):
+                raise DakiStyleTestConflict(
+                    '생성 중인 시안이 있어 프로젝트를 삭제할 수 없습니다.'
+                )
+
+            owned.sort(key=lambda item: item[0])
+            staging = None
+            moved = []
+
+            def restore_catalog_bytes():
+                if original_catalog_bytes is None:
+                    if catalog_path.exists() or catalog_path.is_symlink():
+                        catalog_path.unlink()
+                    return
+                with tempfile.NamedTemporaryFile(
+                        mode='wb', dir=str(root), prefix='.folders-restore-',
+                        suffix='.tmp', delete=False) as target:
+                    backup_path = Path(target.name)
+                    target.write(original_catalog_bytes)
+                    target.flush()
+                    os.fsync(target.fileno())
+                # If replacement fails, keep this exact backup for recovery.
+                os.replace(backup_path, catalog_path)
+
+            try:
+                if owned:
+                    staging = Path(tempfile.mkdtemp(prefix='.delete-project-', dir=str(root)))
+                for draft_id, directory, _ in owned:
+                    entry = root / draft_id
+                    current = self._directory(root, draft_id)
+                    if (entry.is_symlink() or entry.resolve() != directory
+                            or current != directory or current.parent != root
+                            or not entry.is_dir()):
+                        raise ValueError('허용되지 않는 시안 경로입니다.')
+                    destination = staging / draft_id
+                    os.replace(entry, destination)
+                    moved.append((entry, destination))
+
+                self._save_catalog(root, catalog_without_targets)
+                staged_records = [
+                    {
+                        'id': draft_id,
+                        'reference': f'__daki_drafts__/{draft_id}.png',
+                        'directory': staging / draft_id,
+                        'record': deepcopy(record),
+                    }
+                    for draft_id, _, record in owned
+                ]
+                yield staged_records
+            except BaseException as error:
+                rollback_errors = []
+                try:
+                    current_catalog_bytes = catalog_path.read_bytes()
+                except FileNotFoundError:
+                    current_catalog_bytes = None
+                except OSError as rollback_error:
+                    current_catalog_bytes = object()
+                    rollback_errors.append(rollback_error)
+                if current_catalog_bytes != original_catalog_bytes:
+                    try:
+                        restore_catalog_bytes()
+                    except OSError as rollback_error:
+                        rollback_errors.append(rollback_error)
+                for original, staged in reversed(moved):
+                    try:
+                        if original.exists() or original.is_symlink():
+                            raise OSError('시안 경로가 복구 중에 변경되었습니다.')
+                        os.replace(staged, original)
+                    except OSError as rollback_error:
+                        rollback_errors.append(rollback_error)
+                if staging is not None and not rollback_errors:
+                    try:
+                        shutil.rmtree(staging)
+                    except OSError:
+                        pass
+                if rollback_errors:
+                    raise OSError(
+                        '프로젝트 삭제 중 오류가 발생해 시안 자료를 복구하지 못했습니다.'
+                    ) from error
+                raise
+            else:
+                if staging is not None:
+                    try:
+                        shutil.rmtree(staging)
+                    except OSError:
+                        pass
 
     def iter_completed_prompt_images(self):
         """Read saved positive recipes without recovery writes or generation."""

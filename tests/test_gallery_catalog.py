@@ -109,7 +109,7 @@ class CatalogTests(unittest.TestCase):
         fn = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == 'get_gallery_image_page')
         fn.decorator_list = []
         reads = []
-        db = types.SimpleNamespace(conn=self.conn, has_full_gallery_index=lambda: True, close=lambda: None)
+        db = types.SimpleNamespace(conn=self.conn, has_usable_gallery_index=lambda: True, close=lambda: None)
         def created(path, fallback):
             reads.append(path)
             return 123

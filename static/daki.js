@@ -837,6 +837,19 @@
         linkedSettings.type = 'button';
         linkedSettings.onclick = () => root.DakiProjectSettings?.open({projectId: project.id, projectName: project.name, opener: linkedSettings});
         controls.append(sideLinks, generationLink, importButton, linkedSettings, sortLabel);
+        const removal = root.DakiProjectRemoval?.createButton({
+            project,
+            isCurrent: () => revision === pageRevision && isProjectView()
+                && new URLSearchParams(root.location.hash.slice(1)).get('project') === String(project.id),
+            onDeleted: result => {
+                root.location.hash = '#daki';
+                root.showToast?.(result.warning || (result.action === 'archive'
+                    ? `그림 ${result.archived_count}장을 갤러리에 보관하고 프로젝트를 삭제했습니다.`
+                    : '프로젝트와 그림을 삭제했습니다.'));
+                if (result.gallery_changed) root.loadData?.();
+            },
+        });
+        if (removal) controls.appendChild(removal);
         sortLabel.appendChild(sortSelect);
         const sortProjectGrids = [];
         sortSelect.onchange = () => {
@@ -1013,6 +1026,7 @@
         projectReference = null;
         closeCanvasOpenModal(false);
         closeProjectDeleteModal(false, false);
+        root.DakiProjectRemoval?.close(false);
         root.DakiProjectDetails?.close(false);
         root.DakiDraftFolderActions?.close(false);
         doc.body.classList.remove('daki-project-active');
@@ -1102,6 +1116,7 @@
             projectReference = null;
             closeCanvasOpenModal(false);
             closeProjectDeleteModal(false, false);
+            root.DakiProjectRemoval?.close(false);
             root.DakiProjectDetails?.close(false);
             root.DakiDraftFolderActions?.close(false);
             canvasPreviews?.dispose();
