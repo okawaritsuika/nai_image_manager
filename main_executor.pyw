@@ -713,6 +713,27 @@ class NaiaHyperExecutor:
                 self.log_area.see(tk.END)
         self.root.after(self.LOG_FLUSH_MS, self._drain_logs)
 
+    def _can_save_style_connection(self):
+        if (self._active_job is not None or self.update_in_progress
+                or self.server_transitioning or self.server_ready or self._closing):
+            return False
+        if self.server_process is not None and self.server_process.poll() is None:
+            return False
+        return not utils.is_port_active(5000)
+
+    def open_style_connection(self):
+        from naim.style_connection_ui import open_style_connection
+
+        dialog = getattr(self, '_style_connection_dialog', None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.lift()
+            dialog.focus_set()
+            return
+        self._style_connection_dialog = open_style_connection(
+            self.root, APP_DIR, can_save=self._can_save_style_connection,
+            on_saved=lambda: self.log('그림체 프로그램 연결을 저장했습니다. 다음 서버 시작부터 적용됩니다.'),
+        )
+
     def open_legacy_import(self):
         if self.update_in_progress or self._active_job is not None:
             messagebox.showinfo("작업 중", "진행 중인 작업을 마친 뒤 자료를 가져와 주세요.")

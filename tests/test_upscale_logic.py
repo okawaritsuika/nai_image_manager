@@ -9,6 +9,66 @@ import upscale_logic
 
 
 class UpscaleLogicTests(unittest.TestCase):
+    def test_large_model_downsize_skips_native_scale_and_model_assets(self):
+        for engine in ('illustrationjanai', 'animesharp'):
+            with self.subTest(engine=engine), \
+                 mock.patch.object(upscale_logic, 'get_image_size', return_value=(5000, 16000)), \
+                 mock.patch.object(upscale_logic, 'run_lanczos_only', return_value={'engine': 'lanczos'}) as resize, \
+                 mock.patch('naim.upscale_assets.UPSCALE_ASSETS.use') as assets, \
+                 mock.patch('naim.images.model_upscale.run_model_upscale') as model:
+                result = upscale_logic.run_upscale('synthetic.png', 'result.png', 2500, 8000, engine=engine)
+                self.assertEqual(result['engine'], 'lanczos')
+                resize.assert_called_once_with('synthetic.png', 'result.png', 2500, 8000, None, None)
+                assets.assert_not_called()
+                model.assert_not_called()
+
+    def test_model_downsize_writes_requested_size_preserves_alpha_and_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = os.path.join(temporary, 'source.png')
+            target = os.path.join(temporary, 'result.png')
+            Image.new('RGBA', (160, 512), (30, 60, 90, 128)).save(source)
+            with open(source, 'rb') as stream:
+                original = stream.read()
+            for engine in ('illustrationjanai', 'animesharp'):
+                with self.subTest(engine=engine), \
+                     mock.patch('naim.upscale_assets.UPSCALE_ASSETS.use') as assets:
+                    result = upscale_logic.run_upscale(source, target, 80, 256, engine=engine)
+                    self.assertEqual(result['stages'], [])
+                    with Image.open(target) as output:
+                        self.assertEqual(output.size, (80, 256))
+                        self.assertEqual(output.mode, 'RGBA')
+                        self.assertEqual(output.getpixel((40, 128))[3], 128)
+                    with open(source, 'rb') as stream:
+                        self.assertEqual(stream.read(), original)
+                    assets.assert_not_called()
+
+    def test_models_still_run_if_either_dimension_grows_or_size_is_unchanged(self):
+        for engine in ('illustrationjanai', 'animesharp'):
+            for target in ((128, 256), (80, 64), (64, 256), (64, 128)):
+                with self.subTest(engine=engine, target=target), \
+                     mock.patch.object(upscale_logic, 'get_image_size', return_value=(64, 128)), \
+                     mock.patch('naim.upscale_assets.UPSCALE_ASSETS.use') as assets, \
+                     mock.patch('naim.images.model_upscale.run_model_upscale', return_value={'engine': engine}) as model:
+                    result = upscale_logic.run_upscale('synthetic.png', 'result.png', *target, engine=engine)
+                    self.assertEqual(result['engine'], engine)
+                    assets.assert_called_once_with(engine)
+                    model.assert_called_once()
+
+    def test_model_downsize_keeps_cancellation_and_target_limits(self):
+        import threading
+        from naim.processes import UpscaleCancelled
+        event = threading.Event()
+        event.set()
+        with mock.patch.object(upscale_logic, 'get_image_size', return_value=(5000, 16000)), \
+             mock.patch('naim.upscale_assets.UPSCALE_ASSETS.use') as assets:
+            with self.assertRaises(UpscaleCancelled):
+                upscale_logic.run_upscale('synthetic.png', 'result.png', 2500, 8000,
+                                          engine='animesharp', cancel_event=event)
+            with self.assertRaisesRegex(ValueError, '130MP'):
+                upscale_logic.run_upscale('synthetic.png', 'result.png', 20000, 20000,
+                                          engine='animesharp')
+            assets.assert_not_called()
+
     def test_supported_engines_keep_native_and_add_optional_backends(self):
         self.assertEqual(
             upscale_logic.SUPPORTED_UPSCALE_ENGINES,

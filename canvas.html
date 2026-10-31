@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <title>NAI ImageManager - 캔버스</title>
     <link rel="stylesheet" href="/static/style_lab.css">
-    <link rel="stylesheet" href="/static/canvas.css?v=20261025-selection-size">
+    <link rel="stylesheet" href="/static/canvas.css?v=20261031-inpaint-layers">
+    <link rel="stylesheet" href="/static/canvas_layer_delete.css">
+    <link rel="stylesheet" href="/static/canvas_export_feedback.css">
     <link rel="stylesheet" href="/static/upscale_models.css">
     <link rel="stylesheet" href="/static/canvas_saved_gallery.css">
     <link rel="stylesheet" href="/static/canvas_grid.css">
@@ -22,20 +24,25 @@
     <link rel="stylesheet" href="/static/canvas_retouch.css?v=20261025-multiselect">
     <link rel="stylesheet" href="/static/common_anlas_warning.css">
     <link rel="stylesheet" href="/static/novelai_account.css">
-    <link rel="stylesheet" href="/static/canvas_workspace.css?v=20261017-header">
+    <link rel="stylesheet" href="/static/canvas_workspace.css?v=20261031-inline-previews">
+    <link rel="stylesheet" href="/static/workspace_header.css">
     <script src="/static/novelai_account.js" defer></script>
+    <link rel="stylesheet" href="/static/prompt_autocomplete.css?v=20261031">
+    <script src="/static/prompt_autocomplete.js?v=20261031-caret" defer></script>
 </head>
 <body>
     <header class="main-header">
         <div class="header-container-fluid">
-            <div class="header-logo" onclick="location.href='/'">
-                🖼️ 캔버스
-            </div>
+
 
             <nav class="header-nav" aria-label="캔버스 작업">
-                <button type="button" onclick="location.href='/'" class="nav-button secondary" title="갤러리" aria-label="갤러리">🏠 갤러리</button>
+
+                <a id="openGalleryLink" class="gallery-workspace-entry" href="/#gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>갤러리</span></a>
+                <a id="openDakiDictionary" class="gallery-workspace-entry" href="/#daki&library=dictionary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 5Q12 7 21 5Q19 12 21 19Q12 17 3 19Q5 12 3 5Z"/><path d="M6 8q6 1 12 0M6 16q6-1 12 0"/></svg><span>태그 사전</span></a>
+                <button id="openCanvasLink" class="gallery-workspace-entry" aria-current="page" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="16" rx="2"/><path d="m6 15 4-5 4 4 2-2 3 4M9 19l-2 3m8-3 2 3"/><circle cx="16.5" cy="7.5" r="1.5"/></svg><span>캔버스</span></button>
+                <a id="openStyleWorkspace" class="gallery-workspace-entry" href="/style-manager"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h2a3 3 0 0 0 0-6h-1a2 2 0 0 1 0-4h2a4 4 0 0 0 0-8Z"/><circle cx="7" cy="10" r="1"/><circle cx="9" cy="6" r="1"/></svg><span>그림체 관리</span></a>
                 <details class="canvas-header-menu">
-                    <summary title="캔버스">캔버스</summary>
+                    <summary class="canvas-header-control" title="캔버스">캔버스</summary>
                     <div class="canvas-header-menu-content" aria-label="캔버스 작업">
                         <button type="button" class="secondary" onclick="openCanvasDialog()" title="새 캔버스">＋ 새 캔버스</button>
                         <button type="button" class="secondary" onclick="openSavedCanvasSetupsModal()" title="캔버스 관리">📂 캔버스 관리</button>
@@ -43,7 +50,7 @@
                     </div>
                 </details>
                 <details class="canvas-header-menu">
-                    <summary title="도구">도구</summary>
+                    <summary class="canvas-header-control" title="도구">도구</summary>
                     <div class="canvas-header-menu-content" aria-label="캔버스 도구">
                         <button type="button" id="externalCanvasImageBtn" class="secondary" onclick="openExternalCanvasImagePicker()" title="이미지 가져오기">📁 이미지 가져오기</button>
                         <button type="button" id="externalCanvasImageExportBtn" class="secondary" onclick="downloadMergedCanvasImage()" title="이미지 내보내기">💾 이미지 내보내기</button>
@@ -54,7 +61,7 @@
                 </details>
                 <div class="canvas-connection-tools">
                     <div id="canvasProjectBar" class="canvas-project-inline" data-state="idle">
-                        <button id="canvasProjectLinkBtn" type="button" class="canvas-project-connect" title="프로젝트 연결" onclick="CanvasProject.open()">프로젝트</button>
+                        <button id="canvasProjectLinkBtn" type="button" class="canvas-project-connect canvas-header-control" title="프로젝트 연결" onclick="CanvasProject.open()">프로젝트</button>
                         <details id="canvasProjectStatus" class="canvas-project-status" hidden>
                             <summary id="canvasProjectSummary" title="">
                                 <span id="canvasProjectSide" class="canvas-project-side"></span>
@@ -115,7 +122,7 @@
                     onchange="handleExternalCanvasImageSelected(this)"
                 >
                 <div id="canvasWorkspaceControls" class="canvas-workspace-controls-slot">
-                    <button type="button" id="canvasWorkspaceLaunch" onclick="CanvasWorkspaceBridge.launch()" class="nav-button secondary" title="여러 캔버스 열기">여러 캔버스</button>
+                    <button type="button" id="canvasWorkspaceLaunch" onclick="CanvasWorkspaceBridge.launch()" class="nav-button secondary canvas-header-control" title="여러 캔버스 열기">여러 캔버스</button>
                 </div>
             </nav>
             <div class="nai-header-account" aria-label="NovelAI 잔액">
@@ -567,7 +574,7 @@
             </div>
 
             <div class="clip-prompt-field">
-                <textarea id="gptDetailPromptText" rows="18" spellcheck="false"></textarea>
+                <textarea id="gptDetailPromptText" data-prompt-autocomplete rows="18" spellcheck="false"></textarea>
             </div>
 
             <div class="canvas-modal-actions">
@@ -718,7 +725,7 @@
             <div class="clip-prompt-field">
                 <label for="referenceGenBasePrompt">Base Prompt</label>
                 <div id="referenceGenBaseStylePreview"></div>
-                <textarea id="referenceGenBasePrompt" rows="8"></textarea>
+                <textarea id="referenceGenBasePrompt" data-prompt-autocomplete rows="8"></textarea>
             </div>
 
             <div class="clip-prompt-field">
@@ -738,7 +745,7 @@
             <div class="clip-prompt-field">
                 <label for="referenceGenNegativePrompt">Negative Prompt</label>
                 <div id="referenceGenNegativeStylePreview"></div>
-                <textarea id="referenceGenNegativePrompt" rows="6"></textarea>
+                <textarea id="referenceGenNegativePrompt" data-prompt-autocomplete rows="6"></textarea>
             </div>
 
             <div class="clip-prompt-setting-grid" id="referenceGenGenerationSettings">
@@ -824,14 +831,14 @@
                             <div id="clipTabBase" style="display:block;">
                                 <div class="prompt-block" style="margin-bottom: 0;">
                                     <div id="clipBasePromptTokens" class="prompt-token-surface"></div>
-                                    <textarea id="clipBasePromptInput" class="prompt-raw-textarea" rows="12"></textarea>
+                                    <textarea id="clipBasePromptInput" data-prompt-autocomplete class="prompt-raw-textarea" rows="12"></textarea>
                                 </div>
                             </div>
 
                             <div id="clipTabNegative" style="display:none;">
                                 <div class="prompt-block" style="margin-bottom: 0;">
                                     <div id="clipNegativePromptTokens" class="prompt-token-surface"></div>
-                                    <textarea id="clipNegativePromptInput" class="prompt-raw-textarea" rows="12"></textarea>
+                                    <textarea id="clipNegativePromptInput" data-prompt-autocomplete class="prompt-raw-textarea" rows="12"></textarea>
                                 </div>
                             </div>
                         </div>
@@ -846,11 +853,11 @@
                             </div>
                             <div id="clipInstanceTabBase" class="clip-instance-prompt-panel">
                                 <p id="clipInstancePromptHelp" class="clip-prompt-section-help">이 선택 영역의 Base 뒤에 추가됩니다.</p>
-                                <textarea id="clipInstancePromptInput" rows="3" aria-label="Base 인스턴스 프롬프트" aria-describedby="clipInstancePromptHelp"></textarea>
+                                <textarea id="clipInstancePromptInput" data-prompt-autocomplete rows="3" aria-label="Base 인스턴스 프롬프트" aria-describedby="clipInstancePromptHelp"></textarea>
                             </div>
                             <div id="clipInstanceTabNegative" class="clip-instance-prompt-panel" hidden>
                                 <p id="clipInstanceNegativePromptHelp" class="clip-prompt-section-help">이 선택 영역의 Negative 뒤에 추가됩니다.</p>
-                                <textarea id="clipInstanceNegativePromptInput" rows="3" aria-label="Negative 인스턴스 프롬프트" aria-describedby="clipInstanceNegativePromptHelp"></textarea>
+                                <textarea id="clipInstanceNegativePromptInput" data-prompt-autocomplete rows="3" aria-label="Negative 인스턴스 프롬프트" aria-describedby="clipInstanceNegativePromptHelp"></textarea>
                             </div>
                             <div id="clipDetailPresetPicker"></div>
                         </div>
@@ -1097,12 +1104,15 @@
     <script src="/static/daki_project_style_picker.js"></script>
     <script src="/static/daki_project_settings.js"></script>
     <script src="/static/canvas_inpaint_settings.js"></script>
-    <script src="/static/canvas_inpaint_reference.js?v=20261025-selection-size"></script>
+    <script src="/static/canvas_inpaint_reference.js?v=20261031-opposite-inpaint"></script>
     <script src="/static/canvas_workspace_state.js?v=20261017-inline"></script>
-    <script src="/static/canvas_workspace_bridge.js?v=20261017-inline"></script>
+    <script src="/static/canvas_workspace_bridge.js?v=20261031-reference-quality"></script>
     <script src="/static/canvas_composite.js"></script>
     <script src="/static/daki_canvas_previews.js"></script>
-    <script src="/static/canvas.js?v=20261025-selection-size"></script>
+    <script src="/static/canvas_selection_rotation.js"></script>
+    <script src="/static/canvas_layer_delete.js"></script>
+    <script src="/static/canvas_export_feedback.js"></script>
+    <script src="/static/canvas.js?v=20261031-inpaint-layers"></script>
     <script src="/static/canvas_grid.js"></script>
     <script src="/static/canvas_keyboard_move.js"></script>
     <script src="/static/canvas_style_link.js"></script>
@@ -1113,7 +1123,7 @@
     <script src="/static/canvas_history_bridge.js"></script>
     <script src="/static/canvas_project.js?v=20261025-detail-presets"></script>
     <script src="/static/canvas_detail_presets.js?v=20261025"></script>
-    <script src="/static/canvas_opposite_reference.js"></script>
+    <script src="/static/canvas_opposite_reference.js?v=20261031-opposite-inpaint"></script>
     <script src="/static/canvas_daki_regions.js"></script>
     <script src="/static/canvas_daki_prompt_rules.js"></script>
     <script src="/static/canvas_daki_map_editor.js"></script>
@@ -1128,6 +1138,6 @@
     <script src="/static/canvas_reference.js"></script>
     <script src="/static/canvas_dialogs.js?v=20261025-detail-presets"></script>
     <script src="/static/canvas_header.js?v=20261017-header"></script>
-    <script src="/static/canvas_workspace.js?v=20261017-header"></script>
+    <script src="/static/canvas_workspace.js?v=20261031-inline-previews"></script>
 </body>
 </html>

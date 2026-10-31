@@ -368,6 +368,45 @@ function classed(node, className) {
     return descendants(node).filter(item => item.classList.contains(className));
 }
 
+test('project list exposes deletion outside its navigation link and refreshes after confirmed removal', async () => {
+    const f = inlineLibraryFixture('/#daki');
+    const actions = [];
+    f.win.DakiProjectRemoval = {close() {}, createButton(options) {
+        actions.push(options);
+        const button = f.doc.createElement('button'); button.textContent = '프로젝트 삭제';
+        return button;
+    }};
+    await f.initialize();
+    f.requests.shift().reply({projects: [{id:'synthetic',name:'Synthetic',candidates:{front:[],back:[]},canvases:{front:[],back:[]}}]});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].isCurrent(), true);
+    const card = classed(f.nodes.get('dakiContent'), 'daki-project-list-card')[0];
+    assert.equal(card.tagName, 'DIV');
+    assert.equal(classed(card, 'daki-project-list-link')[0].tagName, 'A');
+    assert.equal(classed(card, 'daki-project-list-actions')[0].children[0].textContent, '프로젝트 삭제');
+    const deletion = actions[0].onDeleted({warning:'Synthetic warning'});
+    f.requests.shift().reply({projects:[]}); await deletion;
+    assert.equal(classed(f.nodes.get('dakiContent'), 'daki-project-list-card').length, 0);
+    assert.equal(f.nodes.get('dakiPageStatus').textContent, 'Synthetic warning');
+    assert.equal(actions[0].isCurrent(), false);
+});
+
+test('project cards distinguish upscaled pictures with one badge', async () => {
+    const f = await projectPageFixture({
+        id: 'sample', name: 'Synthetic',
+        candidates: {front: [
+            {id: 'original', path: 'source.png'},
+            {id: 'result', path: 'result.png', upscale: {is_upscaled: true}},
+        ], back: []},
+        canvases: {front: [], back: []},
+    });
+    const badges = classed(f.nodes.get('dakiContent'), 'daki-project-kind');
+    assert.equal(badges.filter(b => b.dataset.kind === 'upscale').length, 1);
+    assert.equal(badges.find(b => b.dataset.kind === 'upscale').textContent, '⬆ UPSCALE');
+    assert.equal(badges.filter(b => b.dataset.kind === 'image').length, 1);
+});
+
 async function projectPageFixture(project, configure) {
     const f = inlineLibraryFixture(`/#project=${encodeURIComponent(project.id)}`);
     configure?.(f);
@@ -1503,6 +1542,27 @@ test('Daki draft library delegates generation and stops polling on gallery navig
     await f.initialize();
     assert.equal(renders, 1); assert.equal(f.requests.length, 0);
     await f.navigate('#gallery'); assert.equal(leaves, 2);
+});
+
+test('Daki dictionary keeps the library shell and leaves on navigation and pagehide', async () => {
+    const f = inlineLibraryFixture('/#daki&library=dictionary');
+    f.nodes.set('dakiCreate', f.doc.createElement('button'));
+    let renders = 0, leaves = 0;
+    f.win.DakiDictionary = {
+        render(params, container) {
+            renders++;
+            assert.equal(params.get('library'), 'dictionary');
+            assert.equal(container, f.nodes.get('dakiContent'));
+        }, leave() { leaves++; },
+    };
+    await f.initialize();
+    assert.equal(renders, 1);
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.nodes.get('dakiCreate').hidden, true);
+    await f.navigate('#gallery');
+    assert.equal(leaves, 2);
+    f.windowEvents.get('pagehide')();
+    assert.equal(leaves, 3);
 });
 
 test('refreshProject reloads only the currently displayed project without navigating', async () => {

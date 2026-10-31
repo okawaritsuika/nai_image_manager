@@ -76,7 +76,7 @@
         for (const region of regions) select.appendChild(promptRegionOption(region));
         select.value = regionId;
         select.setAttribute('aria-label', '프롬프트가 가리키는 부위');
-        const textarea = node('textarea', 'daki-image-import-textarea');
+        const textarea = node('textarea', 'daki-image-import-textarea'); textarea.setAttribute('data-prompt-autocomplete', '');
         textarea.rows = 2;
         textarea.maxLength = 30000;
         textarea.value = String(value?.prompt || '');
@@ -101,7 +101,7 @@
 
     function makeCharacterRow(value, index, onChange) {
         const row = node('div', 'daki-image-import-character-row');
-        const textarea = node('textarea', 'daki-image-import-textarea');
+        const textarea = node('textarea', 'daki-image-import-textarea'); textarea.setAttribute('data-prompt-autocomplete', '');
         textarea.rows = 2;
         textarea.maxLength = 30000;
         textarea.value = value;
@@ -120,14 +120,14 @@
     function populateEditor(state, info) {
         state.promptEditor.replaceChildren();
         const source = info && typeof info === 'object' ? info : {};
-        const base = node('textarea', 'daki-image-import-textarea');
+        const base = node('textarea', 'daki-image-import-textarea'); base.setAttribute('data-prompt-autocomplete', '');
         base.rows = 4;
         base.maxLength = 30000;
         base.value = String(source.basePrompt || '');
         base.dataset.promptField = 'basePrompt';
         base.setAttribute('aria-label', '기본 프롬프트');
         state.promptEditor.appendChild(makeLabel('기본 프롬프트', base));
-        const negative = node('textarea', 'daki-image-import-textarea');
+        const negative = node('textarea', 'daki-image-import-textarea'); negative.setAttribute('data-prompt-autocomplete', '');
         negative.rows = 3;
         negative.maxLength = 30000;
         negative.value = String(source.negativePrompt || '');

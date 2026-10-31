@@ -28,11 +28,11 @@
         const body = node('div', 'daki-test-target-gallery-body');
         const filters = node('section', 'daki-test-target-gallery-filters');
         const includeLabel = node('label', '', '포함 태그');
-        const includeInput = node('input'); includeInput.type = 'text'; includeInput.maxLength = 20000;
+        const includeInput = node('input'); includeInput.setAttribute('data-prompt-autocomplete', ''); includeInput.type = 'text'; includeInput.maxLength = 20000;
         includeInput.placeholder = '예: watercolor, sketch || oil_painting'; includeInput.setAttribute('aria-label', '포함 태그');
         includeLabel.appendChild(includeInput);
         const excludeLabel = node('label', '', '제외 태그');
-        const excludeInput = node('textarea'); excludeInput.rows = 2; excludeInput.maxLength = 20000;
+        const excludeInput = node('textarea'); excludeInput.setAttribute('data-prompt-autocomplete', ''); excludeInput.rows = 2; excludeInput.maxLength = 20000;
         excludeInput.placeholder = '예: monochrome'; excludeInput.setAttribute('aria-label', '제외 태그');
         excludeLabel.appendChild(excludeInput);
         const filterButton = node('button', 'nav-btn', '필터 적용'); filterButton.type = 'button';

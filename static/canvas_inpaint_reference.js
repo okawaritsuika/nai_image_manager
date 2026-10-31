@@ -20,6 +20,7 @@
     let pendingOperation = null;
     let lastContextKey = null;
     let lastProjectKey = null;
+    let lastProjectIdKey = null;
     let imageCacheEntry = null;
     const actionMounts = new WeakMap();
 
@@ -178,7 +179,24 @@
     }
 
     function projectKey(link = projectLink()) {
+        return link ? JSON.stringify([
+            link.projectId || null,
+            link.canvasId || null,
+            link.side || null
+        ]) : '';
+    }
+
+    function projectIdKey(link = projectLink()) {
         return link ? link.projectId : '';
+    }
+
+    function oppositeSide(link) {
+        return link?.side === 'front' ? 'back' : link?.side === 'back' ? 'front' : null;
+    }
+
+    function validOppositeLink(link) {
+        return Boolean(link && /^[a-f0-9]{32}$/.test(link.projectId)
+            && /^[a-f0-9]{32}$/.test(link.canvasId) && oppositeSide(link));
     }
 
     function cancelPendingOperation() {
@@ -195,12 +213,16 @@
     function checkExternalChanges() {
         const nextContextKey = contextKey();
         const nextProjectKey = projectKey();
+        const nextProjectIdKey = projectIdKey();
         const contextChanged = lastContextKey !== null && nextContextKey !== lastContextKey;
-        if (contextChanged || (lastProjectKey !== null && nextProjectKey !== lastProjectKey)) {
+        const linkChanged = lastProjectKey !== null && nextProjectKey !== lastProjectKey;
+        const projectChanged = lastProjectIdKey !== null && nextProjectIdKey !== lastProjectIdKey;
+        if (contextChanged || (pendingOperation?.kind === 'opposite-load' ? linkChanged : projectChanged)) {
             cancelPendingOperation();
         }
         lastContextKey = nextContextKey;
         lastProjectKey = nextProjectKey;
+        lastProjectIdKey = nextProjectIdKey;
     }
 
     function startOperation(kind, includeProject = false) {
@@ -210,13 +232,16 @@
             kind,
             epoch: operationEpoch,
             contextKey: contextKey(),
-            projectKey: includeProject ? projectKey() : '',
+            projectKey: includeProject
+                ? (kind === 'opposite-load' ? projectKey() : projectIdKey()) : '',
             controller: new Controller()
         };
         pendingOperation = operation;
         currentStatus = kind === 'upload'
             ? '이미지를 확인하고 가져오는 중…'
-            : kind === 'project-save' ? '프로젝트에 등록하는 중…' : '프로젝트 참고 이미지를 불러오는 중…';
+            : kind === 'project-save' ? '프로젝트에 등록하는 중…'
+                : kind === 'opposite-load' ? '반대면 참고 이미지를 불러오는 중…'
+                    : '프로젝트 참고 이미지를 불러오는 중…';
         currentStatusIsError = false;
         syncControls();
         syncActionMounts();
@@ -228,7 +253,8 @@
             && operation.epoch === operationEpoch
             && !operation.controller.signal.aborted
             && operation.contextKey === contextKey()
-            && (!operation.projectKey || operation.projectKey === projectKey()));
+            && (!operation.projectKey || operation.projectKey === (operation.kind === 'opposite-load'
+                ? projectKey() : projectIdKey())));
     }
 
     function finishOperation(operation) {
@@ -273,7 +299,10 @@
         const canvasAvailable = hasCanvas();
         const link = projectLink();
         const busy = Boolean(pendingOperation);
+        const oppositePickerAvailable = typeof root.CanvasOppositeReference?.open === 'function';
         sidebarParts.add.disabled = !canvasAvailable || busy;
+        sidebarParts.oppositeLoad.disabled = !canvasAvailable || busy
+            || !validOppositeLink(link) || !oppositePickerAvailable;
         sidebarParts.widthInput.value = String(state.reference?.width || DEFAULT_WIDTH);
         sidebarParts.widthInput.disabled = !hasRef || !canvasAvailable || busy;
         sidebarParts.showArea.checked = state.showArea === true;
@@ -330,7 +359,10 @@
         const add = buildElement('button', 'secondary', '이미지 추가');
         add.type = 'button';
         add.addEventListener('click', openFilePicker);
-        imageActions.append(add);
+        const oppositeLoad = buildElement('button', 'secondary', '반대면에서 가져오기');
+        oppositeLoad.type = 'button';
+        oppositeLoad.addEventListener('click', openOppositePicker);
+        imageActions.append(add, oppositeLoad);
 
         const widthRow = buildElement('label', 'canvas-inpaint-reference-control');
         widthRow.appendChild(buildElement('span', '', '참고 폭'));
@@ -376,7 +408,8 @@
         body.append(name, status, imageActions, widthRow, showAreaLabel, info, projectActions, clear, fileInput);
         disclosure.append(summary, body);
         host.appendChild(disclosure);
-        sidebarParts = {title, name, status, add, widthInput, showArea, info, projectSave, projectLoad, clear};
+        sidebarParts = {title, name, status, add, oppositeLoad, widthInput, showArea, info,
+            projectSave, projectLoad, clear};
         syncControls();
     }
 
@@ -587,6 +620,144 @@
         }
     }
 
+    function openOppositePicker() {
+        const link = projectLink();
+        const picker = root.CanvasOppositeReference;
+        if (pendingOperation || !hasCanvas() || !validOppositeLink(link)
+            || typeof picker?.open !== 'function') return;
+        try {
+            picker.open({onChoose: chosen => { void importOppositeReference(link, chosen); }});
+        } catch (error) {
+            setStatus('반대면 참고 이미지를 가져오지 못했습니다. ' + error.message, true);
+        }
+    }
+
+    function oppositeChoiceIsValid(link, chosen) {
+        return validOppositeLink(link) && chosen && typeof chosen === 'object'
+            && chosen.projectId === link.projectId && chosen.visible === true
+            && ['candidate', 'canvas'].includes(chosen.kind)
+            && /^[a-f0-9]{32}$/.test(chosen.id);
+    }
+
+    function findOppositeRecord(project, link, chosen) {
+        const side = oppositeSide(link);
+        if (!project || project.id !== link.projectId || !side) return null;
+        const collection = chosen.kind === 'candidate' ? project.candidates : project.canvases;
+        const items = collection?.[side];
+        if (!Array.isArray(items)) return null;
+        return items.find(item => item && item.id === chosen.id
+            && (!item.side || item.side === side)) || null;
+    }
+
+    function validCandidateSource(source) {
+        return typeof source === 'string' && source.trim() === source
+            && source.startsWith('/') && !source.startsWith('//')
+            && !source.includes('\\') && !source.includes('\u0000');
+    }
+
+    function oppositeTitle(value, side) {
+        return typeof value === 'string' && value.trim() && value.length <= 500
+            ? value : (side === 'front' ? '앞면 그림' : '뒷면 그림');
+    }
+
+    function imageFileExtension(type) {
+        return ({'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'})[type] || '';
+    }
+
+    async function importOppositeReference(link, chosen) {
+        if (pendingOperation || !hasCanvas() || !oppositeChoiceIsValid(link, chosen)
+            || projectKey(link) !== projectKey(projectLink())) return;
+        const operation = startOperation('opposite-load', true);
+        if (!operation) return;
+        try {
+            const side = oppositeSide(link);
+            const result = await fetchJson('/api/daki/projects/' + encodeURIComponent(link.projectId), {
+                signal: operation.controller.signal
+            });
+            if (!operationIsCurrent(operation)) return;
+            if (!result.project || result.project.id !== link.projectId) {
+                throw new Error('프로젝트 정보를 확인할 수 없습니다.');
+            }
+            const record = findOppositeRecord(result.project, link, chosen);
+            if (!record) throw new Error('선택한 반대면 그림을 프로젝트에서 찾을 수 없습니다.');
+
+            let source;
+            let title;
+            if (chosen.kind === 'candidate') {
+                if (record.missing || !validCandidateSource(record.src)) {
+                    throw new Error('선택한 후보 그림 파일을 찾을 수 없습니다.');
+                }
+                source = record.src;
+                title = oppositeTitle(record.name, side);
+            } else {
+                const canvasResult = await fetchJson('/api/daki/projects/'
+                    + encodeURIComponent(link.projectId) + '/canvases/' + encodeURIComponent(chosen.id), {
+                    signal: operation.controller.signal
+                });
+                if (!operationIsCurrent(operation)) return;
+                const canvas = canvasResult.canvas;
+                if (canvasResult.project?.id !== link.projectId || !canvas || canvas.id !== chosen.id
+                    || canvas.side !== side || !canvas.state) {
+                    throw new Error('선택한 반대면 캔버스를 불러오지 못했습니다.');
+                }
+                if (typeof root.renderMergedCanvasToDataUrl !== 'function') {
+                    throw new Error('캔버스 미리보기 기능을 사용할 수 없습니다.');
+                }
+                source = await root.renderMergedCanvasToDataUrl({state: canvas.state, maxDimension: 1600});
+                if (!operationIsCurrent(operation)) return;
+                if (typeof source !== 'string' || !source.startsWith('data:image/')) {
+                    throw new Error('캔버스 미리보기를 만들지 못했습니다.');
+                }
+                title = oppositeTitle(canvas.name, side);
+            }
+
+            const sourceResponse = await root.fetch(source, {signal: operation.controller.signal});
+            if (!operationIsCurrent(operation)) return;
+            if (!sourceResponse.ok) throw new Error('선택한 반대면 그림 파일을 불러오지 못했습니다.');
+            const blob = await sourceResponse.blob();
+            if (!operationIsCurrent(operation)) return;
+            const extension = imageFileExtension(String(blob?.type || '').toLowerCase());
+            if (!blob || !extension) throw new Error('선택한 그림의 형식을 확인할 수 없습니다.');
+
+            const form = new root.FormData();
+            form.append('file', blob, 'opposite-reference.' + extension);
+            if (typeof hooks.sessionId === 'string' && hooks.sessionId) {
+                form.append('sessionId', hooks.sessionId);
+            }
+            const uploadResponse = await root.fetch('/api/canvas/upload_image', {
+                method: 'POST', body: form, signal: operation.controller.signal
+            });
+            if (!operationIsCurrent(operation)) return;
+            let payload;
+            try {
+                payload = await uploadResponse.json();
+            } catch (_) {
+                payload = null;
+            }
+            if (!operationIsCurrent(operation)) return;
+            parseResponse(uploadResponse, payload);
+            let descriptor = uploadedDescriptor(payload, {name: title});
+            descriptor.name = title;
+            descriptor = normalizeReference(descriptor);
+            if (!descriptor) throw new Error('가져온 이미지 이름 또는 경로를 확인할 수 없습니다.');
+            await loadImage(descriptor.src);
+            if (!operationIsCurrent(operation)) return;
+            state.reference = descriptor;
+            state.include = true;
+            state.showArea = true;
+            currentStatus = '반대면 참고 이미지를 가져왔습니다.';
+            currentStatusIsError = false;
+            persistAndRender();
+        } catch (error) {
+            if (operationIsCurrent(operation)) {
+                setStatus('반대면 참고 이미지를 가져오지 못했습니다. ' + error.message, true);
+            }
+        } finally {
+            finishOperation(operation);
+            syncControls();
+        }
+    }
+
     function mountActions(container) {
         if (!container || !doc) return null;
         if (actionMounts.has(container)) {
@@ -649,6 +820,7 @@
         };
         lastContextKey = null;
         lastProjectKey = null;
+        lastProjectIdKey = null;
         render();
     }
 

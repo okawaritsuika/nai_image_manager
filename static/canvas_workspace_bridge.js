@@ -366,7 +366,7 @@
         try {
             const overlay = root.document?.querySelector?.('.canvas-retouch-surface-overlay canvas');
             if (overlay && Number(overlay.width) > 0 && Number(overlay.height) > 0) {
-                const scale = Math.min(1, 1024 / Math.max(overlay.width, overlay.height));
+                const scale = Math.min(1, 1600 / Math.max(overlay.width, overlay.height));
                 const preview = root.document.createElement('canvas');
                 preview.width = Math.max(1, Math.round(overlay.width * scale));
                 preview.height = Math.max(1, Math.round(overlay.height * scale));
@@ -384,7 +384,7 @@
                 throw new Error('캔버스 미리보기 기능을 사용할 수 없습니다.');
             }
             const stateSnapshot = root.buildCanvasStateSnapshot({preserveMasks: true});
-            const dataUrl = await root.renderMergedCanvasToDataUrl({state: stateSnapshot, maxDimension: 1024});
+            const dataUrl = await root.renderMergedCanvasToDataUrl({state: stateSnapshot, maxDimension: 1600});
             if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
                 throw new Error('캔버스 미리보기를 만들지 못했습니다.');
             }

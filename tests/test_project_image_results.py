@@ -146,6 +146,7 @@ class ProjectImageResultStorageTests(unittest.TestCase):
         project = self.store.get_project(self.project['id'])
         self.assertEqual(len(project['candidates']['front']), 2)
         self.assertEqual(project['candidates']['back'], [])
+        self.assertEqual(project['candidates']['front'][-1]['name'], 'source_업스케일_64x96.png')
         full_path, _ = resolve_daki_image_reference(
             result['result_path'], None, project_exports_root=self.export_root,
         )
@@ -156,6 +157,46 @@ class ProjectImageResultStorageTests(unittest.TestCase):
         saved_sidecar = json.loads(Path(full_path).with_suffix('.json').read_text(encoding='utf-8'))
         self.assertEqual(saved_sidecar['upscale']['engine'], 'lanczos')
         self.assertEqual(saved_sidecar['upscale']['source_path'], 'source.png')
+
+    def test_project_upscale_name_uses_candidate_name_and_utf16_limit(self):
+        named_source = self.gallery / 'named source.png'
+        Image.new('RGB', (32, 48), (20, 40, 60)).save(named_source)
+        original = named_source.read_bytes()
+        source_name = ('한😀' * 35) + '<bad> .PNG'
+        project = self.store.add_candidate(
+            self.project['id'], named_source.name, 'front', name=source_name,
+        )
+        candidate = project['candidates']['front'][-1]
+
+        def engine_with_actual_size(**kwargs):
+            Image.new('RGB', (81, 105), (70, 80, 90)).save(kwargs['target_path'])
+            return {'engine': 'lanczos'}
+
+        with mock.patch('naim.images.project_results.upscale_logic.run_upscale',
+                        side_effect=engine_with_actual_size):
+            result = process_project_upscale_job(
+                {
+                    'source_path': candidate['path'],
+                    'projectContext': self.context(candidate),
+                    'target_width': 64,
+                    'target_height': 96,
+                    'engine': 'lanczos',
+                },
+                lambda *_args: None,
+                store=self.store,
+                export_root=self.export_root,
+                prompt_info_loader=self.load_source_prompt,
+                created_at=lambda: 'synthetic-time',
+            )
+
+        saved_candidate = self.store.get_project(self.project['id'])['candidates']['front'][-1]
+        name = saved_candidate['name']
+        self.assertTrue(name.endswith('_업스케일_81x105.png'), name)
+        self.assertLessEqual(len(name.encode('utf-16-le')) // 2, 120)
+        self.assertFalse(any(char in name for char in '<>:"/\\|?*'))
+        self.assertFalse(any(ord(char) < 32 for char in name))
+        self.assertEqual(named_source.read_bytes(), original)
+        self.assertEqual(saved_candidate['path'], result['result_path'])
 
     def test_cancel_before_persistence_leaves_no_candidate_or_export(self):
         cancel = threading.Event()

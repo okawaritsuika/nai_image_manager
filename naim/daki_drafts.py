@@ -97,6 +97,15 @@ def normalize_draft_settings(data):
                              'name': _text(source.get('name', ''), '그림체 이름', 120),
                              'positive': _text(source.get('positive', ''), '그림체 Base 프롬프트'),
                              'negative': _text(source.get('negative', ''), '그림체 Nega 프롬프트')}
+    reference = data.get('dictionary_reference')
+    if reference is not None:
+        if (not isinstance(reference, dict) or type(reference.get('image_id')) is not int
+                or reference['image_id'] <= 0):
+            raise ValueError('태그사전 참고 그림 정보를 확인해 주세요.')
+        settings['dictionary_reference'] = {
+            'image_id': reference['image_id'],
+            'tag': _text(reference.get('tag', ''), '참고 자세 태그'),
+        }
     build_draft_payload(settings)
     return settings
 

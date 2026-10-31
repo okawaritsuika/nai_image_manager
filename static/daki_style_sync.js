@@ -224,7 +224,7 @@
             node('p', 'daki-test-note', 'V5 Full · V5 Full Medium의 새 그림체를 추가합니다. 로그인 없이 사용하며 기존 그림과 테스트는 유지합니다.'));
         function tagField(labelText, name, placeholder) {
             const label = node('label', 'daki-style-sync-field');
-            const input = node('textarea'); input.name = name; input.rows = 2; input.placeholder = placeholder;
+            const input = node('textarea'); input.setAttribute('data-prompt-autocomplete', ''); input.name = name; input.rows = 2; input.placeholder = placeholder;
             input.setAttribute('aria-label', labelText); label.appendChild(input);
             return {label, input};
         }

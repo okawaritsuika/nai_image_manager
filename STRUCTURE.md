@@ -61,7 +61,7 @@
 | 캔버스 저장본 UI | `static/canvas_setups.js`, `static/canvas_saved_gallery.css` | 저장본 갤러리·검색·확대·불러오기·이름 변경·삭제 및 브라우저 저장 호환 |
 | 기존 프로그램 자료 가져오기 | `naim/storage/legacy_import.py`, `naim/legacy_import_ui.py` | 원본 보존, 현재 자료 백업, 실패 복구, 설정/DB 호환 |
 | 캐릭터·copyright 관계 사전과 브랜드 동기화 | `naim/storage/character_copyrights.py`, `danbooru_sync.py` | 기존 브랜드·한글명 보존, 로컬 관계 우선 조회, 누락 시 기존 온라인 조회 |
-| 갤러리 화면 선택 | `static/gallery_layout.js`, `static/gallery_modern.css` | 기존 화면 기본값, 동일 DOM·검색·선택 상태; 별도 `naia_gallery_layout_v1` 키 |
+| 갤러리 화면 배치 | `static/gallery_layout.js`, `static/gallery_modern.css` | modern 단일 화면, 동일 DOM·검색·선택 상태 유지; 이전 화면 선택 키는 사용하지 않음 |
 | 이미지 표시용 프리뷰 | `naim/images/previews.py`, `app.py` | 원본 URL·픽셀 보존, OS 임시 디렉터리의 폐기 가능한 512MiB 캐시 |
 | 종료한 제작소의 보존 자료 | `naim/storage/legacy_archive.py`, `legacy_generation.html`, `static/legacy_generation.js` | `output`·`daki_generated_temp` 읽기 전용; 기존 두 화면 URL도 자료 화면으로 연결 |
 
@@ -79,7 +79,7 @@
 ## 갤러리 최적화와 제작소 종료 (2026-09-05)
 
 - 다키 제작소·그림체 연구소 전용 HTML/JS를 제거했다. `/api/generate`는 외부 통신 없이 HTTP 410과 보존 자료 주소를 반환한다. 캔버스·갤러리 인페인트와 공유 CSS·설정·태그 사전·Anlas·저장·업스케일은 유지한다. 사용자 이미지·설정·DB 변환은 없다.
-- 기존 화면/새 화면 선택은 갤러리 상단에서 즉시 변경한다. 같은 노드를 이동하므로 리스너·선택·필터·이미지 로딩을 다시 만들지 않으며, 선택한 디자인만 새 브라우저 설정 키에 저장한다.
+- 갤러리는 modern 화면만 제공한다. `gallery_layout.js`는 초기화 때 기존 컨트롤·갤러리·Daki 노드를 한 번 이동하며 리스너·선택·필터·이미지 로딩을 보존한다. 이전 `naia_gallery_layout_v1` 값은 읽거나 쓰지 않고 그대로 둔다. 상단 이름·화면 선택 줄은 제거하고 잔액은 이동 버튼과 같은 줄 오른쪽에 둔다. 갤러리·캔버스의 이동 버튼과 캔버스 작업 버튼 모양은 `static/workspace_header.css`가 담당한다.
 - 이미지 카드는 긴 변 768px 프리뷰를 쓴다. 확대·저장·캔버스 전달은 원본 URL을 유지한다. 캔버스 전달 시 크기 0은 기존 규칙에 따라 원본에서 EXIF 회전을 반영한 표시 크기를 읽게 한다.
 - `static/index.js`의 이미지 렌더는 사용자 배치 크기를 유지하되 한 프레임에 최대 32장씩 추가한다. 화면 변경 때 남은 프레임을 취소하고, 가상 폴더 비동기 준비와 첫 배치가 끝난 뒤 스크롤을 복원한다.
 - `HistoryDB.refresh_gallery_folder_summaries()`는 저장 전·후 폴더와 조상만 갱신한다. 전체 인덱스가 준비된 경우에만 사용하며 기존 전체 재계산은 복구·재색인용으로 유지한다.
@@ -101,7 +101,7 @@
 - `static/canvas_setups.js`: 각 저장 요청 스냅샷과 최신 응답만 반영하여 대기 중 저장의 손실을 막는다. `tests/test_canvas_setups.js`가 연속·실패 응답을 검증한다.
 - `static/canvas.js`: 저장 레이어 전체 1회 복제, 마스크 패널 리스너 정리와 프레임 단위 미리보기 병합. `tests/test_canvas_state.js`, `tests/test_canvas_mask_lifecycle.js`에서 저장 형식·추가 필드·입력 좌표·마지막 갱신을 보존한다.
 - `static/canvas_dialogs.js`: `canvas.html`의 명시된 주요 모달 5개에만 포커스·Tab·Escape·배경 조작 차단을 추가한다. 실제 표시·저장은 기존 콜백이 소유한다. 번역·그룹 팝업의 전역 단축키 간섭은 `tests/test_canvas_dialogs.js`로 검증한다.
-- 갤러리 이전 생성 자료 링크는 디자인 설정의 접힌 항목으로 옮겼다. 새 갤러리 색상만 중립색 중심으로 조정하고 기존 화면 선택을 유지한다. 렌더링은 최대 32개 제한에 약 8ms 경과 기준을 추가했다.
+- 갤러리 이전 생성 자료 링크는 디자인 설정의 접힌 항목으로 옮겼다. 갤러리 색상은 중립색 중심으로 사용한다. 렌더링은 최대 32개 제한에 약 8ms 경과 기준을 추가했다.
 
 ### 기존 개선 기록
 
@@ -186,7 +186,7 @@ PyInstaller spec의 `static` 전체 포함 및 정적 Python import로 신규 �
 
 ## daki 프로젝트 (2026-10-12)
 
-- 화면은 `index.html`의 `#dakiLibrary`, `static/daki.js`, `static/daki.css`. 갤러리 헤더·라이브러리·카드 스타일을 공유하며 `static/gallery_layout.js`가 기존/새 화면에 함께 배치한다. `#daki`·`#project=...`에서 후보를 표시하고 `#gallery`로 기존 갤러리 DOM·선택 상태에 복귀한다. `/daki`도 공통 HTML을 제공한다. 우클릭·설정 연결은 `static/index.js`, 확대 보기 삭제 연결은 `static/gallery_zoom.js`에 있다.
+- 화면은 `index.html`의 `#dakiLibrary`, `static/daki.js`, `static/daki.css`. 갤러리 헤더·라이브러리·카드 스타일을 공유하며 `static/gallery_layout.js`가 modern 화면에 한 번 배치한다. `#daki`·`#project=...`에서 후보를 표시하고 `#gallery`로 기존 갤러리 DOM·선택 상태에 복귀한다. `/daki`도 공통 HTML을 제공한다. 우클릭·설정 연결은 `static/index.js`, 확대 보기 삭제 연결은 `static/gallery_zoom.js`에 있다.
 - API는 `naim/web/daki.py`, 프로젝트·앞뒤 후보·사용 설정 저장은 `naim/storage/daki_projects.py`가 소유한다. `app.py`는 `/daki` 페이지, 원본의 정확한 갤러리 경로 해석, 기존 세 삭제 API의 확인 경고를 연결한다. 기존 등급 폴더의 동명 이미지로 대체하지 않으며 PNG→WebP 별칭만 유지한다.
 - `daki_projects.json`은 원본 상대경로만 기록한다. 같은 면의 동일 원본은 중복 추가하지 않으며, 후보에서 제외해도 원본은 보존한다. 비활성화는 메뉴를 숨기고 데이터와 삭제 경고를 보존한다. 원본의 일반 이동·재분류·외부 삭제를 추적하지 않으므로 다음 조회에서 누락을 표시한다.
 - `.gitignore`, `naim_updater.py`, `tools/build_exe_release.ps1`은 프로젝트 JSON을 사용자 자료로 보호한다. 기존 자료 가져오기는 updater 보호 파일 목록을 재사용한다.
@@ -239,6 +239,7 @@ PyInstaller spec의 `static` 전체 포함 및 정적 Python import로 신규 �
 - `static/daki_test_targets.js/.css`는 새 테스트의 전체·태그·월드컵 순위·갤러리 대상 선택을 소유한다. 공유 폴더의 새 테스트는 `category=v5`인 공유 그림체 일람만 전달하며 상반신과 카테고리가 없는 기존 상반신은 제외한다. 전체 선택도 화면의 `style_ids`를 명시하여 서버의 통합 카탈로그로 범위가 넓어지지 않게 한다. `static/daki_test_target_gallery.js/.css`는 현재 대상 조건에 맞는 그림체의 포함·제외 태그 및 최소 추천수 필터, 기본·추천수·날짜·이름 정렬, 사각형 영역 추가 선택, 일괄 선택과 개별 해제, 선택 적용을 담당한다. 기존 테스트 태그를 기준으로 열면 해당 완료 결과 그림을 표시하며, 적용 후 다시 열어도 원래 대상 범위에서 재선택할 수 있다. 추천수·날짜 미상은 정렬에서 뒤로 보내고, 최소 추천수가 있으면 추천수 미상은 제외한다. 비저장 POST `/api/daki/style-tests/targets/filter`는 `naim/web/daki_styles.py`에서 기존 `normalize_style_filters`·`matches_style_filters`를 재사용하며 가져오기의 실사 제외·게시물당 추천수 제한은 적용하지 않는다. 최소 추천수 필터와 정렬은 전달받은 대상 메타데이터에 화면 안에서 적용한다. 태그 기준은 대표 그림 또는 선택한 기존 테스트의 완료 결과이며, 월드컵 기준은 사용자가 고른 기록의 N위 이하(공동 순위 포함)다. 현재 라이브러리의 활성 그림체 ID로 한정하고 중복은 제거한다. `static/daki_styles.js`는 대상 수를 표시하고 미선택·조회 실패·0개일 때 준비를 막으며, 선택된 `style_ids`만 생성 API에 보낸다. `naim/daki_style_tests.py`의 create는 ID 생략 시 기존 전체 동작을 유지하고, 명시한 목록은 입력 순서대로 검증해 선택 항목만 준비한다. 기존 테스트의 설정 수정에는 적용하지 않는다. 검증: `test_daki_test_targets.js`, `test_daki_test_target_gallery.js`, `test_daki_styles.js`, 격리 `test_daki_style_tests.py`, `test_daki_styles_api.py`.
 - `naim/storage/daki_personal_styles.py`와 `naim/web/daki_personal_styles.py`는 `daki_personal_styles/catalog.json`의 개인 그림체 등록·조회·수정과 이미지에서 초안 가져오기를 담당한다. `static/daki_personal_styles.js/.css`는 직접 입력·Base/Nega 편집·우클릭 가져오기와 개인 갤러리를 담당한다. 대표 이미지는 선택한 원본의 상대 참조이며 복사하지 않는다. 원본이 없어져도 레시피는 유지된다. `__daki_personal__/personal_<id>.png`는 기존 읽기 전용 가상 참조 경계로 처리한다.
 - 개인 그림체 저장 폴더는 Git 제외·업데이트 보호·기존 설치 가져오기 대상이다. 원본 삭제 시 개인 대표 그림 연결도 기존 daki 경고에 포함한다. 그림체에는 시드를 고정하지 않으며 가져온 PNG의 생성 옵션은 메타데이터 어댑터를 통해 보존한다.
+- 개인 그림체 편집의 `시안 생성`은 `/api/daki/personal-styles/generate`에서 기존 생성 설정과 그림체 뒤에 붙인 일회용 Base·Nega로 생성한다. 시안 프롬프트·크기는 저장하지 않고 기존 `preview`는 읽기 호환을 위해 유지한다. 결과는 확인 후 `대표 그림으로 사용`을 선택하고 그림체를 저장할 때만 `representative_image`로 전달되어 기존 카탈로그 잠금 안에서 대표 PNG와 함께 저장된다. 검증: `tests/test_daki_personal_styles.py`, `tests/test_daki_personal_styles.js`.
 - `Daki.createImageTools()`는 기존 갤러리 태그 상태·저장을 재사용한다. 확대 화면에서 태그 선택·적용 후 다음 이미지 이동이 가능하며 `getGalleryTagState()`와 `gallery-tags-updated`가 상태 경계다. `static/daki_gallery_filters.js/.css`가 태그 있는 그림·특정 태그 필터와 저장된 월드컵을 선택하는 순위 정렬을 소유한다. 태그 필터는 기존 갤러리의 아이콘 렌더러·`gallery-tag-filter-chip`을 재사용하고 정렬은 작은 `SORT` 도구줄로 표시한다. 공유·개인 그림체와 테스트 갤러리가 이를 연결하며, 화면 목록과 월드컵 참가 후보에는 같은 필터 결과를 적용한다. 이 화면들은 `shareTagAssignment:true`와 `createImageTools({tagChoices:false})`로 하나의 태그 행을 공유한다. 태그 모드에서는 적용할 태그 선택으로 전환하고 태그 필터만 잠시 해제하며, 모드를 끄면 이전 필터를 복원한다. 추천수·정렬은 유지하고 `tagOnly` 선택 화면은 기존 필터 동작을 유지한다. 기본 순서를 유지하다가 사용자가 기록을 선택하면 낮은 순위 숫자부터 정렬하고 동순위는 입력 순서, 미참가는 맨 뒤로 둔다. 기록 조회 실패·삭제 시 기본 순서로 복귀하며 태그 필터는 계속 사용할 수 있다.
 - `static/daki_worldcup.js/.css`는 현재 갤러리에 보이는 이미지 중 사용자가 선택한 태그만 참가시킨다. 미완료 결과와 대표 그림 없는 개인 레시피는 제외하고, 홀수 참가자는 다음 라운드로 통과한다. 진행 중 선택 되돌리기와 확대 보기를 제공하고, 대회 완료 시 참가자·선택·태그·갤러리 정보를 자동 저장한다. 기록 화면은 전체 참가자의 공동 순위와 승수를 표시하며 같은 단계의 탈락자는 동순위다. 저장된 참가 그림으로 다시 진행하면 `replay_of`를 가진 새 기록을 만들고 이전 결과는 보존한다. 미완료 대회의 진행 상태는 창을 닫으면 종료한다.
 - `naim/storage/daki_worldcups.py`가 `daki_worldcups/<id>.json`의 원자 저장과 선택 기록 재검증·순위 계산을, `naim/web/daki_worldcups.py`가 `GET/POST /api/daki/worldcups`와 `GET /api/daki/worldcups/<id>`를 소유한다. 같은 ID·같은 내용의 재저장은 기존 결과를 반환하며 다른 내용은 충돌로 거부한다. 목록은 안정된 `gallery_key`로 필터링하고 UI는 `daki-worldcups-updated`로 기록 선택지를 갱신한다. 저장 폴더는 Git 제외·업데이트 보호·기존 설치 가져오기 대상이며 원본 이미지가 없어도 기록과 순위는 유지된다.
@@ -315,7 +316,8 @@ EXE 검사는 두 실제 spec을 합성 사전 데이터로 빌드하여 서버 
 - 프로젝트 내부는 앞면·뒷면마다 캔버스와 그림 후보를 하나의 공통 갤러리 격자에 표시하고, 카드의 `캔버스`·`그림` 배지로 종류를 구분한다. 면별 개수는 두 종류를 합산하며 그림 필터·정렬·월드컵은 후보에만 적용한다. 캔버스 카드는 통합 그림을 표시하며, 프로젝트 목록은 면별 첫 캔버스를 대표로 사용하고 캔버스가 없으면 기존 첫 후보를 표시한다. `static/daki_canvas_previews.js`가 기존 캔버스 GET과 `static/canvas_composite.js`의 공통 합성 함수를 사용해 긴 변 최대 768px의 표시 전용 이미지를 만든다. 화면 근처부터 최대 2개를 동시에 처리하고 같은 페이지의 동일 프로젝트·캔버스·revision은 재사용하며, 이동 시 요청과 이미지 로드를 취소한다. 원본·저장 상태·기존 내보내기 해상도는 바꾸지 않는다.
 - `app.py`의 `project_canvas_import_refs()`가 프로젝트에서 사용하는 원본·마스크를 세 캔버스 정리 경로에서 보호한다. 갤러리 원본 삭제 경고도 프로젝트 캔버스의 `/image/` 참조를 포함한다.
 - 반대쪽 참고 그림은 `static/canvas_opposite_reference.js/.css`가 소유한다. 연결된 프로젝트의 반대면 후보 또는 저장된 캔버스를 선택하며, 선택하지 않았거나 원본이 없으면 그림을 표시하지 않는다. 선택한 프로젝트/항목 ID·종류·표시 여부와 선택적 `view: {x,y,width,height}`를 캔버스 상태의 `oppositeReference`에 저장한다. 제목 드래그로 이동하고 모서리에서 비율을 유지해 크기를 조절하며, **높이 맞춤**은 현재 캔버스의 표시 높이에 맞춘다. 기존 선택 상태를 그대로 읽고 고정 레이어와 내보내기 대상은 유지한다. 저장 캔버스의 미리보기는 `renderMergedCanvasToDataUrl({state, maxDimension:1600})`로 복사본을 합성하고 편집 상태를 바꾸지 않는다. 선택·면·프로젝트 변경 시 이전 비동기 결과는 버리며, 원본 누락·읽기 실패 시 재시도를 제공한다.
-- 프로젝트 연결 모달은 프로젝트·면별 `프로젝트명_앞면_캔버스N`을 제안하고 직접 입력한 이름을 유지한다. `static/canvas_project.js`가 제안과 PNG 다운로드 이름을, `naim/storage/daki_projects.py`의 `project_canvas_result_name`/`add_candidate`가 서버 결과 이름과 순번을 소유한다. 캔버스의 선택적 `exportCount`와 후보의 `name/sourceCanvasId/resultIndex`는 기존 JSON 잠금 안에서 함께 기록하며, 후보를 제외해도 번호를 되돌리지 않는다. 실제 UUID 이미지 경로와 기존 후보 형식은 유지한다. `app.py`는 PNG 응답의 다운로드 이름에 후보 이름을 사용하고 `static/daki.js`는 이를 카드에 표시한다. 회귀: `test_canvas_project.js`, `test_canvas_project_export.py`.
+- 프로젝트 연결 모달은 `프로젝트명_앞면_YYYY-MM-DD_HHmmss` 형식의 현지 시각 이름을 제안하고 직접 입력한 이름을 유지한다. `static/canvas_project.js`가 제안과 PNG 다운로드 이름을, `naim/storage/daki_projects.py`의 `project_canvas_result_name`/`add_candidate`가 서버 결과 이름과 순번을 소유한다. 새 결과 이름에는 캔버스명과 순번 대신 프로젝트·면·내보내기 시각을 사용한다. 캔버스의 선택적 `exportCount`와 후보의 `name/sourceCanvasId/resultIndex`는 기존 JSON 잠금 안에서 함께 기록하며, 후보를 제외해도 번호를 되돌리지 않는다. 실제 UUID 이미지 경로와 기존 후보 형식은 유지한다. `app.py`는 PNG 응답의 다운로드 이름에 후보 이름을 사용하고 `static/daki.js`는 이를 카드에 표시한다. `static/canvas_workspace.js`의 캔버스 추가 목록은 프로젝트 캔버스와 저장본에 픽셀 크기를 표시한다. 회귀: `test_canvas_project.js`, `test_canvas_project_export.py`, `test_canvas_workspace.js`.
+- 통합 내보내기의 선택적 정리·저장 확인과 처리 단계·경과 시간·단계 완료율은 `static/canvas_export_feedback.js/.css`가 담당한다. `static/canvas.js`는 성공한 내보내기와 동일한 이미지·프롬프트를 `buildMergedOnlyCanvasStateSnapshot`에 재사용하고 해당 캔버스만 기존 프로젝트 자동 저장 또는 캔버스 저장 API로 보관한다. 대기 중 연결·작업 공간·레이어 변경이 있으면 정리를 중단하며, 내보내기 이후 저장 실패는 부분 성공으로 알린다. 회귀: `test_canvas_export.js`, `test_canvas_export_feedback.js`, `test_canvas_inpaint_settings.js`.
 - 검증: `tests/test_daki_project_canvases.py`, `tests/test_canvas_project_assets.py`, `tests/test_canvas_project_autosave.js`, `tests/test_canvas_project.js`, `tests/test_canvas_state.js`, `tests/test_canvas_opposite_reference.js`, `tests/test_canvas_reference_render.js`, `tests/test_daki.js`, `tests/test_daki_canvas_previews.js`. 실제 화면은 합성 자료로 1280×900과 800×800에서 확인한다.
 
 ## 프로젝트 그림체·면별 프롬프트·공통 인페인트 연동
@@ -331,6 +333,8 @@ EXE 검사는 두 실제 spec을 합성 사전 데이터로 빌드하여 서버 
 검증: `test_project_canvas_settings.py`, `test_canvas_project_settings.js`, `test_daki_project_settings.js`, `test_daki_project_style_picker.js`, `test_project_character_bridge.js`와 기존 프로젝트·캔버스 저장·그림체·인페인트 테스트. `.qa/project_prompt_text_check.cjs`는 텍스트 편집과 저장을, `.qa/project_character_import_check.cjs`는 합성 메타데이터의 캐릭터 22개 중 선택·편집·면별 추가와 생성 설정 병합·저장을 실제 브라우저에서 확인한다. 기존 `.qa/verify_project_image_settings.cjs`의 태그 선택 시나리오는 텍스트 편집 이전 흐름이다. 충돌·명시적 다시 불러오기 회귀는 설정 단위 테스트와 `.qa/verify_project_canvas_settings.cjs`에서 다룬다. 실제 화면 조건은 1280×900·800×800, 브라우저 배율 100%, deviceScaleFactor 1이다.
 
 ## 다키 캔버스의 부위 지도와 선택 영역
+
+- 새 선택 영역은 `static/canvas.js`의 `getSelectionAreaCreationCenter`가 캔버스 표면·작업 영역의 스크롤 가능한 내부·브라우저 화면이 겹치는 부분의 중앙을 구해 배치한다. `getCanvasPointerPosition`으로 확대 배율을 반영하며 기본 크기·요청 크기 제한·저장은 기존 `addSelectionArea` 동작을 유지한다. 회귀: `tests/test_canvas_selection_position.js`.
 
 - `static/canvas_daki_regions.js`는 기존 다키메이커의 기본 위치를 사용하는 앞면·뒷면 부위 지도, 겹침 판정과 부위 폴더 재사용을 담당한다. 이미지 AI 분석 없이 좌표로 판정하며 수동 선택을 우선한다. 지도 v1에 선택적 `customRegions` 정의(이름·기준 부위·포커스 문구·색)를 추가하며, 사용자 부위가 없으면 기존 저장 형태를 그대로 유지한다.
 - `static/canvas_daki_map_editor.js/.css`는 기존 캔버스 위에서 선택한 부위의 사각형만 이동·크기 조절·추가·삭제하게 한다. 편집 중 오른쪽 레이어 패널을 지도 설정으로 교체하고 기존 캔버스의 확대·이동을 재사용한다. 직접 부위를 추가할 수 있으며, 취소하면 원본을 유지하고 적용할 때만 저장한다. 종료하면 레이어 패널을 복원한다. 인라인 오버레이는 캔버스 표면의 형제이며 재렌더·크기 변경에 맞춰 동기화한다.
@@ -400,6 +404,8 @@ EXE 검사는 두 실제 spec을 합성 사전 데이터로 빌드하여 서버 
 
 ## 인페인팅 참고 이미지
 
+- 캔버스 레이어 삭제 확인은 `static/canvas_layer_delete.js/.css`가 소유한다. 원본 클립(`type: clip`, `renderOnCanvas`가 꺼짐)이 포함된 레이어·선택 영역·폴더만 확인하며, 취소를 기본 포커스로 둔다. `static/canvas.js`는 확인한 객체와 하위 ID 집합을 다시 확인한 뒤 삭제하며, 목록 갱신으로 마우스 아래 버튼이 바뀌면 재지정 전 클릭을 차단한다. 삭제 후 기존 저장·실행 취소·자산 정리 경계를 재사용한다. `canvas_history.js`는 기록마다 자산 참조를 보관하고 `canvas_history_bridge.js`가 이를 조회해 삭제 때 모든 이력을 재파싱하지 않는다. 인페인팅 진행 표시는 기존 편집기를 유지하고 상태만 갱신하며, 완료 이미지에는 짧은 페이드와 동작 줄이기 설정을 적용한다. 회귀: `test_canvas_layer_delete.js`, `test_canvas_layer_actions.js`, `test_canvas_history.js`, `test_canvas_history_bridge.js`, 기존 mask lifecycle/inpaint reference bridge 테스트. 합성 UI 검증: `.qa/inpaint-layer-ui.cjs`; 삭제 성능 비교: `.qa/inpaint-layer-performance.cjs`. 저장 형식과 생성 API는 유지한다.
+
 - `static/canvas_inpaint_reference.js/.css`가 참고 이미지 업로드·설정 영역의 폭 편집·전송 체크·프로젝트 설정 복사를 소유한다. `참조 영역 포함 표시`와 `참고 이미지 포함`은 함께 켜고 끄며 선택 영역 왼쪽에 이미지나 폭을 덧그리지 않는다. `static/canvas.js`의 `updateSelectionSizeTooltip`은 클립 생성 전 선택 영역 크기 조절 중 `request(width, height)`를 사용해 선택 크기·참고 폭·전체 요청 크기를 표시하고 전체 면적으로 Anlas 크기 범위를 판단한다. 일반 이미지 크기 안내는 기존 계산을 유지한다. 왼쪽 설정은 제목으로 접고 펼치며 페이지를 처음 열면 접힌다. 접기 상태는 참고 이미지 설정과 별개이며 저장하지 않는다. `canvas.html`은 로드와 설정 컨테이너만 제공한다. `requestClipInpainting`은 기존 작업 크기와 선택 영역을 유지하며 비용 확인에는 참조를 더한 크기를 사용한다.
 - 캔버스 상태의 선택적 `inpaintReference`는 `{reference, showArea, include}`이며 `reference`는 `null` 또는 `{src, name, width, x, y, zoom}`이다. 두 체크 값이 다른 기존 저장본은 실제 전송 여부인 `include`를 기준으로 복원하고 두 키를 계속 저장한다. 폭은 기본 320px, 64~1024px의 64px 단위다. 기존 x/y(0~1)와 zoom(1~8)은 저장 호환을 위해 검증·보존하되 전송 이미지에는 적용하지 않는다. 기존 공개 `cropBox`/`fitBox`/`reference_crop_box`는 호환용으로 유지한다. `canvas_setups.js`가 기존 상태 복원을 재사용하며, 새 캔버스는 초기화하고 실행 취소·자동 저장·저장본의 자산 참조 보호에 포함한다.
 - `naim/images/inpaint_reference.py`는 설정 검증, `reference_fit_box`의 전체 이미지 축소·흰 여백 배치, 왼쪽 이미지·검은 마스크 합성, 응답 크기 검사·참조 부분 제거와 요청용 `split screen` 추가를 담당한다. 확대 없는 최소 배율, 치수의 반올림, 중앙 위치의 내림을 사용한다. `app.py`의 `/api/canvas/inpaint`는 선택적 `reference`를 받고, 응답을 원본 크기로 자른 다음 기존 마스크 합성과 PNG 저장을 진행한다. 저장된 프롬프트에는 임시 배치 태그를 덧붙이지 않는다.
@@ -415,3 +421,67 @@ EXE 검사는 두 실제 spec을 합성 사전 데이터로 빌드하여 서버 
 - 큰 프로젝트 조회는 저장소별 최신 JSON 스냅샷 하나를 재사용하며, 경로·파일 식별자·수정 시간·크기가 바뀌면 다시 읽는다. 저장·삭제는 기존 원자 저장 경로를 유지한다. 카드 미리보기의 GET 캔버스 요청만 `?preview=1`로 표시할 레이어·좌표·이미지 주소를 받고, 편집용 기본 응답은 전체 데이터를 유지한다. `static/daki_canvas_previews.js`는 같은 페이지에서 최대 8개 이미지 로드를 공유하고 페이지 종료 시 해제한다.
 - `naim/images/dimensions.py`는 PNG/WebP 크기와 EXIF 회전을 픽셀 디코딩 없이 읽는다. 프로젝트 상세는 기존 크기 캐시를 유지하면서 이 함수를 사용한다. `test_image_dimensions.py`, `test_daki_read_cache.py`, `test_daki_preview_api.py`, `test_daki_canvas_previews.js`가 원본 보존·저장 후 갱신·기존 편집 응답·미리보기 호환성을 검증한다. 합성 대용량 측정과 화면 검증은 `.qa/measure_project_large_files.py`, `.qa/serve_project_speed.py`에서 수행한다.
 - 회귀: `test_project_removal.py`, `test_project_removal_storage.py`, `test_daki_project_removal.js`, `test_daki_read_performance.py`, `test_daki_image_refs.py`, `test_canvas_project.js`. 격리 UI 검증은 `.qa/serve_project_removal.py`에서 합성 자료와 비삭제 응답으로 수행한다.
+
+# Daki 태그사전 화면
+
+- 예시 썸네일 클릭은 큰 그림 선택만 하고 큰 그림·확대 그림 클릭도 시안 창을 열지 않는다. 미리보기 작업 줄과 확대 그림의 명시적 `시안으로 가져오기` 버튼이 `static/daki_dictionary_drafts.js/.css`의 프로젝트 선택 창을 바로 연다. 사전 항목과 태그 분류는 독립적으로 접고 펼치며, 항목을 접으면 왼쪽 탐색 공간을 확보한다. 프로젝트를 선택하면 기존 시안 폴더 생성 API로 새 폴더를 만들고 첫 캐릭터에 선택한 태그를 넣어 편집 화면으로 이동한다. 선택적 폴더 설정 `dictionary_reference: {image_id, tag}`는 `naim/daki_drafts.py`에서 검증하며 `static/daki_drafts.js/.css`가 결과 옆 참고 그림과 저장·생성 시 보존을 담당한다. 자동 생성은 하지 않는다. 참고 그림은 기존 사전 이미지 ID를 사용하므로 원본 또는 연결 폴더가 사라지면 읽기 실패 안내를 표시한다. 회귀: `test_daki_dictionary_drafts.js`, `test_daki_drafts.js/.py`, `test_daki_draft_folders.py`; 합성 자료 화면 검증: `.qa/verify_dictionary_drafts.cjs`.
+- 태그사전은 상단 버튼에서 `#daki&library=dictionary`로 이동하며 Daki 프로젝트 목록에는 별도 카드를 두지 않는다. `static/daki_dictionary.js/.css`가 `/daki/dictionary`의 작업대 요소를 기존 `dakiContent` 안에 직접 장착하고 남은 창 높이를 사용한다. 바깥 갤러리·Daki 메뉴와 기존 프롬프트 삽입 팝업 `DakiTagBrowser`는 유지한다.
+- 상단 캔버스 옆의 `openDakiDictionary` 링크도 같은 사전 경로로 이동한다. 갤러리·태그 사전·캔버스 순서의 진입 버튼은 `gallery-workspace-entry` 공통 스타일로 크기·글꼴·여백과 선 아이콘을 맞추고, 청록·금색·파랑으로 구분한다. 현재 화면은 `aria-current="page"`와 밝은 배경·하단 선으로 표시한다. 기본·선택 상태 모두 hover 색 변화를 제공한다. 사전이 열린 동안에만 모던 화면의 기존 라이브러리 사이드바를 숨겨 탐색 공간을 대체하며, 이동하면 같은 DOM을 다시 표시한다.
+- `dictionary-navigation`은 태그 찾기·그림 전환·상단 접기/펼치기를 제공하며 화면 안의 갤러리·프로젝트 복귀 링크는 생략한다. `mount(host, {onHeaderChange})`의 선택적 콜백이 부모의 작업 줄과 사전 도구 줄을 함께 접으며, 부모는 남은 창 높이를 다시 계산한다. 다른 화면으로 나가면 접힘 클래스와 현재 페이지 표시를 정리한다. 직접 연 `/daki/dictionary`에서도 접기/펼치기를 지원한다. 큰 그림은 너비 맞춤으로 크게 표시하고 세로로만 스크롤한다. `그림 크게 보기`는 원본 로딩 후 활성화되며 `pictureOverlay`를 기존 오른쪽 그림 영역의 가로 위치와 폭 그대로 유지하며 위쪽 상단 메뉴 위까지 겹쳐 띄운다. 다른 사전 패널은 계속 조작할 수 있고 전체 화면 이동은 하지 않는다. 5:16 비율을 유지하고 닫기·Esc·그림 바깥 클릭으로 원래 선택·스크롤·초점으로 돌아간다. 이전 맞춤 전환의 `dictionary-picture-expanded`와 `dictionary-large-preview-v1` 값은 건드리지 않으며 새 표시 방식에서는 사용하지 않는다.
+- `static/daki_dictionary/index.html`, `app.js`, `styles.css`는 왼쪽 사전 탐색·선택 항목 설명, 중앙 그림 목록, 오른쪽 큰 그림·사용 태그를 소유한다. 큰 그림의 열 폭은 `clamp(240px, 28vw, 420px)`로 확보하고 가운데 목록은 남은 폭을 사용한다. 사용 태그는 그림 바로 옆에 배치하며 연결 설정은 접어 둔다. 목록 미리보기는 5:16 전체를 최대 360px 높이로 보여 준다. 사용 태그를 누르면 해당 항목을 가리던 검색·분류 조건을 해제하고 왼쪽 이름·뜻·선택 행을 표시한다. 현재 그림에 그 태그가 있으면 그림을 유지한다. 호스트 너비 1100px부터 3열, 800~1099px는 왼쪽 탐색과 그림 목록/큰 그림 전환, 그보다 좁으면 탐색 서랍과 그림 목록/큰 그림 전환을 사용한다. 스타일은 `.daki-dictionary-tool`에 한정하고 각 패널이 스크롤을 소유한다. `DakiDictionaryWorkbench.mount(host)`의 반환값 `dispose()`가 요청·타이머·리스너·관찰자·열린 창을 해제한다. 통계 비율의 분모는 실제 원본 조합 수와 프롬프트가 있는 이미지 수다.
+- `naim/web/daki_dictionary.py`의 `register_daki_dictionary_routes`가 `/api/daki/dictionary/*`를 제공하며 첫 요청 때 상태를 준비한다. `naim/daki_dictionary.py`는 사전·조합·통계·사용자 편집, `naim/daki_dictionary_images.py`는 PNG/WebP 메타데이터·정확한 양성 태그 매칭·점진 색인·썸네일과 종료 정리를 담당한다. 기존 이미지 SQLite 형식과 ID를 유지한다.
+- 배포용 원본은 `data/daki_dictionary/dictionary.json`과 `source_combinations.json`, 편집·이미지 연결·캐시는 Git에서 제외한 `daki_dictionary_user/`에 둔다. 사용자 편집은 기존 원자 JSON 저장을 재사용하고 알 수 없는 필드를 보존한다. 사용자 폴더는 updater 및 기존 설치 가져오기의 보호 대상이다. `tools/import_daki_dictionary.py --source <원본 사전 폴더>`는 비어 있는 대상에만 원본 자료와 SQLite 백업을 복사한다. 변환 때만 Parquet 지원이 필요하고 앱 실행에는 필요하지 않다. 이미지 원본은 연결된 폴더에 그대로 둔다.
+- 한국어 이름·설명·별칭 3,205개와 분류명 533개를 재검토했다. `data/daki_dictionary/translation_review.json`에 수정 전후·근거와 원문 유지 항목을 기록한다. 의미를 확정하지 못한 희귀 태그는 추정 번역 없이 영문만 표시한다. 분류의 표시 이름은 번역해도 ID·소속·빈도는 유지하며 편집 화면에서도 표시 이름을 기존 ID로 되돌려 저장한다.
+- 회귀: 격리 `test_daki_dictionary*.py`, `test_naim_updater.py`, `test_legacy_import.py`; JS `test_daki_dictionary_view.js`, `test_daki.js`, `test_daki_tag_browser.js`, `test_gallery_script_loading.js`. `.qa/verify_workspace_header.cjs`와 `.qa/dictionary_transport.py`는 합성 자료로 modern 단일 화면, 갤러리·사전·캔버스 이동 버튼과 잔액 배치, 작업 메뉴를 1280×900·800×800, 배율 100%·deviceScaleFactor 1에서 확인한다.
+
+
+## 일반 프롬프트 자동완성
+
+- `data/prompt_tags/`의 영문 CSV와 `ko.json`은 다키 사전과 독립된 읽기 전용 배포 자료다. `NAI_Image_Manager.spec`에 포함하며 사용자 저장 파일과 병합하지 않는다.
+- `naim/prompt_suggestions.py`가 최초 요청 시 태그를 합치고 한영 검색을 수행한다. `naim/web/prompt_suggestions.py`의 `/api/prompt-tags/suggest`는 현재 입력 중인 태그만 받는다. 정확 일치·접두 일치·부분 일치 순서 안에서 빈도순으로 제안한다.
+- `static/prompt_autocomplete.js/.css`는 `data-prompt-autocomplete`가 있는 입력란에 공통 후보 UI를 제공한다. 동적 캐릭터·그룹·프리셋·부위 편집도 같은 속성을 사용한다. 후보에는 영문과 한글명을 표시하고 영문을 삽입한다. 후보 목록은 현재 입력 커서 바로 아래·옆에 배치하며 줄바꿈·입력란 내부 스크롤을 반영하고 화면 가장자리에서는 위쪽 전환과 좌우 보정을 적용한다. 번역 없는 항목은 영문만 표시한다.
+- 갤러리 프롬프트 검색 및 가상 폴더 검색은 해당 속성을 붙이지 않으며 기존 검색 인덱스 자동완성을 유지한다. 읽기 전용 프롬프트와 이름·경로·설명 입력은 대상이 아니다.
+- 검증 진입점: `tests/test_prompt_suggestions.py`, `tests/test_prompt_autocomplete.js`. 화면 검증은 `.qa/prompt-autocomplete/`의 합성 데이터로 1280×900·800×800, 배율 100%에서 수행한다.
+
+
+### 그림체 관리의 공통 설정과 자동 목록 갱신
+
+`naim/web/style_shared_settings.py`가 기존 `lab_config.json`의 NAI 키와 공통 생성 기본값(model, width, height, steps, scale, cfg_rescale, sampler, noise_schedule)의 단일 저장 경계를 제공합니다. `style_workspace.py`는 실행마다 만든 인증 토큰을 연결 프로세스의 환경으로 전달합니다. 연결 앱의 `naim_shared_settings.py`는 키 읽기/변경/삭제를 이 API로 연결하며 기존 독립 실행 설정 파일은 보존합니다. 브라우저용 응답에는 키를 포함하지 않습니다. 프롬프트·평가·생성 기록은 공유 대상이 아닙니다.
+
+`static/daki_styles.js`와 연결 앱의 `static/naim_shared_library.js`는 표시 중인 공유 목록을 2초마다 조회합니다. 추가·제외를 반영하고 검색과 남은 선택을 유지하며, NAIM에서는 기존 카드 DOM을 재사용하고 화면 이탈 시 예약을 해제합니다. 연결 앱의 `static/naim_shared_settings.js`는 공통 생성 필드만 부분 저장하고 편집 중인 필드는 원격 조회로 덮지 않습니다. 연결 변경 후 서버 재시작이 필요합니다. 검증: `tests/test_style_shared_settings.py`, `tests/test_daki_styles.js`.
+
+### 확정 그림체 복사와 개인 그림체·프로젝트 삭제
+
+naim/web/confirmed_style_import.py는 연결된 작가 앱의 확정 목록·대표 그림을 로컬 HTTP로 읽고 기존 개인 저장소의 create_snapshot을 호출합니다. 아티스트 프롬프트·네거티브·지원 생성 설정과 대표 이미지 원본 바이트를 독립 복사하며 원본 앱을 수정하지 않습니다. 개인 저장소 내부 images 폴더만 소유하고 기존 외부 이미지 링크는 유지합니다. DELETE /api/daki/personal-styles/<id>는 등록 항목과 복사한 자체 이미지만 정리하며 저장 실패 시 복구합니다.
+
+static/daki_personal_styles.js/.css는 확정 그림체 검색·60개씩 더 보기·복사와 취소 우선 삭제 모달을 담당합니다. static/daki.js의 프로젝트 목록 카드는 링크와 별도 삭제 조작을 두고 기존 DakiProjectRemoval 모달의 그림 보관/영구 삭제 선택을 재사용합니다. 검증: test_confirmed_style_import.py, test_daki_personal_styles.py/.js, test_project_removal.py, test_daki_project_removal.js, test_daki.js; 합성 브라우저 QA .qa/check_personal_project_actions.py (1280×900, 800×800).
+
+
+
+### 리모콘에서 기존 그림체 프로그램 연결
+
+`naim/desktop_ui.py`의 그림체 프로그램 연결 버튼 → `main_executor.pyw`의 `open_style_connection` → `naim/style_connection_ui.py`의 폴더 선택·미리보기·키 충돌 선택 → `naim/style_connection.py`의 읽기 전용 확인과 원자 저장 순서다. 실행 중인 서버·작업이 있으면 연결 저장을 막고, 서버를 정지한 뒤 저장하고 다음 서버 시작부터 적용한다.
+
+프로그램 폴더, 소스 저장소의 `artist_rater/`, 데이터 폴더에서 `artist_rater.sqlite`를 찾는다. 여러 후보가 있으면 직접 선택한다. 선택한 데이터 폴더를 `style_workspace.local.json`의 `data_dir`로 기록하며, 기존 호환 실행 소스와 Python 연결을 재사용한다. 원본 DB·이미지·설정 파일은 복사하거나 초기화하지 않는다. 이후 그림체 관리의 편집은 연결된 데이터 폴더에 저장된다.
+
+그림체 `settings.json`에 `novelai_app_key`가 저장돼 있고 NAIM `lab_config.json`의 키와 다르면 저장 전에 어느 쪽을 사용할지 반드시 선택한다. 키 값은 화면이나 로그에 표시하지 않는다. 그림체 쪽 키를 선택하면 NAIM 공통 키만 변경하고 기존 그림체 프로그램 설정은 보존한다. 공통 생성 기본값은 기존 NAIM 설정 경계를 유지하며, 브라우저에만 저장된 프롬프트·화면 배치·생성 입력값은 폴더 연결로 가져오지 않는다.
+
+미리보기 이후 파일이 변경되면 다시 선택하도록 안내한다. 손상된 JSON은 자동 초기화하지 않는다. `style_workspace.local.json`은 업데이트 보호 대상이며, 기존 자료 가져오기에도 포함한다. 검증: `tests/test_style_connection.py`, `tests/test_style_connection_ui.py`, `tests/test_desktop_controller.py`, `tests/test_naim_updater.py`; Tk 배치 캡처는 `.qa/style-connection/`.
+
+### 프로젝트 확대 그림 비교
+
+프로젝트 확대 보기에서 고정을 켜면 `static/project_zoom_compare.js/.css`가 같은 너비의 비교 열과 프로젝트 그림 선택기를 관리한다. `static/gallery_zoom.js`의 `prepareGalleryProjectZoom`은 현재 프로젝트 앞면·뒷면의 기존 `galleryZoomImages`를 모으고, 선택된 그림을 단일 확대 화면과 동기화한다. `static/gallery_zoom_view.js`는 고정 전환을 전달하며 일반 갤러리의 단일 그림 드래그·확대는 유지한다.
+
+그림은 기본 위쪽 정렬이며 개별 모드에서는 클릭한 그림만, 동시 모드에서는 선택한 그림의 표시 높이를 기준으로 전체를 확대·축소한다. 높이 맞춤도 선택한 그림의 표시 높이를 사용한다. 각 그림은 독립적으로 드래그 이동하며, 비교에서 제외해도 원본은 삭제하지 않는다. ‘현재 프로젝트 그림’은 큰 선택 모달에서 페이지 단위로 표시한다. 프로젝트 카드의 기존 축소 미리보기를 재사용하고, 없는 경우 기존 이미지 API의 `preview=256`을 사용하며 실제 비교에 추가한 그림만 원본을 불러온다. 상태는 확대 화면 메모리에만 있고 저장 형식·API·이미지 파일은 바꾸지 않는다. 비교 중 기존 화살표 이동·삭제는 중지하며 Esc는 열린 선택기를 먼저 닫는다. 검증: `tests/test_project_zoom_compare.js`, `tests/test_gallery_zoom.js`, `tests/test_gallery_zoom_view.js`, `tests/test_gallery_script_loading.js`; 브라우저 확인: `.qa/check_project_zoom_compare.cjs`.
+
+### 태그 사전의 WebP 품질 90 복사본 전환
+
+tools/copy_dictionary_webp.py는 기본 읽기 전용 점검, --apply로 별도 images_webp_q90 폴더 생성·검증·사전 연결 전환을 수행합니다. 서버가 중지된 상태에서만 실행하며 외부 PNG는 수정하지 않습니다. 기존 convert_png_to_webp를 복사본에 적용해 품질 90 손실 압축과 PNG 메타데이터 보관을 재사용합니다. 모든 원본 해시·해상도·프롬프트를 비교한 뒤 SQLite 백업을 만들고, 이미지 ID와 태그·프롬프트를 유지한 채 path/mtime/size 및 연결 폴더만 단일 트랜잭션으로 변경합니다. 기존 대상 폴더나 작업 도중 원본·DB 변경이 발견되면 전환하지 않습니다. daki_dictionary_images.extract_prompt는 WebP에 보관된 PNG 메타데이터를 먼저 복원해 재색인에서도 태그를 유지합니다. 회귀: test_dictionary_webp_copy.py, test_daki_dictionary_images.py.
+
+### 태그 사전 예시 이미지의 Hugging Face 배포와 설치
+
+공유 그림체와 같은 okawaritsuika/nai-shared-styles 저장소의 dictionary-image-pack.json과 dictionary-images-webp-q90-v1.zip을 사용합니다. 현재 게시 리비전은 829c06e55f06516bf581697138cca83dcd015764이며 WebP 품질90 이미지 1,093장, ZIP 139,530,777바이트입니다. 이미지 SHA-256과 크기를 담은 휴대용 index.json에는 ID 기반 상대 파일명만 들어가고 사용자 SQLite·편집 내용·절대 경로는 포함하지 않습니다.
+
+naim/daki_dictionary_pack_format.py가 공개 형식·수량·용량·경로 계약을 소유하고 tools/export_dictionary_image_pack.py가 원본 WebP 바이트를 재압축 없이 내보냅니다. naim/daki_dictionary_download.py는 기존 공개 HF 다운로드와 이어받기·해시 검증을 재사용하며 최신 커밋에 고정된 주소에서 받아 ZIP 항목·개별 해시·실제 이미지·프롬프트까지 검증합니다. 관리 폴더에 게시한 뒤 ImageCatalog.install_image_pack이 이미지 없는 색인을 원자적으로 연결하며 기존 사용자 편집과 사용 가능한 연결은 유지합니다. 실행 중 폴더 변경·중지·프로세스 종료는 기존 연결을 덮지 않습니다.
+
+naim/web/daki_dictionary.py의 image-pack GET은 로컬 작업 상태만 조회하며, POST가 명시 다운로드를 시작하고 image-pack/stop POST가 중지합니다. static/daki_dictionary_download.js와 두 HTML 진입점이 버튼·진행 상태·중지·재시도·복귀 조회를 연결합니다. 상태 행은 헤더 아래에 있어 접힌 폴더 상세나 그림 탭에 가려지지 않습니다. 검증: test_daki_dictionary*.py, test_dictionary_image_export.py, test_daki_dictionary_download.js, test_daki_dictionary_view.js. 실제 공개 저장소 다운로드를 빈 임시 사전에 설치해 이미지1093장·태그 연결16241개·원본 바이트·ID·프롬프트·편집 보존을 확인했으며 화면1280×900/800×800을 확인했습니다.

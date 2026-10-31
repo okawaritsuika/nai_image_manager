@@ -1,0 +1,89 @@
+.prompt-autocomplete-popup {
+    box-sizing: border-box;
+    position: fixed;
+    z-index: 2147483000;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    max-width: calc(100vw - 16px);
+    max-height: 280px;
+    margin: 0;
+    padding: 8px 10px;
+    overflow: hidden;
+    border: 1px solid var(--border-color, #48505e);
+    border-radius: 8px;
+    background: var(--bg-secondary, #20242d);
+    color: var(--text-color, #eee);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.prompt-autocomplete-popup[hidden] {
+    display: none;
+}
+
+.prompt-autocomplete-status {
+    flex: 0 0 auto;
+    min-width: 0;
+    color: var(--text-muted-color, #adb5c2);
+    overflow-wrap: anywhere;
+}
+
+.prompt-autocomplete-status:empty {
+    display: none;
+}
+
+.prompt-autocomplete-listbox {
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.prompt-autocomplete-option {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+.prompt-autocomplete-option[aria-selected="true"],
+.prompt-autocomplete-option:hover {
+    background: rgba(103, 207, 255, .18);
+}
+
+.prompt-autocomplete-tag,
+.prompt-autocomplete-ko {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+.prompt-autocomplete-tag {
+    color: var(--text-color, #eee);
+}
+
+.prompt-autocomplete-ko {
+    color: var(--accent-color, #67cfff);
+}
+
+.prompt-autocomplete-tag:only-child {
+    grid-column: 1 / -1;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+    .prompt-autocomplete-option[aria-selected="true"],
+    .prompt-autocomplete-option:hover {
+        background: color-mix(in srgb, var(--accent-color, #67cfff) 18%, transparent);
+    }
+}

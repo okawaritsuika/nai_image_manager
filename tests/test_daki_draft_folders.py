@@ -45,6 +45,15 @@ class DraftFolderStorageTests(unittest.TestCase):
     def make_folder(self, **data):
         return self.manager.create_folder({'name': 'Synthetic folder', **data})
 
+    def test_dictionary_reference_is_saved_and_reopened_with_first_character(self):
+        reference = {'image_id': 42, 'tag': 'synthetic_pose'}
+        settings = {'dictionary_reference': reference, 'char_prompts': [{'prompt': 'synthetic_pose'}]}
+        folder = self.make_folder(settings=settings)
+        reopened = DakiDrafts(self.root, lambda: 'synthetic-key', self.generator)
+        saved = reopened.get_folder(folder['id'])['folder']
+        self.assertEqual(saved['settings']['dictionary_reference'], reference)
+        self.assertEqual(saved['settings']['char_prompts'][0]['prompt'], 'synthetic_pose')
+
     def make_draft(self, folder_id=None, purpose='draft', **settings):
         data = synthetic_settings(**settings)
         data['purpose'] = purpose

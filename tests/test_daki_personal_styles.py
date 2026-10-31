@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import ast
+import base64
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -43,6 +45,12 @@ class PersonalStylesFixture:
 
     def create(self, **changes):
         return self.store.create({'name': 'Synthetic personal style', 'positive': 'ink', **changes})
+
+    @staticmethod
+    def png_data_url(size=(640, 640), color='red'):
+        output = BytesIO()
+        Image.new('RGB', size, color).save(output, format='PNG')
+        return 'data:image/png;base64,' + base64.b64encode(output.getvalue()).decode('ascii')
 
 
 class DakiPersonalStylesTests(PersonalStylesFixture, unittest.TestCase):
@@ -290,6 +298,62 @@ class DakiPersonalStylesTests(PersonalStylesFixture, unittest.TestCase):
             self.create()
         self.assertEqual(path.read_text(encoding='utf-8'), '{invalid')
 
+    def test_save_with_image_owns_png_and_drops_transient_generation_fields(self):
+        data_url = self.png_data_url()
+        style = self.store.save_with_image({
+            'name': 'Generated personal style', 'positive': 'ink', 'prompt': 'temporary scene',
+            'negative_prompt': 'temporary blur', 'width': 640, 'height': 640,
+            'representative_image': data_url,
+        })
+        self.assertTrue(style['source_path'].startswith('__daki_owned__/personal_'))
+        self.assertEqual(style['preview'], {'width': 832, 'height': 1216})
+        self.assertNotIn('prompt', style)
+        self.assertNotIn('negative_prompt', style)
+        self.assertNotIn('width', style)
+        self.assertNotIn('representative_image', style)
+        self.assertEqual(self.store.preview_path(style['id']).read_bytes(),
+                         base64.b64decode(data_url.split(',', 1)[1]))
+        saved = json.loads((self.catalog_root / 'catalog.json').read_text(encoding='utf-8'))['styles'][0]
+        self.assertNotIn('representative_image', saved)
+
+    def test_save_with_image_update_preserves_previous_representative_file(self):
+        style = self.store.save_with_image({
+            'name': 'Generated personal style', 'positive': 'ink',
+            'representative_image': self.png_data_url(color='red'),
+        })
+        previous_image = self.store.preview_path(style['id'])
+        updated = self.store.save_with_image({
+            'positive': 'watercolor', 'representative_image': self.png_data_url(color='green'),
+        }, style_id=style['id'])
+        self.assertEqual(updated['id'], style['id'])
+        self.assertEqual(updated['created_at'], style['created_at'])
+        self.assertEqual(updated['positive'], 'watercolor')
+        self.assertTrue(previous_image.is_file())
+        self.assertNotEqual(self.store.preview_path(style['id']), previous_image)
+
+    def test_save_with_image_rolls_back_new_png_when_catalog_write_fails(self):
+        with mock.patch('naim.storage.daki_personal_styles.write_json', side_effect=OSError('synthetic failure')):
+            with self.assertRaises(OSError):
+                self.store.save_with_image({
+                    'name': 'Generated personal style', 'positive': 'ink',
+                    'representative_image': self.png_data_url(),
+                })
+        self.assertFalse((self.catalog_root / 'catalog.json').exists())
+        self.assertEqual(list((self.catalog_root / 'images').iterdir()), [])
+
+    def test_save_with_image_rejects_non_png_and_oversized_dimensions(self):
+        jpeg = BytesIO()
+        Image.new('RGB', (64, 64), 'blue').save(jpeg, format='JPEG')
+        for data_url in (
+                'data:image/jpeg;base64,' + base64.b64encode(jpeg.getvalue()).decode('ascii'),
+                self.png_data_url(size=(2049, 1))):
+            with self.subTest(prefix=data_url[:30]), self.assertRaises(ValueError):
+                self.store.save_with_image({
+                    'name': 'Generated personal style', 'positive': 'ink',
+                    'representative_image': data_url,
+                })
+        self.assertFalse(self.catalog_root.exists())
+
 
 class DakiPersonalStylesApiTests(PersonalStylesFixture, unittest.TestCase):
     def test_canvas_prompt_catalog_is_opt_in_and_read_only(self):
@@ -343,6 +407,116 @@ class DakiPersonalStylesApiTests(PersonalStylesFixture, unittest.TestCase):
         self.assertEqual(response.mimetype, 'image/png')
         self.assertEqual(response.data, self.image.read_bytes())
         response.close()
+
+    def test_generation_is_disposable_uses_combined_prompts_and_returns_png_data_url(self):
+        app = Flask(__name__)
+        register_daki_personal_style_routes(app, self.store, key_provider=lambda: ' synthetic-key ')
+        client = app.test_client()
+        with mock.patch('naim.web.daki_personal_styles.generate_text_image',
+                        return_value=Image.new('RGBA', (640, 640), 'purple')) as generate:
+            response = client.post('/api/daki/personal-styles/generate', json={
+                'positive': 'style ink', 'negative': 'style blur', 'model': 'nai-diffusion-5-full',
+                'options': {'steps': 20}, 'width': 640, 'height': 640,
+                'prompt': 'sunset scene', 'negative_prompt': 'lowres',
+            })
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertTrue(response.json['image'].startswith('data:image/png;base64,'))
+        image_bytes = base64.b64decode(response.json['image'].split(',', 1)[1])
+        with Image.open(BytesIO(image_bytes)) as image:
+            self.assertEqual(image.size, (640, 640))
+            self.assertEqual(image.format, 'PNG')
+        payload = generate.call_args.args[1]
+        self.assertEqual(payload['input'], 'style ink, sunset scene')
+        self.assertEqual(payload['parameters']['negative_prompt'], 'style blur, lowres')
+        self.assertEqual(payload['parameters']['steps'], 20)
+        self.assertEqual(payload['parameters']['seed'], payload['parameters']['extra_noise_seed'])
+        self.assertIsInstance(payload['parameters']['seed'], int)
+        self.assertEqual(self.store.list_styles(), [])
+        self.assertFalse(self.catalog_root.exists())
+
+    def test_generation_requires_key_checks_anlas_and_sanitizes_transport_failures(self):
+        no_key_app = Flask('personal-styles-no-key')
+        register_daki_personal_style_routes(no_key_app, self.store)
+        no_key_client = no_key_app.test_client()
+        valid = {'positive': 'private positive prompt', 'model': 'nai-diffusion-5-full',
+                 'options': {'steps': 28}, 'width': 640, 'height': 640}
+        with mock.patch('naim.web.daki_personal_styles.generate_text_image') as generate:
+            missing = no_key_client.post('/api/daki/personal-styles/generate', json=valid)
+            self.assertEqual((missing.status_code, missing.json['code']), (400, 'api_key_required'))
+            generate.assert_not_called()
+
+        app = Flask('personal-styles-anlas')
+        register_daki_personal_style_routes(app, self.store, key_provider=lambda: 'synthetic-key')
+        client = app.test_client()
+        for expensive in (
+                {**valid, 'width': 1088, 'height': 1024},
+                {**valid, 'options': {'steps': 29}}):
+            with self.subTest(expensive=expensive):
+                response = client.post('/api/daki/personal-styles/generate', json=expensive)
+                self.assertEqual((response.status_code, response.json['code']), (409, 'anlas_confirmation'))
+        with mock.patch('naim.web.daki_personal_styles.generate_text_image',
+                        return_value=Image.new('RGB', (1088, 1024), 'purple')) as generate:
+            allowed = client.post('/api/daki/personal-styles/generate', json={
+                **valid, 'width': 1088, 'height': 1024, 'allow_anlas': True,
+            })
+        self.assertEqual(allowed.status_code, 200, allowed.json)
+        generate.assert_called_once()
+        with mock.patch('naim.web.daki_personal_styles.generate_text_image',
+                        side_effect=RuntimeError('private positive prompt')) as generate:
+            response = client.post('/api/daki/personal-styles/generate', json=valid)
+        self.assertEqual((response.status_code, response.json['code']), (502, 'generation_failed'))
+        self.assertNotIn('private positive prompt', response.get_data(as_text=True))
+        self.assertEqual(generate.call_count, 1)
+
+    def test_generation_lock_rejects_overlapping_requests(self):
+        from threading import Event
+
+        app = Flask('personal-styles-generation-lock')
+        register_daki_personal_style_routes(app, self.store, key_provider=lambda: 'synthetic-key')
+        first_client = app.test_client()
+        second_client = app.test_client()
+        entered = Event()
+        release = Event()
+
+        def slow_generation(_key, _payload):
+            entered.set()
+            release.wait(timeout=5)
+            return Image.new('RGB', (640, 640), 'purple')
+
+        with mock.patch('naim.web.daki_personal_styles.generate_text_image', side_effect=slow_generation):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                first = pool.submit(first_client.post, '/api/daki/personal-styles/generate', json={
+                    'positive': 'ink', 'model': 'nai-diffusion-5-full', 'width': 640, 'height': 640,
+                })
+                self.assertTrue(entered.wait(timeout=2))
+                overlapping = second_client.post('/api/daki/personal-styles/generate', json={
+                    'positive': 'ink', 'model': 'nai-diffusion-5-full', 'width': 640, 'height': 640,
+                })
+                self.assertEqual((overlapping.status_code, overlapping.json['code']),
+                                 (409, 'generation_in_progress'))
+                release.set()
+                self.assertEqual(first.result(timeout=5).status_code, 200)
+
+    def test_api_create_and_update_accept_representative_png(self):
+        root = '/api/daki/personal-styles'
+        created = self.client.post(root, json={
+            'name': 'Generated style', 'positive': 'ink',
+            'representative_image': self.png_data_url(), 'width': 640, 'height': 640,
+            'prompt': 'disposable',
+        })
+        self.assertEqual(created.status_code, 201, created.json)
+        style = created.json['style']
+        self.assertTrue(style['source_path'].startswith('__daki_owned__/'))
+        self.assertNotIn('prompt', style)
+        self.assertIn('/preview', style['src'])
+        updated = self.client.put(root + '/' + style['id'], json={
+            'positive': 'watercolor', 'representative_image': self.png_data_url(color='green'),
+            'prompt': 'also disposable', 'width': 1024, 'height': 1024,
+        })
+        self.assertEqual(updated.status_code, 200, updated.json)
+        self.assertEqual(updated.json['style']['positive'], 'watercolor')
+        self.assertEqual(updated.json['style']['preview'], {'width': 832, 'height': 1216})
+        self.assertNotIn('prompt', updated.json['style'])
 
     def test_api_errors_are_json_without_private_paths(self):
         root = '/api/daki/personal-styles'

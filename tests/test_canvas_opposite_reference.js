@@ -218,6 +218,39 @@ function chooseButton(h, kind, id) {
     return find(h.document.getElementById('canvasOppositeDialog'), node => node.dataset?.kind === kind && node.dataset?.id === id);
 }
 
+test('inpaint chooser returns the opposite-side record without changing preview state', async () => {
+    const h = harness();
+    h.api.linkChanged();
+    const chosen = [];
+    await h.api.open({onChoose: value => chosen.push(value)});
+    assert.match(h.document.getElementById('canvasOppositeDialog').textContent, /인페인팅 참고 이미지/);
+    chooseButton(h, 'canvas', BACK_CANVAS_ID).click();
+    assert.equal(chosen.length, 1);
+    assert.equal(chosen[0].id, BACK_CANVAS_ID);
+    assert.equal(chosen[0].kind, 'canvas');
+    assert.equal(h.api.snapshot(), null);
+    assert.equal(h.saveCount(), 0);
+    assert.equal(h.renderCalls.length, 0);
+    await h.api.open();
+    chooseButton(h, 'candidate', BACK_CANDIDATE_ID).click();
+    await tick();
+    assert.equal(chosen.length, 1);
+    assert.equal(h.api.snapshot().id, BACK_CANDIDATE_ID);
+});
+
+test('canceling an inpaint chooser clears its callback before a later preview choice', async () => {
+    const h = harness();
+    h.api.linkChanged();
+    let calls = 0;
+    await h.api.open({onChoose: () => calls++});
+    h.document.getElementById('canvasOppositeDialog').dispatch('cancel');
+    await h.api.open();
+    chooseButton(h, 'candidate', BACK_CANDIDATE_ID).click();
+    await tick();
+    assert.equal(calls, 0);
+    assert.equal(h.api.snapshot().id, BACK_CANDIDATE_ID);
+});
+
 test('missing state defaults to no selection and hidden preview', () => {
     const h = harness({link: null});
     h.api.restore(undefined);

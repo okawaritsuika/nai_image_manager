@@ -50,9 +50,12 @@ function updateGalleryZoomModeUi() {
 function updateGalleryZoomUi() {
     const toolbar = document.getElementById('galleryZoomToolbar');
     if (!toolbar) return;
+    const pinButton = document.getElementById('galleryZoomPinBtn');
+    if (pinButton) pinButton.disabled = galleryZoomActionBusy;
     const item = galleryZoomImages[galleryZoomIndex];
     const path = normalizeGalleryPathKey(item?.path || '');
     const projectView = window.Daki?.isProjectView?.();
+    const comparing = Boolean(window.ProjectZoomCompare?.isActive());
     const validTag = selectedGalleryAssignmentTagId === 'NONE' || Boolean(getGalleryTagDef(selectedGalleryAssignmentTagId));
     const canTag = Boolean(!projectView && galleryZoomTagEnabled && item && validTag);
     const referencedStyle = /^__daki_(shared|tests|personal)__\//.test(path);
@@ -97,17 +100,62 @@ function updateGalleryZoomUi() {
     deleteAction.disabled = !canDelete || galleryZoomActionBusy;
     deleteAction.querySelector('span').textContent = !galleryZoomDeleteEnabled ? '화살표 삭제 꺼짐' :
         referencedStyle ? '그림체 원본 보관' : path.startsWith('_TRASH/') ? '이미 휴지통에 있는 그림' : '휴지통으로 보내고 다음';
-    document.getElementById('galleryZoomActionStatus').textContent = galleryZoomStatus;
+    if (comparing) {
+        tagAction.disabled = true;
+        deleteAction.disabled = true;
+    }
+    document.getElementById('galleryZoomActionStatus').textContent = comparing
+        ? '그림 클릭으로 선택 · 드래그로 이동 · 휠로 확대·축소' : galleryZoomStatus;
+}
+
+function prepareGalleryProjectZoom(src) {
+    if (!window.ProjectZoomCompare || !window.Daki?.isProjectView?.()) return;
+    const path = normalizeGalleryPathKey(src);
+    const images = [];
+    const seen = new Set();
+    for (const grid of document.querySelectorAll('#dakiContent .flex-masonry')) {
+        const thumbnails = new Map();
+        for (const image of grid.querySelectorAll?.('img.zoomable') || []) {
+            const key = normalizeGalleryPathKey(image.closest('[data-path]')?.dataset.path || '');
+            const thumbnailSrc = image.currentSrc || image.src;
+            if (key && /[?&]preview=/.test(thumbnailSrc)) thumbnails.set(key, thumbnailSrc);
+        }
+        for (const item of grid.galleryZoomImages || []) {
+            const key = normalizeGalleryPathKey(item.path);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            images.push({path: key, src: getGalleryImageSrc(key), name: getImageFileName(key),
+                thumbnailSrc: thumbnails.get(key)});
+        }
+    }
+    const current = {path, src, name: getImageFileName(path)};
+    if (!seen.has(path)) images.push(current);
+    window.ProjectZoomCompare.prepare({
+        images,
+        current,
+        onSelect: selectedPath => {
+            galleryZoomImages = images;
+            galleryZoomIndex = images.findIndex(item => item.path === selectedPath);
+            document.getElementById('zoomImg').src = getGalleryImageSrc(selectedPath);
+            updateGalleryZoomUi();
+        },
+    });
 }
 
 function showGalleryZoomImage() {
     const item = galleryZoomImages[galleryZoomIndex];
     if (!item) return;
+    window.GalleryZoomView?.reset();
     document.getElementById('zoomImg').src = getGalleryImageSrc(item.path);
+    prepareGalleryProjectZoom(getGalleryImageSrc(item.path));
+    if (window.GalleryZoomView?.isPinned()) window.ProjectZoomCompare?.setPinned(true);
     updateGalleryZoomUi();
 }
 
 function openZoom(src) {
+    window.ProjectZoomCompare?.close();
+    window.GalleryZoomView?.init();
+    window.GalleryZoomView?.reset(true);
     galleryZoomSession += 1;
     galleryZoomStatus = window.Daki?.isProjectView?.() ? '← → 이동 · 켜진 기능은 ↓ 휴지통 · 처리 성공 후 다음 그림'
         : '← → 이동 · 켜진 기능은 ↑ 태그 / ↓ 휴지통 · 처리 성공 후 다음 그림';
@@ -128,11 +176,14 @@ function openZoom(src) {
     document.getElementById('zoomImg').src = src;
     layer.style.display = 'flex';
     document.body?.classList.add('gallery-zoom-open');
+    prepareGalleryProjectZoom(src);
     updateGalleryZoomUi();
     layer.focus({preventScroll: true});
 }
 
 function closeZoom() {
+    window.ProjectZoomCompare?.close();
+    window.GalleryZoomView?.reset(true);
     galleryZoomSession += 1;
     document.getElementById('zoomLayer').style.display = 'none';
     document.getElementById('zoomImg').src = '';
@@ -148,6 +199,7 @@ function closeZoom() {
 }
 
 async function runGalleryZoomAction(action) {
+    if (window.ProjectZoomCompare?.isActive()) return;
     if (action === 'tag' && window.Daki?.isProjectView?.()) return;
     if (galleryZoomActionBusy || document.getElementById('zoomLayer')?.style.display !== 'flex') return;
     const item = galleryZoomImages[galleryZoomIndex];
@@ -224,9 +276,14 @@ function handleGalleryZoomKeydown(event) {
     event.preventDefault();
     event.stopImmediatePropagation();
     if (event.key === 'Escape') {
+        if (window.ProjectZoomCompare?.isPicking()) {
+            window.ProjectZoomCompare.closePicker();
+            return;
+        }
         closeZoom();
         return;
     }
+    if (window.ProjectZoomCompare?.isActive()) return;
     if (galleryZoomActionBusy) return;
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
         if (event.repeat) return;

@@ -7,6 +7,52 @@ const vm = require('node:vm');
 const root = path.join(__dirname, '..');
 const indexSource = fs.readFileSync(path.join(root, 'static/index.js'), 'utf8');
 
+test('project comparison gathers both project sides and keeps the selected image when unpinned', () => {
+    const f = gallery([{path: 'sample/a.png'}], '#project=sample');
+    let prepared;
+    f.context.ProjectZoomCompare = {close() {}, prepare(config) { prepared = config; }, isActive: () => false};
+    f.context.document.querySelectorAll = selector => selector === '#dakiContent .flex-masonry'
+        ? [{galleryZoomImages: [{path: 'sample/a.png'}]},
+            {galleryZoomImages: [{path: 'sample/b.png'}, {path: 'sample/a.png'}]}]
+        : [];
+    f.context.openZoom('/image/sample/a.png');
+    assert.deepEqual(Array.from(prepared.images, item => item.path), ['sample/a.png', 'sample/b.png']);
+    prepared.onSelect('sample/b.png');
+    assert.equal(f.img.src, '/image/sample/b.png');
+    f.press('ArrowLeft');
+    assert.equal(f.img.src, '/image/sample/a.png');
+    assert.equal(prepared.current.path, 'sample/a.png', 'navigation refreshes the next comparison baseline');
+});
+
+test('comparison blocks image navigation and destructive shortcuts and Escape closes the picker first', async () => {
+    const f = gallery([{path: 'sample/a.png'}, {path: 'sample/b.png'}], '#project=sample');
+    let picking = true;
+    let closed = false;
+    f.context.ProjectZoomCompare = {
+        close() { closed = true; }, prepare() {}, isActive: () => true,
+        isPicking: () => picking, closePicker() { picking = false; },
+    };
+    f.context.openZoom('/image/sample/a.png');
+    closed = false;
+    f.press('ArrowRight');
+    f.press('ArrowDown');
+    await f.context.runGalleryZoomAction('delete');
+    assert.equal(f.img.src, '/image/sample/a.png');
+    f.press('Escape');
+    assert.equal(picking, false);
+    assert.equal(f.layer.style.display, 'flex');
+    f.press('Escape');
+    assert.equal(closed, true);
+    assert.equal(f.layer.style.display, 'none');
+});
+
+test('ordinary gallery enlargement does not prepare project comparison', () => {
+    const f = gallery([{path: 'sample/a.png'}]);
+    f.context.ProjectZoomCompare = {close() {}, prepare() { throw new Error('project only'); }, isActive: () => false};
+    f.context.openZoom('/image/sample/a.png');
+    assert.equal(f.img.src, '/image/sample/a.png');
+});
+
 function ordered(images, order = 'newest', isComic = false) {
     const context = vm.createContext({images, galleryImageOrder: order, parentNode: {is_comic: isComic}, g: {}});
     const sort = indexSource.slice(indexSource.indexOf('    const orderedImages ='),

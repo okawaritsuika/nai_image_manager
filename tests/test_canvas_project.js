@@ -250,7 +250,7 @@ async function conflictedCanvas({name = 'Back master', side = 'back'} = {}) {
     return {h, localState};
 }
 
-test('suggestCanvasName uses the next number independently for each project side and stays within 120 characters', () => {
+test('suggestCanvasName uses the project, side, and local timestamp within 120 characters', () => {
     const project = projectRecord({name: '합성Project'});
     project.canvases = {
         front: [
@@ -260,12 +260,14 @@ test('suggestCanvasName uses the next number independently for each project side
         ],
         back: [{name: '합성Project_뒷면_캔버스1'}],
     };
-    assert.equal(harness().context.CanvasProject.suggestCanvasName(project, 'front'), '합성Project_앞면_캔버스4');
-    assert.equal(harness().context.CanvasProject.suggestCanvasName(project, 'back'), '합성Project_뒷면_캔버스2');
+    assert.match(harness().context.CanvasProject.suggestCanvasName(project, 'front'),
+        /^합성Project_앞면_\d{4}-\d{2}-\d{2}_\d{6}$/);
+    assert.match(harness().context.CanvasProject.suggestCanvasName(project, 'back'),
+        /^합성Project_뒷면_\d{4}-\d{2}-\d{2}_\d{6}$/);
 
     const longSuggestion = harness().context.CanvasProject.suggestCanvasName({name: '한글'.repeat(120)}, 'front');
     assert.ok(longSuggestion.length <= 120);
-    assert.ok(longSuggestion.endsWith('_앞면_캔버스1'));
+    assert.match(longSuggestion, /_앞면_\d{4}-\d{2}-\d{2}_\d{6}$/);
 });
 
 test('opening the link dialog updates automatic names on project and side changes while preserving manual input', async () => {
@@ -289,17 +291,17 @@ test('opening the link dialog updates automatic names on project and side change
     const sideRadios = dialog.querySelectorAll('[name=canvasProjectSide]');
     const front = sideRadios.find(input => input.value === 'front');
     const back = sideRadios.find(input => input.value === 'back');
-    assert.equal(canvasName.value, '합성Project_앞면_캔버스4');
+    assert.match(canvasName.value, /^합성Project_앞면_\d{4}-\d{2}-\d{2}_\d{6}$/);
 
     front.checked = false;
     back.checked = true;
     back.dispatch('change');
-    assert.equal(canvasName.value, '합성Project_뒷면_캔버스2');
+    assert.match(canvasName.value, /^합성Project_뒷면_\d{4}-\d{2}-\d{2}_\d{6}$/);
 
     const projectSelect = h.element('canvasProjectSelect');
     projectSelect.value = OTHER_PROJECT_ID;
     projectSelect.dispatch('change');
-    assert.equal(canvasName.value, '다른Project_뒷면_캔버스2');
+    assert.match(canvasName.value, /^다른Project_뒷면_\d{4}-\d{2}-\d{2}_\d{6}$/);
 
     canvasName.value = '사용자가 직접 입력한 캔버스명';
     canvasName.dispatch('input');
@@ -315,7 +317,7 @@ test('opening the link dialog updates automatic names on project and side change
     back.checked = true;
     front.checked = false;
     back.dispatch('change');
-    assert.equal(canvasName.value, '합성Project_뒷면_캔버스2');
+    assert.match(canvasName.value, /^합성Project_뒷면_\d{4}-\d{2}-\d{2}_\d{6}$/);
 
     const existingMode = h.element('canvasProjectExisting');
     const newMode = h.element('canvasProjectNew');
@@ -325,7 +327,7 @@ test('opening the link dialog updates automatic names on project and side change
     const projectName = h.element('canvasProjectName');
     projectName.value = '새 합성Project';
     projectName.dispatch('input');
-    assert.equal(canvasName.value, '새 합성Project_뒷면_캔버스1');
+    assert.match(canvasName.value, /^새 합성Project_뒷면_\d{4}-\d{2}-\d{2}_\d{6}$/);
 });
 
 test('URL initialization fetches and applies the project canvas, then stores a clean link', async () => {
@@ -876,7 +878,7 @@ test('unnamed imported image canvas uses the next project and side name; supplie
         {url: `/api/daki/projects/${PROJECT_ID}`, method: 'GET'},
         {url: `/api/daki/projects/${PROJECT_ID}/canvases`, method: 'POST'},
     ]);
-    assert.equal(h.requests[1].body.name, '합성Project_앞면_캔버스4');
+    assert.match(h.requests[1].body.name, /^합성Project_앞면_\d{4}-\d{2}-\d{2}_\d{6}$/);
     assert.equal(h.requests[1].body.side, 'front');
 
     const h2 = harness();
@@ -919,10 +921,10 @@ test('automatic image-import name lookup keeps the state snapshot from the call 
     await pending;
 
     assert.deepEqual(h.requests[1].body.state, before);
-    assert.equal(h.requests[1].body.name, 'Synthetic Project_뒷면_캔버스1');
+    assert.match(h.requests[1].body.name, /^Synthetic Project_뒷면_\d{4}-\d{2}-\d{2}_\d{6}$/);
 });
 
-test('suggestDownloadName adds one project prefix and uses exportCount plus one', async () => {
+test('suggestDownloadName uses the project side timestamp and ignores canvas name and exportCount', async () => {
     const h = harness();
     await connectExistingCanvas(h, {projectId: PROJECT_ID, projectName: '합성Project', side: 'front'});
     h.enqueue(success({
@@ -930,17 +932,21 @@ test('suggestDownloadName adds one project prefix and uses exportCount plus one'
         canvas: {...canvasRecord({id: CANVAS_ID, name: '합성Project_앞면_캔버스1', side: 'front'}), exportCount: 2},
     }));
 
-    assert.equal(await h.context.CanvasProject.suggestDownloadName(), '합성Project_앞면_캔버스1_결과3.png');
+    const firstName = await h.context.CanvasProject.suggestDownloadName();
+    assert.match(firstName, /^합성Project_앞면_\d{4}-\d{2}-\d{2}_\d{6}\.png$/);
+    assert.doesNotMatch(firstName, /캔버스1|결과3/);
     assert.equal(h.requests.at(-1).url, `/api/daki/projects/${PROJECT_ID}/canvases/${CANVAS_ID}`);
 
     h.enqueue(success({
         project: projectRecord({id: PROJECT_ID, name: '합성Project'}),
         canvas: {...canvasRecord({id: CANVAS_ID, name: '임의 이름:내보내기?', side: 'front'}), exportCount: 0},
     }));
-    assert.equal(await h.context.CanvasProject.suggestDownloadName(), '합성Project_앞면_임의 이름_내보내기__결과1.png');
+    const secondName = await h.context.CanvasProject.suggestDownloadName();
+    assert.match(secondName, /^합성Project_앞면_\d{4}-\d{2}-\d{2}_\d{6}\.png$/);
+    assert.doesNotMatch(secondName, /임의|결과1/);
 });
 
-test('suggestDownloadName keeps the generated suffix within 200 characters and defaults a missing count to one', async () => {
+test('suggestDownloadName ignores long canvas names and exportCount', async () => {
     const h = harness();
     await connectExistingCanvas(h, {projectId: PROJECT_ID, projectName: '합성Project', side: 'back'});
     h.enqueue(success({
@@ -950,7 +956,7 @@ test('suggestDownloadName keeps the generated suffix within 200 characters and d
 
     const name = await h.context.CanvasProject.suggestDownloadName();
     assert.ok(name.length <= 200);
-    assert.ok(name.endsWith('_결과1.png'));
+    assert.match(name, /^합성Project_뒷면_\d{4}-\d{2}-\d{2}_\d{6}\.png$/);
 });
 
 test('suggestDownloadName returns null without fetching when unlinked and rejects a stale link', async () => {

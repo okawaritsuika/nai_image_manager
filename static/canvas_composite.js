@@ -102,6 +102,25 @@ function collectDrawableImageLayersForClip(layers, output = []) {
     return output;
 }
 
+function drawCanvasLayerImage(ctx, img, layer, offsetX = 0, offsetY = 0) {
+    const x = (layer.x || 0) - offsetX;
+    const y = (layer.y || 0) - offsetY;
+    const width = layer.layerWidth || layer.imageWidth || img.naturalWidth || img.width;
+    const height = layer.layerHeight || layer.imageHeight || img.naturalHeight || img.height;
+    const rotation = layer.type === 'clip' ? layer.rotation : null;
+
+    if (Number.isFinite(rotation) && rotation % 360 !== 0) {
+        ctx.save();
+        ctx.translate(x + width / 2, y + height / 2);
+        ctx.rotate(rotation * Math.PI / 180);
+        ctx.drawImage(img, -width / 2, -height / 2, width, height);
+        ctx.restore();
+        return;
+    }
+
+    ctx.drawImage(img, x, y, width, height);
+}
+
 async function renderMergedCanvasToDataUrl(options = null) {
     const signal = options?.signal;
     signal?.throwIfAborted();
@@ -149,13 +168,7 @@ async function renderMergedCanvasToDataUrl(options = null) {
             : await loadImageElementForClip(layer.src);
         signal?.throwIfAborted();
 
-        ctx.drawImage(
-            img,
-            layer.x || 0,
-            layer.y || 0,
-            layer.layerWidth || layer.imageWidth || img.naturalWidth || img.width,
-            layer.layerHeight || layer.imageHeight || img.naturalHeight || img.height
-        );
+        drawCanvasLayerImage(ctx, img, layer);
     }
 
     signal?.throwIfAborted();

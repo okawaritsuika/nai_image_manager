@@ -695,7 +695,8 @@ class DesktopControllerTests(unittest.TestCase):
             self.assertGreaterEqual(root.winfo_height(), root.winfo_reqheight())
             for button in (c.auto_webp_checkbox, c.btn_run, c.btn_stop, c.btn_server, c.btn_open,
                            c.auto_open_gallery_checkbox, c.btn_sync, c.btn_reset_brand,
-                           c.btn_reorg, c.btn_scan_art, c.btn_webp, c.threshold_spin):
+                           c.btn_reorg, c.btn_scan_art, c.btn_webp, c.threshold_spin,
+                           c.btn_style_connection):
                 self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight())
                 bottom = button.winfo_rooty() - root.winfo_rooty() + button.winfo_height()
                 self.assertLessEqual(bottom, root.winfo_height())
@@ -872,6 +873,40 @@ class DesktopControllerTests(unittest.TestCase):
             for callback in root.tk.splitlist(root.tk.call("after", "info")):
                 root.after_cancel(callback)
             root.destroy()
+
+
+    def test_style_connection_save_requires_stopped_server_and_idle_jobs(self):
+        c = self.controller
+        self.assertTrue(c._can_save_style_connection())
+        for field, value in (("_active_job", "classify"), ("update_in_progress", True),
+                             ("server_transitioning", True), ("server_ready", True),
+                             ("_closing", True)):
+            old = getattr(c, field)
+            setattr(c, field, value)
+            self.assertFalse(c._can_save_style_connection(), field)
+            setattr(c, field, old)
+        c.server_process = mock.Mock()
+        c.server_process.poll.return_value = None
+        self.assertFalse(c._can_save_style_connection())
+        c.server_process = None
+        self.namespace["utils"].is_port_active.return_value = True
+        self.assertFalse(c._can_save_style_connection())
+
+    def test_style_connection_dialog_reuses_existing_window(self):
+        from naim import style_connection_ui
+        c = self.controller
+        window = mock.Mock()
+        window.winfo_exists.return_value = True
+        with mock.patch.object(style_connection_ui, "open_style_connection", return_value=window) as open_dialog:
+            c.open_style_connection()
+            c.open_style_connection()
+            self.assertEqual(open_dialog.call_count, 1)
+            self.assertEqual(open_dialog.call_args.kwargs["can_save"], c._can_save_style_connection)
+            window.lift.assert_called_once()
+            window.focus_set.assert_called_once()
+            window.winfo_exists.return_value = False
+            c.open_style_connection()
+            self.assertEqual(open_dialog.call_count, 2)
 
 
 if __name__ == "__main__":

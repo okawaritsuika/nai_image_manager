@@ -11,7 +11,7 @@ import uuid
 from naim_updater import PROTECTED_FILES
 
 
-DATA_DIRECTORIES = ('TOTAL_CLASSIFIED', 'output', 'canvas_imports', 'daki_generated_temp', 'daki_style_tests', 'daki_imported_styles', 'daki_personal_styles', 'daki_worldcups', 'daki_drafts', 'daki_tag_examples')
+DATA_DIRECTORIES = ('TOTAL_CLASSIFIED', 'output', 'canvas_imports', 'daki_generated_temp', 'daki_style_tests', 'daki_imported_styles', 'daki_personal_styles', 'daki_worldcups', 'daki_drafts', 'daki_tag_examples', 'daki_dictionary_user')
 DATA_FILES = tuple(sorted(PROTECTED_FILES)) + ('data/tag_categories_ko.json',)
 
 

@@ -2310,7 +2310,7 @@ function updateGalleryTagAssignmentModeUi() {
     const btn = document.getElementById('galleryTagAssignmentModeBtn');
     if (btn) {
         btn.classList.toggle('active', isGalleryTagAssignmentMode);
-        btn.innerText = isGalleryTagAssignmentMode ? '🏷️ 태그 모드 ON' : '🏷️ 태그 모드';
+        btn.innerText = isGalleryTagAssignmentMode ? '태그 모드 ON' : '태그 모드';
     }
 
     const status = document.getElementById('galleryTagAssignmentModeStatus');

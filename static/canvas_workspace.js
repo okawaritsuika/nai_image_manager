@@ -1,4 +1,4 @@
-/* One main editor, with movable picture-only views of the other live canvases. */
+/* One main editor, with in-stage picture previews of the other live canvases. */
 (function (root) {
     'use strict';
     const state = root.CanvasWorkspaceState;
@@ -7,7 +7,7 @@
     const doc = root.document, channel = 'naim-canvas-workspace';
     const frames = new Map(), pending = new Map();
     let workspaceId, key, manifest, shell, notice, picker, manager, references, frameHost, inlinePaneId;
-    let pickerRevision = 0, retouchSettings = null, referenceHost = null, observer = null;
+    let pickerRevision = 0, retouchSettings = null, referenceHost = null, referenceStage = null, observer = null;
     let pickerPreviews = null, pickerSearch = null, pickerSelection = new Set(), pickerItems = [];
     let pickerFooterCount = null, pickerAddButton = null, pickerNoResults = null;
     let controls, mainSelect, visibilityMenu, visibilityList, visibilitySummary, controlsHost;
@@ -54,10 +54,10 @@
         if (pane.reference) {
             const reference = pane.reference;
             if (reference.fitHeight && reference.fitRatio) {
-                const headerHeight = frames.get(pane.id)?.header?.getBoundingClientRect?.().height || 0;
+                const footerHeight = frames.get(pane.id)?.footer?.getBoundingClientRect?.().height || 0;
                 return {...reference,
                     width: Math.max(120, reference.fitHeight * reference.fitRatio + 2),
-                    height: Math.max(120, reference.fitHeight + headerHeight + 2)};
+                    height: Math.max(120, reference.fitHeight + footerHeight + 8)};
             }
             return reference;
         }
@@ -66,58 +66,52 @@
         const height = Math.max(120, Math.min(300, ((referenceHost?.clientHeight || 700) - 64) / Math.max(1, visible.length) - 8));
         return {visible: true, x: 8, y: 56 + index * (height + 8), width: 160, height};
     }
-    function place(entry, bounds) {
-        const hostHeight = referenceHost?.clientHeight || bounds.height;
-        const hud = referenceHost?.ownerDocument?.getElementById('canvasDakiFocus');
-        // Keep the fitted card's title and controls below the floating body-map toolbar.
-        const hudBottom = bounds.fitHeight && hud && !hud.hidden
-            ? (hud.getBoundingClientRect?.().bottom || 0) - (referenceHost.getBoundingClientRect?.().top || 0) + 8 : 0;
-        const topInset = Math.max(0, Math.min(hudBottom, hostHeight - 120));
-        const width = Math.min(bounds.width, referenceHost?.clientWidth || bounds.width);
-        const height = Math.min(bounds.height, hostHeight - topInset);
-        const x = Math.max(0, Math.min(bounds.x, (referenceHost?.clientWidth || width) - width));
-        const y = Math.max(topInset, Math.min(bounds.y, hostHeight - height));
-        Object.assign(entry.card.style, {left: x + 'px', top: y + 'px', width: width + 'px', height: height + 'px'});
-        if (entry.fit) entry.fit.textContent = width < 150 ? '높이' : '높이 맞춤';
-        return {...bounds, x, y, width, height};
+    function visibleReferences() {
+        return manifest.panes.filter(pane => !pane.closed && pane.id !== manifest.activeId && referenceOf(pane).visible);
     }
-    function applyReferenceFit(pane, entry) {
-        const reference = pane?.reference, image = entry?.image;
-        if (reference?.fitHeight > 0 && reference?.fitRatio > 0 && image?.naturalWidth > 0 && image?.naturalHeight > 0) {
-            image.style.width = (reference.fitHeight * reference.fitRatio) + 'px';
-            image.style.height = reference.fitHeight + 'px';
-            image.style.flex = '0 0 auto';
-            entry.picture.style.justifyContent = 'flex-start';
-            entry.picture.style.alignItems = 'flex-start';
-            return;
-        }
-        image.style.width = ''; image.style.height = ''; image.style.flex = '';
-        entry.picture.style.justifyContent = ''; entry.picture.style.alignItems = '';
+    function place(entry, bounds) {
+        const ratio = bounds.fitHeight > 0 && bounds.fitRatio > 0
+            ? bounds.fitRatio : entry.image.naturalWidth > 0 && entry.image.naturalHeight > 0
+                ? entry.image.naturalWidth / entry.image.naturalHeight : 0;
+        const width = Math.min(2000, Math.max(120, Number(bounds.fitHeight > 0 && ratio > 0
+            ? bounds.fitHeight * ratio + 2 : bounds.width) || 160));
+        entry.card.style.width = width + 'px';
+        const footerHeight = entry.footer.getBoundingClientRect?.().height || 0;
+        const imageHeight = bounds.fitHeight > 0 ? bounds.fitHeight
+            : ratio > 0 ? width / ratio : Math.max(32, Number(bounds.height) - footerHeight - 8 || 32);
+        const height = imageHeight + footerHeight + 8;
+        entry.card.style.height = '';
+        entry.pictureWrapper.style.width = width + 'px'; entry.pictureWrapper.style.height = imageHeight + 'px';
+        entry.picture.style.width = '100%'; entry.picture.style.height = '100%';
+        if (entry.fit) entry.fit.textContent = '높이 맞춤';
+        return {...bounds, width, height, imageHeight, ratio};
     }
     function layoutReferences() {
         if (!referenceHost) return;
-        Object.assign(references.style, {left: referenceHost.scrollLeft + 'px', top: referenceHost.scrollTop + 'px',
-            width: referenceHost.clientWidth + 'px', height: referenceHost.clientHeight + 'px'});
+        referenceStage?.classList.toggle('has-multi-references', visibleReferences().length > 0);
         for (const pane of manifest.panes) {
             const entry = frames.get(pane.id); if (!entry) continue;
             const bounds = referenceOf(pane);
             entry.card.hidden = pane.id === manifest.activeId || !bounds.visible || pane.closed;
-            if (!entry.card.hidden) {applyReferenceFit(pane, entry); place(entry, bounds);}
+            if (!entry.card.hidden) place(entry, bounds);
         }
     }
     function attachReferences() {
         const active = frames.get(manifest.activeId);
         const editorDoc = active?.local ? doc : active?.frame.contentDocument;
         const host = active?.ready ? editorDoc?.querySelector('.canvas-workspace') : null;
-        if (host !== referenceHost) {
-            referenceHost?.removeEventListener('scroll', layoutReferences);
-            observer?.disconnect(); referenceHost = host;
-            if (host) {
-                host.append(references); host.addEventListener('scroll', layoutReferences);
+        const stage = host?.querySelector('#canvasStage') || null;
+        if (host !== referenceHost || stage !== referenceStage) {
+            referenceStage?.classList.remove('has-multi-references');
+            observer?.disconnect(); referenceHost = host; referenceStage = stage;
+            if (stage) {
+                stage.append(references);
                 if (root.ResizeObserver) { observer = new root.ResizeObserver(layoutReferences); observer.observe(host); }
-            } else shell.append(references);
+            } else {
+                referenceHost = null; referenceStage = null; shell.append(references);
+            }
         }
-        references.hidden = !host; layoutReferences();
+        references.hidden = !stage; layoutReferences();
     }
     function attachControls() {
         const active = frames.get(manifest.activeId);
@@ -242,24 +236,26 @@
         if (event.button !== 0) return;
         event.preventDefault(); event.stopPropagation();
         const pane = manifest.panes.find(value => value.id === paneId), entry = frames.get(paneId);
+        const bounds = place(entry, referenceOf(pane));
         drag = {paneId, pointerId: event.pointerId, target: event.currentTarget, x: event.clientX, y: event.clientY,
-            bounds: place(entry, referenceOf(pane)), resize};
+            bounds, ratio: bounds.ratio || bounds.width / Math.max(32, bounds.imageHeight),
+            fit: bounds.fitHeight > 0 && bounds.fitRatio > 0, resize};
         event.currentTarget.setPointerCapture(event.pointerId);
     }
     function moveDrag(event) {
         if (!drag || event.pointerId !== drag.pointerId) return;
         const dx = event.clientX - drag.x, dy = event.clientY - drag.y, b = drag.bounds;
-        if (drag.resize && b.fitHeight > 0 && b.fitRatio > 0) {
-            const byWidth = b.fitHeight + dx / b.fitRatio, byHeight = b.fitHeight + dy;
-            const fitHeight = Math.max(1, Math.abs(byWidth - b.fitHeight) > Math.abs(byHeight - b.fitHeight) ? byWidth : byHeight);
-            const headerHeight = frames.get(drag.paneId)?.header?.getBoundingClientRect?.().height || 0;
-            drag.next = place(frames.get(drag.paneId), {...b, fitHeight,
-                width: fitHeight * b.fitRatio + 2, height: fitHeight + headerHeight + 2});
-        } else {
-            drag.next = place(frames.get(drag.paneId), drag.resize
-                ? {...b, width: Math.max(120, b.width + dx), height: Math.max(120, b.height + dy)}
-                : {...b, x: b.x + dx, y: b.y + dy});
-        }
+        if (!drag.resize || !(drag.ratio > 0)) return;
+        const baseHeight = drag.fit ? b.fitHeight : b.imageHeight;
+        const byWidth = baseHeight + dx / drag.ratio, byHeight = baseHeight + dy;
+        const imageHeight = Math.max(32,
+            Math.abs(byWidth - baseHeight) > Math.abs(byHeight - baseHeight) ? byWidth : byHeight);
+        const width = Math.min(2000, Math.max(120, imageHeight * drag.ratio + 2));
+        const footerHeight = frames.get(drag.paneId)?.footer?.getBoundingClientRect?.().height || 0;
+        const bounds = {...b, width, height: imageHeight + footerHeight + 8};
+        if (drag.fit) {bounds.fitHeight = imageHeight; bounds.fitRatio = drag.ratio;}
+        else {delete bounds.fitHeight; delete bounds.fitRatio;}
+        drag.next = place(frames.get(drag.paneId), bounds);
     }
     function stopDrag(event) {
         if (!drag || event.pointerId !== drag.pointerId) return;
@@ -267,10 +263,9 @@
         if (finished.target.hasPointerCapture?.(event.pointerId)) finished.target.releasePointerCapture(event.pointerId);
         if (finished.next && event.type !== 'pointercancel') {
             try {
-                const reference = {...finished.next};
+                const {imageHeight, ratio, ...reference} = finished.next;
                 commit({...manifest, panes: manifest.panes.map(pane => pane.id === finished.paneId
                     ? {...pane, reference} : pane)});
-                if (finished.resize) applyReferenceFit(manifest.panes.find(pane => pane.id === finished.paneId), frames.get(finished.paneId));
             }
             catch (error) { message('그림 위치를 저장하지 못했습니다. ' + error.message, true); }
         }
@@ -280,33 +275,36 @@
         if (frames.has(pane.id) || pane.closed) return;
         local = local || pane.id === inlinePaneId;
         const card = node('section', 'canvas-multi-reference'); card.dataset.paneId = pane.id;
-        const header = node('div', 'canvas-multi-reference-header');
-        const title = node('span', 'canvas-multi-reference-title', pane.name); title.title = pane.name + ' · 드래그로 이동';
+        const footer = node('div', 'canvas-multi-reference-footer');
+        const title = node('span', 'canvas-multi-reference-title', pane.name); title.title = pane.name;
         const choose = button('메인', () => select(pane.id)); choose.title = '이 캔버스를 메인과 교체';
         const fit = button('높이 맞춤', () => fitReference(pane.id), 'canvas-multi-reference-fit secondary');
         fit.title = '현재 캔버스와 같은 높이로 맞추기'; fit.disabled = true;
         fit.setAttribute('aria-label', pane.name + ' 그림을 현재 캔버스와 같은 높이로 맞추기');
         const hide = button('숨김', () => toggle(pane.id)); hide.setAttribute('aria-label', pane.name + ' 숨기기');
-        header.append(title, choose, fit, hide);
+        footer.append(title, choose, fit, hide);
         const picture = button('', () => select(pane.id), 'canvas-multi-picture');
         picture.setAttribute('aria-label', pane.name + ' 메인으로 선택');
         const image = node('img'); image.alt = pane.name; image.draggable = false; image.hidden = true;
         const placeholder = node('span', '', '불러오는 중…'); picture.append(image, placeholder);
         const resize = button('↘', () => {}, 'canvas-multi-reference-resize'); resize.title = '드래그로 그림 크기 조절';
         resize.setAttribute('aria-label', pane.name + ' 표시 크기 조절');
-        card.append(header, picture, resize); references.append(card);
-        for (const [target, resizing] of [[title, false], [resize, true]]) {
+        const pictureWrapper = node('div', 'canvas-multi-reference-picture');
+        pictureWrapper.append(picture, resize);
+        card.append(pictureWrapper, footer); references.append(card);
+        for (const [target, resizing] of [[resize, true]]) {
             target.addEventListener('pointerdown', event => startDrag(event, pane.id, resizing));
             target.addEventListener('pointermove', moveDrag);
             target.addEventListener('pointerup', stopDrag); target.addEventListener('pointercancel', stopDrag);
         }
+        resize.onclick = event => event.stopPropagation();
         placeholder.onclick = event => {event.stopPropagation(); preview(pane.id);};
         let frame = null;
         if (!local) {
             frame = node('iframe', 'canvas-multi-editor'); frame.title = pane.name;
             frame.src = state.frameUrl(workspaceId, pane); frame.hidden = true; frameHost.append(frame);
         }
-        frames.set(pane.id, {card, frame, local, header, title, image, picture, placeholder, choose, fit, hide, ready: local,
+        frames.set(pane.id, {card, frame, local, footer, title, image, picture, pictureWrapper, placeholder, choose, fit, hide, ready: local,
             status: local ? 'saved' : 'loading', closing: false, previewing: false});
         image.addEventListener('load', () => {
             fit.disabled = !(image.naturalWidth > 0 && image.naturalHeight > 0);
@@ -327,15 +325,12 @@
         }
         try {
             const prior = referenceOf(pane), ratio = naturalWidth / naturalHeight;
-            const width = Math.min(Math.max(120, height * ratio + 2), referenceHost?.clientWidth || height * ratio + 2);
-            const cardHeight = Math.min(Math.max(120, height + (entry.header.getBoundingClientRect?.().height || 0) + 2),
-                referenceHost?.clientHeight || height + (entry.header.getBoundingClientRect?.().height || 0) + 2);
-            const reference = {...prior, fitHeight: height, fitRatio: ratio, width, height: cardHeight,
-                x: Math.max(0, Math.min(prior.x, (referenceHost?.clientWidth || width) - width)),
-                y: Math.max(0, Math.min(prior.y, (referenceHost?.clientHeight || cardHeight) - cardHeight))};
+            const width = Math.min(2000, Math.max(120, height * ratio + 2));
+            entry.card.style.width = width + 'px';
+            const cardHeight = height + (entry.footer.getBoundingClientRect?.().height || 0) + 8;
+            const reference = {...prior, fitHeight: height, fitRatio: ratio, width, height: cardHeight};
             commit({...manifest, panes: manifest.panes.map(value => value.id === paneId
                 ? {...value, reference} : value)});
-            applyReferenceFit(manifest.panes.find(value => value.id === paneId), entry);
             layoutReferences(); message(); return true;
         } catch (error) {message('높이 맞춤을 저장하지 못했습니다. ' + error.message, true); return false;}
     }
@@ -602,10 +597,13 @@
             if (!canvases.length) continue;
             for (const canvas of canvases) {
                 count++;
+                const width = canvas.width || canvas.state?.width || '?';
+                const height = canvas.height || canvas.state?.height || '?';
                 addPickerItem({key: `project:${project.id}:${canvas.id}`, kind: 'project', name: canvas.name || '이름 없는 캔버스',
-                    projectId: project.id, canvasId: canvas.id, detail: `${project.name || '이름 없는 프로젝트'} · ${side === 'front' ? '앞면' : '뒷면'}`,
+                    projectId: project.id, canvasId: canvas.id,
+                    detail: `${project.name || '이름 없는 프로젝트'} · ${side === 'front' ? '앞면' : '뒷면'} · ${width} × ${height} px`,
                     canvas: {...canvas, side}, input: {name: canvas.name, projectId: project.id, canvasId: canvas.id},
-                    searchText: `${canvas.name || ''} ${project.name || ''} ${side}`.toLocaleLowerCase('ko-KR')}, grid, section);
+                    searchText: `${canvas.name || ''} ${project.name || ''} ${side} ${width} ${height}`.toLocaleLowerCase('ko-KR')}, grid, section);
             }
         }
         if (count) {group.append(grid); section.append(group);}
@@ -648,7 +646,7 @@
                 for (const setup of setups) {
                     const savedAt = setup.savedAt ?? setup.updatedAt ?? setup.createdAt ?? setup.id;
                     addPickerItem({key: 'setup:' + setup.id, kind: 'setup', name: setup.name || '이름 없는 캔버스',
-                        detail: `${setup.width || setup.state?.width || '?'} × ${setup.height || setup.state?.height || '?'}`,
+                        detail: `${setup.width || setup.state?.width || '?'} × ${setup.height || setup.state?.height || '?'} px`,
                         input: {name: setup.name, setupId: setup.id}, snapshot: setup.state,
                         setupPreview: {id: setup.id, name: setup.name, savedAt, state: setup.state},
                         searchText: `${setup.name || ''} ${setup.width || setup.state?.width || ''} ${setup.height || setup.state?.height || ''}`.toLocaleLowerCase('ko-KR')}, grid, setupSection);

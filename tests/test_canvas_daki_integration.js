@@ -116,6 +116,7 @@ function harness({focus = true, warningAllowed = true, prepareError = null,
         async json() { events.push('response.json'); return jsonCopy(response.body); },
     };
     const context = {
+        CanvasSelectionRotation: require('../static/canvas_selection_rotation.js'),
         canvasLayers: [selection],
         layerIdSeq: 100,
         activeLayerId: null,
@@ -182,6 +183,7 @@ function harness({focus = true, warningAllowed = true, prepareError = null,
         renderLayerList() { renders.push('layers'); },
         renderCanvasLayersOnSurface() { renders.push('canvas'); },
         renderClipOutputPanel() { renders.push('clip-panel'); },
+        animateClipInpaintResult() { renders.push('animate-result'); },
         saveCanvasState() { saves.push(jsonCopy(selection)); },
         async renderMergedClipSourceToDataUrl() { throw new Error('unexpected merged-source render'); },
     };
@@ -231,7 +233,7 @@ test('prepared linked prompt is sent and success lands in the frozen body folder
     assert.deepEqual(h.processing.map(entry => entry[1]), [true, false]);
     assert.equal(h.saves.length, 1);
     assert.equal(h.saves[0].children[0].dakiRegion, 'chest');
-    assert.deepEqual(h.renders, ['clear-preview-cache', 'layers', 'canvas', 'clip-panel']);
+    assert.deepEqual(h.renders, ['clear-preview-cache', 'layers', 'canvas', 'animate-result']);
 });
 
 test('a selection reuses its first result folder after the prepared focus changes', async () => {

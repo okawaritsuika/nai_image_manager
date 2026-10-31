@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#121218">
+  <title>태그 사전</title>
+  <link rel="stylesheet" href="/static/daki_dictionary/styles.css">
+  <link rel="stylesheet" href="/static/daki_dictionary_drafts.css">
+  <script src="/static/daki_dictionary_drafts.js" defer></script>
+  <script src="/static/daki_dictionary_download.js" defer></script>
+  <script src="/static/daki_dictionary/app.js" defer></script>
+</head>
+<body class="daki-dictionary-standalone">
+  <section class="daki-dictionary-tool" aria-label="태그 사전">
+    <nav class="dictionary-navigation" aria-label="사전 탐색과 화면 이동">
+      <span class="dictionary-navigation-title">태그 사전</span>
+      <button id="browseTagsMobile" class="button quiet" type="button" aria-expanded="false" aria-controls="dictionaryBrowser">태그 찾기</button>
+      <div id="viewSwitch" class="view-switch" role="group" aria-label="작업 보기">
+        <button id="showPreviewView" class="button quiet active" type="button" aria-pressed="true">큰 그림</button>
+        <button id="showInspectorView" class="button quiet" type="button" aria-pressed="false">그림 목록</button>
+      </div>
+      <button id="toggleDictionaryHeader" class="button quiet dictionary-header-toggle" type="button" aria-expanded="true" aria-controls="dictionaryToolbar">상단 접기</button>
+    </nav>
+    <header id="dictionaryToolbar" class="tool-toolbar">
+      <div class="toolbar-brand">
+        <div class="brand-title">
+          <h1>태그 사전</h1>
+          <div class="archive-stats" aria-live="polite">
+            <span><strong id="tagCount">—</strong>개 태그</span>
+            <span class="stats-separator" aria-hidden="true">·</span>
+            <span><strong id="combinationCount">—</strong>개 원본 조합</span>
+          </div>
+        </div>
+      </div>
+      <nav class="toolbar-actions" aria-label="사전 작업">
+        <button id="openStatistics" class="button quiet" type="button" aria-expanded="false" aria-controls="statisticsPanel">통계</button>
+        <button id="headerImageFolder" class="button quiet" type="button">이미지 폴더</button>
+        <button id="dictionaryDownloadImages" class="button quiet" type="button">예시 이미지 다운로드</button>
+        <a class="button quiet export" href="/api/daki/dictionary/export.csv" download>사전 내보내기</a>
+      </nav>
+    </header>
+    <div class="image-pack-status-row" hidden>
+      <span id="dictionaryImagePackStatus" class="image-pack-status" role="status" aria-live="polite"></span>
+      <button id="dictionaryStopImagePack" class="button quiet" type="button" hidden>다운로드 중지</button>
+    </div>
+
+    <main class="workspace view-preview" aria-label="태그 사전 작업대">
+      <aside class="dictionary-sidebar" aria-label="사전 탐색 및 선택한 태그">
+      <div class="dictionary-sidebar-head">
+        <strong>사전 탐색</strong>
+        <button id="closeBrowse" class="icon-button browser-close" type="button" aria-label="태그 탐색 닫기">×</button>
+      </div>
+      <aside class="detail-panel" aria-label="선택한 태그 상세">
+        <article id="tagDetail" class="detail-information" hidden>
+          <div class="detail-overline"><button id="toggleDictionaryEntry" class="text-button section-toggle" type="button" aria-expanded="true" aria-controls="dictionaryEntryBody">사전 항목 <span aria-hidden="true">−</span></button><button id="editTag" class="text-button edit-button" type="button">번역·분류 편집 <span aria-hidden="true">↗</span></button></div>
+          <div id="dictionaryEntryBody">
+          <div class="entry-title"><div class="entry-name"><h2 id="detailKo"></h2><div class="english-tag"><span id="detailTag"></span><button id="copyTag" class="icon-button" type="button" aria-label="영문 태그 복사" title="영문 태그 복사"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></svg></button></div></div><div class="entry-number"><strong id="detailCount"></strong><span>사용 조합</span></div></div>
+          <p id="detailDescription" class="entry-description"></p>
+          <div id="detailCategories" class="category-pills" aria-label="이 태그의 분류"></div>
+          <section id="selectedStatistics" class="selected-statistics" aria-label="선택한 태그의 사용 통계"><div class="selected-stat-card"><span>사용 조합</span><strong id="statCombinationCount">—</strong></div><div class="selected-stat-card"><span>조합 비율</span><strong id="statCombinationPercent">—</strong></div><div class="selected-stat-card"><span>사용 순위</span><strong id="statRank">—</strong></div><div class="selected-stat-card"><span>연결 이미지</span><strong id="statImageCount">—</strong><small id="statImagePercent">비율 확인 중</small></div></section><p id="selectedStatisticsError" class="statistics-inline-error" hidden></p>
+          <details id="relatedSection" class="related-section"><summary><span>자주 함께 쓰인 태그</span><span id="relatedBasis" class="related-basis">원본 조합 기준</span></summary><div id="relatedTags" class="related-tags"></div><button id="showMoreRelated" class="text-button related-more" type="button" hidden>더 보기</button></details>
+          <section id="statisticsPanel" class="statistics-panel" hidden aria-label="태그 사용 통계"><div class="statistics-heading"><div><span class="eyebrow">태그 사용 통계</span><h2>태그 사용 통계</h2><p>원본 조합과 연결 이미지의 태그 사용량을 확인하세요.</p></div><button id="closeStatistics" class="button quiet" type="button">통계 접기 −</button></div><div id="statisticsOverview" class="statistics-overview"></div><div class="statistics-ranking-head"><h3>태그 사용 순위 <span id="statisticsTotal"></span></h3><label>정렬 <select id="statisticsSort"><option value="combinations">원본 조합 사용순</option><option value="images">연결 이미지 많은 순</option></select></label></div><p id="statisticsDenominator" class="statistics-denominator">조합과 이미지 비율의 분모를 불러오는 중입니다.</p><div class="statistics-table-wrap"><table class="statistics-table"><thead><tr><th scope="col">조합 순위</th><th scope="col">태그</th><th scope="col">원본 조합</th><th scope="col">연결 이미지</th></tr></thead><tbody id="statisticsRanking"></tbody></table></div><p id="statisticsError" class="form-error" role="alert"></p><button id="moreStatistics" class="button quiet statistics-more" type="button" hidden>순위 더 보기</button></section>
+
+          <div class="entry-tabs" role="tablist" aria-label="태그 정보와 조합"><button id="imagesTab" class="entry-tab active" role="tab" aria-selected="true" aria-controls="imagesPanel" type="button">태그 정보 <span id="imageTabCount" class="tab-badge">미연결</span></button><button id="combinationsTab" class="entry-tab" role="tab" aria-selected="false" aria-controls="combinationsPanel" type="button">태그 조합 <span id="comboTabCount"></span></button></div>
+          <section id="combinationsPanel" class="combinations-panel" role="tabpanel" aria-labelledby="combinationsTab" hidden><div class="image-section-heading"><div><h3>이 태그가 쓰인 조합</h3><p>원본에서 이 태그와 함께 사용된 사전 태그입니다.</p></div></div><div id="combinationsList"></div><button id="loadMoreCombinations" class="button quiet load-combinations" type="button" hidden>조합 더 보기</button></section>
+          <footer class="entry-footnote"><span>번역과 분류는 직접 다듬을 수 있습니다.</span><span id="translationSource"></span></footer>
+          </div>
+        </article>
+      </aside>
+      <aside id="dictionaryBrowser" class="dictionary-browser" aria-label="태그와 분류 탐색">
+        <div class="browser-head">
+          <div class="browser-tabs" role="tablist" aria-label="탐색 종류">
+            <button id="tagsBrowserTab" class="browser-tab active" role="tab" aria-selected="true" aria-controls="tagPane" type="button">태그</button>
+            <button id="categoriesBrowserTab" class="browser-tab" role="tab" aria-selected="false" aria-controls="categoryPane" type="button">분류</button>
+          </div>
+        </div>
+        <section id="tagPane" class="browser-pane" role="tabpanel" aria-labelledby="tagsBrowserTab">
+          <label class="main-search"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg><input id="tagSearch" type="search" placeholder="한국어·영문·별칭 검색" autocomplete="off" aria-label="한국어, 영문 또는 별칭 검색"><kbd>/</kbd></label>
+          <div class="result-toolbar">
+            <div class="result-context"><button id="clearCategory" class="active-category" type="button" hidden><span id="activeCategory">모든 태그</span><span aria-hidden="true">×</span></button><span id="resultCount" class="small-count">—</span></div>
+            <select id="sortTags" aria-label="태그 정렬"><option value="count">자주 쓰인 순</option><option value="ko">가나다 순</option><option value="tag">영문 순</option></select>
+          </div>
+          <div id="tagList" class="tag-list" role="listbox" aria-label="태그 검색 결과"><div class="list-state"><span class="spinner"></span><p>사전을 불러오는 중…</p></div></div>
+          <div class="list-footer"><span>선택한 태그의 뜻과 조합을 확인하세요</span><button id="loadMoreTags" class="text-button" type="button" hidden>더 보기</button></div>
+        </section>
+        <section id="categoryPane" class="browser-pane category-pane" role="tabpanel" aria-labelledby="categoriesBrowserTab" hidden>
+          <div class="panel-title"><h2><button id="toggleDictionaryCategories" class="text-button section-toggle" type="button" aria-expanded="true" aria-controls="dictionaryCategoryBody">태그 분류 <span aria-hidden="true">−</span></button></h2><span id="categoryCount" class="small-count">—</span></div>
+          <div id="dictionaryCategoryBody" class="category-body">
+          <label class="category-search"><span aria-hidden="true">⌕</span><input id="categorySearch" type="search" placeholder="세부 분류 찾기" autocomplete="off" aria-label="세부 분류 검색"></label>
+          <button id="allCategories" class="category-all active" type="button"><span>모든 태그</span><span id="allCount">—</span></button>
+          <nav id="categoryTree" class="category-tree" aria-label="세부 분류 목록"><div class="loading-text">분류를 불러오는 중…</div></nav>
+          <p class="sidebar-note">하나의 태그는 여러 분류에 속할 수 있습니다.</p>
+          </div>
+        </section>
+      </aside>
+      </aside>
+
+      <section class="image-list-pane" aria-label="태그에 연결된 그림 목록">
+        <section class="thumbnail-strip" aria-label="태그에 연결된 그림">
+          <div class="thumbnail-heading"><h3>태그에 연결된 그림</h3><span id="thumbnailCount"></span></div>
+          <div id="imageGallery" class="portrait-grid"><p class="thumbnail-empty">이미지 폴더를 연결하면 그림이 표시됩니다.</p></div>
+          <button id="loadMoreImages" class="button quiet load-combinations" type="button" hidden>다른 그림 더 보기</button>
+        </section>
+      </section>
+
+      <section class="main-pane" aria-label="그림 미리보기">
+        <div class="main-pane-grid">
+        <header class="picture-toolbar">
+          <div class="picture-context"><span id="selectedLabel" class="selected-label">선택한 태그의 그림</span><span id="pictureTag" class="picture-tag"></span></div>
+          <div class="picture-actions"><button id="importDictionaryDraft" class="button quiet" type="button" aria-haspopup="dialog" disabled>시안으로 가져오기</button><button id="togglePicture" class="button quiet" type="button" aria-expanded="false" aria-controls="pictureOverlay" aria-haspopup="dialog" title="상단 메뉴 위에 그림을 띄워 화면 높이에 맞춰 보기" disabled>그림 크게 보기</button></div>
+        </header>
+        <section class="picture-workbench picture-original-size" aria-label="선택한 태그의 그림">
+          <div id="detailEmpty" class="detail-empty"><div class="empty-mark" aria-hidden="true">Aa</div><h2>태그 하나에서 시작하세요.</h2><p>태그를 선택하면 뜻과 분류, 사용 그림과 조합을 볼 수 있습니다.</p></div>
+          <section id="imageViewer" class="inline-image-viewer" aria-label="큰 그림">
+            <div class="image-view"><div class="image-stage-content"><p id="imageStageMessage" class="image-stage-message">이미지 폴더를 연결하면 이곳에 그림이 표시됩니다.</p><img id="imageFull" alt="선택한 생성 이미지"></div></div>
+            <div class="image-stage-meta"><h2 id="imageName" title="">태그를 선택하면 그림을 불러옵니다.</h2><p id="imageDimensions" class="image-dimensions"></p></div>
+            <p id="imageDetailError" class="form-error" role="alert"></p>
+          </section>
+        </section>
+        <section id="imagesPanel" class="image-panel" role="tabpanel" aria-labelledby="imagesTab">
+          <section class="image-used-information" aria-label="그림에 사용된 태그">
+            <div class="used-tags-heading"><h3>그림의 사용 태그 <span id="usedTagCount"></span></h3><button id="copyUsedTags" class="text-button" type="button" disabled>사용 태그 복사 ↗</button></div>
+            <div id="imageMatchedTags" class="used-tags-list"></div>
+            <details class="image-connection-details">
+              <summary>폴더·연결 상태</summary>
+              <p id="imageConnectionTitle" class="connection-title">이미지 폴더를 연결해 보세요.</p>
+              <p id="imageConnectionDescription" class="connection-path">PNG·WebP 이미지 폴더를 선택하면 프롬프트의 태그와 연결합니다.</p>
+              <button id="openImageFolder" class="button quiet" type="button">폴더 연결</button>
+              <div id="imageScanStatus" class="image-scan-status" hidden></div>
+            </details>
+          </section>
+        </section>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="editDialog" class="edit-dialog"><form id="editForm"><div class="dialog-heading"><div><span class="eyebrow">내 사전</span><h2>사전 항목 편집</h2></div><button id="closeEdit" class="icon-button" type="button" aria-label="편집 닫기">×</button></div><p id="editEnglish" class="edit-english"></p><label>한국어 이름<input id="editKo" maxlength="300" required></label><label>설명<textarea id="editDescription" rows="4" maxlength="5000"></textarea></label><label>세부 분류<span class="field-help">한 줄에 하나씩 입력하세요. / 로 단계를 구분할 수 있습니다. 최대 30개입니다.</span><textarea id="editCategories" rows="5" required></textarea></label><p id="editError" class="form-error" role="alert"></p><div class="dialog-actions"><button id="cancelEdit" class="button quiet" type="button">취소</button><button id="saveEdit" class="button primary" type="submit">변경 저장</button></div></form></dialog>
+    <dialog id="folderDialog" class="edit-dialog folder-dialog"><form id="folderForm"><div class="dialog-heading"><div><span class="eyebrow">내 이미지 보관함</span><h2>이미지 폴더 연결</h2></div><button id="closeFolder" class="icon-button" type="button" aria-label="폴더 연결 닫기">×</button></div><p class="folder-intro">PNG·WebP 이미지가 담긴 폴더를 선택하세요. 하위 폴더를 살펴보고, 프롬프트가 기록된 그림을 태그에 연결합니다.</p><label>이미지 폴더 경로<div class="folder-input-row"><input id="folderPath" type="text" placeholder="이미지 폴더 경로" required autocomplete="off"><button id="pickImageFolder" class="button quiet" type="button">찾아보기</button></div></label><p class="field-help">그림은 이동하거나 수정하지 않습니다. 새 그림도 연결할 수 있습니다.</p><p id="folderError" class="form-error" role="alert"></p><div class="dialog-actions"><button id="cancelFolder" class="button quiet" type="button">취소</button><button id="saveFolder" class="button primary" type="submit">연결하기</button></div></form></dialog>
+    <dialog id="pictureOverlay" class="picture-overlay" aria-label="그림 크게 보기"><button id="importDictionaryDraftOverlay" class="button quiet picture-overlay-import" type="button" aria-haspopup="dialog">시안으로 가져오기</button><button id="closePictureOverlay" class="button quiet picture-overlay-close" type="button" aria-label="그림 크게 보기 닫기" title="닫기" autofocus><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg></button><img id="pictureOverlayImage" alt="선택한 생성 이미지"><p id="pictureOverlayError" class="picture-overlay-error" role="alert" hidden>그림을 읽지 못했습니다. 닫은 뒤 다시 시도해 주세요.</p></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </section>
+</body>
+</html>

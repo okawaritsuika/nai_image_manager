@@ -186,7 +186,7 @@ function updateGalleryBulkDeleteModeUi() {
     const btn = document.getElementById('galleryBulkDeleteModeBtn');
     if (btn) {
         btn.classList.toggle('active', isGalleryBulkDeleteMode);
-        btn.innerText = isGalleryBulkDeleteMode ? '🧹 삭제 모드 ON' : '🧹 삭제 모드';
+        btn.innerText = isGalleryBulkDeleteMode ? '삭제 모드 ON' : '삭제 모드';
     }
 
     updateGalleryBulkDeleteBar();

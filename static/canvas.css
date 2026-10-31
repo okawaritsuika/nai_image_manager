@@ -915,6 +915,39 @@
     cursor: nwse-resize;
 }
 
+.selection-rotate-handle {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: var(--selection-rotate-size, 36px);
+    height: var(--selection-rotate-size, 36px);
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    border: 2px solid var(--accent-blue);
+    border-radius: 50%;
+    box-sizing: border-box;
+    background: var(--card-bg);
+    color: var(--accent-blue);
+    cursor: grab;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: calc(var(--selection-rotate-size, 36px) * 0.55);
+    line-height: 1;
+    z-index: 2;
+    transform: translate(-50%, -50%);
+}
+
+.selection-rotate-handle::after {
+    content: "↻";
+}
+
+.selection-area-layer.selection-locked-move .selection-rotate-handle {
+    cursor: not-allowed;
+}
+
 .selection-size-tooltip {
     position: fixed;
     box-sizing: border-box;
@@ -2413,38 +2446,86 @@
 .clip-inpaint-loading {
     position: absolute;
     inset: 0;
-    display: none;
+    display: flex;
     align-items: center;
     justify-content: center;
     flex-direction: column;
-    gap: 12px;
-    background: rgba(0, 0, 0, 0.62);
+    gap: 14px;
+    padding: 16px;
+    box-sizing: border-box;
+    background: rgba(12, 16, 24, 0.38);
     z-index: 20;
-    pointer-events: all;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 180ms ease, visibility 180ms;
 }
 
 .clip-inpaint-loading.show {
-    display: flex;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: all;
 }
 
 .clip-inpaint-loading-spinner {
-    width: 42px;
-    height: 42px;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
     border-radius: 50%;
-    border: 4px solid rgba(255,255,255,0.18);
+    border: 3px solid rgba(255,255,255,0.24);
     border-top-color: #4ea8ff;
-    animation: clipInpaintSpin 0.9s linear infinite;
+    animation: clipInpaintSpin 1.1s linear infinite;
 }
 
 .clip-inpaint-loading-text {
     color: #fff;
     font-size: 13px;
-    font-weight: 800;
+    font-weight: 600;
+    line-height: 1.6;
+    max-width: 320px;
+    overflow-wrap: anywhere;
+    text-shadow: 0 1px 4px rgba(0,0,0,.8);
     text-align: center;
 }
 
 @keyframes clipInpaintSpin {
     to { transform: rotate(360deg); }
+}
+
+.clip-inpaint-loading-track {
+    width: min(160px, 60%);
+    height: 3px;
+    flex: 0 0 auto;
+    overflow: hidden;
+    border-radius: 3px;
+    background: rgba(255,255,255,.2);
+}
+.clip-inpaint-loading-track::after {
+    content: '';
+    display: block;
+    width: 40%;
+    height: 100%;
+    border-radius: inherit;
+    background: #8bc7ff;
+    animation: clipInpaintFlow 1.7s cubic-bezier(.45,0,.55,1) infinite;
+}
+.clip-inpaint-loading:not(.show) .clip-inpaint-loading-spinner,
+.clip-inpaint-loading:not(.show) .clip-inpaint-loading-track::after { animation-play-state: paused; }
+.clip-inpaint-run-btn:disabled { cursor: wait; opacity: .72; }
+.clip-inpaint-result-reveal { animation: clipInpaintReveal 260ms ease-out; }
+@keyframes clipInpaintFlow {
+    from { transform: translateX(-110%); }
+    to { transform: translateX(360%); }
+}
+@keyframes clipInpaintReveal {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .clip-inpaint-loading { transition: none; }
+    .clip-inpaint-loading-spinner,
+    .clip-inpaint-loading-track::after,
+    .clip-inpaint-result-reveal { animation: none; }
 }
 
 .canvas-tool-title {

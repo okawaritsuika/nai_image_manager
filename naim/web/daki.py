@@ -9,6 +9,7 @@ from flask import jsonify, request
 from PIL import Image
 
 from naim.images.dimensions import get_display_image_dimensions
+from naim.images.prompt_metadata import load_upscale_badge_info
 from naim.images.project_deletion import (
     ProjectImageReferencesConflict, delete_project_candidate_image,
 )
@@ -84,6 +85,7 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
                 if include_dimensions:
                     candidate['width'] = None
                     candidate['height'] = None
+                    candidate['upscale'] = {'is_upscaled': False}
                 try:
                     full_path, actual_relative = store.resolve_image(relative)
                     file_stat = os.stat(full_path)
@@ -98,6 +100,7 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
                                 if extension.lower() in ('.png', '.jpg', '.jpeg'):
                                     candidate['name'] = stem + '.webp'
                         if include_dimensions:
+                            candidate['upscale'] = load_upscale_badge_info(full_path)
                             candidate['width'], candidate['height'] = image_dimensions(
                                 full_path, file_stat.st_mtime_ns, file_stat.st_size,
                             )

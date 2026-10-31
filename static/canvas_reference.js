@@ -1289,7 +1289,7 @@ function addReferenceGenCharPromptEditor(initialValue = '') {
                 삭제
             </button>
         </div>
-        <textarea rows="4" id="referenceGenCharPromptInput-${id}"></textarea>
+        <textarea data-prompt-autocomplete rows="4" id="referenceGenCharPromptInput-${id}"></textarea>
     `;
 
     const textarea = item.querySelector('textarea');

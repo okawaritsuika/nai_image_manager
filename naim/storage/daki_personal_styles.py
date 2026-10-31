@@ -1,7 +1,9 @@
 """Personal style recipes with optional links to existing gallery images."""
 from copy import deepcopy
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
+import io
 from pathlib import Path
 import re
 import uuid
@@ -9,9 +11,10 @@ import uuid
 from PIL import Image
 
 from naim.paths import path_identity_key
-from naim.daki_style_tests import GENERATION_DEFAULTS, MODELS, build_style_test_payload
+from naim.daki_style_tests import GENERATION_DEFAULTS, MODELS, _request_settings, build_style_test_payload
 from naim.storage.daki_projects import DakiNotFoundError, matching_image_references, normalize_relative_path
 from naim.storage.json_files import json_lock, write_json
+from naim.storage.image_files import IMAGE_FILES_LOCK, staged_image_removal
 
 
 _STYLE_ID = re.compile(r'^personal_[a-f0-9]{32}$')
@@ -102,6 +105,18 @@ class DakiPersonalStyles:
         return reference
 
     def _source(self, reference):
+        if isinstance(reference, str) and reference.startswith('__daki_owned__/'):
+            name = reference.removeprefix('__daki_owned__/')
+            if not re.fullmatch(r'personal_[a-f0-9]{32}\.(png|jpg|webp)', name):
+                raise ValueError('복사한 대표 이미지 경로를 확인해 주세요.')
+            image_root = self._path().parent / 'images'
+            if image_root.is_symlink():
+                raise ValueError('복사한 대표 이미지 폴더를 확인해 주세요.')
+            root = image_root.resolve()
+            path = root / name
+            if path.is_symlink() or not path.resolve().is_relative_to(root) or not path.is_file():
+                raise FileNotFoundError('복사한 대표 이미지를 찾을 수 없습니다.')
+            return path, reference
         path, normalized = self.resolve_source(self._reference(reference))
         normalized = self._reference(normalized)
         path = Path(path)
@@ -132,6 +147,8 @@ class DakiPersonalStyles:
         reference = values.get('source_path', '')
         if reference:
             reference = self._reference(reference)
+            if reference.startswith('__daki_owned__/') and (not existing or reference != existing.get('source_path')):
+                raise ValueError('복사한 대표 이미지는 해당 그림체에서만 사용할 수 있습니다.')
             # Existing recipes remain editable even after their linked image moves.
             if not existing or reference != existing.get('source_path'):
                 _, reference = self._source(reference)
@@ -174,6 +191,141 @@ class DakiPersonalStyles:
             write_json(path, catalog, indent=2)
             return deepcopy(style)
 
+    def generation_payload(self, data):
+        """Build a validated one-off generation request without persisting it."""
+        if not isinstance(data, dict):
+            raise ValueError('요청 내용은 JSON 객체여야 합니다.')
+        width, height = data.get('width'), data.get('height')
+        style = self._normalize({
+            'name': 'Disposable preview',
+            'positive': data.get('positive'),
+            'negative': data.get('negative', ''),
+            'model': data.get('model', _DEFAULT_MODEL),
+            'options': data.get('options', {}),
+            'preview': {'width': 832 if width is None else width,
+                        'height': 1216 if height is None else height},
+        })
+        request = _request_settings({
+            'model': style['model'], 'width': width, 'height': height,
+            'prompt': data.get('prompt', ''),
+            'negative_prompt': data.get('negative_prompt', ''),
+        })
+        return build_style_test_payload(style, request)
+
+    @staticmethod
+    def _representative_png(value):
+        prefix = 'data:image/png;base64,'
+        if not isinstance(value, str) or not value.startswith(prefix):
+            raise ValueError('대표 이미지는 PNG 데이터로 입력해 주세요.')
+        import base64
+        try:
+            image_bytes = base64.b64decode(value[len(prefix):], validate=True)
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                if image.format != 'PNG' or image.width > 2048 or image.height > 2048:
+                    raise ValueError('대표 이미지는 2048×2048 이하의 PNG를 선택해 주세요.')
+                image.verify()
+        except (OSError, ValueError, Image.DecompressionBombError):
+            raise ValueError('대표 이미지는 2048×2048 이하의 올바른 PNG를 선택해 주세요.') from None
+        return image_bytes
+
+    def save_with_image(self, data, style_id=None):
+        """Save a recipe and its new owned PNG under the same catalog lock."""
+        if not isinstance(data, dict):
+            raise ValueError('개인 그림체 설정은 JSON 객체여야 합니다.')
+        values = dict(data)
+        image_bytes = self._representative_png(values.pop('representative_image', None))
+        path = self._path()
+        with IMAGE_FILES_LOCK, json_lock(path):
+            catalog = self._read(path)
+            previous = self._find(catalog, style_id) if style_id is not None else None
+            style = self._normalize(values, existing=previous)
+            if previous is None:
+                style.update(id='personal_' + uuid.uuid4().hex, created_at=_now())
+                style['updated_at'] = style['created_at']
+            else:
+                style.update(id=previous['id'], created_at=previous['created_at'], updated_at=_now())
+
+            image_root = path.parent / 'images'
+            if image_root.is_symlink():
+                raise ValueError('복사한 대표 이미지 폴더를 확인해 주세요.')
+            image_root.mkdir(parents=True, exist_ok=True)
+            image_name = 'personal_' + uuid.uuid4().hex + '.png'
+            image_path = image_root / image_name
+            owns_image = False
+            try:
+                with image_path.open('xb') as target:
+                    owns_image = True
+                    target.write(image_bytes)
+                    target.flush()
+                style['source_path'] = '__daki_owned__/' + image_name
+                if previous is None:
+                    catalog['styles'].append(style)
+                else:
+                    previous.clear()
+                    previous.update(style)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                write_json(path, catalog, indent=2)
+            except BaseException:
+                if owns_image:
+                    image_path.unlink(missing_ok=True)
+                raise
+        return deepcopy(style)
+
+    def create_snapshot(self, data, image_bytes=None):
+        """Copy a confirmed recipe and its preview without linking the original."""
+        style = self._normalize({**data, 'source_path': ''})
+        style.update(id='personal_' + uuid.uuid4().hex, created_at=_now())
+        style['updated_at'] = style['created_at']
+        suffix = None
+        if image_bytes is not None:
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as image:
+                    suffix = {'PNG': 'png', 'JPEG': 'jpg', 'WEBP': 'webp'}.get(image.format)
+                    image.verify()
+            except OSError:
+                raise ValueError('대표 그림을 읽을 수 없습니다.') from None
+            if suffix is None:
+                raise ValueError('지원하는 대표 이미지 형식이 아닙니다.')
+        path = self._path()
+        with IMAGE_FILES_LOCK, json_lock(path):
+            catalog = self._read(path)
+            image_path = None
+            owns_image = False
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if suffix:
+                    name = style['id'] + '.' + suffix
+                    image_path = path.parent / 'images' / name
+                    if image_path.parent.is_symlink():
+                        raise ValueError('복사한 대표 이미지 폴더를 확인해 주세요.')
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                    with image_path.open('xb') as target:
+                        owns_image = True
+                        target.write(image_bytes)
+                    style['source_path'] = '__daki_owned__/' + name
+                catalog['styles'].append(style)
+                write_json(path, catalog, indent=2)
+            except BaseException:
+                if owns_image:
+                    image_path.unlink(missing_ok=True)
+                raise
+        return deepcopy(style)
+
+    def remove_style(self, style_id):
+        path = self._path()
+        with IMAGE_FILES_LOCK, json_lock(path):
+            catalog = self._read(path)
+            style = self._find(catalog, style_id)
+            owned = []
+            if style['source_path'].startswith('__daki_owned__/'):
+                try:
+                    owned.append(self._source(style['source_path'])[0])
+                except FileNotFoundError:
+                    pass
+            with staged_image_removal(owned[0]) if owned else nullcontext():
+                catalog['styles'] = [item for item in catalog['styles'] if item['id'] != style_id]
+                write_json(path, catalog, indent=2)
+
     def preview_path(self, style_id, full=False):
         style = self.get_style(style_id)
         if not style['source_path']:
@@ -184,7 +336,7 @@ class DakiPersonalStyles:
     def references(self, paths=None, folders=None):
         def references():
             for style in self.list_styles():
-                if style['source_path']:
+                if style['source_path'] and not style['source_path'].startswith('__daki_owned__/'):
                     yield {'project_id': style['id'], 'style_id': style['id'],
                            'project_name': '개인 그림체 · ' + style['name'], 'side': '대표 그림',
                            'path': style['source_path'], 'source_path': style['source_path']}

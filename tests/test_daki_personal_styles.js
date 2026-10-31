@@ -28,15 +28,18 @@ function fixture() {
         set textContent(value) { this.replaceChildren(); this.text = String(value); }
         get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
         setAttribute(name, value) { this.attributes[name] = String(value); }
+        getAttribute(name) { return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null; }
         addEventListener(name, callback) {
             const callbacks = this.listeners.get(name) || []; callbacks.push(callback); this.listeners.set(name, callbacks);
         }
+        emit(name, event = {}) { (this.listeners.get(name) || []).forEach(callback => callback(event)); }
         showModal() { this.open = true; }
         close() { this.open = false; (this.listeners.get('close') || []).forEach(callback => callback()); }
         focus() { doc.activeElement = this; }
         get isConnected() { return !!this.parentNode; }
         matches(selector) {
             if (selector.startsWith('.')) return this.className.split(' ').includes(selector.slice(1));
+            if (selector.startsWith('#')) return this.id === selector.slice(1);
             return this.tagName === selector.toUpperCase();
         }
         querySelectorAll(selector) { return this.descendants().filter(el => selector.split(',').some(part => el.matches(part.trim()))); }
@@ -93,6 +96,15 @@ function style(overrides = {}) {
         options: {steps: 28, cfg: 6.5, cfg_rescale: .4, sampler: 'k_euler', noise_schedule: 'native',
             prefer_brownian: false, strength: .75, dynamic_thresholding: true}, ...overrides};
 }
+function confirmedStyle(overrides = {}) {
+    return {id: 31, name: 'Confirmed synthetic', model: 'nai-diffusion-5-full', positive: 'source prompt', negative: '',
+        preview: {width: 832, height: 1216}, src: '/api/daki/confirmed-styles/31/preview', ...overrides};
+}
+async function loadedLibrary(f, styles = [style()]) {
+    const loaded = f.render(); f.reply({styles}); await flush(); f.reply({batches: []}); await loaded;
+}
+function picker(f) { return f.doc.body.querySelectorAll('dialog').find(dialog => dialog.className.includes('daki-personal-picker-dialog')); }
+function deleteDialog(f) { return f.doc.body.querySelectorAll('dialog').find(dialog => dialog.className.includes('daki-project-delete-dialog')); }
 
 test('personal library reuses gallery interactions, excludes imageless recipes from worldcup and shows only personal tests', async () => {
     const f = fixture(), styles = [style(), style({id: 'personal_manual', name: 'Manual style', source_path: ''})];
@@ -142,7 +154,7 @@ test('manual editor posts entered recipe only when saved, without a seed or copi
     assert.equal(request.method, 'POST'); assert.equal(request.url, '/api/daki/personal-styles');
     assert.equal(request.body.name, 'New synthetic'); assert.equal(request.body.positive, '<img src=x onerror=unsafe()> & prompt');
     assert.equal(request.body.source_path, ''); assert.equal(request.body.model, 'nai-diffusion-5-full');
-    assert.deepEqual(request.body.preview, {width: 1024, height: 1024});
+    assert.deepEqual(request.body.preview, {width: 832, height: 1216});
     assert.equal(request.body.options.steps, 28); assert.equal('seed' in request.body.options, false);
     assert.equal(f.doc.body.querySelector('dialog'), null); assert.equal(f.toasts.length, 1);
 });
@@ -176,6 +188,47 @@ test('a failed edit load cannot save the default draft over the existing recipe'
     assert.equal(f.button('그림체 저장').disabled, true); assert.equal(f.button('취소').disabled, false);
     const retried = f.button('다시 불러오기').onclick(); f.reply({style: style()}); await retried;
     assert.equal(f.button('그림체 저장').disabled, false); assert.equal(f.field('positive').value, 'synthetic base');
+    f.field('name').value = 'Retried edit'; const save = f.submit();
+    const request = f.reply({style: style({name: 'Retried edit'})}); await save;
+    assert.equal(request.method, 'PUT'); assert.equal(request.url, '/api/daki/personal-styles/personal_example');
+    assert.equal(request.body.name, 'Retried edit');
+});
+
+test('failed edit load stays unsaveable after trial and source import attempts', async () => {
+    const f = fixture(); const opened = f.win.DakiPersonalStyles.openEditor({id: 'personal_example'});
+    f.reply({message: 'Synthetic load failure'}, 500); await opened;
+    f.field('positive').value = 'synthetic trial prompt';
+
+    const failedTrial = f.button('시안 생성').onclick();
+    f.reply({message: 'Synthetic trial failure'}, 502); await failedTrial;
+    assert.equal(f.button('그림체 저장').disabled, true);
+    const afterFailedTrial = f.requests.length;
+    await f.submit();
+    assert.equal(f.requests.length, afterFailedTrial);
+
+    const successfulTrial = f.button('시안 생성').onclick();
+    f.reply({image: 'data:image/png;base64,synthetic'}); await successfulTrial;
+    assert.equal(f.button('그림체 저장').disabled, true);
+    const afterSuccessfulTrial = f.requests.length;
+    await f.submit();
+    assert.equal(f.requests.length, afterSuccessfulTrial);
+
+    f.field('source_path').value = 'synthetic/import.png';
+    const failedImport = f.button('이 그림에서 가져오기').onclick();
+    f.reply({message: 'Synthetic import failure'}, 502); await failedImport;
+    assert.equal(f.button('그림체 저장').disabled, true);
+    const afterFailedImport = f.requests.length;
+    await f.submit();
+    assert.equal(f.requests.length, afterFailedImport);
+
+    const successfulImport = f.button('이 그림에서 가져오기').onclick();
+    f.reply({style: style({source_path: 'synthetic/import.png', positive: 'imported prompt'})}); await successfulImport;
+    assert.equal(f.field('positive').value, 'imported prompt');
+    assert.equal(f.button('그림체 저장').disabled, true);
+    const afterSuccessfulImport = f.requests.length;
+    await f.submit();
+    assert.equal(f.requests.length, afterSuccessfulImport);
+    assert.equal(f.requests.filter(request => request.method === 'PUT').length, 0);
 });
 
 test('late imports cannot replace a new dialog after leaving the previous view', async () => {
@@ -208,4 +261,208 @@ test('onSaved receives the saved style without navigation or library refresh', a
     const save = f.submit(); const saved = style(); f.reply({style: saved}); await save;
     assert.deepEqual(savedStyles, [saved]); assert.equal(f.pending.length, 0); assert.equal(f.requests.length, 3);
     assert.equal(f.win.location.hash, '#daki&library=personal'); assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 0);
+});
+
+test('confirmed styles are copied by id as an independent personal style and the current library refreshes', async () => {
+    const f = fixture(); await loadedLibrary(f, []);
+    f.button('확정 그림체 가져오기').onclick();
+    assert.equal(f.requests.at(-1).url, '/api/daki/confirmed-styles');
+    assert.equal(picker(f).getAttribute('aria-labelledby'), 'dakiPersonalPickerTitle');
+    assert.match(picker(f).querySelector('.daki-personal-status').textContent, /불러오는 중/);
+    const source = confirmedStyle(); f.reply({styles: [source]}); await flush();
+    const dialog = picker(f), choice = dialog.querySelector('.daki-personal-picker-choice');
+    assert.equal(choice.querySelector('img').src, source.src);
+    assert.equal(choice.textContent.includes(source.name), true);
+    assert.equal(choice.textContent.includes('NovelAI V5 Full'), true);
+    choice.onclick();
+    const copying = f.button('개인 그림체로 복사').onclick();
+    const request = f.requests.at(-1);
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/api/daki/personal-styles/import-confirmed');
+    assert.deepEqual(request.body, {style_id: 31});
+    assert.equal(source.name, 'Confirmed synthetic');
+    f.reply({style: style({id: 'personal_copy', name: source.name})}, 201); await flush();
+    f.reply({styles: [style({id: 'personal_copy', name: source.name})]}); await flush();
+    f.reply({batches: []}); await copying;
+    assert.equal(picker(f), undefined);
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 1);
+    assert.equal(f.bindings.includes('__daki_personal__/personal_copy.png'), true);
+});
+
+test('confirmed picker reveals further same-name styles and copies the selected ID without requesting a missing preview', async () => {
+    const f = fixture(); await loadedLibrary(f, []);
+    f.button('확정 그림체 가져오기').onclick();
+    const styles = Array.from({length: 61}, (_, index) => confirmedStyle({id: 1000 + index, name: 'Same synthetic name', src: ''}));
+    f.reply({styles}); await flush();
+    const dialog = picker(f), search = dialog.querySelector('input');
+    search.value = 'same synthetic name'; search.oninput();
+    assert.equal(dialog.querySelectorAll('.daki-personal-picker-choice').length, 60);
+    const first = dialog.querySelector('.daki-personal-picker-choice');
+    assert.equal(first.querySelector('img'), null);
+    assert.equal(first.querySelector('.daki-personal-picker-placeholder').textContent, '대표 그림 없음');
+    const more = f.button('더 보기'); assert.equal(more.hidden, false);
+    more.onclick();
+    const choices = dialog.querySelectorAll('.daki-personal-picker-choice');
+    assert.equal(choices.length, 61); assert.equal(more.hidden, true);
+    choices.at(-1).onclick();
+    const copying = f.button('개인 그림체로 복사').onclick();
+    assert.deepEqual(f.requests.at(-1).body, {style_id: 1060});
+    f.reply({style: style({id: 'personal_last', name: 'Same synthetic name'})}, 201); await flush();
+    f.reply({styles: [style({id: 'personal_last', name: 'Same synthetic name'})]}); await flush();
+    f.reply({batches: []}); await copying;
+});
+
+test('confirmed picker shows loading, retries list errors, and reports an empty catalog', async () => {
+    const f = fixture(); await loadedLibrary(f, []);
+    f.button('확정 그림체 가져오기').onclick();
+    assert.match(picker(f).querySelector('.daki-personal-status').textContent, /불러오는 중/);
+    f.reply({message: 'Synthetic catalog error'}, 500); await flush();
+    assert.match(picker(f).querySelector('.daki-personal-status').textContent, /Synthetic catalog error/);
+    const retry = f.button('다시 불러오기').onclick();
+    f.reply({styles: []}); await retry;
+    assert.match(picker(f).querySelector('.daki-personal-status').textContent, /가져올 확정 그림체가 없습니다/);
+    f.button('취소').onclick();
+    assert.equal(picker(f), undefined);
+});
+
+test('failed confirmed copy can retry; canceling during retry ignores its late success', async () => {
+    const f = fixture(); await loadedLibrary(f, []);
+    f.button('확정 그림체 가져오기').onclick(); f.reply({styles: [confirmedStyle()]}); await flush();
+    picker(f).querySelector('.daki-personal-picker-choice').onclick();
+    const failed = f.button('개인 그림체로 복사').onclick();
+    f.reply({message: 'Synthetic copy error'}, 500); await failed;
+    assert.equal(picker(f).open, true);
+    assert.match(picker(f).querySelector('.daki-personal-status').textContent, /Synthetic copy error/);
+    const retry = f.button('개인 그림체로 복사').onclick();
+    assert.equal(f.requests.at(-1).method, 'POST');
+    f.button('취소').onclick();
+    assert.equal(picker(f), undefined);
+    const requestCount = f.requests.length;
+    f.reply({style: style({id: 'late_copy'})}, 201); await retry;
+    assert.equal(f.requests.length, requestCount);
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 0);
+});
+
+test('confirmed picker closes on leave and a late catalog response cannot open or populate a new view', async () => {
+    const f = fixture(); await loadedLibrary(f, []);
+    f.button('확정 그림체 가져오기').onclick();
+    f.win.DakiPersonalStyles.leave();
+    assert.equal(picker(f), undefined);
+    const next = f.render();
+    f.reply({styles: [confirmedStyle()]}); await flush();
+    f.reply({styles: [style({id: 'new_view'})]}); await flush();
+    f.reply({batches: []}); await next;
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 1);
+    assert.equal(f.content.querySelectorAll('.daki-personal-picker-choice').length, 0);
+});
+
+test('personal style delete confirmation uses safe text, supports Escape and backdrop cancellation, and restores focus', async () => {
+    const f = fixture(); await loadedLibrary(f, [style({name: '<Synthetic style>'})]);
+    const opener = f.button('그림체 삭제'); opener.focus(); opener.onclick();
+    let dialog = deleteDialog(f);
+    assert.equal(dialog.getAttribute('aria-labelledby'), 'dakiPersonalDeleteTitle');
+    assert.equal(dialog.querySelector('#dakiPersonalDeleteTitle').textContent, '개인 그림체를 삭제할까요?');
+    assert.equal(dialog.querySelector('.daki-project-delete-title').textContent, '개인 그림체를 삭제할까요?');
+    assert.equal(dialog.querySelector('.daki-project-delete-name').textContent, '<Synthetic style>');
+    assert.match(dialog.querySelector('.daki-project-delete-description').textContent, /원본.*유지됩니다/);
+    assert.equal(f.doc.activeElement.textContent, '취소');
+    let prevented = false;
+    dialog.emit('cancel', {preventDefault() { prevented = true; }});
+    assert.equal(prevented, true);
+    assert.equal(deleteDialog(f), undefined);
+    assert.equal(f.doc.activeElement, opener);
+    assert.equal(f.requests.filter(request => request.method === 'DELETE').length, 0);
+
+    opener.onclick(); dialog = deleteDialog(f);
+    dialog.getBoundingClientRect = () => ({left: 10, right: 400, top: 10, bottom: 500});
+    dialog.emit('click', {target: dialog, clientX: 5, clientY: 200});
+    assert.equal(deleteDialog(f), undefined);
+    assert.equal(f.doc.activeElement, opener);
+});
+
+test('personal style delete succeeds once, disables all modal controls while pending, then refreshes', async () => {
+    const f = fixture(); await loadedLibrary(f, [style()]);
+    const opener = f.button('그림체 삭제'); opener.onclick();
+    const dialog = deleteDialog(f), confirm = dialog.querySelector('.daki-project-delete-confirm');
+    const removing = confirm.onclick();
+    assert.equal(f.requests.at(-1).method, 'DELETE');
+    assert.equal(f.requests.at(-1).url, '/api/daki/personal-styles/personal_example');
+    assert.equal(dialog.querySelector('.daki-project-delete-close').disabled, true);
+    assert.equal(dialog.querySelector('.daki-project-delete-cancel').disabled, true);
+    assert.equal(confirm.disabled, true);
+    confirm.onclick();
+    assert.equal(f.requests.filter(request => request.method === 'DELETE').length, 1);
+    f.reply({}); await flush();
+    f.reply({styles: []}); await flush(); f.reply({batches: []}); await removing;
+    assert.equal(deleteDialog(f), undefined);
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 0);
+});
+
+test('personal style delete failure stays in the dialog and can be retried', async () => {
+    const f = fixture(); await loadedLibrary(f, [style()]);
+    f.button('그림체 삭제').onclick();
+    const dialog = deleteDialog(f), confirm = dialog.querySelector('.daki-project-delete-confirm');
+    const failed = confirm.onclick(); f.reply({message: 'Synthetic delete error'}, 500); await failed;
+    assert.equal(dialog.open, true);
+    assert.match(dialog.querySelector('.daki-personal-status').textContent, /Synthetic delete error/);
+    assert.equal(confirm.disabled, false);
+    const retry = confirm.onclick(); f.reply({}); await flush();
+    f.reply({styles: []}); await flush(); f.reply({batches: []}); await retry;
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 0);
+});
+
+test('leaving during personal style deletion closes the dialog and ignores its late response', async () => {
+    const f = fixture(); await loadedLibrary(f, [style()]);
+    f.button('그림체 삭제').onclick();
+    const removing = deleteDialog(f).querySelector('.daki-project-delete-confirm').onclick();
+    f.win.DakiPersonalStyles.leave();
+    assert.equal(deleteDialog(f), undefined);
+    f.content.replaceChildren();
+    const next = f.render();
+    f.reply({}); await removing;
+    f.reply({styles: [style({id: 'still_visible'})]}); await flush();
+    f.reply({batches: []}); await next;
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 1);
+    assert.equal(f.content.querySelectorAll('.daki-project-delete-dialog').length, 0);
+});
+
+
+test('trial generation is disposable and only explicitly selected image is saved', async () => {
+    const f = fixture(); await f.win.DakiPersonalStyles.openEditor();
+    f.field('positive').value = 'ink'; f.field('negative').value = 'blur';
+    f.field('prompt').value = 'portrait'; f.field('negative_prompt').value = 'hat';
+    f.field('width').value = '1024'; f.field('height').value = '1024';
+    const generating = f.button('시안 생성').onclick();
+    const generated = f.reply({image: 'data:image/png;base64,synthetic'}); await generating;
+    assert.equal(generated.url, '/api/daki/personal-styles/generate');
+    assert.equal(generated.body.prompt, 'portrait'); assert.equal(generated.body.positive, 'ink');
+    assert.equal(generated.body.width, 1024); assert.equal(f.requests.length, 1);
+    f.button('대표 그림으로 사용').onclick(); f.field('name').value = 'Trial style';
+    const saving = f.submit(); const saved = f.reply({style: style()}); await saving;
+    assert.equal(saved.body.representative_image, 'data:image/png;base64,synthetic');
+    assert.equal(saved.body.positive, 'ink'); assert.equal(saved.body.negative, 'blur');
+    assert.equal('prompt' in saved.body, false); assert.equal('width' in saved.body, false);
+    assert.deepEqual(saved.body.preview, {width: 832, height: 1216});
+});
+
+test('unselected trial is not saved and failure permits retry', async () => {
+    const f = fixture(); await f.win.DakiPersonalStyles.openEditor();
+    f.field('positive').value = 'ink'; f.field('name').value = 'Trial';
+    const failed = f.button('시안 생성').onclick(); f.reply({message: 'Synthetic failure'}, 502); await failed;
+    assert.equal(f.button('시안 생성').disabled, false);
+    const retry = f.button('시안 생성').onclick(); f.reply({image: 'data:image/png;base64,trial'}); await retry;
+    const saving = f.submit(); const saved = f.reply({style: style()}); await saving;
+    assert.equal('representative_image' in saved.body, false);
+});
+
+test('paid trial requires confirmation and duplicate generation is suppressed', async () => {
+    const f = fixture(); await f.win.DakiPersonalStyles.openEditor(); f.field('positive').value = 'ink';
+    f.field('steps').value = '29'; let warnings = 0;
+    f.win.showAnlasWarningModal = async () => { warnings++; return false; };
+    await f.button('시안 생성').onclick(); assert.equal(f.requests.length, 0); assert.equal(warnings, 1);
+    f.win.showAnlasWarningModal = async () => true;
+    const generating = f.button('시안 생성').onclick(); await flush();
+    await f.button('시안 생성').onclick(); assert.equal(f.requests.length, 1);
+    const request = f.reply({image: 'data:image/png;base64,trial'}); await generating;
+    assert.equal(request.body.allow_anlas, true);
 });

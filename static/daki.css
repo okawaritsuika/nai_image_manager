@@ -89,6 +89,7 @@ body.daki-project-active #dakiLibrary .daki-side > .section-title { margin: 12px
 #dakiLibrary .daki-project-kind { top: 8px; left: 8px; min-width: 0; max-width: calc(100% - 58px); padding: 4px 7px; border-width: 1px; box-shadow: none; font-size: 11px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; pointer-events: none; }
 #dakiLibrary .daki-project-kind[data-kind="canvas"] { --neon-daki: var(--accent); color: var(--neon-daki); border-color: var(--neon-daki); }
 #dakiLibrary .daki-project-kind[data-kind="image"] { --neon-daki: var(--thumb); color: var(--neon-daki); border-color: var(--neon-daki); }
+#dakiLibrary .daki-project-kind[data-kind="upscale"] { color: #001b16; border-color: #55efc4; background: rgba(0, 184, 148, 0.9); }
 .daki-side h2 span { margin-left: 10px; color: #999; font-size: 13px; font-weight: 400; letter-spacing: 0; }
 .daki-candidate { min-width: 0; margin: 0; }
 .daki-image-tools { margin: 16px 0 20px; padding: 14px 16px; border: 1px solid #ffffff20; border-radius: 10px; background: var(--card); }

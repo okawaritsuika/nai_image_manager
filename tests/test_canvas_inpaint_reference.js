@@ -164,7 +164,7 @@ function createHarness(fetchImpl = async () => {
         devicePixelRatio: 1
     };
     vm.runInNewContext(source, {window, module: {exports: {}}, AbortController});
-    return {api: window.CanvasInpaintReference, document, host, stage, surface};
+    return {api: window.CanvasInpaintReference, document, host, stage, surface, window};
 }
 
 function findByText(root, tagName, text) {
@@ -211,6 +211,21 @@ function assertJsonEqual(actual, expected) {
 async function flushAsync() {
     await new Promise(resolve => setImmediate(resolve));
     await new Promise(resolve => setImmediate(resolve));
+}
+
+function jsonResponse(payload, status = 200) {
+    return {ok: status >= 200 && status < 300, status, json: async () => payload};
+}
+
+function installOppositePicker(harness) {
+    const picker = {calls: []};
+    picker.open = options => picker.calls.push(options);
+    harness.window.CanvasOppositeReference = picker;
+    return picker;
+}
+
+function findReferenceButton(harness) {
+    return findByText(harness.host, 'button', '반대면에서 가져오기');
 }
 
 test('normalizes missing state and clones valid reference snapshots', () => {
@@ -545,6 +560,276 @@ test('failed upload preserves the current reference', async () => {
     assert.equal(saveCalls, 0);
 });
 
+test('opposite-side candidate is imported through the existing image upload and included once', async () => {
+    const projectId = 'a'.repeat(32);
+    const canvasId = 'c'.repeat(32);
+    const candidateId = 'd'.repeat(32);
+    const calls = [];
+    const harness = createHarness(async (url, options) => {
+        calls.push({url, options});
+        if (url === `/api/daki/projects/${projectId}`) {
+            return jsonResponse({status: 'success', project: {
+                id: projectId,
+                candidates: {back: [{id: candidateId, side: 'back', src: '/images/back.webp', name: '뒷면 후보'}]},
+                canvases: {back: []}
+            }});
+        }
+        if (url === '/images/back.webp') {
+            return {ok: true, blob: async () => new Blob(['candidate'], {type: 'image/webp'})};
+        }
+        if (url === '/api/canvas/upload_image') {
+            return jsonResponse({status: 'success', src: '/canvas-imports/imported.webp',
+                name: 'opposite-reference.webp', width: 800, height: 600});
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const picker = installOppositePicker(harness);
+    let saveCalls = 0;
+    harness.api.configure({
+        getContext: () => ({canvasWidth: 512, canvasHeight: 512}),
+        save: () => { saveCalls += 1; },
+        redraw: () => {},
+        getProjectLink: () => ({projectId, canvasId, side: 'front'}),
+        sessionId: 'synthetic-session'
+    });
+    harness.api.restore({reference: validReference, showArea: false, include: false});
+
+    const button = findReferenceButton(harness);
+    assert.equal(button.disabled, false);
+    button.click();
+    assert.equal(picker.calls.length, 1);
+    const chosen = {projectId, kind: 'candidate', id: candidateId, visible: true};
+    picker.calls[0].onChoose(chosen);
+    picker.calls[0].onChoose(chosen);
+    assert.equal(button.disabled, true);
+    await flushAsync();
+
+    assert.deepEqual(calls.map(call => call.url), [
+        `/api/daki/projects/${projectId}`, '/images/back.webp', '/api/canvas/upload_image'
+    ]);
+    const fileEntry = calls[2].options.body.entries.find(entry => entry[0] === 'file');
+    assert.equal(fileEntry[2], 'opposite-reference.webp');
+    assert.equal(calls[2].options.signal.aborted, false);
+    assertJsonEqual(harness.api.snapshot(), {
+        reference: {src: '/canvas-imports/imported.webp', name: '뒷면 후보',
+            width: 320, x: 0.5, y: 0.5, zoom: 1},
+        showArea: true,
+        include: true
+    });
+    assert.equal(saveCalls, 1);
+    assert.equal(button.disabled, false);
+});
+
+test('opposite-side saved canvas is rendered and imported from the other face', async () => {
+    const projectId = 'e'.repeat(32);
+    const canvasId = 'f'.repeat(32);
+    const selectedCanvasId = '1'.repeat(32);
+    const calls = [];
+    const rendered = [];
+    const harness = createHarness(async (url, options) => {
+        calls.push({url, options});
+        if (url === `/api/daki/projects/${projectId}`) {
+            return jsonResponse({status: 'success', project: {
+                id: projectId, candidates: {front: []},
+                canvases: {front: [{id: selectedCanvasId, side: 'front'}]}
+            }});
+        }
+        if (url === `/api/daki/projects/${projectId}/canvases/${selectedCanvasId}`) {
+            return jsonResponse({status: 'success', project: {id: projectId}, canvas: {
+                id: selectedCanvasId, side: 'front', name: '앞면 저장 캔버스', state: {layers: [{id: 'layer'}]}
+            }});
+        }
+        if (url === 'data:image/png;base64,synthetic') {
+            return {ok: true, blob: async () => new Blob(['canvas'], {type: 'image/png'})};
+        }
+        if (url === '/api/canvas/upload_image') {
+            return jsonResponse({status: 'success', src: '/canvas-imports/canvas.png',
+                name: 'opposite-reference.png', width: 700, height: 900});
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const picker = installOppositePicker(harness);
+    harness.window.renderMergedCanvasToDataUrl = async options => {
+        rendered.push(options);
+        return 'data:image/png;base64,synthetic';
+    };
+    let saveCalls = 0;
+    harness.api.configure({
+        getContext: () => ({canvasWidth: 512, canvasHeight: 512}),
+        save: () => { saveCalls += 1; },
+        redraw: () => {},
+        getProjectLink: () => ({projectId, canvasId, side: 'back'}),
+        sessionId: 'canvas-session'
+    });
+    harness.api.restore({reference: validReference, showArea: false, include: false});
+
+    findReferenceButton(harness).click();
+    picker.calls[0].onChoose({projectId, kind: 'canvas', id: selectedCanvasId, visible: true});
+    await flushAsync();
+
+    assert.deepEqual(calls.map(call => call.url), [
+        `/api/daki/projects/${projectId}`,
+        `/api/daki/projects/${projectId}/canvases/${selectedCanvasId}`,
+        'data:image/png;base64,synthetic',
+        '/api/canvas/upload_image'
+    ]);
+    assert.equal(JSON.stringify(rendered), JSON.stringify([
+        {state: {layers: [{id: 'layer'}]}, maxDimension: 1600}
+    ]));
+    const upload = calls[3].options.body.entries;
+    assert.deepEqual(upload.find(entry => entry[0] === 'sessionId'), ['sessionId', 'canvas-session']);
+    assert.equal(upload.find(entry => entry[0] === 'file')[2], 'opposite-reference.png');
+    assertJsonEqual(harness.api.snapshot(), {
+        reference: {src: '/canvas-imports/canvas.png', name: '앞면 저장 캔버스',
+            width: 320, x: 0.5, y: 0.5, zoom: 1},
+        showArea: true,
+        include: true
+    });
+    assert.equal(saveCalls, 1);
+});
+
+test('opposite-side import button requires a canvas, a valid link, and the picker', () => {
+    const projectId = 'a'.repeat(32);
+    const canvasId = 'b'.repeat(32);
+    const harness = createHarness();
+    let link = null;
+    harness.api.configure({
+        getContext: () => ({canvasWidth: 512, canvasHeight: 512}),
+        getProjectLink: () => link
+    });
+    const picker = installOppositePicker(harness);
+    harness.api.render();
+    const button = findReferenceButton(harness);
+    assert.equal(button.disabled, true);
+    button.click();
+    assert.equal(picker.calls.length, 0);
+
+    link = {projectId, canvasId, side: 'front'};
+    harness.api.render();
+    assert.equal(button.disabled, false);
+    delete harness.window.CanvasOppositeReference;
+    harness.api.render();
+    assert.equal(button.disabled, true);
+
+    installOppositePicker(harness);
+    link = {projectId, canvasId, side: 'left'};
+    harness.api.render();
+    assert.equal(button.disabled, true);
+
+    link = {projectId, canvasId, side: 'back'};
+    harness.api.configure({getContext: () => ({canvasWidth: 0, canvasHeight: 0}), getProjectLink: () => link});
+    assert.equal(button.disabled, true);
+});
+
+test('failed opposite-side upload preserves the existing reference and include state', async () => {
+    const projectId = '2'.repeat(32);
+    const canvasId = '3'.repeat(32);
+    const candidateId = '4'.repeat(32);
+    const calls = [];
+    const harness = createHarness(async (url, options) => {
+        calls.push({url, options});
+        if (url === `/api/daki/projects/${projectId}`) {
+            return jsonResponse({status: 'success', project: {id: projectId,
+                candidates: {back: [{id: candidateId, src: '/images/source.jpg'}]}, canvases: {back: []}}});
+        }
+        if (url === '/images/source.jpg') {
+            return {ok: true, blob: async () => new Blob(['candidate'], {type: 'image/jpeg'})};
+        }
+        if (url === '/api/canvas/upload_image') {
+            return jsonResponse({status: 'error', message: 'synthetic upload failure'}, 422);
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const picker = installOppositePicker(harness);
+    let saveCalls = 0;
+    harness.api.configure({
+        getContext: () => ({canvasWidth: 512, canvasHeight: 512}),
+        save: () => { saveCalls += 1; }, redraw: () => {},
+        getProjectLink: () => ({projectId, canvasId, side: 'front'})
+    });
+    harness.api.restore({reference: validReference, showArea: true, include: true});
+
+    findReferenceButton(harness).click();
+    picker.calls[0].onChoose({projectId, kind: 'candidate', id: candidateId, visible: true});
+    await flushAsync();
+
+    assert.deepEqual(calls.map(call => call.url), [
+        `/api/daki/projects/${projectId}`, '/images/source.jpg', '/api/canvas/upload_image'
+    ]);
+    assert.equal(calls[2].options.body.entries.find(entry => entry[0] === 'file')[2], 'opposite-reference.jpg');
+    assertJsonEqual(harness.api.snapshot(), {reference: validReference, showArea: true, include: true});
+    assert.equal(saveCalls, 0);
+    assert.equal(findReferenceButton(harness).disabled, false);
+});
+
+test('opposite-side import ignores project data after the linked canvas or side changes', async t => {
+    for (const change of ['canvas', 'side']) {
+        await t.test(change, async () => {
+            const projectId = '5'.repeat(32);
+            const canvasId = '6'.repeat(32);
+            const candidateId = '7'.repeat(32);
+            const projectRequest = deferred();
+            const calls = [];
+            const harness = createHarness(async (url, options) => {
+                calls.push({url, options});
+                return projectRequest.promise;
+            });
+            const picker = installOppositePicker(harness);
+            let link = {projectId, canvasId, side: 'front'};
+            let saveCalls = 0;
+            harness.api.configure({
+                getContext: () => ({canvasWidth: 512, canvasHeight: 512}),
+                save: () => { saveCalls += 1; }, redraw: () => {}, getProjectLink: () => link
+            });
+            harness.api.restore({reference: validReference, showArea: false, include: false});
+            findReferenceButton(harness).click();
+            picker.calls[0].onChoose({projectId, kind: 'candidate', id: candidateId, visible: true});
+            assert.equal(calls.length, 1);
+
+            link = change === 'canvas'
+                ? {...link, canvasId: '8'.repeat(32)}
+                : {...link, side: 'back'};
+            harness.api.render();
+            assert.equal(calls[0].options.signal.aborted, true);
+            projectRequest.resolve(jsonResponse({status: 'success', project: {id: projectId,
+                candidates: {back: [{id: candidateId, src: '/images/stale.webp'}]}}}));
+            await flushAsync();
+
+            assert.equal(calls.length, 1, 'stale result must not trigger an image fetch or upload');
+            assertJsonEqual(harness.api.snapshot(), {reference: validReference, showArea: false, include: false});
+            assert.equal(saveCalls, 0);
+        });
+    }
+});
+
+test('opposite-side import rejects a record assigned to the linked side', async () => {
+    const projectId = '9'.repeat(32);
+    const canvasId = 'a'.repeat(32);
+    const candidateId = 'b'.repeat(32);
+    const calls = [];
+    const harness = createHarness(async (url, options) => {
+        calls.push({url, options});
+        return jsonResponse({status: 'success', project: {id: projectId,
+            candidates: {back: [{id: candidateId, side: 'front', src: '/images/wrong-side.png'}]}}});
+    });
+    const picker = installOppositePicker(harness);
+    let saveCalls = 0;
+    harness.api.configure({
+        getContext: () => ({canvasWidth: 512, canvasHeight: 512}),
+        save: () => { saveCalls += 1; }, redraw: () => {},
+        getProjectLink: () => ({projectId, canvasId, side: 'front'})
+    });
+    harness.api.restore({reference: validReference, showArea: true, include: true});
+
+    findReferenceButton(harness).click();
+    picker.calls[0].onChoose({projectId, kind: 'candidate', id: candidateId, visible: true});
+    await flushAsync();
+
+    assert.equal(calls.length, 1);
+    assertJsonEqual(harness.api.snapshot(), {reference: validReference, showArea: true, include: true});
+    assert.equal(saveCalls, 0);
+});
+
 test('render does not add a reference overlay or change stage padding', () => {
     const harness = createHarness();
     harness.stage.style.paddingLeft = 'preserved';
@@ -602,6 +887,36 @@ test('project template save does not PUT after the linked project changes during
         reference: validReference, showArea: false, include: false
     });
     assert.equal(saveCalls, 0);
+});
+
+test('project template save keeps its project-level scope when the linked canvas changes', async () => {
+    const projectId = 'b'.repeat(32);
+    const getSettings = deferred();
+    const calls = [];
+    const harness = createHarness(async (url, options) => {
+        calls.push({url, options});
+        if (calls.length === 1) return getSettings.promise;
+        return jsonResponse({status: 'success'});
+    });
+    let link = {projectId, canvasId: 'c'.repeat(32), side: 'front'};
+    harness.api.configure({
+        getContext: () => ({canvasWidth: 512, canvasHeight: 512}),
+        save: () => {}, redraw: () => {}, getProjectLink: () => link
+    });
+    harness.api.restore({reference: validReference});
+
+    findByText(harness.host, 'button', '프로젝트에 등록').click();
+    link = {...link, canvasId: 'd'.repeat(32), side: 'back'};
+    harness.api.render();
+    assert.equal(calls[0].options.signal.aborted, false);
+    getSettings.resolve(jsonResponse({status: 'success', settings: {
+        revision: 4, style: {}, prompts: {}, inpaintSettings: {}
+    }}));
+    await flushAsync();
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].options.method, 'PUT');
+    assert.equal(calls[1].url, `/api/daki/projects/${projectId}/canvas-settings`);
 });
 
 test('sidebar reference width text describes request inclusion and clear disables it', () => {

@@ -1,0 +1,83 @@
+/* Keep the shell; give the dictionary the content area below its navigation. */
+.workspace-header-navigation > .gallery-workspace-entry,
+body.gallery-layout-modern .workspace-header-navigation > .gallery-workspace-entry,
+.main-header .gallery-workspace-entry {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    flex: 0 0 104px;
+    width: 104px;
+    height: 34px;
+    min-height: 34px;
+    margin: 0 !important;
+    padding: 6px 10px !important;
+    border: 1px solid #637fc2;
+    border-radius: 7px !important;
+    color: #c2d3ff;
+    background: #202a3d;
+    font: 600 12px/1.4 'Segoe UI', 'Malgun Gothic', sans-serif;
+    font-weight: 600;
+    font-size: 12px !important;
+    box-shadow: none !important;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    gap: 6px;
+}
+.gallery-workspace-entry:focus-visible { outline: 2px solid #adc8ff; outline-offset: 2px; }
+.gallery-workspace-entry svg { width: 16px; height: 16px; flex: 0 0 16px; }
+.header-row-right > .gallery-workspace-entry:hover { background: #2d3b55; }
+#openDakiDictionary { border-color: #9f8857; background: #292630; color: #ecd6a4; }
+#openDakiDictionary:hover { background: #3a3224; }
+.gallery-workspace-entry#openCanvasLink:hover { background: #354b73; border-color: #9bb9ff; color: #e4edff; }
+.gallery-workspace-entry#openDakiDictionary:hover { background: #514329; border-color: #dfbd76; color: #fff0cb; }
+#openGalleryLink { background: #193633; border-color: #4e9f91; color: #a5e3d6; }
+.main-header #openCanvasLink:hover { background: #354b73; border-color: #9bb9ff; color: #e4edff; }
+.main-header #openDakiDictionary:hover { background: #514329; border-color: #dfbd76; color: #fff0cb; }
+.main-header #openGalleryLink:hover { background: #27554e; border-color: #80d8c3; color: #dcfff5; }
+.main-header .header-nav .canvas-header-control {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    height: 34px;
+    min-height: 34px;
+    gap: 6px;
+    padding: 6px 10px !important;
+    border: 1px solid #596079;
+    border-radius: 7px;
+    background: #292d38;
+    color: #dce2ef;
+    font: 600 12px/1.4 'Segoe UI', 'Malgun Gothic', sans-serif;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: none;
+}
+.main-header .header-nav .canvas-header-control:hover { background: #3a4458; border-color: #8d9bb7; color: #fff; }
+.header-row-right > .nai-header-account { margin-left: auto !important; flex: 0 0 auto; }
+body.gallery-layout-modern .header-row-right > .gallery-image-tools-controls { margin-left: 0; }
+.gallery-workspace-entry#openGalleryLink:hover { background: #27554e; border-color: #80d8c3; color: #dcfff5; }
+
+.workspace-header-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; width: 100%; min-width: 0; }
+body.gallery-layout-modern .header-row-right > .workspace-header-navigation { margin-left: 0; white-space: normal; }
+.workspace-header-navigation > .nai-header-account { margin-left: auto; flex: 0 0 auto; }
+.main-header .header-container-fluid { align-items: flex-start; }
+.main-header .header-nav { gap: 8px; }
+body.gallery-layout-modern .workspace-header-navigation > .gallery-workspace-entry[aria-current="page"],
+.main-header .gallery-workspace-entry[aria-current="page"] {
+    border-color: currentColor;
+    box-shadow: inset 0 -3px 0 currentColor !important;
+    outline: 1px solid currentColor;
+    outline-offset: -1px;
+}
+#openGalleryLink[aria-current="page"] { background: #24534a; color: #d2fff2; }
+#openDakiDictionary[aria-current="page"] { background: #4a3a20; color: #ffe5a5; }
+#openCanvasLink[aria-current="page"] { background: #273e67; color: #e1ebff; }
+#openGalleryLink[aria-current="page"]:hover { background: #30695e; }
+#openDakiDictionary[aria-current="page"]:hover { background: #65502c; }
+#openCanvasLink[aria-current="page"]:hover { background: #36558a; }
+#openStyleWorkspace { border-color: #a46c80; color: #ffc1d3; background: #392832; }
+#openStyleWorkspace:hover { background: #503443; border-color: #dfa0b7; color: #ffe0eb; }

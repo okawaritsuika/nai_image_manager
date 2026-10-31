@@ -89,8 +89,9 @@ function tooltipCalls(source) {
 test('selection resize start and drag updates pass the selection flag', () => {
     for (const name of ['startSelectionResizeDrag', 'handleSelectionResize']) {
         const calls = tooltipCalls(extractFunction(canvasSource, name));
-        assert.equal(calls.length, 1, `expected one tooltip update in ${name}`);
-        assert.match(calls[0][1], /,\s*true\s*$/);
+        assert.equal(calls.length, name === 'handleSelectionResize' ? 2 : 1,
+            `expected tooltip updates for each resize branch in ${name}`);
+        calls.forEach((call) => assert.match(call[1], /,\s*true\s*$/));
     }
 });
 

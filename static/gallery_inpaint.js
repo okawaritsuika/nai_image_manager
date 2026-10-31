@@ -102,7 +102,7 @@ function addGalleryInpaintCharPromptEditor(initialValue = '') {
         removeGalleryInpaintCharPromptEditor(id);
     };
 
-    const textarea = document.createElement('textarea');
+    const textarea = document.createElement('textarea'); textarea.setAttribute('data-prompt-autocomplete', '');
     textarea.id = `galleryInpaintCharPrompt-${id}`;
     textarea.rows = 4;
     textarea.value = initialValue || '';

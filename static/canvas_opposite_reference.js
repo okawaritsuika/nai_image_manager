@@ -16,6 +16,7 @@
     let pickerController = null;
     let picker = null;
     let pickerOpener = null;
+    let pickerConsumer = null;
     let closingPicker = false;
     let preview = null;
     let statusText = '반대쪽 그림을 선택하세요.';
@@ -506,6 +507,7 @@
         });
         dialog.addEventListener('close', () => {
             if (!closingPicker) {
+                pickerConsumer = null;
                 cancelPickerRequest();
                 if (pickerOpener?.isConnected) pickerOpener.focus();
                 pickerOpener = null;
@@ -520,6 +522,7 @@
     }
 
     function closePicker(restoreFocus = true) {
+        pickerConsumer = null;
         cancelPickerRequest();
         if (picker?.dialog.open) {
             closingPicker = true;
@@ -560,7 +563,7 @@
             button.type = 'button';
             button.dataset.kind = kind;
             button.dataset.id = item.id;
-            const isSelected = selection?.kind === kind && selection.id === item.id
+            const isSelected = !pickerConsumer && selection?.kind === kind && selection.id === item.id
                 && selection.projectId === activeLink.projectId;
             if (isSelected) button.classList.add('is-selected');
 
@@ -614,7 +617,9 @@
             if (!project || project.id !== link.projectId) throw new Error('프로젝트 정보를 확인할 수 없습니다.');
             const side = oppositeSide(link);
             current.body.replaceChildren();
-            current.message.textContent = `${sideNames[side]}에서 미리 볼 그림을 고르세요.`;
+            current.message.textContent = pickerConsumer
+                ? `${sideNames[side]}에서 인페인팅 참고 이미지를 고르세요.`
+                : `${sideNames[side]}에서 미리 볼 그림을 고르세요.`;
             current.message.className = 'canvas-opposite-dialog-status';
             current.body.appendChild(current.message);
             current.body.append(addSection(project, side, 'candidate'), addSection(project, side, 'canvas'));
@@ -636,7 +641,12 @@
     function chooseRecord(value) {
         const chosen = normalizeSnapshot({...value, visible: true});
         if (!chosen || !activeLink || chosen.projectId !== activeLink.projectId) return;
+        const consumer = pickerConsumer;
         closePicker();
+        if (consumer) {
+            consumer(chosen);
+            return;
+        }
         cancelViewDrag();
         cancelOperation();
         selection = chosen;
@@ -647,7 +657,7 @@
         loadSelected();
     }
 
-    function open() {
+    function open(options = {}) {
         const link = readLink();
         if (!link || link.projectId !== activeLink?.projectId) {
             setStatus('프로젝트 캔버스를 연결한 뒤 사용할 수 있습니다.', true);
@@ -655,6 +665,7 @@
             return;
         }
         const current = ensurePicker();
+        pickerConsumer = typeof options.onChoose === 'function' ? options.onChoose : null;
         pickerOpener = doc.activeElement;
         cancelPickerRequest();
         if (!current.dialog.open) current.dialog.showModal();

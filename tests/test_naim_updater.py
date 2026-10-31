@@ -124,6 +124,8 @@ class NaimUpdaterTests(unittest.TestCase):
             (install / "daki_drafts" / "synthetic" / "draft.json").write_bytes(b'{"status":"completed"}')
             (install / "daki_tag_examples").mkdir()
             (install / "daki_tag_examples" / "catalog.json").write_bytes(b'{"examples":[]}')
+            (install / "daki_dictionary_user").mkdir()
+            (install / "daki_dictionary_user" / "user_edits.json").write_bytes(b'{"smile":{"ko":"synthetic"}}')
             (install / "TOTAL_CLASSIFIED").mkdir()
             (install / "TOTAL_CLASSIFIED" / "image.png").write_bytes(b"private-image")
             self.write_managed_manifest(install, ["app.bin", "stale.dll"])
@@ -146,6 +148,7 @@ class NaimUpdaterTests(unittest.TestCase):
             self.assertEqual((install / "daki_worldcups" / "record.json").read_bytes(), b'{"winner":"synthetic.png"}')
             self.assertEqual((install / "daki_drafts" / "synthetic" / "draft.json").read_bytes(), b'{"status":"completed"}')
             self.assertEqual((install / "daki_tag_examples" / "catalog.json").read_bytes(), b'{"examples":[]}')
+            self.assertEqual((install / "daki_dictionary_user" / "user_edits.json").read_bytes(), b'{"smile":{"ko":"synthetic"}}')
             self.assertEqual((install / "TOTAL_CLASSIFIED" / "image.png").read_bytes(), b"private-image")
 
     def test_legacy_update_without_old_manifest_keeps_unknown_files(self):
@@ -173,7 +176,8 @@ class NaimUpdaterTests(unittest.TestCase):
             payload = root / "payload"
             install.mkdir()
             payload.mkdir()
-            for name in ("gallery_config.json", "daki_projects.json", "daki_personal_styles/catalog.json"):
+            for name in ("gallery_config.json", "daki_projects.json", "daki_personal_styles/catalog.json",
+                         "style_workspace.local.json"):
                 with self.subTest(name=name):
                     (payload / name).parent.mkdir(parents=True, exist_ok=True)
                     (payload / name).write_text("{}", encoding="utf-8")

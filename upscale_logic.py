@@ -594,6 +594,13 @@ def run_upscale(
     if engine == 'lanczos':
         return _run_upscale(source_path, target_path, target_width, target_height,
                             engine, quality, progress_callback, cancel_event)
+    if engine in ('illustrationjanai', 'animesharp'):
+        source_width, source_height = get_image_size(source_path)
+        if (target_width <= source_width and target_height <= source_height
+                and (target_width < source_width or target_height < source_height)):
+            # These models always enlarge first; shrinking needs no native model pass.
+            return run_lanczos_only(source_path, target_path, target_width, target_height,
+                                    progress_callback, cancel_event)
     from naim.upscale_assets import UPSCALE_ASSETS
     with UPSCALE_ASSETS.use(engine):
         if engine in ('illustrationjanai', 'animesharp'):

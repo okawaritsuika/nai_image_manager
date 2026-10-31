@@ -62,7 +62,7 @@ def _validate_project_side(side):
 
 def save_project_candidate_image(store, export_root, project_id, side, image, prompt_info,
                                  *, source_label='NAI Image Manager Project Result',
-                                 sidecar_extra=None, canvas_id=None):
+                                 sidecar_extra=None, canvas_id=None, candidate_name=None):
     """Save a unique project image and link it as a candidate on one side."""
     project_id = _validate_export_id(project_id, '다키 프로젝트 ID')
     side = _validate_project_side(side)
@@ -119,10 +119,13 @@ def save_project_candidate_image(store, export_root, project_id, side, image, pr
                 write_json(sidecar_path, sidecar_data, indent=2)
                 sidecar_saved = True
             reference = f'{PROJECT_EXPORT_PREFIX}/{project_id}/{export_id}.png'
+            candidate_options = {'name': candidate_name} if candidate_name is not None else {}
             if canvas_id is None:
-                project = store.add_candidate(project_id, reference, side)
+                project = store.add_candidate(project_id, reference, side, **candidate_options)
             else:
-                project = store.add_candidate(project_id, reference, side, canvas_id=canvas_id)
+                project = store.add_candidate(
+                    project_id, reference, side, canvas_id=canvas_id, **candidate_options,
+                )
             result = {
                 'status': 'success',
                 'destination': 'project',

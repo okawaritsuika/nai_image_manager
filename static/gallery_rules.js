@@ -1309,7 +1309,7 @@ function ensureRouteCardRuleEditorLayer() {
 
                 <label>
                     <span>감지 프롬프트</span>
-                    <textarea id="routeCardRulePrompt" rows="10"></textarea>
+                    <textarea data-prompt-autocomplete id="routeCardRulePrompt" rows="10"></textarea>
                 </label>
 
                 <div class="route-card-editor-grid">

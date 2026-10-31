@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <title>NAI Image Server Archive</title>
     <link rel="stylesheet" href="/static/index.css">
+    <link rel="stylesheet" href="/static/project_zoom_compare.css">
     <link rel="stylesheet" href="/static/common_anlas_warning.css">
     <link rel="stylesheet" href="/static/gallery_modern.css">
     <link rel="stylesheet" href="/static/daki.css">
@@ -22,6 +23,10 @@
     <link rel="stylesheet" href="/static/daki_test_targets.css">
     <link rel="stylesheet" href="/static/daki_test_target_gallery.css">
     <link rel="stylesheet" href="/static/daki_tag_browser.css">
+    <link rel="stylesheet" href="/static/daki_dictionary.css">
+    <link rel="stylesheet" href="/static/workspace_header.css">
+    <link rel="stylesheet" href="/static/daki_dictionary/styles.css">
+    <link rel="stylesheet" href="/static/daki_dictionary_drafts.css">
     <link rel="stylesheet" href="/static/daki_tag_examples.css">
     <link rel="stylesheet" href="/static/daki_prompt_groups.css">
     <link rel="stylesheet" href="/static/daki_draft_editor.css">
@@ -56,26 +61,20 @@
     <script src="/static/daki_worldcup.js" defer></script>
     <script src="/static/daki_gallery_filters.js" defer></script>
     <script src="/static/daki_tag_browser.js" defer></script>
+    <script src="/static/daki_dictionary_drafts.js" defer></script>
+    <script src="/static/daki_dictionary_download.js" defer></script>
+    <script src="/static/daki_dictionary/app.js" defer></script>
+    <script src="/static/daki_dictionary.js" defer></script>
     <script src="/static/daki_prompt_groups.js" defer></script>
     <script src="/static/daki_draft_editor.js" defer></script>
     <script src="/static/daki_tag_examples.js" defer></script>
     <script src="/static/daki_draft_framing.js" defer></script>
     <script src="/static/daki_drafts.js" defer></script>
+    <link rel="stylesheet" href="/static/prompt_autocomplete.css?v=20261031">
+    <script src="/static/prompt_autocomplete.js?v=20261031-caret" defer></script>
 </head>
-<body>
-    <div id="galleryLayoutSwitch" class="gallery-layout-switch" aria-label="갤러리 화면 선택">
-        <span class="gallery-layout-brand">NAI Image Manager <span>갤러리</span></span>
-        <div class="nai-header-account" aria-label="NovelAI 잔액">
-            <button type="button" id="naiAccountBadge" title="NovelAI 키와 잔액 설정 열기"><span id="naiQuotaLabel">할당량 —</span><span class="nai-account-divider">·</span><span id="naiAnlasLabel">Anlas —</span></button>
-            <button type="button" id="naiAccountRefresh" title="NovelAI 잔액 새로고침" aria-label="NovelAI 잔액 새로고침">↻</button>
-        </div>
-        <div class="gallery-layout-options" role="group" aria-label="화면 구성">
-            <button type="button" id="galleryLegacyLayoutBtn" data-gallery-layout="legacy" aria-pressed="true">기존 화면</button>
-            <button type="button" id="galleryModernLayoutBtn" data-gallery-layout="modern" aria-pressed="false">새 화면</button>
-        </div>
-        <span id="galleryLayoutSaveStatus" class="gallery-layout-save-status" role="status" aria-live="polite" hidden></span>
-    </div>
-    <div id="galleryModernLayout" class="gallery-modern-layout" hidden>
+<body class="gallery-layout-modern">
+    <div id="galleryModernLayout" class="gallery-modern-layout">
         <aside class="gallery-modern-sidebar" aria-label="갤러리 탐색과 필터">
             <details id="galleryModernNavSection" class="gallery-modern-navigation" open>
                 <summary>라이브러리</summary>
@@ -92,12 +91,22 @@
         </aside>
         <main id="galleryModernMain" class="gallery-modern-main" aria-label="갤러리 이미지"></main>
     </div>
-    <div class="header-main">
+    <div id="galleryWorkspaceHeader" class="header-main">
         <div class="header-row">
             <div id="nav-tabs"></div>
             <div class="header-row-right">
-                <button onclick="location.href='/canvas'" style="background: #6366f1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);">🖼️ 캔버스</button>
+                <div class="workspace-header-navigation">
 
+                <a id="openGalleryLink" class="gallery-workspace-entry" aria-current="page" href="#gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>갤러리</span></a>
+                <a id="openDakiDictionary" class="gallery-workspace-entry" href="#daki&library=dictionary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 5Q12 7 21 5Q19 12 21 19Q12 17 3 19Q5 12 3 5Z"/><path d="M6 8q6 1 12 0M6 16q6-1 12 0"/></svg><span>태그 사전</span></a>
+                <button id="openCanvasLink" class="gallery-workspace-entry" type="button" onclick="location.href='/canvas'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="16" rx="2"/><path d="m6 15 4-5 4 4 2-2 3 4M9 19l-2 3m8-3 2 3"/><circle cx="16.5" cy="7.5" r="1.5"/></svg><span>캔버스</span></button>
+                <a id="openStyleWorkspace" class="gallery-workspace-entry" href="/style-manager"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h2a3 3 0 0 0 0-6h-1a2 2 0 0 1 0-4h2a4 4 0 0 0 0-8Z"/><circle cx="7" cy="10" r="1"/><circle cx="9" cy="6" r="1"/></svg><span>그림체 관리</span></a>
+
+        <div class="nai-header-account" aria-label="NovelAI 잔액">
+            <button type="button" id="naiAccountBadge" title="NovelAI 키와 잔액 설정 열기"><span id="naiQuotaLabel">할당량 —</span><span class="nai-account-divider">·</span><span id="naiAnlasLabel">Anlas —</span></button>
+            <button type="button" id="naiAccountRefresh" title="NovelAI 잔액 새로고침" aria-label="NovelAI 잔액 새로고침">↻</button>
+        </div>
+                </div>
                 <div class="gallery-header-tools-wrap">
                     <button id="galleryHeaderToolsToggle"
                             onclick="toggleGalleryHeaderTools(event)"
@@ -106,35 +115,35 @@
                     </button>
 
                     <div id="galleryHeaderTools" class="gallery-header-tools collapsed">
-                        <button onclick="openFolderMgr()" title="폴더 관리" style="background: #0984e3; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px;">📁 폴더</button>               
-                        <button onclick="toggleBrandManager()" title="브랜드 관리" style="background: #ff007c; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(255, 0, 124, 0.3);">👑 브랜드</button>
-                        <button onclick="toggleArtStyleManager()" title="그림체 관리" style="background: #f1c40f; color: #000; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(241, 196, 15, 0.3);">🎨 그림체</button>
-                        <button onclick="openGalleryTagManager()" title="태그 관리" style="background: #2dd4bf; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(45, 212, 191, 0.3);">🏷️ 태그</button>
+                        <button onclick="openFolderMgr()" title="폴더 관리" style="background: #0984e3; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px;">폴더</button>               
+                        <button onclick="toggleBrandManager()" title="브랜드 관리" style="background: #ff007c; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(255, 0, 124, 0.3);">브랜드</button>
+                        <button onclick="toggleArtStyleManager()" title="그림체 관리" style="background: #f1c40f; color: #000; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(241, 196, 15, 0.3);">그림체</button>
+                        <button onclick="openGalleryTagManager()" title="태그 관리" style="background: #2dd4bf; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(45, 212, 191, 0.3);">태그</button>
                         <button id="galleryTagAssignmentModeBtn"
                                 onclick="toggleGalleryTagAssignmentMode()"
                                 title="태그 모드"
                                 style="background: #0f766e; color: #dff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);">
-                            🏷️ 태그 모드
+                            태그 모드
                         </button>
-                        <button onclick="openGalleryCharacterNameManager()" title="캐릭터 이름 한글 표기 관리" style="background: #14b8a6; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);">🔤 이름</button>
+                        <button onclick="openGalleryCharacterNameManager()" title="캐릭터 이름 한글 표기 관리" style="background: #14b8a6; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);">이름</button>
                         <button onclick="openGalleryIndexModal()"
                                 title="이미지·폴더 목록 갱신 · 프롬프트 검색 인덱스는 별도"
                                 style="background: #22c55e; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(34, 197, 94, 0.3);">
-                            🔄 갤러리 목록 갱신
+                            갤러리 목록 갱신
                         </button>
                         <button onclick="openGalleryPromptIndexModal()"
                                 title="빠른 프롬프트 검색과 자동완성용 인덱스 관리"
                                 style="background: #0ea5e9; color: #001; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(14, 165, 233, 0.3);">
-                            🔎 프롬프트 검색 인덱스
+                            검색 관리
                         </button>
-                        <button onclick="openGalleryVirtualFolderManager()" title="가상 폴더 관리" style="background: #7c3aed; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px;">🗂️ 가상 폴더</button>
-                        <button onclick="toggleStats()" title="통계 보기" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">📊 통계</button>
-                        <button onclick="openGalleryDesignSettings()" title="갤러리 디자인 설정" style="background: #8b5cf6; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(139, 92, 246, 0.3);">⚙️ 설정</button>
+                        <button onclick="openGalleryVirtualFolderManager()" title="가상 폴더 관리" style="background: #7c3aed; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px;">가상 폴더</button>
+                        <button onclick="toggleStats()" title="통계 보기" style="background: #6f42c1; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 10px; box-shadow: 0 0 10px rgba(111, 66, 193, 0.3);">통계</button>
+                        <button onclick="openGalleryDesignSettings()" title="갤러리 디자인 설정" style="background: #8b5cf6; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(139, 92, 246, 0.3);">설정</button>
                         <button id="galleryBulkDeleteModeBtn"
                                 onclick="toggleGalleryBulkDeleteMode()"
                                 title="삭제 모드"
                                 style="background: #ef4444; color: #fff; border: none; padding: 6px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; margin-left: 5px; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);">
-                            🧹 삭제 모드
+                            삭제 모드
                         </button>
                     </div>
                 </div>
@@ -154,6 +163,7 @@
                     </label>
                     <button type="button" id="galleryWebpCurrentFolder" class="gallery-image-tools-folder-button">현재 폴더 WebP</button>
                 </div>
+
             </div>
         </div>
 
@@ -291,14 +301,17 @@
     <nav id="galleryScrollNavigation" class="gallery-scroll-nav" aria-label="갤러리 페이지 내비게이션">
         <div class="gallery-scroll-nav-dots"></div>
     </nav>
-    <div id="zoomLayer" role="dialog" aria-modal="true" aria-label="이미지 확대 보기 · 좌우 화살표로 이동 · Esc로 닫기" tabindex="-1" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:9000; align-items:center; justify-content:center; cursor:zoom-out;" onclick="closeZoom()">
+    <div id="zoomLayer" role="dialog" aria-modal="true" aria-label="이미지 확대 보기 · 좌우 화살표로 이동 · Esc로 닫기" tabindex="-1" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:9000; align-items:center; justify-content:center; cursor:zoom-out;" onclick="if (!window.GalleryZoomView?.isPinned()) closeZoom()">
         <div class="gallery-zoom-image-stage"><img id="zoomImg" alt="확대 이미지"></div>
+        <div id="projectZoomCompareStage" hidden></div>
         <div id="galleryZoomToolbar" class="gallery-zoom-toolbar" onclick="event.stopPropagation()">
             <div class="gallery-zoom-heading">
                 <span id="galleryZoomPosition"></span>
                 <span id="galleryZoomFileName"></span>
+                <button id="galleryZoomPinBtn" type="button" aria-pressed="false" onclick="window.GalleryZoomView.toggle()">고정</button>
                 <button type="button" onclick="closeZoom()"><kbd>Esc</kbd> 닫기</button>
             </div>
+            <div id="projectZoomCompareControls" hidden></div>
             <div id="galleryZoomTagPicker" class="gallery-zoom-tag-picker" hidden>
                 <label for="galleryZoomTagSelect">↑로 붙일 태그</label>
                 <select id="galleryZoomTagSelect" onchange="selectGalleryTagForAssignment(this.value); document.getElementById('zoomLayer').focus({preventScroll:true})"></select>
@@ -311,6 +324,7 @@
                 <button id="galleryZoomDeleteAction" class="gallery-zoom-key-delete" type="button" onclick="runGalleryZoomAction('delete')"><kbd>↓</kbd><span>화살표 삭제 꺼짐</span></button>
             </div>
             <div id="galleryZoomActionStatus" class="gallery-zoom-action-status" role="status" aria-live="polite">키보드 ← →로 그림을 넘기세요.</div>
+            <div id="galleryZoomViewHint" class="gallery-zoom-action-status" role="status" aria-live="polite"></div>
         </div>
     </div>
 
@@ -479,6 +493,8 @@
     <script src="/static/index.js"></script>
     <script src="/static/gallery_image_tools.js"></script>
     <script src="/static/gallery_index_jobs.js"></script>
+    <script src="/static/project_zoom_compare.js"></script>
+    <script src="/static/gallery_zoom_view.js"></script>
     <script src="/static/gallery_zoom.js"></script>
     <script src="/static/generation_settings.js"></script>
     <script src="/static/gallery_inpaint.js"></script>
@@ -592,7 +608,7 @@
                         개별: 콤마와 엔터로 각각 분리합니다.
                     </div>
                 </div>
-                <textarea id="ruleTagsExpandedText"
+                <textarea id="ruleTagsExpandedText" data-prompt-autocomplete
                           class="route-tags-expanded-textarea route-single-mode"
                           style="flex:1; background:#121218; color:#39ff14; border:1px solid #333; border-radius:8px; padding:15px; font-family:Consolas; font-size:14px; resize:none; outline:none;"
                           placeholder="여기에 대량의 프롬프트를 붙여넣으세요."></textarea>
@@ -659,7 +675,7 @@
                                 개별: 콤마와 Enter로 나눈 항목 중 지정 개수 이상 일치하면 통과합니다.
                             </div>
                         </div>
-                        <textarea id="routeTestPromptText"
+                        <textarea id="routeTestPromptText" data-prompt-autocomplete
                                   class="route-tags-expanded-textarea route-single-mode"
                                   placeholder="임시 감지 규칙을 입력하세요. 예: aaaa, bbb, ccc"></textarea>
                         <div class="route-test-help">
@@ -757,7 +773,7 @@
                 <input type="text" id="ruleFolderName" placeholder="이동할 폴더명 (예: _Comic)" style="flex:1; padding:12px 15px; background:#222230; border:1px solid #3b3b4f; color:#fff; border-radius:8px; outline:none; font-family:'Malgun Gothic'; font-size:14px;">
 
                 <div style="flex:2; display:flex; background:#222230; border:1px solid #3b3b4f; border-radius:8px; overflow:hidden;">
-                    <input type="text" id="ruleTags" placeholder="감지할 프롬프트/태그 입력..." oninput="updateNewRulePromptText(this.value)" style="flex:1; padding:12px 15px; background:none; border:none; color:#fff; outline:none; font-family:'Malgun Gothic'; font-size:14px;">
+                    <input type="text" id="ruleTags" data-prompt-autocomplete placeholder="감지할 프롬프트/태그 입력..." oninput="updateNewRulePromptText(this.value)" style="flex:1; padding:12px 15px; background:none; border:none; color:#fff; outline:none; font-family:'Malgun Gothic'; font-size:14px;">
                     <button type="button"
                             id="newRuleSingleModeBtn"
                             class="route-mode-btn route-mode-mini active"
@@ -918,7 +934,7 @@
             </div>
 
             <label>Base Prompt</label>
-            <textarea id="galleryInpaintBasePrompt" rows="4"></textarea>
+            <textarea id="galleryInpaintBasePrompt" data-prompt-autocomplete rows="4"></textarea>
 
             <label>Character Prompt</label>
 
@@ -937,7 +953,7 @@
             <div id="galleryInpaintCharPromptList"></div>
 
             <label>Negative Prompt</label>
-            <textarea id="galleryInpaintNegativePrompt" rows="4"></textarea>
+            <textarea id="galleryInpaintNegativePrompt" data-prompt-autocomplete rows="4"></textarea>
 
             <div id="galleryInpaintGenerationSettings" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px;">
                 <div>

@@ -132,7 +132,7 @@
         function disabled(input) { return input.disabled || input.matches?.(':disabled'); }
         function promptField(key, label, parent) {
             const entry = node('div', 'daki-draft-prompt-entry'); parent.appendChild(entry);
-            const input = field(key, label, 'textarea', '', entry); input.maxLength = 30000;
+            const input = field(key, label, 'textarea', '', entry); input.setAttribute('data-prompt-autocomplete', ''); input.maxLength = 30000;
             input.placeholder = '영문 태그 또는 문장을 입력하세요.';
             input.onfocus = () => setActive(input);
             if (root.DakiPromptGroups?.create) {

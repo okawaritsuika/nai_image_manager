@@ -37,6 +37,16 @@ def main():
             assert original.count('port=5000,') == 1
             server_source.write_text(original.replace('port=5000,', f'port={port},'), encoding='utf-8')
         (root / 'data').mkdir(exist_ok=True)
+        dictionary = root / 'data/daki_dictionary'
+        dictionary.mkdir()
+        (dictionary / 'dictionary.json').write_text(json.dumps({
+            'source': {'rows': 1, 'unique_tags': 1}, 'categories': [],
+            'tags': [{'tag': 'smile', 'ko': '미소', 'description': '',
+                      'categories': ['표정/웃음'], 'count': 1, 'translation_source': 'synthetic'}],
+        }), encoding='utf-8')
+        (dictionary / 'source_combinations.json').write_text(json.dumps([
+            {'id': 1, 'general': 'smile', 'rating': 'g'},
+        ]), encoding='utf-8')
         (root / 'tools').mkdir(exist_ok=True)
         (root / 'tools/synthetic.txt').write_text('No engines in packaging smoke test.')
         (root / 'data/tag_categories_ko.generated.json').write_text('{}')
@@ -136,9 +146,13 @@ def main():
                         '/static/canvas_clipboard.js', '/static/canvas_reference.js', '/static/canvas_setups.js',
                         '/static/gallery_dates.js', '/static/gallery_selection.js', '/static/gallery_managers.js',
                         '/static/gallery_rules.js', '/static/gallery_inpaint.js', '/static/gallery_upscale.js',
-                        '/static/upscale_models.js', '/static/upscale_models.css'):
+                        '/static/upscale_models.js', '/static/upscale_models.css',
+                        '/daki/dictionary', '/static/daki_dictionary.js',
+                        '/static/daki_dictionary/app.js', '/static/daki_dictionary/styles.css'):
                 with urllib.request.urlopen(f'http://127.0.0.1:{port}' + url, timeout=5) as response:
                     assert response.status == 200, url
+            with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/daki/dictionary/health', timeout=5) as response:
+                assert json.load(response)['tags'] == 1
             with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/upscale/models', timeout=5) as response:
                 assert {row['id'] for row in json.load(response)['models']} == {
                     'realcugan', 'waifu2x', 'illustrationjanai', 'animesharp'}

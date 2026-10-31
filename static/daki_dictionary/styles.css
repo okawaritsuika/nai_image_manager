@@ -1,0 +1,323 @@
+body.daki-dictionary-standalone{width:100%;height:100dvh;min-width:0;min-height:0;margin:0;padding:0;overflow:hidden;background:#121218;color:#f1f2f5;font:13px/1.5 "Segoe UI","Malgun Gothic",sans-serif}
+.daki-dictionary-tool{--bg-color:var(--bg,#121218);--card-bg:var(--card,#1c1c27);--text-main:var(--text,#f1f2f5);--text-muted:#a0a0b0;--border-color:#333344;--accent-blue:var(--accent,#8fa8e8);--btn-secondary:#2a2a35;--btn-secondary-hover:#3b3b4f;--danger:#ff7e88;--radius-sm:8px;--shadow-md:0 14px 44px #0008;--font-family:"Segoe UI","Malgun Gothic",sans-serif;--portrait-preview-width:clamp(240px,28vw,420px);display:flex;width:100%;height:var(--daki-dictionary-height,100dvh);min-width:0;min-height:0;flex-direction:column;position:relative;overflow:hidden;background:var(--bg-color);color:var(--text-main);font:13px/1.5 var(--font-family);color-scheme:dark}
+.daki-dictionary-tool *,.daki-dictionary-tool *::before,.daki-dictionary-tool *::after{box-sizing:border-box}
+.daki-dictionary-tool :is(button,input,textarea,select){min-width:0;font:inherit;color:inherit}
+.daki-dictionary-tool :is(button,a,input,select,textarea){-webkit-tap-highlight-color:transparent}
+.daki-dictionary-tool button{min-height:32px;cursor:pointer}
+.daki-dictionary-tool button:disabled{cursor:default;opacity:.62}
+.daki-dictionary-tool button[hidden],.daki-dictionary-tool [hidden]{display:none!important}
+.daki-dictionary-tool a{color:inherit;text-decoration:none}
+.daki-dictionary-tool svg{width:18px;height:18px;stroke:currentColor;stroke-width:1.7}
+.daki-dictionary-tool :is(button,a,input,textarea,select,summary):focus-visible{outline:2px solid var(--accent-blue);outline-offset:2px}
+.daki-dictionary-tool :is(p,span,strong,h1,h2,h3,label,button,a){overflow-wrap:anywhere}
+.daki-dictionary-tool .dictionary-navigation{display:flex;min-width:0;min-height:32px;flex:0 0 auto;align-items:center;flex-wrap:wrap;gap:8px;padding:4px 8px;border-bottom:1px solid var(--border-color);background:var(--card-bg)}
+.daki-dictionary-tool .dictionary-gallery-link{display:inline-flex;min-height:30px;flex:0 0 auto;align-items:center;gap:5px;color:var(--accent-blue);font-size:12px;font-weight:600;line-height:1.3}
+.daki-dictionary-tool .dictionary-gallery-link>span{font-size:15px;line-height:1}
+.daki-dictionary-tool .dictionary-navigation-title{display:none;min-width:0;flex:0 0 auto;color:#c4c7d2;font-size:11px;font-weight:600;white-space:nowrap}
+.daki-dictionary-tool.headers-collapsed .dictionary-navigation-title{display:inline}
+.daki-dictionary-tool .dictionary-navigation .dictionary-header-toggle{min-height:32px;flex:0 0 auto;margin-left:auto;padding:3px 8px;font-size:11px}
+.daki-dictionary-tool .dictionary-navigation .view-switch{flex:0 0 auto}
+.daki-dictionary-tool.headers-collapsed #dictionaryToolbar{display:none}
+.daki-dictionary-tool ::-webkit-scrollbar{width:8px;height:8px}
+.daki-dictionary-tool ::-webkit-scrollbar-track{background:transparent}
+.daki-dictionary-tool ::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:8px;background:#50515f;background-clip:padding-box}
+.daki-dictionary-tool .tool-toolbar{z-index:2;display:flex;min-height:54px;flex:0 0 auto;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 14px;padding:7px 12px;border-bottom:1px solid var(--border-color);background:var(--card-bg)}
+.daki-dictionary-tool .toolbar-brand{display:flex;min-width:0;align-items:center;gap:12px}
+.daki-dictionary-tool .back-link{flex:0 0 auto;color:var(--text-muted);font-size:12px}
+.daki-dictionary-tool .back-link:hover{color:var(--accent-blue)}
+.daki-dictionary-tool .brand-title{display:flex;min-width:0;align-items:baseline;flex-wrap:wrap;gap:5px 12px}
+.daki-dictionary-tool .brand-title h1{margin:0;font-size:17px;font-weight:650;line-height:1.35}
+.daki-dictionary-tool .archive-stats{display:flex;min-width:0;align-items:baseline;flex-wrap:wrap;gap:4px 8px;color:var(--text-muted);font-size:12px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .archive-stats strong{color:var(--text-main);font-weight:650}
+.daki-dictionary-tool .stats-separator{color:#656777}
+.daki-dictionary-tool .toolbar-actions{display:flex;min-width:0;flex:0 1 auto;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px}
+.daki-dictionary-tool .button{display:inline-flex;min-height:34px;flex:0 0 auto;align-items:center;justify-content:center;gap:6px;padding:6px 10px;border:1px solid var(--border-color);border-radius:var(--radius-sm);background:var(--btn-secondary);color:var(--text-main);font-size:12px;font-weight:600;line-height:1.4;text-align:center}
+.daki-dictionary-tool .button:hover{border-color:var(--accent-blue);background:var(--btn-secondary-hover)}
+.daki-dictionary-tool .button.primary{border-color:var(--accent-blue);background:var(--accent-blue);color:#171821}
+.daki-dictionary-tool .button.quiet{background:transparent}
+.daki-dictionary-tool .button.quiet:hover{background:#ffffff0d}
+.daki-dictionary-tool .view-switch{display:none;align-items:center;gap:4px}
+.daki-dictionary-tool .view-switch .button.active{border-color:#4d5b7b;background:#28334b;color:#e1e8fb}
+.daki-dictionary-tool .workspace{position:relative;display:grid;min-width:0;min-height:0;flex:1 1 0;grid-template-columns:240px minmax(260px,1fr) minmax(440px,calc(var(--portrait-preview-width) + 220px));overflow:hidden}
+.daki-dictionary-tool .dictionary-sidebar,.daki-dictionary-tool .dictionary-browser,.daki-dictionary-tool .image-list-pane,.daki-dictionary-tool .main-pane,.daki-dictionary-tool .detail-panel{min-width:0;min-height:0}
+.daki-dictionary-tool .dictionary-sidebar{display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border-color);background:var(--card-bg)}
+.daki-dictionary-tool .dictionary-sidebar-head{display:flex;min-width:0;min-height:38px;flex:0 0 auto;align-items:center;justify-content:space-between;gap:8px;padding:5px 10px;border-bottom:1px solid var(--border-color)}
+.daki-dictionary-tool .dictionary-sidebar-head strong{font-size:13px;font-weight:650}
+.daki-dictionary-tool .dictionary-browser{position:relative;z-index:1;display:flex;min-height:0;flex:1 1 0;flex-direction:column;overflow:hidden;background:var(--card-bg)}
+.daki-dictionary-tool .browser-head{flex:0 0 auto;padding:10px 10px 0;border-bottom:1px solid var(--border-color)}
+.daki-dictionary-tool .browser-close{display:none!important}
+.daki-dictionary-tool .browser-tabs{display:flex;gap:14px}
+.daki-dictionary-tool .browser-tab{position:relative;min-height:34px;padding:7px 2px;border:0;background:transparent;color:var(--text-muted);font-size:12px;font-weight:600}
+.daki-dictionary-tool .browser-tab.active{color:var(--text-main)}
+.daki-dictionary-tool .browser-tab.active::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;background:var(--accent-blue);content:""}
+.daki-dictionary-tool .browser-pane{display:flex;min-width:0;min-height:0;flex:1 1 0;flex-direction:column;overflow:hidden;padding:9px 10px 8px}
+.daki-dictionary-tool .main-search{display:flex;min-width:0;min-height:36px;flex:0 0 auto;align-items:center;gap:7px;padding:0 8px;border:1px solid var(--border-color);border-radius:var(--radius-sm);background:#13141b;color:var(--text-muted)}
+.daki-dictionary-tool .main-search svg{flex:0 0 17px;width:17px;height:17px}
+.daki-dictionary-tool .main-search input,.daki-dictionary-tool .category-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--text-main);font-size:12px}
+.daki-dictionary-tool .main-search input::placeholder,.daki-dictionary-tool .category-search input::placeholder{color:#858795}
+.daki-dictionary-tool .main-search kbd{flex:0 0 auto;padding:1px 5px;border:1px solid #414350;border-radius:4px;color:var(--text-muted);font:11px/1.4 var(--font-family)}
+.daki-dictionary-tool .result-toolbar{display:flex;min-width:0;min-height:38px;flex:0 0 auto;align-items:center;justify-content:space-between;gap:6px;padding:5px 0}
+.daki-dictionary-tool .result-context{display:flex;min-width:0;align-items:center;gap:6px}
+.daki-dictionary-tool .active-category{display:inline-flex;min-width:0;max-width:100%;align-items:center;gap:5px;padding:3px 6px;border:1px solid #43506c;border-radius:5px;background:#28334b;color:#d5e0ff;font-size:11px;line-height:1.4}
+.daki-dictionary-tool .small-count{display:inline-flex;min-width:26px;max-width:100%;align-items:center;justify-content:center;padding:2px 5px;border:1px solid var(--border-color);border-radius:5px;background:#20212b;color:#c1c4cf;font-size:11px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .result-toolbar select,.daki-dictionary-tool .statistics-ranking-head select{min-width:0;max-width:132px;min-height:30px;padding:4px 6px;border:1px solid var(--border-color);border-radius:6px;background:#20212b;color:var(--text-main);font-size:11px}
+.daki-dictionary-tool .tag-list{display:flex;min-height:0;flex:1 1 0;flex-direction:column;gap:3px;overflow:auto;overscroll-behavior:contain;padding:1px 2px 6px 0;scrollbar-width:thin}
+.daki-dictionary-tool .tag-row{display:grid;min-width:0;min-height:48px;flex:0 0 auto;grid-template-columns:24px minmax(0,1fr) auto 12px;align-items:center;gap:6px;padding:5px 7px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--text-main);text-align:left}
+.daki-dictionary-tool .tag-row:hover{background:#ffffff08}
+.daki-dictionary-tool .tag-row.active{border-color:#465372;background:#28334b}
+.daki-dictionary-tool .row-index,.daki-dictionary-tool .row-count{color:#858997;font-size:11px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .row-body{display:flex;min-width:0;flex-direction:column}
+.daki-dictionary-tool .row-ko{min-width:0;color:var(--text-main);font-size:12px;font-weight:600;line-height:1.4}
+.daki-dictionary-tool .row-en{min-width:0;color:var(--text-muted);font-size:11px;line-height:1.35;overflow-wrap:anywhere}
+.daki-dictionary-tool .row-arrow{color:#777b89;font-size:12px}
+.daki-dictionary-tool .list-footer{display:flex;min-height:34px;flex:0 0 auto;align-items:center;justify-content:space-between;gap:6px;padding-top:5px;border-top:1px solid var(--border-color);color:var(--text-muted);font-size:11px}
+.daki-dictionary-tool .text-button{display:inline-flex;min-height:30px;flex:0 0 auto;align-items:center;justify-content:center;gap:4px;padding:4px 6px;border:0;border-radius:5px;background:transparent;color:var(--accent-blue);font-size:12px;font-weight:600;line-height:1.4}
+.daki-dictionary-tool .text-button:hover{background:#ffffff0b}
+.daki-dictionary-tool .category-pane{gap:8px}
+.daki-dictionary-tool .panel-title{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.daki-dictionary-tool .panel-title h2{margin:0;font-size:13px;font-weight:650}
+.daki-dictionary-tool .category-search{display:flex;min-height:34px;flex:0 0 auto;align-items:center;gap:7px;padding:3px 7px;border:1px solid var(--border-color);border-radius:6px;color:var(--text-muted)}
+.daki-dictionary-tool .category-search>span{font-size:18px;line-height:1}
+.daki-dictionary-tool .category-all{display:flex;min-height:34px;flex:0 0 auto;align-items:center;justify-content:space-between;gap:7px;padding:6px 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text-main);font-size:12px;text-align:left}
+.daki-dictionary-tool .category-all.active{border-color:#465372;background:#28334b}
+.daki-dictionary-tool .category-all>span:last-child{color:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .category-tree{min-width:0;min-height:0;flex:1 1 0;overflow:auto;overscroll-behavior:contain;padding:0 2px 4px 0;scrollbar-width:thin}
+.daki-dictionary-tool .category-group{padding:1px 0 3px;border-bottom:1px solid #ffffff10}
+.daki-dictionary-tool .category-group summary{display:flex;min-height:34px;align-items:center;gap:6px;padding:6px 5px;color:#d2d4dc;font-size:12px;font-weight:600;cursor:pointer;list-style:none}
+.daki-dictionary-tool .category-group summary::-webkit-details-marker{display:none}
+.daki-dictionary-tool .category-group summary::after{flex:0 0 auto;color:#9699a7;content:"+"}
+.daki-dictionary-tool .category-group[open] summary::after{content:"−"}
+.daki-dictionary-tool .category-group summary>span:last-child{margin-left:auto;color:#8d909e;font-size:11px;font-weight:400}
+.daki-dictionary-tool .category-children{min-width:0;padding-left:8px}
+.daki-dictionary-tool .category-item{display:flex;width:100%;min-height:32px;align-items:flex-start;justify-content:space-between;gap:6px;padding:5px 6px 5px 9px;border:0;border-radius:5px;background:transparent;color:#c0c3ce;font-size:12px;line-height:1.45;text-align:left}
+.daki-dictionary-tool .category-item:hover{background:#ffffff09}
+.daki-dictionary-tool .category-item.active{background:#28334b;color:#e0e8ff}
+.daki-dictionary-tool .category-item span:first-child{min-width:0}
+.daki-dictionary-tool .category-item span:last-child{flex:0 0 auto;color:#9699a7;font-size:11px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .sidebar-note{flex:0 0 auto;margin:0;padding:7px 4px 0;border-top:1px solid var(--border-color);color:var(--text-muted);font-size:11px;line-height:1.5}
+.daki-dictionary-tool .image-list-pane{display:flex;min-width:0;min-height:0;overflow:hidden;border-right:1px solid var(--border-color);background:var(--card-bg)}
+.daki-dictionary-tool .main-pane{position:relative;display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden;background:var(--bg-color);container-name:dictionary-preview;container-type:inline-size}
+.daki-dictionary-tool .main-pane-grid{display:grid;min-width:0;min-height:0;flex:1 1 0;grid-template-columns:var(--portrait-preview-width) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);gap:8px;overflow:hidden;padding:8px}
+.daki-dictionary-tool .detail-empty{position:absolute;z-index:1;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;padding:24px;background:var(--bg-color);color:var(--text-muted);text-align:center}
+.daki-dictionary-tool .detail-empty[hidden]{display:none!important}
+.daki-dictionary-tool .detail-empty h2{margin:0;color:var(--text-main);font-size:18px;font-weight:600}
+.daki-dictionary-tool .detail-empty p{max-width:360px;margin:0;font-size:13px}
+.daki-dictionary-tool .empty-mark{color:var(--accent-blue);font-size:25px;font-weight:700;letter-spacing:-2px}
+.daki-dictionary-tool .picture-workbench{position:relative;display:flex;min-width:0;min-height:0;grid-column:1;grid-row:2;flex-direction:column;overflow:hidden;padding:0}
+.daki-dictionary-tool .picture-toolbar{display:flex;min-width:0;min-height:34px;grid-column:1/-1;grid-row:1;align-items:center;justify-content:space-between;gap:8px}
+.daki-dictionary-tool .picture-context{display:flex;min-width:0;flex-direction:column}
+.daki-dictionary-tool .selected-label{min-width:0;color:var(--text-main);font-size:14px;font-weight:650;line-height:1.35}
+.daki-dictionary-tool .picture-tag{min-width:0;color:var(--text-muted);font-size:11px;line-height:1.35}
+.daki-dictionary-tool .picture-toolbar .button{min-height:32px}
+.daki-dictionary-tool .picture-toolbar{flex-wrap:wrap}
+.daki-dictionary-tool .picture-actions{display:flex;min-width:0;flex-wrap:wrap;gap:6px}
+.daki-dictionary-tool .picture-actions .button{flex:0 0 auto;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.daki-dictionary-tool .section-toggle{min-height:32px;text-align:left;font:inherit;font-weight:600}
+.daki-dictionary-tool .category-body{display:flex;min-width:0;min-height:0;flex:1 1 0;flex-direction:column;gap:6px;overflow:hidden}
+.daki-dictionary-tool :is(#dictionaryEntryBody,#dictionaryCategoryBody)[hidden]{display:none!important}
+.daki-dictionary-tool .detail-panel:has(.entry-collapsed){flex:0 0 auto;max-height:none}
+.daki-dictionary-tool .detail-information.entry-collapsed{height:auto}
+.daki-dictionary-tool .picture-overlay-import{position:absolute;z-index:2;top:8px;left:8px;max-width:calc(100% - 60px);min-height:32px;white-space:normal;overflow-wrap:anywhere}
+.daki-dictionary-tool .inline-image-viewer{display:flex;min-width:0;min-height:0;flex:1 1 0;flex-direction:column;overflow:hidden;border:1px solid var(--border-color);border-radius:var(--radius-sm);background:#0e1015}
+.daki-dictionary-tool .image-view{position:relative;display:flex;min-width:0;min-height:0;flex:1 1 0;align-items:center;justify-content:center;overflow:auto;background-color:#111319;background-image:linear-gradient(45deg,#191b22 25%,transparent 25%),linear-gradient(-45deg,#191b22 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#191b22 75%),linear-gradient(-45deg,transparent 75%,#191b22 75%);background-position:0 0,0 8px,8px -8px,-8px 0;background-size:16px 16px;scrollbar-width:thin}
+.daki-dictionary-tool .image-stage-content{position:absolute;inset:8px;display:flex;width:auto;height:auto;min-width:0;min-height:0;align-items:center;justify-content:center;padding:0}
+.daki-dictionary-tool #imageFull{display:block;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain}
+.daki-dictionary-tool #imageFull:not([src]){display:none}
+.daki-dictionary-tool .image-stage-message{display:flex;max-width:360px;min-height:120px;align-items:center;justify-content:center;margin:0;padding:24px;color:#b4b7c3;font-size:13px;line-height:1.7;text-align:center}
+.daki-dictionary-tool .picture-original-size .image-view{align-items:flex-start;justify-content:flex-start;overflow-x:hidden;overflow-y:auto}
+.daki-dictionary-tool .picture-original-size .image-stage-content{position:relative;inset:auto;display:flex;width:100%;min-width:0;height:auto;min-height:100%;align-items:flex-start;justify-content:center;padding:8px}
+.daki-dictionary-tool .picture-original-size #imageFull{width:100%;height:auto;max-width:100%;max-height:none;flex:none;box-sizing:border-box}
+.daki-dictionary-tool .picture-original-size .image-stage-message{min-width:100%}
+.daki-dictionary-tool .picture-overlay{position:fixed;z-index:4500;inset:4px auto auto 0;max-width:none;max-height:none;margin:0;padding:4px;overflow:hidden;border:1px solid var(--border-color);border-radius:8px;background:#0e1015;color:var(--text-main)}
+.daki-dictionary-tool .picture-overlay[open]{display:flex;align-items:center;justify-content:center}
+.daki-dictionary-tool .picture-overlay img{display:block;flex:none;width:auto;height:100%;max-width:100%;max-height:100%;object-fit:contain}
+.daki-dictionary-tool .picture-overlay-close{position:absolute;z-index:1;top:12px;right:12px;display:grid;place-items:center;width:36px;height:36px;min-width:36px;min-height:36px;padding:0;font-size:22px;line-height:1;border:1px solid #596079;background:#222734;box-shadow:0 2px 12px #0008}
+.daki-dictionary-tool .picture-overlay-close svg{display:block;width:16px;height:16px;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+.daki-dictionary-tool .picture-overlay-error{position:absolute;max-width:calc(100% - 32px);padding:14px;border:1px solid #596079;border-radius:8px;background:#222734;color:var(--text-main);text-align:center}
+.daki-dictionary-tool .image-stage-meta{display:flex;min-width:0;min-height:38px;flex:0 0 auto;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border-top:1px solid var(--border-color);background:#171922}
+.daki-dictionary-tool .image-stage-meta h2{min-width:0;flex:1 1 auto;margin:0;overflow:hidden;color:#e4e6ed;font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
+.daki-dictionary-tool .image-dimensions{flex:0 0 auto;margin:0;color:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool #imageDetailError:empty{display:none}
+.daki-dictionary-tool .form-error{margin:5px 8px;color:var(--danger);font-size:12px;line-height:1.55}
+.daki-dictionary-tool .thumbnail-strip{display:flex;min-width:0;min-height:0;flex:1 1 0;flex-direction:column;gap:8px;padding:8px}
+.daki-dictionary-tool .thumbnail-heading{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:8px}
+.daki-dictionary-tool .thumbnail-heading h3{margin:0;color:#d6d8e0;font-size:12px;font-weight:600}
+.daki-dictionary-tool .thumbnail-heading>span{color:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .portrait-grid{display:grid;min-width:0;min-height:0;flex:1 1 0;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));grid-auto-rows:max-content;align-content:start;align-items:start;gap:8px;overflow:auto;padding:1px 1px 5px;scrollbar-width:thin}
+.daki-dictionary-tool .image-card{display:flex;width:auto;min-width:0;min-height:0;flex:0 0 auto;flex-direction:column;gap:4px;padding:4px;border:1px solid var(--border-color);border-radius:6px;background:#1b1d26;text-align:left}
+.daki-dictionary-tool .image-card:hover,.daki-dictionary-tool .image-card.selected{border-color:var(--accent-blue)}
+/* 360px at 5:16: bound both axes and let the gallery scroll instead of squeezing rows. */
+.daki-dictionary-tool .image-card-portrait{position:relative;display:grid;width:min(100%,112.5px);height:auto;min-height:0;max-height:360px;aspect-ratio:5/16;flex:0 0 auto;align-self:center;place-items:center;overflow:hidden;border-radius:3px;background:#111319}
+.daki-dictionary-tool .image-card-portrait img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:contain}
+.daki-dictionary-tool .image-unavailable{padding:3px;color:var(--text-muted);font-size:10px;line-height:1.35;text-align:center}
+.daki-dictionary-tool .image-card-name{display:block;min-width:0;overflow:hidden;color:#d1d3dc;font-size:11px;line-height:1.3;text-overflow:ellipsis;white-space:nowrap}
+.daki-dictionary-tool .image-card-size{min-width:0;overflow:hidden;color:#999dab;font-size:11px;font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
+.daki-dictionary-tool .thumbnail-empty{grid-column:1/-1;margin:3px 0;color:var(--text-muted);font-size:12px}
+.daki-dictionary-tool .portrait-grid>.gallery-state{grid-column:1/-1;min-width:0}
+.daki-dictionary-tool .load-combinations{width:100%;margin:4px 0}
+.daki-dictionary-tool .detail-panel{display:flex;min-height:0;max-height:45%;flex:0 1 45%;flex-direction:column;overflow:hidden;border-bottom:1px solid var(--border-color);background:var(--card-bg)}
+.daki-dictionary-tool .detail-panel:has(.detail-information[hidden]){display:none}
+.daki-dictionary-tool .detail-information{display:block;width:100%;min-width:0;height:100%;overflow:auto;overscroll-behavior:contain;padding:12px;scrollbar-width:thin}
+.daki-dictionary-tool .detail-information[hidden]{display:none!important}
+.daki-dictionary-tool .detail-overline{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px}
+.daki-dictionary-tool .eyebrow{color:#aebbe6;font-size:11px;font-weight:700;letter-spacing:.35px}
+.daki-dictionary-tool .entry-title{display:flex;min-width:0;align-items:flex-start;justify-content:space-between;gap:8px}
+.daki-dictionary-tool .entry-name{min-width:0}
+.daki-dictionary-tool .entry-title h2{margin:0;color:var(--text-main);font-size:18px;font-weight:650;line-height:1.35}
+.daki-dictionary-tool .english-tag{display:flex;min-width:0;align-items:center;gap:5px;margin-top:3px;color:var(--text-muted);font-size:12px;line-height:1.45}
+.daki-dictionary-tool .english-tag>span{min-width:0;overflow-wrap:anywhere}
+.daki-dictionary-tool .icon-button{display:inline-grid;min-width:30px;min-height:30px;flex:0 0 auto;place-items:center;padding:3px;border:0;border-radius:6px;background:transparent;color:#a8abba}
+.daki-dictionary-tool .icon-button:hover{background:#ffffff10;color:var(--text-main)}
+.daki-dictionary-tool .icon-button svg{width:16px;height:16px}
+.daki-dictionary-tool .entry-number{display:flex;max-width:78px;flex:0 0 auto;align-items:flex-end;flex-direction:column;gap:2px;padding-top:1px;text-align:right}
+.daki-dictionary-tool .entry-number strong{color:#dce2f3;font-size:16px;line-height:1.25;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .entry-number span{color:var(--text-muted);font-size:10px;line-height:1.35}
+.daki-dictionary-tool .entry-description{margin:8px 0;color:#d0d2db;font-size:13px;line-height:1.6;white-space:pre-line}
+.daki-dictionary-tool .category-pills{display:flex;max-height:118px;min-width:0;flex-wrap:wrap;gap:5px;overflow:auto;margin:0 0 10px}
+.daki-dictionary-tool .category-pill{max-width:100%;padding:4px 6px;border:1px solid var(--border-color);border-radius:5px;background:#22242e;color:#bdc2d3;font-size:11px;line-height:1.4;text-align:left}
+.daki-dictionary-tool .selected-statistics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-bottom:9px}
+.daki-dictionary-tool .selected-stat-card{display:flex;min-width:0;flex-direction:column;gap:3px;padding:7px 8px;border:1px solid var(--border-color);border-radius:7px;background:#20212b}
+.daki-dictionary-tool .selected-stat-card>span{color:#c2c7d5;font-size:11px;line-height:1.4}
+.daki-dictionary-tool .selected-stat-card>strong{color:#e4e8f2;font-size:17px;line-height:1.25;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .selected-stat-card>small{color:var(--text-muted);font-size:11px;line-height:1.4}
+.daki-dictionary-tool .related-section{margin:0 0 9px;border-bottom:1px solid var(--border-color)}
+.daki-dictionary-tool .related-section>summary{display:flex;min-height:34px;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 7px;padding:6px 0;color:#d4d7e1;font-size:12px;font-weight:600;cursor:pointer;list-style:none}
+.daki-dictionary-tool .related-section>summary::-webkit-details-marker{display:none}
+.daki-dictionary-tool .related-section>summary::after{color:#9699a8;content:"+"}
+.daki-dictionary-tool .related-section[open]>summary::after{content:"−"}
+.daki-dictionary-tool .related-basis{color:var(--text-muted);font-size:11px;font-weight:400}
+.daki-dictionary-tool .related-tags{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:5px;padding:0 0 8px}
+.daki-dictionary-tool .related-tag{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:7px;padding:6px 7px;border:1px solid var(--border-color);border-radius:6px;background:#20212b;text-align:left}
+.daki-dictionary-tool .related-label{display:flex;min-width:0;flex-direction:column}
+.daki-dictionary-tool .related-ko,.daki-dictionary-tool .related-en{overflow-wrap:anywhere}
+.daki-dictionary-tool .related-ko{color:#e0e2e9;font-size:11px}
+.daki-dictionary-tool .related-en{color:var(--text-muted);font-size:10px}
+.daki-dictionary-tool .related-frequency{display:flex;flex:0 0 auto;align-items:flex-end;flex-direction:column;color:var(--text-muted);font-size:10px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .related-percent{color:#c7cee3;font-size:10px}
+.daki-dictionary-tool .related-message{margin:5px 0;color:var(--text-muted);font-size:12px;line-height:1.55}
+.daki-dictionary-tool .statistics-panel{margin:10px 0;padding:11px;border:1px solid var(--border-color);border-radius:8px;background:#20212b}
+.daki-dictionary-tool .statistics-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px}
+.daki-dictionary-tool .statistics-heading>div{min-width:0}
+.daki-dictionary-tool .statistics-heading h2{margin:3px 0;font-size:17px;font-weight:650}
+.daki-dictionary-tool .statistics-heading p{margin:0;color:var(--text-muted);font-size:12px}
+.daki-dictionary-tool .statistics-overview{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:11px}
+.daki-dictionary-tool .overview-stat-card{display:flex;min-width:0;flex-direction:column;gap:3px;padding:7px;border:1px solid var(--border-color)}
+.daki-dictionary-tool .overview-stat-card>span{color:#c5c9d5;font-size:11px}
+.daki-dictionary-tool .overview-stat-card>strong{color:var(--text-main);font-size:16px;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .overview-stat-card>small{color:var(--text-muted);font-size:10px}
+.daki-dictionary-tool .statistics-ranking-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin:9px 0}
+.daki-dictionary-tool .statistics-ranking-head h3{margin:0;color:#e0e2e9;font-size:12px}
+.daki-dictionary-tool .statistics-ranking-head label{display:flex;align-items:center;gap:5px;color:var(--text-muted);font-size:11px}
+.daki-dictionary-tool .statistics-denominator{margin:7px 0;color:#bec3d1;font-size:11px}
+.daki-dictionary-tool .statistics-table-wrap{max-height:360px;overflow:auto;border:1px solid var(--border-color);border-radius:6px}
+.daki-dictionary-tool .statistics-table{width:100%;min-width:410px;border-collapse:collapse;background:#181a22}
+.daki-dictionary-tool .statistics-table th,.daki-dictionary-tool .statistics-table td{padding:7px 6px;border-bottom:1px solid #ffffff10;font-size:11px;text-align:left}
+.daki-dictionary-tool .statistics-table th{position:sticky;top:0;z-index:1;background:#272a35;color:#d5d8e1}
+.daki-dictionary-tool .statistics-selected-row{background:#292d3a}
+.daki-dictionary-tool .statistics-tag{display:flex;max-width:100%;min-height:30px;flex-direction:column;align-items:flex-start;padding:2px;border:0;background:transparent;text-align:left}
+.daki-dictionary-tool .statistics-tag strong,.daki-dictionary-tool .statistics-tag span{max-width:100%;overflow-wrap:anywhere}
+.daki-dictionary-tool .statistics-tag strong{font-size:11px}
+.daki-dictionary-tool .statistics-tag span,.daki-dictionary-tool .statistics-value span{color:var(--text-muted);font-size:10px}
+.daki-dictionary-tool .statistics-value{min-width:70px;color:#e0e2e9;font-variant-numeric:tabular-nums}
+.daki-dictionary-tool .statistics-value strong,.daki-dictionary-tool .statistics-value span{display:block;overflow-wrap:anywhere}
+.daki-dictionary-tool .statistics-empty{text-align:center!important;color:var(--text-muted)}
+.daki-dictionary-tool .image-panel{display:flex;min-width:0;min-height:0;grid-column:2;grid-row:2;flex:none;flex-direction:column;overflow:auto;padding:0;border:0;background:transparent;scrollbar-width:thin}
+.daki-dictionary-tool .image-panel[hidden]{display:none!important}
+.daki-dictionary-tool .image-used-information{min-width:0;margin:0;padding:0;border:0}
+.daki-dictionary-tool .used-tags-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:5px}
+.daki-dictionary-tool .used-tags-heading h3{margin:0;color:#e0e2e9;font-size:12px}
+.daki-dictionary-tool .used-tags-help,.daki-dictionary-tool .connection-title,.daki-dictionary-tool .connection-path{margin:5px 0;color:var(--text-muted);font-size:12px;line-height:1.5}
+.daki-dictionary-tool .connection-title{color:#d6d8e0;font-weight:600}
+.daki-dictionary-tool .connection-path{overflow-wrap:anywhere}
+.daki-dictionary-tool .used-tags-list,.daki-dictionary-tool .combo-tags{display:flex;min-width:0;flex-wrap:wrap;gap:5px}
+.daki-dictionary-tool .used-tag{display:inline-flex;max-width:100%;align-items:baseline;flex-wrap:wrap;gap:2px 6px;padding:4px 6px;border:1px solid var(--border-color);border-radius:5px;background:#20212b;text-align:left}
+.daki-dictionary-tool .used-tag.selected{border-color:var(--accent-blue);background:#28334b;color:#e0e8ff}
+.daki-dictionary-tool .used-tag-ko,.daki-dictionary-tool .used-tag-en{max-width:100%;color:#e0e2e9;font-size:11px}
+.daki-dictionary-tool .used-tag-en{color:var(--text-muted)}
+.daki-dictionary-tool .image-scan-status{padding:6px 0}
+.daki-dictionary-tool .image-connection-details{margin-top:10px;border-top:1px solid var(--border-color)}
+.daki-dictionary-tool .image-connection-details>summary{display:flex;min-height:34px;align-items:center;padding:5px 2px;color:#c5c8d2;font-size:12px;font-weight:600;cursor:pointer;list-style:none}
+.daki-dictionary-tool .image-connection-details>summary::-webkit-details-marker{display:none}
+.daki-dictionary-tool .image-connection-details>summary::after{margin-left:auto;color:var(--text-muted);content:"+"}
+.daki-dictionary-tool .image-connection-details[open]>summary::after{content:"−"}
+.daki-dictionary-tool .scan-summary{display:flex;align-items:center;flex-wrap:wrap;gap:5px 8px;color:var(--text-muted);font-size:11px}
+.daki-dictionary-tool .scan-summary>span:nth-child(2){min-width:0}
+.daki-dictionary-tool .scan-help{margin:5px 0;color:var(--text-muted);font-size:11px}
+.daki-dictionary-tool .image-pack-status-row{display:flex;min-width:0;flex:0 0 auto;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border-color);background:var(--card-bg)}
+.daki-dictionary-tool .image-pack-status{min-width:0;flex:1 1 180px;color:var(--text-muted);font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.daki-dictionary-tool #dictionaryStopImagePack{flex:0 0 auto}
+.daki-dictionary-tool .entry-tabs{display:flex;flex:0 0 auto;gap:14px;border-bottom:1px solid var(--border-color)}
+.daki-dictionary-tool .entry-tab{position:relative;display:flex;min-height:36px;align-items:center;gap:5px;padding:7px 1px;border:0;background:transparent;color:var(--text-muted);font-size:12px}
+.daki-dictionary-tool .entry-tab.active{color:var(--text-main);font-weight:650}
+.daki-dictionary-tool .entry-tab.active::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;background:var(--accent-blue);content:""}
+.daki-dictionary-tool .tab-badge{max-width:95px;padding:2px 4px;border-radius:4px;background:#2b2d38;color:#c3c6d0;font-size:10px}
+.daki-dictionary-tool .combo-card{padding:9px 0;border-bottom:1px solid var(--border-color)}
+.daki-dictionary-tool .combo-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.daki-dictionary-tool .combo-card-head>span{color:var(--text-muted);font-size:10px}
+.daki-dictionary-tool .combo-tag{max-width:100%;min-height:28px;padding:3px 6px;border:1px solid var(--border-color);border-radius:5px;background:#22242f;color:#d0d3dd;font-size:11px;line-height:1.4}
+.daki-dictionary-tool .combo-tag.selected,.daki-dictionary-tool .combo-tag:hover{border-color:var(--accent-blue)}
+.daki-dictionary-tool .image-section-heading{display:flex;gap:8px;margin:10px 0 7px}
+.daki-dictionary-tool .image-section-heading h3{margin:0 0 3px;font-size:12px}
+.daki-dictionary-tool .image-section-heading p,.daki-dictionary-tool .entry-footnote{margin:0;color:var(--text-muted);font-size:11px}
+.daki-dictionary-tool .entry-footnote{display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px 8px;margin-top:10px}
+.daki-dictionary-tool .list-state,.daki-dictionary-tool .gallery-state{display:flex;min-height:140px;align-items:center;justify-content:center;flex-direction:column;gap:8px;padding:18px;color:var(--text-muted);font-size:12px;text-align:center}
+.daki-dictionary-tool .list-state p,.daki-dictionary-tool .gallery-state p{margin:0}
+.daki-dictionary-tool .list-state strong,.daki-dictionary-tool .gallery-state strong{color:var(--text-main);font-size:13px}
+.daki-dictionary-tool .loading-text{padding:10px 2px;color:var(--text-muted);font-size:12px}
+.daki-dictionary-tool .spinner{width:20px;height:20px;border:2px solid #454755;border-top-color:var(--accent-blue);border-radius:50%;animation:dakiDictionarySpin .7s linear infinite}
+.daki-dictionary-tool .spinner.small{width:14px;height:14px;flex:0 0 14px}
+@keyframes dakiDictionarySpin{to{transform:rotate(360deg)}}
+.daki-dictionary-tool .edit-dialog{width:min(540px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;padding:18px;border:1px solid #454755;border-radius:10px;background:#20212b;color:var(--text-main);box-shadow:var(--shadow-md)}
+.daki-dictionary-tool .edit-dialog::backdrop{background:#07080db8;backdrop-filter:blur(3px)}
+.daki-dictionary-tool .edit-dialog form{display:flex;min-width:0;flex-direction:column}
+.daki-dictionary-tool .dialog-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
+.daki-dictionary-tool .dialog-heading>div{min-width:0}
+.daki-dictionary-tool .dialog-heading h2{margin:4px 0 0;font-size:19px}
+.daki-dictionary-tool .edit-english{margin:0 0 14px;color:var(--text-muted);font-size:13px}
+.daki-dictionary-tool .edit-dialog label{display:block;margin:12px 0;color:#d6d8e1;font-size:13px;font-weight:600}
+.daki-dictionary-tool .edit-dialog input,.daki-dictionary-tool .edit-dialog textarea{display:block;width:100%;min-width:0;margin-top:6px;padding:9px 10px;border:1px solid #454755;border-radius:6px;outline:0;background:#15161d;color:var(--text-main);font-size:13px;line-height:1.55}
+.daki-dictionary-tool .edit-dialog textarea{min-height:85px;resize:vertical}
+.daki-dictionary-tool .field-help,.daki-dictionary-tool .folder-intro{display:block;margin:5px 0;color:var(--text-muted);font-size:12px;line-height:1.55}
+.daki-dictionary-tool .folder-input-row{display:flex;align-items:stretch;flex-wrap:wrap;gap:7px}
+.daki-dictionary-tool .folder-input-row input{flex:1 1 220px;margin-top:6px}
+.daki-dictionary-tool .folder-input-row .button{margin-top:6px}
+.daki-dictionary-tool .dialog-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:14px}
+.daki-dictionary-tool .toast{position:absolute;z-index:120;right:12px;bottom:12px;left:12px;width:max-content;max-width:calc(100% - 24px);margin:auto;padding:9px 14px;transform:translateY(8px);border:1px solid #454755;border-radius:7px;background:#292c38;color:var(--text-main);box-shadow:var(--shadow-md);font-size:12px;text-align:center;opacity:0;pointer-events:none;transition:.18s}
+.daki-dictionary-tool .toast.visible{transform:translateY(0);opacity:1}
+.daki-dictionary-tool .tag-tooltip{position:fixed;z-index:5000;max-width:min(340px,calc(100vw - 24px));padding:10px 12px;border:1px solid #596079;border-radius:8px;background:#222734;color:#f1f2f5;box-shadow:var(--shadow-md);pointer-events:none;text-align:left}
+.daki-dictionary-tool .hint-ko{display:block;color:#fff;font-size:14px}
+.daki-dictionary-tool .hint-en{display:block;margin-top:2px;color:#c4c9d9;font-size:12px}
+.daki-dictionary-tool .hint-description{margin:7px 0 0;color:#e0e2e9;font-size:12px;line-height:1.6;white-space:pre-line}
+.daki-dictionary-tool[data-layout-mode="wide"] .workspace{grid-template-columns:240px minmax(260px,1fr) minmax(440px,calc(var(--portrait-preview-width) + 220px))}
+.daki-dictionary-tool[data-layout-mode="large"] .workspace{grid-template-columns:260px minmax(260px,1fr) minmax(440px,calc(var(--portrait-preview-width) + 220px))}
+.daki-dictionary-tool[data-layout-mode="wide"] .workspace.browser-hidden{grid-template-columns:minmax(260px,1fr) minmax(440px,calc(var(--portrait-preview-width) + 220px))}
+.daki-dictionary-tool[data-layout-mode="large"] .workspace.browser-hidden{grid-template-columns:minmax(260px,1fr) minmax(440px,calc(var(--portrait-preview-width) + 220px))}
+.daki-dictionary-tool .workspace.browser-hidden .dictionary-sidebar{display:none}
+.daki-dictionary-tool[data-layout-mode="medium"] .workspace{grid-template-columns:240px minmax(0,1fr)}
+.daki-dictionary-tool[data-layout-mode="medium"] .image-list-pane{display:none}
+.daki-dictionary-tool[data-layout-mode="medium"] .workspace.view-inspector .main-pane{display:none}
+.daki-dictionary-tool[data-layout-mode="medium"] .workspace.view-inspector .image-list-pane{display:flex;grid-column:2}
+.daki-dictionary-tool[data-layout-mode="narrow"] .workspace{display:grid;grid-template-columns:minmax(0,1fr)}
+.daki-dictionary-tool[data-layout-mode="narrow"] .dictionary-sidebar,.daki-dictionary-tool[data-layout-mode="narrow"] .image-list-pane{display:none}
+.daki-dictionary-tool[data-layout-mode="narrow"] .workspace.view-inspector .main-pane{display:none}
+.daki-dictionary-tool[data-layout-mode="narrow"] .workspace.view-inspector .image-list-pane{display:flex;grid-column:1}
+.daki-dictionary-tool[data-layout-mode="narrow"] .workspace.browse-open::before{position:absolute;z-index:19;inset:0;background:#05060a9e;content:""}
+.daki-dictionary-tool[data-layout-mode="narrow"] .workspace.browse-open .dictionary-sidebar{position:absolute;z-index:20;inset:8px auto 8px 8px;display:flex;width:min(400px,calc(100% - 16px));box-shadow:var(--shadow-md)}
+.daki-dictionary-tool[data-layout-mode="narrow"] .browser-close{display:inline-grid!important}
+.daki-dictionary-tool[data-layout-mode="narrow"] .view-switch,.daki-dictionary-tool[data-layout-mode="medium"] .view-switch{display:flex}
+.daki-dictionary-tool[data-layout-mode="medium"] .row-index{display:none}
+.daki-dictionary-tool[data-layout-mode="medium"] .tag-row{grid-template-columns:minmax(0,1fr) auto 12px}
+.daki-dictionary-tool[data-layout-mode="narrow"] .tool-toolbar{align-items:flex-start}
+.daki-dictionary-tool[data-layout-mode="narrow"] .toolbar-brand{flex:1 1 auto}
+.daki-dictionary-tool[data-layout-mode="narrow"] .toolbar-actions{width:100%;justify-content:flex-start}
+.daki-dictionary-tool[data-layout-mode="narrow"] .brand-title h1{font-size:16px}
+.daki-dictionary-tool[data-layout-mode="narrow"] .picture-workbench{padding:0}
+.daki-dictionary-tool[data-layout-mode="narrow"] .detail-information{padding:10px}
+.daki-dictionary-tool[data-layout-mode="narrow"] .detail-panel{max-height:45%}
+@container dictionary-preview (max-width:400px){
+  .daki-dictionary-tool .main-pane-grid{display:flex;flex-direction:column;overflow:auto}
+  .daki-dictionary-tool .picture-toolbar{flex:0 0 auto}
+  .daki-dictionary-tool .picture-workbench{width:100%;height:min(70vh,680px);flex:0 0 auto}
+  .daki-dictionary-tool .image-panel{width:100%;max-height:none;flex:0 0 auto;overflow:visible}
+}
+@media(prefers-reduced-motion:reduce){.daki-dictionary-tool *,.daki-dictionary-tool *::before,.daki-dictionary-tool *::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}

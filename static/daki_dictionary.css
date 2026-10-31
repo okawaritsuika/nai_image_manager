@@ -1,0 +1,25 @@
+body.daki-dictionary-active.daki-dictionary-header-collapsed #galleryWorkspaceHeader { display: none !important; }
+body.daki-dictionary-active.daki-dictionary-header-collapsed .gallery-modern-layout { padding-top: 6px; }
+body.daki-dictionary-active.gallery-layout-modern .gallery-modern-sidebar { display: none; }
+body.daki-dictionary-active.gallery-layout-modern .gallery-modern-layout { grid-template-columns: minmax(0, 1fr); }
+body.daki-dictionary-active #dakiLibrary {
+    padding: 10px 16px 12px;
+}
+body.daki-dictionary-active #dakiLibrary > :is(.daki-library-path, .daki-toolbar, .daki-library-description, #dakiPageStatus) {
+    display: none;
+}
+body.daki-dictionary-active #dakiContent { min-width: 0; min-height: 0; }
+.daki-dictionary-loading {
+    min-height: 360px;
+    padding: 20px;
+    border: 1px solid #3c4250;
+    border-radius: 8px;
+    background: var(--card, #1c1c27);
+    color: var(--text, #f1f2f5);
+    font: 13px/1.5 'Segoe UI', 'Malgun Gothic', sans-serif;
+}
+.daki-dictionary-loading button { padding: 8px 12px; }
+.daki-dictionary-loading a { display: inline-flex; margin-right: 12px; }
+@media (max-width: 900px) {
+    body.daki-dictionary-active #dakiLibrary { padding: 8px 8px 12px; }
+}

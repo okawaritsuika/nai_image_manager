@@ -75,7 +75,7 @@
                     const summary = make('summary', 'daki-prompt-group-summary', part.name);
                     summary.setAttribute('aria-label', part.name + ' 묶음');
                     details.ontoggle = () => { part.collapsed = !details.open; };
-                    const textarea = make('textarea', 'daki-prompt-group-text', part.text);
+                    const textarea = make('textarea', 'daki-prompt-group-text', part.text); textarea.setAttribute('data-prompt-autocomplete', '');
                     textarea.value = part.text;
                     textarea.rows = 3; textarea.maxLength = 30000;
                     textarea.setAttribute('aria-label', label + ' · ' + part.name);
@@ -86,7 +86,7 @@
                     content.append(textarea, ungroup); details.append(summary, content); view.appendChild(details);
                     editors.push({part, textarea, index});
                 } else {
-                    const textarea = make('textarea', 'daki-prompt-text-segment');
+                    const textarea = make('textarea', 'daki-prompt-text-segment'); textarea.setAttribute('data-prompt-autocomplete', '');
                     textarea.value = part.text; textarea.rows = part.text ? 2 : 1; textarea.maxLength = 30000;
                     textarea.setAttribute('aria-label', label + ' · 묶음 사이 텍스트');
                     textarea.onfocus = () => { lastFocusedPart = part; notifyFocus(textarea); };

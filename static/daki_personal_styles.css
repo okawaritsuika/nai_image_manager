@@ -1,11 +1,16 @@
 .daki-personal-placeholder { aspect-ratio: 3 / 4; display: grid; place-items: center; min-height: 180px; color: #999; font-size: 14px; background: var(--card); }
 .gallery-fixed-size-grid .daki-personal-placeholder { height: var(--gallery-fixed-image-height, 360px); aspect-ratio: auto; }
 .daki-personal-history { margin-top: 28px; }
-.daki-personal-dialog { width: min(850px, calc(100vw - 32px)); padding: 0; overscroll-behavior: contain; }
+#dakiLibrary .daki-personal-card .daki-image-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#dakiLibrary .daki-personal-card .daki-image-actions > span:first-child { grid-column: 1 / -1; min-width: 0; }
+#dakiLibrary .daki-personal-card .daki-image-actions > .gallery-card-action-btn { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.daki-personal-dialog { width: min(850px, calc(100vw - 32px)); padding: 0; overscroll-behavior: contain; overflow: hidden; }
+.daki-personal-dialog > form { display: flex; flex-direction: column; max-height: calc(100dvh - 50px); }
+.daki-personal-dialog .daki-personal-header, .daki-personal-dialog .daki-personal-actions { flex: 0 0 auto; }
 .daki-personal-header { padding: 22px 26px 18px; border-bottom: 1px solid #ffffff1a; }
 .daki-personal-header h2 { margin: 0 0 6px; }
 .daki-personal-header p { margin: 0; }
-.daki-personal-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 20px; padding: 22px 26px; }
+.daki-personal-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-auto-rows: max-content; align-content: start; gap: 16px 20px; padding: 22px 26px; min-height: 0; overflow-y: auto; }
 .daki-personal-dialog .daki-personal-field { min-width: 0; margin: 0; font-size: 12px; font-weight: 600; color: #c7c9d0; }
 .daki-personal-field:has(#dakiPersonal-source_path), .daki-personal-prompts, .daki-personal-advanced, .daki-personal-status { grid-column: 1 / -1; }
 .daki-personal-dialog :is(input, select, textarea) { min-width: 0; font-size: 13px; font-weight: 400; }
@@ -20,11 +25,40 @@
 .daki-personal-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
 .daki-personal-dialog .daki-personal-status { margin: 0; color: var(--thumb); overflow-wrap: anywhere; }
 .daki-personal-status:empty { display: none; }
-.daki-personal-actions { position: sticky; bottom: 0; margin: 0; padding: 16px 26px; background: var(--card); border-top: 1px solid #ffffff1a; }
+.daki-personal-actions { margin: 0; padding: 16px 26px; background: var(--card); border-top: 1px solid #ffffff1a; }
+.daki-personal-trial { grid-column: 1 / -1; min-width: 0; border-top: 1px solid #ffffff1a; padding-top: 12px; }
+.daki-personal-trial h3 { margin: 0; font-size: 14px; }
+.daki-personal-trial textarea { display: block; box-sizing: border-box; width: 100%; margin-top: 7px; padding: 10px 12px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; line-height: 1.6; }
+.daki-personal-trial .daki-personal-field { margin-top: 12px; }
+.daki-personal-trial-result { display: grid; justify-items: center; gap: 12px; margin-top: 16px; }
+.daki-personal-trial-result[hidden] { display: none; }
+.daki-personal-trial-result img { display: block; max-width: 100%; max-height: 360px; object-fit: contain; }
+.daki-personal-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+.daki-personal-actions > button { flex: 0 0 auto; white-space: normal; }
+.daki-personal-picker-dialog { width: min(850px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; }
+.daki-personal-picker-dialog[open] { display: flex; flex-direction: column; }
+.daki-personal-picker-dialog .daki-personal-header { flex: 0 0 auto; }
+.daki-personal-picker-body { display: grid; flex: 1 1 auto; grid-template-columns: minmax(0, 1fr); gap: 16px; min-height: 0; overflow-y: auto; padding: 22px 26px; }
+.daki-personal-picker-dialog .daki-personal-field input { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; border: 1px solid #555; border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+.daki-personal-picker-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; gap: 16px; }
+.daki-personal-picker-choice { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; min-width: 0; gap: 12px; padding: 10px; text-align: left; white-space: normal; }
+.daki-personal-picker-choice.is-selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+.daki-personal-picker-choice img { width: 72px; height: 96px; min-width: 0; object-fit: contain; background: var(--bg); }
+.daki-personal-picker-placeholder { display: grid; place-items: center; width: 72px; height: 96px; padding: 4px; background: var(--bg); color: #999; font-size: 11px; line-height: 1.4; text-align: center; overflow-wrap: anywhere; }
+.daki-personal-picker-choice-text { display: grid; min-width: 0; gap: 5px; }
+.daki-personal-picker-choice-text > :is(strong, span) { min-width: 0; overflow-wrap: anywhere; }
+.daki-personal-picker-choice-text > strong { font-size: 14px; line-height: 1.45; }
+.daki-personal-picker-choice-text > span { color: #bec4d1; font-size: 12px; line-height: 1.5; }
+.daki-personal-picker-more { margin: 0; color: #999; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-personal-picker-dialog .daki-personal-actions { position: static; flex: 0 0 auto; }
+.daki-personal-picker-dialog .daki-personal-actions > button { flex: 0 0 auto; min-width: 88px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 600px) {
     .daki-personal-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 24px); }
     .daki-personal-header, .daki-personal-body { padding: 18px; }
     .daki-personal-body { grid-template-columns: minmax(0, 1fr); }
     .daki-personal-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .daki-personal-actions { padding: 14px 18px; }
+    .daki-personal-picker-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 32px); }
+    .daki-personal-picker-body { grid-template-columns: minmax(0, 1fr); }
+    .daki-personal-picker-grid { grid-template-columns: minmax(0, 1fr); }
 }

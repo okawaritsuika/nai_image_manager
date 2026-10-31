@@ -4,6 +4,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 
 datas = [
+    ("style_workspace.html", "."),
     ("index.html", "."),
     ("canvas.html", "."),
     ("legacy_generation.html", "."),
@@ -14,6 +15,8 @@ datas = [
     ("data/tag_categories_ko.generated.json", "data"),
     ("data/shared_style_artists.json", "data"),
     ("data/shared_style_post_dates.json", "data"),
+    ("data/daki_dictionary", "data/daki_dictionary"),
+    ("data/prompt_tags", "data/prompt_tags"),
     ("tools", "tools"),
     ("naim/upscale_worker.py", "naim"),
     ("danbooru_tags.db", "."),

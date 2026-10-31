@@ -4,6 +4,7 @@
     function createCanvasHistory(options = {}) {
         const limit = Number.isFinite(options.limit) ? Math.max(0, Math.floor(options.limit)) : 50;
         const maxBytes = Number.isFinite(options.maxBytes) ? Math.max(0, Math.floor(options.maxBytes)) : 32 * 1024 * 1024;
+        const collectRefs = typeof options.collectRefs === 'function' ? options.collectRefs : null;
         let history = [];
         let historyBytes = 0;
         let current = null;
@@ -13,7 +14,13 @@
             if (typeof text !== 'string') throw new TypeError('Canvas history state must be JSON-serializable');
             const entryKey = key === undefined ? text : key;
             const keyBytes = typeof entryKey === 'string' && entryKey !== text ? entryKey.length * 2 : 0;
-            return {text, key: entryKey, bytes: text.length * 2 + keyBytes};
+            const collectedRefs = collectRefs ? collectRefs(state) : [];
+            if (!Array.isArray(collectedRefs) || collectedRefs.some(ref => typeof ref !== 'string')) {
+                throw new TypeError('Canvas history collectRefs must return an array of strings');
+            }
+            const refs = [...new Set(collectedRefs)];
+            const refsBytes = refs.reduce((total, ref) => total + ref.length * 2, 0);
+            return {text, key: entryKey, refs, bytes: text.length * 2 + keyBytes + refsBytes};
         }
 
         function copy(entry) {
@@ -62,6 +69,12 @@
             },
             states() {
                 return current === null ? [] : history.concat(current).map(copy);
+            },
+            importRefs() {
+                const refs = new Set();
+                for (const entry of history) entry.refs.forEach(ref => refs.add(ref));
+                if (current) current.refs.forEach(ref => refs.add(ref));
+                return [...refs];
             },
             get canUndo() {
                 return history.length > 0;

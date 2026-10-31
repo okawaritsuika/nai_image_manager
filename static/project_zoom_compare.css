@@ -1,0 +1,347 @@
+#zoomLayer.project-zoom-comparing .gallery-zoom-image-stage,
+#zoomLayer.project-zoom-comparing .gallery-zoom-key-guide,
+#zoomLayer.project-zoom-comparing #galleryZoomViewHint {
+    display: none;
+}
+
+#zoomLayer #projectZoomCompareStage[hidden],
+#zoomLayer #projectZoomCompareControls[hidden] {
+    display: none;
+}
+
+#zoomLayer.project-zoom-comparing #projectZoomCompareStage {
+    display: grid;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    width: 100%;
+    gap: 8px;
+    align-items: stretch;
+    box-sizing: border-box;
+    overflow: hidden;
+    cursor: default;
+    touch-action: auto;
+}
+
+#zoomLayer #projectZoomCompareControls {
+    flex: 0 0 auto;
+    min-width: 0;
+}
+
+#zoomLayer .project-zoom-compare-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+#zoomLayer .project-zoom-compare-actions button,
+#zoomLayer .project-zoom-compare-picker button {
+    flex-shrink: 0;
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid #46566c;
+    border-radius: 7px;
+    background: #1d2a3b;
+    color: #edf4ff;
+    font: 600 12px system-ui, sans-serif;
+    cursor: pointer;
+}
+
+#zoomLayer .project-zoom-compare-actions button:hover,
+#zoomLayer .project-zoom-compare-picker button:hover {
+    filter: brightness(1.2);
+}
+
+#zoomLayer .project-zoom-compare-actions button:focus-visible,
+#zoomLayer .project-zoom-compare-picker button:focus-visible,
+#zoomLayer .project-zoom-compare-pane:focus-visible {
+    outline: 2px solid #7dd3fc;
+    outline-offset: 2px;
+}
+
+#zoomLayer .project-zoom-compare-sync[aria-pressed="true"] {
+    border-color: #24a897;
+    background: #103b35;
+    color: #9df4e5;
+}
+
+#zoomLayer .project-zoom-compare-picker {
+    position: fixed;
+    inset: 0;
+    width: min(1000px, calc(100vw - 32px));
+    height: min(760px, calc(100vh - 32px));
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    min-width: 0;
+    min-height: 0;
+    margin: auto;
+    padding: 16px;
+    box-sizing: border-box;
+    border: 1px solid #3b4555;
+    border-radius: 12px;
+    background: #111722;
+    color: #e7edf6;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 12px;
+    overflow: hidden;
+    font: 13px/1.4 system-ui, sans-serif;
+}
+
+#zoomLayer .project-zoom-compare-picker:not([open]) {
+    display: none;
+}
+
+#zoomLayer .project-zoom-compare-picker[open] {
+    display: grid;
+}
+
+#zoomLayer .project-zoom-compare-picker::backdrop {
+    background: rgba(3, 7, 13, .78);
+}
+
+#zoomLayer .project-zoom-compare-picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    color: #dce7f6;
+    font-size: 16px;
+}
+
+#zoomLayer .project-zoom-compare-picker-header strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+#zoomLayer .project-zoom-compare-picker-close {
+    min-width: 68px;
+}
+
+#zoomLayer .project-zoom-compare-picker-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr));
+    align-content: start;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+    padding: 2px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+#zoomLayer .project-zoom-compare-picker .project-zoom-compare-picker-item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 220px;
+    padding: 8px !important;
+    text-align: left;
+    white-space: normal;
+}
+
+#zoomLayer .project-zoom-compare-picker-item img {
+    display: block;
+    flex: 0 0 160px;
+    width: 100%;
+    height: 160px;
+    max-width: none;
+    max-height: none;
+    object-fit: contain;
+    border: 0;
+    border-radius: 5px;
+    background: #0a1019;
+    box-shadow: none;
+}
+
+#zoomLayer .project-zoom-compare-picker-item span {
+    display: -webkit-box;
+    min-width: 0;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+    min-height: 2.7em;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+#zoomLayer .project-zoom-compare-picker-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+#zoomLayer .project-zoom-compare-picker-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: #cbd5e1;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+#zoomLayer .project-zoom-compare-picker-previous,
+#zoomLayer .project-zoom-compare-picker-next {
+    min-width: 72px;
+}
+
+#zoomLayer .project-zoom-compare-picker button:disabled {
+    opacity: .45;
+    cursor: default;
+}
+
+#zoomLayer .project-zoom-compare-picker-empty {
+    grid-column: 1 / -1;
+    align-self: start;
+    margin: 8px 4px;
+    color: #cbd5e1;
+    font-size: 14px;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+    #zoomLayer .project-zoom-compare-picker-list {
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 132px), 1fr));
+        gap: 8px;
+    }
+
+    #zoomLayer .project-zoom-compare-picker-item {
+        min-height: 196px;
+    }
+
+    #zoomLayer .project-zoom-compare-picker-item img {
+        flex-basis: 136px;
+        height: 136px;
+    }
+}
+
+#zoomLayer .project-zoom-compare-pane {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid #3b4555;
+    border-radius: 8px;
+    background: #101722;
+    color: #e7edf6;
+    user-select: none;
+}
+
+#zoomLayer .project-zoom-compare-pane.is-selected {
+    border-color: #43c7b4;
+    box-shadow: inset 0 0 0 1px #43c7b4;
+}
+
+#zoomLayer .project-zoom-compare-pane-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 32px;
+    min-width: 0;
+    height: 32px;
+    padding: 2px 5px;
+    box-sizing: border-box;
+    overflow: hidden;
+    background: #1a2432;
+    font: 12px/1.2 system-ui, sans-serif;
+}
+
+#zoomLayer .project-zoom-compare-selected {
+    flex: 0 0 auto;
+    padding: 3px 5px;
+    border-radius: 5px;
+    background: #16443e;
+    color: #a6f2e5;
+    font-size: 10px;
+}
+
+#zoomLayer .project-zoom-compare-name {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#zoomLayer .project-zoom-compare-remove {
+    flex: 0 0 28px;
+    width: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid #59677a;
+    border-radius: 6px;
+    background: #263245;
+    color: #edf4ff;
+    font: 600 17px/1 system-ui, sans-serif;
+    cursor: pointer;
+}
+
+#zoomLayer .project-zoom-compare-remove:disabled {
+    opacity: .45;
+    cursor: default;
+}
+
+#zoomLayer .project-zoom-compare-viewport {
+    display: flex;
+    flex: 1 1 0;
+    align-items: flex-start;
+    justify-content: center;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    cursor: grab;
+    touch-action: none;
+}
+
+#zoomLayer .project-zoom-compare-viewport.is-dragging,
+#zoomLayer .project-zoom-compare-viewport.is-dragging img { cursor: grabbing; }
+
+#zoomLayer #projectZoomCompareStage .project-zoom-compare-image {
+    display: block;
+    flex: 0 0 auto;
+    width: auto;
+    max-width: none;
+    max-height: none;
+    box-sizing: border-box;
+    object-fit: fill;
+    border: 2px solid #333;
+    box-shadow: 0 0 20px #0008;
+    cursor: inherit;
+    user-select: none;
+}
+
+#zoomLayer .project-zoom-compare-error {
+    align-self: center;
+    max-width: 100%;
+    padding: 8px;
+    color: #ffc1c8;
+    font-size: 12px;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+#zoomLayer .project-zoom-compare-retry {
+    align-self: center;
+    min-height: 30px;
+    max-width: 100%;
+    margin: 4px;
+    padding: 4px 8px;
+    border: 1px solid #59677a;
+    border-radius: 6px;
+    background: #263245;
+    color: #edf4ff;
+    font: 600 11px system-ui, sans-serif;
+    cursor: pointer;
+}
+
+#zoomLayer .project-zoom-compare-error[hidden],
+#zoomLayer .project-zoom-compare-retry[hidden] {
+    display: none;
+}

@@ -31,14 +31,12 @@
     let canvasNameEdited = false;
 
     function suggestCanvasName(project, side) {
-        const stem = `${String(project?.name || '프로젝트').trim().slice(0, 100)}_${sides[side] || sides.front}_캔버스`;
-        let next = 1;
-        for (const canvas of project?.canvases?.[side] || []) {
-            if (!canvas.name?.startsWith(stem)) continue;
-            const suffix = canvas.name.slice(stem.length);
-            if (/^[1-9]\d*$/.test(suffix) && Number.isSafeInteger(Number(suffix))) next = Math.max(next, Number(suffix) + 1);
-        }
-        return `${stem}${next}`.slice(0, 120);
+        const now = new Date();
+        const pad = value => String(value).padStart(2, '0');
+        const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const suffix = `_${sides[side] || sides.front}_${timestamp}`;
+        const projectName = String(project?.name || '프로젝트').trim();
+        return projectName.slice(0, Math.max(0, 120 - suffix.length)) + suffix;
     }
 
     function updateSuggestedCanvasName() {
@@ -57,12 +55,9 @@
         if (!current || current.projectId !== link.projectId || current.canvasId !== link.canvasId) {
             throw new Error('캔버스 연결이 변경되었습니다. 다시 내보내 주세요.');
         }
-        const prefix = `${result.project.name.trim().slice(0, 100)}_${sides[result.canvas.side]}_`;
-        const canvasName = result.canvas.name;
-        const base = (canvasName.startsWith(prefix) ? canvasName : prefix + canvasName)
+        const base = suggestCanvasName(result.project, result.canvas.side)
             .replace(/[<>:"/\\|?*\u0000-\u001f\u007f-\u009f]/g, '_').replace(/[. ]+$/, '');
-        const suffix = `_결과${Math.max(0, Number(result.canvas.exportCount) || 0) + 1}.png`;
-        return base.slice(0, 200 - suffix.length).replace(/[. ]+$/, '') + suffix;
+        return base + '.png';
     }
 
     async function api(url, method = 'GET', body) {

@@ -108,6 +108,7 @@ function createHarness({referenceRequest, fetchImpl} = {}) {
         canvasLayers: [selection],
         clipInpaintLoadingClipId: null,
         isClipInpaintMergedSourceMode: false,
+        CanvasSelectionRotation: require('../static/canvas_selection_rotation.js'),
         layerIdSeq: 100,
         activeLayerId: null,
         activeClipSelectionId: null,
@@ -172,6 +173,7 @@ function createHarness({referenceRequest, fetchImpl} = {}) {
         renderLayerList() {},
         renderCanvasLayersOnSurface() {},
         renderClipOutputPanel() {},
+        animateClipInpaintResult() {},
         saveCanvasState() {}
     };
     vm.createContext(context);

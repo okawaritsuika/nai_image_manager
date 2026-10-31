@@ -1,44 +1,11 @@
-/* Optional gallery presentation. Legacy styles and all shared modal rules stay in index.css. */
-.gallery-layout-switch {
-    position: sticky;
-    top: 0;
-    z-index: 3200;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px 20px;
-    min-height: 54px;
-    box-sizing: border-box;
-    padding: 10px 26px;
-    color: #eef0f5;
-    background: #1c1e24;
-    border-bottom: 1px solid #414550;
-    font: 13px/1.5 'Segoe UI', 'Malgun Gothic', sans-serif;
-}
-.gallery-layout-brand { font-weight: 600; }
-.gallery-layout-brand > span { color: #b0b6c4; font-weight: 400; margin-left: 8px; }
-.gallery-layout-options { display: flex; gap: 4px; margin-left: auto; }
-.gallery-layout-options > button {
-    border: 1px solid transparent;
-    padding: 6px 12px;
-    border-radius: 7px;
-    background: transparent;
-    color: #d1d5df;
-    font: inherit;
-    cursor: pointer;
-    white-space: nowrap;
-}
-.gallery-layout-options > button[aria-pressed="true"] { border-color: #759de2; background: #293d65; color: #e0eaff; }
-.gallery-layout-options > button:focus-visible { outline: 2px solid #a9c6ff; outline-offset: 2px; }
-.gallery-layout-save-status { width: 100%; color: #f7cc83; font-size: 12px; }
-.gallery-layout-save-status[hidden], #galleryModernLayout[hidden] { display: none !important; }
+/* Gallery uses the modern layout only. Shared controls stay in index.css. */
 .gallery-legacy-access { margin-top: 20px; padding: 14px; border: 1px solid #505664; border-radius: 8px; color: #d6dae4; font-size: 13px; }
 .gallery-legacy-access summary { cursor: pointer; min-height: 24px; }
 .gallery-legacy-access p { color: #bec4d1; line-height: 1.6; }
 .gallery-legacy-access a { display: inline-block; padding: 8px 0; color: #adc8ff; }
-body:not(.gallery-layout-modern) > .header-main { top: var(--gallery-layout-switch-height, 54px); }
 
 body.gallery-layout-modern {
+    --gallery-layout-switch-height: 0px;
     --bg: #17181c;
     --card: #24262d;
     --accent: #ff8795;
@@ -102,7 +69,7 @@ body.gallery-layout-modern .gallery-header-tools-toggle {
 body.gallery-layout-modern #applyBtn { background: #adc8ff !important; color: #172442 !important; }
 body.gallery-layout-modern .gallery-header-tools { left: 0; right: auto; transform: none; background: #252831; border-color: #515a6d; }
 body.gallery-layout-modern .gallery-header-tools button { box-shadow: none !important; margin-left: 0 !important; border-radius: 6px !important; }
-body.gallery-layout-modern .gallery-header-tools button:not([id]) { background: #303541 !important; color: #eef0f5 !important; border: 1px solid #606b82 !important; min-height: 42px; }
+body.gallery-layout-modern .gallery-header-tools button:not([id]) { background: #303541 !important; color: #eef0f5 !important; border: 1px solid #606b82 !important; min-height: 32px; }
 body.gallery-layout-modern .gallery-header-tools button:not([id]):hover { background: #3d4960 !important; }
 body.gallery-layout-modern .gallery-modern-main > .header-main button:focus-visible,
 body.gallery-layout-modern .gallery-modern-sidebar :is(button, input, select, summary):focus-visible { outline: 2px solid #adc8ff; outline-offset: 3px; }
@@ -226,10 +193,6 @@ body.gallery-layout-modern .gallery-fixed-size-grid .item-box { max-width: 100%;
     body.gallery-layout-modern .gallery-card-action-btn { justify-content: flex-start; padding-left: 9px; }
 }
 @media (max-width: 760px) {
-    .gallery-layout-switch { padding: 9px 14px; gap: 8px; }
-    .gallery-layout-brand { font-size: 12px; }
-    .gallery-layout-brand > span { display: none; }
-    .gallery-layout-options > button { padding: 6px 9px; }
     body.gallery-layout-modern .gallery-modern-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px 22px 0 12px; }
     body.gallery-layout-modern .gallery-modern-sidebar { position: static; max-height: none; overflow: visible; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     body.gallery-layout-modern .gallery-modern-sidebar > details { margin: 0; padding: 0 9px 8px; border: 1px solid #474e60; border-radius: 8px; background: #24262e; min-width: 0; }
@@ -243,7 +206,7 @@ body.gallery-layout-modern .gallery-fixed-size-grid .item-box { max-width: 100%;
         right: 12px;
         width: auto;
         min-width: 0;
-        max-width: 360px;
+        max-width: 280px;
         max-height: calc(100vh - var(--gallery-layout-switch-height, 54px) - 24px);
         max-height: calc(100dvh - var(--gallery-layout-switch-height, 54px) - 24px);
         box-sizing: border-box;

@@ -43,6 +43,8 @@ let contextImageLayerId = null;
 let isLayerMoveMode = false;
 let activeLayerDrag = null;
 let draggedLayerId = null;
+let canvasLayerDeletePointerId = null;
+let canvasLayerDeletePressedId = null;
 let pendingCanvasHotLayerIds = new Set();
 let canvasHotGeometryFrame = null;
 
@@ -911,15 +913,51 @@ function addCanvasFolder() {
     saveCanvasState();
 }
 
+function getSelectionAreaCreationCenter() {
+    const fallback = {x: currentCanvasWidth / 2, y: currentCanvasHeight / 2};
+    const surface = el('canvasSurface');
+    const workspace = surface?.closest('.canvas-workspace');
+    if (!surface || !workspace) return fallback;
+
+    const surfaceRect = surface.getBoundingClientRect();
+    const workspaceRect = workspace.getBoundingClientRect();
+    if (surfaceRect.width <= 0 || surfaceRect.height <= 0) return fallback;
+
+    const left = Math.max(surfaceRect.left, workspaceRect.left + workspace.clientLeft, 0);
+    const top = Math.max(surfaceRect.top, workspaceRect.top + workspace.clientTop, 0);
+    const right = Math.min(
+        surfaceRect.right,
+        workspaceRect.left + workspace.clientLeft + workspace.clientWidth,
+        window.innerWidth
+    );
+    const bottom = Math.min(
+        surfaceRect.bottom,
+        workspaceRect.top + workspace.clientTop + workspace.clientHeight,
+        window.innerHeight
+    );
+    if (right <= left || bottom <= top) return fallback;
+
+    const center = getCanvasPointerPosition({
+        clientX: (left + right) / 2,
+        clientY: (top + bottom) / 2
+    });
+    return {x: center.x, y: center.y};
+}
+
 function addSelectionArea() {
     if (!currentCanvasWidth || !currentCanvasHeight) {
         openCanvasDialog();
         return;
     }
 
-    const width = Math.max(128, Math.round(currentCanvasWidth * 0.5));
-    const height = Math.max(128, Math.round(currentCanvasHeight * 0.22));
+    let width = snapToSelectionStep(Math.max(128, Math.round(currentCanvasWidth * 0.5)));
+    let height = snapToSelectionStep(Math.max(128, Math.round(currentCanvasHeight * 0.22)));
+    while (!isSelectionRequestSizeAllowed({layerWidth: width, layerHeight: height})) {
+        width = Math.max(SELECTION_MIN_SIZE, width - SELECTION_SIZE_STEP);
+        height = Math.max(SELECTION_MIN_SIZE, height - SELECTION_SIZE_STEP);
+    }
 
+    const center = getSelectionAreaCreationCenter();
     const selection = {
         id: layerIdSeq++,
         name: `선택 영역 ${countCanvasLayersByType('selection') + 1}`,
@@ -927,8 +965,8 @@ function addSelectionArea() {
         type: 'selection',
         expanded: true,
         hasInpaintResult: false,
-        x: Math.round((currentCanvasWidth - width) / 2),
-        y: Math.round((currentCanvasHeight - height) / 2),
+        x: Math.round(center.x - width / 2),
+        y: Math.round(center.y - height / 2),
         layerWidth: width,
         layerHeight: height,
         children: []
@@ -1179,15 +1217,23 @@ function collectCanvasLayerIds(layer, ids = new Set()) {
     return ids;
 }
 
-function deleteCanvasLayer(layerId, event) {
+async function deleteCanvasLayer(layerId, event) {
     if (event) event.stopPropagation();
 
-    const found = findCanvasLayer(layerId);
+    let found = findCanvasLayer(layerId);
     if (!found) return;
 
-    if (found.layer.type === 'folder' && Array.isArray(found.layer.children) && found.layer.children.length > 0) {
-        const ok = confirm(`'${found.layer.name}' 폴더와 내부 레이어 ${found.layer.children.length}개를 삭제할까요?`);
-        if (!ok) return;
+    if (CanvasLayerDelete.countSourceClips(found.layer) > 0) {
+        const target = found.layer;
+        const confirmedIds = collectCanvasLayerIds(target);
+        if (!await CanvasLayerDelete.confirm(target)) return;
+        found = findCanvasLayer(layerId);
+        const currentIds = found ? collectCanvasLayerIds(found.layer) : new Set();
+        if (found?.layer !== target || currentIds.size !== confirmedIds.size ||
+            [...currentIds].some(id => !confirmedIds.has(id))) {
+            showToast('확인 중 레이어 구성이 바뀌었습니다. 삭제 대상을 다시 확인해 주세요.');
+            return;
+        }
     }
 
     const totalNodes = getAllCanvasLayerNodes();
@@ -1238,6 +1284,24 @@ function renderLayerList() {
     const list = el('layerList');
     if (!list) return;
 
+    // Keep the row under the pointer in place when a generated result is inserted.
+    const hovered = list.querySelector('.layer-item:hover');
+    const anchorId = hovered?.dataset.layerId;
+    const anchorTop = hovered?.getBoundingClientRect().top;
+    if (!list.dataset.deletePointerBound) {
+        list.dataset.deletePointerBound = '1';
+        list.addEventListener('pointermove', (event) => {
+            canvasLayerDeletePointerId = getCanvasLayerDeletePointerTarget(event);
+        });
+        list.addEventListener('pointerleave', () => { canvasLayerDeletePointerId = null; });
+        list.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0) return;
+            const id = getCanvasLayerDeletePointerTarget(event);
+            if (event.pointerType === 'touch') canvasLayerDeletePointerId = id;
+            canvasLayerDeletePressedId = id === canvasLayerDeletePointerId ? id : null;
+        }, true);
+    }
+
     list.innerHTML = '';
 
     if (!canvasLayers.length) {
@@ -1246,7 +1310,29 @@ function renderLayerList() {
     }
 
     renderLayerTree(canvasLayers, list, 0);
+    if (anchorId) {
+        const anchor = list.querySelector(`.layer-item[data-layer-id="${Number(anchorId)}"]`);
+        if (anchor) list.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    }
     updateImageResizePanel();
+}
+
+function getCanvasLayerDeletePointerTarget(event) {
+    const button = event.target.closest?.('.layer-delete-btn');
+    return button ? Number(button.closest('.layer-item')?.dataset.layerId) : null;
+}
+
+function handleCanvasLayerDeleteClick(layerId, event) {
+    event.stopPropagation();
+    // A new row may replace a button between hover, press and release. Keyboard
+    // activation has detail=0 and is already addressed to the focused button.
+    if (event.detail > 0 && (canvasLayerDeletePointerId !== Number(layerId) ||
+        canvasLayerDeletePressedId !== Number(layerId))) {
+        showToast('목록이 갱신되었습니다. 삭제할 레이어를 다시 가리켜 주세요.');
+        return;
+    }
+    canvasLayerDeletePressedId = null;
+    deleteCanvasLayer(layerId, event);
 }
 
 function renderLayerTree(layers, container, depth) {
@@ -1255,6 +1341,7 @@ function renderLayerTree(layers, container, depth) {
             layer.children = Array.isArray(layer.children) ? layer.children : [];
         }
         const item = document.createElement('div');
+        item.dataset.layerId = String(layer.id);
 
         item.style.setProperty('--layer-depth', depth);
         item.onclick = (event) => selectCanvasLayer(layer.id, event);
@@ -1360,7 +1447,7 @@ function renderLayerTree(layers, container, depth) {
             exitFolderBtn.oncontextmenu = (event) => event.stopPropagation();
         }
 
-        deleteBtn.onclick = (event) => deleteCanvasLayer(layer.id, event);
+        deleteBtn.onclick = (event) => handleCanvasLayerDeleteClick(layer.id, event);
         if (selectionCheckBtn) {
             selectionCheckBtn.onclick = (event) => checkSelectionArea(layer.id, event);
             selectionCheckBtn.oncontextmenu = (event) => event.stopPropagation();
@@ -2618,6 +2705,11 @@ function updateCanvasLayerNodeGeometry(layer, displayScale = getCanvasDisplaySca
     setCanvasLayerNodePosition(node, x, y, displayScale);
     node.style.width = `${width * displayScale}px`;
     node.style.height = `${height * displayScale}px`;
+    if (layer.type === 'selection') {
+        node.style.transform += ` rotate(${CanvasSelectionRotation.angle(layer.rotation)}deg)`;
+        node.style.setProperty('--selection-rotate-size', `${Math.max(12, Math.min(36, Math.min(width, height) * displayScale - 24))}px`);
+    }
+    if (layer.type === 'clip') node.style.transform += ` rotate(${CanvasSelectionRotation.angle(layer.rotation)}deg)`;
     return true;
 }
 
@@ -3454,6 +3546,8 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
             setCanvasLayerNodePosition(selectionEl, layer.x, layer.y, displayScale);
             selectionEl.style.width = `${layer.layerWidth * displayScale}px`;
             selectionEl.style.height = `${layer.layerHeight * displayScale}px`;
+            selectionEl.style.transform += ` rotate(${CanvasSelectionRotation.angle(layer.rotation)}deg)`;
+            selectionEl.style.setProperty('--selection-rotate-size', `${Math.max(12, Math.min(36, Math.min(layer.layerWidth, layer.layerHeight) * displayScale - 24))}px`);
 
             selectionEl.oncontextmenu = (event) => {
                 openCanvasSelectionContextMenu(event, layer.id);
@@ -3461,6 +3555,7 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
 
             selectionEl.innerHTML = `
                 <div class="selection-move-zone" title="선택 영역 이동"></div>
+                ${getEditableClipForSelection(layer) ? '' : '<button type="button" class="selection-rotate-handle" title="가운데를 잡고 드래그하여 선택 영역 회전" aria-label="선택 영역 회전"></button>'}
                 <div class="selection-resize-handle tl" data-handle="tl" title="크기 조절"></div>
                 <div class="selection-resize-handle tr" data-handle="tr" title="크기 조절"></div>
                 <div class="selection-resize-handle bl" data-handle="bl" title="크기 조절"></div>
@@ -3468,6 +3563,8 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
             `;
 
             const moveZone = selectionEl.querySelector('.selection-move-zone');
+            const rotateHandle = selectionEl.querySelector('.selection-rotate-handle');
+            if (rotateHandle) rotateHandle.onmousedown = (event) => startSelectionRotateDrag(event, layer.id);
             if (moveZone) {
                 moveZone.onmousedown = (event) => {
                     startSelectionMoveFromCanvasEvent(event, layer);
@@ -3494,6 +3591,8 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
             setCanvasLayerNodePosition(layerEl, layer.x, layer.y, displayScale);
             layerEl.style.width = `${layer.layerWidth * displayScale}px`;
             layerEl.style.height = `${layer.layerHeight * displayScale}px`;
+
+            layerEl.style.transform += ` rotate(${CanvasSelectionRotation.angle(layer.rotation)}deg)`;
 
             layerEl.onmousedown = (event) => {
                 if (isImageResizeMode) {
@@ -5426,6 +5525,34 @@ function startSelectionMoveDrag(event, layerId) {
     hideSelectionSizeTooltip();
 }
 
+function startSelectionRotateDrag(event, layerId) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const layer = findCanvasLayer(layerId)?.layer;
+    if (!layer || layer.type !== 'selection' || !layer.visible) return;
+    if (getEditableClipForSelection(layer)) return;
+    if (selectionRequiresLayerMoveMode(layer) && !isLayerMoveMode) return;
+    normalizeSelectionAreaGeometry(layer);
+    selectedLayerIds.clear();
+    selectedLayerIds.add(Number(layer.id));
+    activeLayerId = checkedSelectionId = activeClipSelectionId = layer.id;
+    const pointer = getCanvasPointerPosition(event);
+    const centerX = layer.x + layer.layerWidth / 2;
+    const centerY = layer.y + layer.layerHeight / 2;
+    const dx = pointer.x - centerX;
+    const dy = pointer.y - centerY;
+    activeSelectionDrag = {
+        mode: 'rotate', layerId: layer.id,
+        displayScale: pointer.displayScale, surfaceLeft: pointer.surfaceLeft, surfaceTop: pointer.surfaceTop,
+        centerX, centerY, startRotation: CanvasSelectionRotation.angle(layer.rotation),
+        startAngle: Math.hypot(dx, dy) * pointer.displayScale >= 6 ? Math.atan2(dy, dx) : null
+    };
+    hideSelectionSizeTooltip();
+    renderLayerList();
+    syncCanvasSurfaceSelectionState();
+}
+
 function startSelectionResizeDrag(event, layerId, handle) {
     const found = findCanvasLayer(layerId);
     const layer = found?.layer;
@@ -5464,6 +5591,7 @@ function startSelectionResizeDrag(event, layerId, handle) {
     activeSelectionDrag = {
         mode: 'resize',
         layerId: layer.id,
+        rotation: CanvasSelectionRotation.angle(layer.rotation),
         handle,
         startPointerX: pointer.x,
         startPointerY: pointer.y,
@@ -5491,6 +5619,21 @@ function handleSelectionMouseMove(event) {
     const found = findCanvasLayer(activeSelectionDrag.layerId);
     const layer = found?.layer;
     if (!layer || layer.type !== 'selection') return;
+
+    if (activeSelectionDrag.mode === 'rotate') {
+        const pointer = getCanvasPointerPositionForDrag(event, activeSelectionDrag);
+        const dx = pointer.x - activeSelectionDrag.centerX;
+        const dy = pointer.y - activeSelectionDrag.centerY;
+        if (Math.hypot(dx, dy) * pointer.displayScale < 6) return;
+        const angle = Math.atan2(dy, dx);
+        if (activeSelectionDrag.startAngle === null) activeSelectionDrag.startAngle = angle;
+        const rotation = CanvasSelectionRotation.angle(CanvasSelectionRotation.snapAngle(
+            activeSelectionDrag.startRotation + (angle - activeSelectionDrag.startAngle) * 180 / Math.PI));
+        if (!isSelectionRequestSizeAllowed({...layer, rotation})) return;
+        layer.rotation = rotation;
+        updateCanvasHotLayerGeometry(layer.id);
+        return;
+    }
 
     if (activeSelectionDrag.mode === 'move') {
         handleSelectionMove(event, layer);
@@ -5554,6 +5697,19 @@ function handleSelectionMove(event, layer) {
 function handleSelectionResize(event, layer) {
     const pointer = getCanvasPointerPositionForDrag(event, activeSelectionDrag);
     const handle = activeSelectionDrag.handle;
+
+    if (activeSelectionDrag.rotation) {
+        const drag = activeSelectionDrag;
+        const resized = CanvasSelectionRotation.resize({
+            x: drag.startX, y: drag.startY, layerWidth: drag.startWidth,
+            layerHeight: drag.startHeight, rotation: drag.rotation
+        }, handle, pointer.x - drag.startPointerX, pointer.y - drag.startPointerY, snapToSelectionStep);
+        if (!isSelectionRequestSizeAllowed({...layer, ...resized})) return;
+        Object.assign(layer, resized);
+        updateSelectionSizeTooltip(event.clientX, event.clientY, layer.layerWidth, layer.layerHeight, true);
+        updateCanvasHotLayerGeometry(layer.id);
+        return;
+    }
 
     let nextX = activeSelectionDrag.startX;
     let nextY = activeSelectionDrag.startY;
@@ -5663,6 +5819,11 @@ function handleSelectionResize(event, layer) {
     nextWidth = Math.max(SELECTION_MIN_SIZE, nextWidth);
     nextHeight = Math.max(SELECTION_MIN_SIZE, nextHeight);
 
+    if (!isSelectionRequestSizeAllowed({
+        ...layer, x: Math.round(nextX), y: Math.round(nextY),
+        layerWidth: nextWidth, layerHeight: nextHeight
+    })) return;
+
     layer.x = Math.round(nextX);
     layer.y = Math.round(nextY);
     layer.layerWidth = nextWidth;
@@ -5745,6 +5906,17 @@ function handleSelectionMouseUp(event) {
     syncCanvasSurfaceSelectionState();
     updateSelectionHoverCursor(event);
     saveCanvasState();
+}
+
+function isSelectionRequestSizeAllowed(selection) {
+    // Rotation keeps the selection's original request dimensions.
+    let width = Math.ceil(selection.layerWidth / SELECTION_SIZE_STEP) * SELECTION_SIZE_STEP;
+    const height = Math.ceil(selection.layerHeight / SELECTION_SIZE_STEP) * SELECTION_SIZE_STEP;
+    if (typeof CanvasInpaintReference !== 'undefined') {
+        const reference = CanvasInpaintReference.snapshot();
+        if (reference.include) width += reference.reference?.width || 320;
+    }
+    return width > 0 && height > 0 && width * height <= 3145728;
 }
 
 function getSelectionSizeTooltip() {
@@ -6192,13 +6364,14 @@ function getCurrentClipOutputDisplayState() {
     if (!target?.clip) return null;
 
     const previewClip = getTopVisibleInpaintClipForSelection(target.selection, target.clip);
-    const showInpaintPreview = Boolean(!isClipInpaintMergedSourceMode && isClipInpaintPreviewMode && previewClip);
+    const showInpaintPreview = Boolean(isClipInpaintPreviewMode && previewClip);
 
     const mergedPreviewKey = isClipInpaintMergedSourceMode
         ? buildClipMergedSourcePreviewKey(target.selection, target.clip)
         : '';
 
     const hasMergedPreview =
+        !showInpaintPreview &&
         isClipInpaintMergedSourceMode &&
         clipMergedSourcePreviewCache.key === mergedPreviewKey &&
         clipMergedSourcePreviewCache.dataUrl;
@@ -6240,6 +6413,7 @@ function buildClipboardPayloadFromClipOutputState(state) {
         y: sourceClip.y ?? state.baseClip.y ?? sourceClip.sourceSelectionY ?? state.baseClip.sourceSelectionY ?? state.selection.y,
         layerWidth: sourceClip.layerWidth || state.baseClip.layerWidth || state.selection.layerWidth,
         layerHeight: sourceClip.layerHeight || state.baseClip.layerHeight || state.selection.layerHeight,
+        rotation: CanvasSelectionRotation.angle(sourceClip.rotation),
         copiedAt: Date.now(),
         isMergedPreview: state.isMergedPreview
     };
@@ -6248,7 +6422,8 @@ function buildClipboardPayloadFromClipOutputState(state) {
 function buildExternalClipboardPayloadForClipOutput(imageDataUrl, state) {
     if (!imageDataUrl || !state?.selection || !state.baseClip) return null;
 
-    const sourceClip = state.displayClip || state.baseClip;
+    // Match inpainting placement; a previewed result may have been moved or resized.
+    const sourceClip = state.baseClip;
 
     return {
         src: imageDataUrl,
@@ -6264,6 +6439,7 @@ function buildExternalClipboardPayloadForClipOutput(imageDataUrl, state) {
         y: sourceClip.y ?? state.baseClip.y ?? state.selection.y,
         layerWidth: sourceClip.layerWidth || state.baseClip.layerWidth || state.selection.layerWidth,
         layerHeight: sourceClip.layerHeight || state.baseClip.layerHeight || state.selection.layerHeight,
+        rotation: CanvasSelectionRotation.angle(sourceClip.rotation),
         copiedAt: Date.now(),
         isExternalClipboard: true
     };
@@ -6392,6 +6568,7 @@ async function pasteInternalClipboardToClipInpaintResults(options = {}) {
             sourceSelectionY: pasteY,
             layerWidth: pasteWidth,
             layerHeight: pasteHeight,
+            rotation: CanvasSelectionRotation.angle(clipboard.rotation),
             createdAt: Date.now()
         };
 
@@ -6539,6 +6716,8 @@ async function createClipFromSelection(selection) {
     normalizeSelectionAreaGeometry(selection);
     clipOutputPanelPosition = null;
 
+    const rotated = CanvasSelectionRotation.angle(selection.rotation) !== 0;
+    const bounds = rotated ? CanvasSelectionRotation.bounds(selection) : null;
     const cropX = Math.round(selection.x);
     const cropY = Math.round(selection.y);
     const cropWidth = Math.round(selection.layerWidth);
@@ -6561,34 +6740,36 @@ async function createClipFromSelection(selection) {
         ctx.fillRect(0, 0, cropWidth, cropHeight);
     }
 
+    // Unrotate world coordinates into the selection's original pixel dimensions.
+    if (rotated) {
+        ctx.translate(cropWidth / 2, cropHeight / 2);
+        ctx.rotate(-CanvasSelectionRotation.angle(selection.rotation) * Math.PI / 180);
+        ctx.translate(-cropWidth / 2, -cropHeight / 2);
+    }
+
     const drawableLayers = collectDrawableImageLayersForClip(canvasLayers);
 
     for (const layer of drawableLayers) {
         normalizeImageLayerGeometry(layer);
 
         // 선택 영역과 전혀 겹치지 않으면 스킵
+        const layerBounds = layer.type === 'clip' && layer.rotation ? CanvasSelectionRotation.bounds(layer) : layer;
         if (!rectsIntersect(
-            cropX,
-            cropY,
-            cropWidth,
-            cropHeight,
-            layer.x,
-            layer.y,
-            layer.layerWidth,
-            layer.layerHeight
+            bounds ? bounds.x : cropX,
+            bounds ? bounds.y : cropY,
+            bounds ? bounds.width : cropWidth,
+            bounds ? bounds.height : cropHeight,
+            layerBounds.x,
+            layerBounds.y,
+            layerBounds.width ?? layer.layerWidth,
+            layerBounds.height ?? layer.layerHeight
         )) {
             continue;
         }
 
         const img = await loadImageElementForClip(layer.src);
 
-        ctx.drawImage(
-            img,
-            layer.x - cropX,
-            layer.y - cropY,
-            layer.layerWidth,
-            layer.layerHeight
-        );
+        drawCanvasLayerImage(ctx, img, layer, cropX, cropY);
     }
 
     const dataUrl = offscreen.toDataURL('image/png');
@@ -6645,8 +6826,9 @@ async function createClipFromSelection(selection) {
         imageHeight: cropHeight,
         x: cropX,
         y: cropY,
-        sourceSelectionX: cropX,
-        sourceSelectionY: cropY,
+        sourceSelectionX: Math.round(selection.x),
+        sourceSelectionY: Math.round(selection.y),
+        rotation: CanvasSelectionRotation.angle(selection.rotation),
         layerWidth: cropWidth,
         layerHeight: cropHeight,
         createdAt: Date.now()
@@ -6753,15 +6935,15 @@ async function downloadMergedCanvasImage() {
     }
 }
 
-async function buildMergedOnlyCanvasStateSnapshot() {
-    const dataUrl = await renderMergedCanvasToDataUrl();
+async function buildMergedOnlyCanvasStateSnapshot(dataUrl = null, exportedPromptInfo = null) {
+    dataUrl = dataUrl || await renderMergedCanvasToDataUrl();
 
     if (!dataUrl) {
         throw new Error('통합 이미지를 만들지 못했습니다.');
     }
 
     const mergedSrc = await saveClipDataUrlToServer(dataUrl);
-    const promptInfo = getCanvasExportPromptInfo();
+    const promptInfo = exportedPromptInfo || getCanvasExportPromptInfo();
 
     const imageLayerId = 1;
     const baseLayerId = 2;
@@ -6944,10 +7126,41 @@ function getClipOutputTarget() {
 }
 
 function setClipInpaintProcessing(clipId, isLoading, message = '인페인팅 처리 중...') {
+    if (!isLoading && clipInpaintLoadingClipId !== clipId) return;
     clipInpaintLoadingClipId = isLoading ? clipId : null;
     clipInpaintLoadingMessage = message || '인페인팅 처리 중...';
 
-    renderClipOutputPanel();
+    syncClipInpaintProcessing(el('canvasStage')?.querySelector('.canvas-clip-output-panel'));
+}
+
+function syncClipInpaintProcessing(panel) {
+    if (!panel) return;
+    const isLoading = clipInpaintLoadingClipId !== null &&
+        Number(panel.dataset.clipId) === Number(clipInpaintLoadingClipId);
+    const overlay = panel.querySelector('.clip-inpaint-loading');
+    overlay.classList.toggle('show', isLoading);
+    overlay.setAttribute('aria-hidden', String(!isLoading));
+    panel.querySelector('.clip-inpaint-loading-text').textContent = clipInpaintLoadingMessage;
+    panel.querySelector('.canvas-clip-output-image-wrap').setAttribute('aria-busy', String(isLoading));
+    const button = panel.querySelector('.clip-inpaint-run-btn');
+    button.disabled = clipInpaintLoadingClipId !== null;
+    button.textContent = isLoading ? '생성 중…' : '인페인팅';
+}
+
+function animateClipInpaintResult(resultId) {
+    const images = [...document.querySelectorAll(`.canvas-render-layer[data-layer-id="${Number(resultId)}"] img`)];
+    const wrap = el('canvasStage')?.querySelector('.canvas-clip-output-image-wrap');
+    if (Number(wrap?.dataset.displayClipId) === Number(resultId)) {
+        const image = wrap.querySelector('.clip-output-image');
+        if (image) images.push(image);
+    }
+    images.forEach(image => {
+        const reveal = () => {
+            if (image.isConnected) image.classList.add('clip-inpaint-result-reveal');
+        };
+        if (image.complete && image.naturalWidth > 0) reveal();
+        else image.addEventListener('load', reveal, {once: true});
+    });
 }
 
 function getClipSourceSelectionPosition(clip) {
@@ -7247,6 +7460,10 @@ function renderClipOutputPanel() {
     if (!stage) return;
 
     const oldPanel = stage.querySelector('.canvas-clip-output-panel');
+    const oldOutputWrap = oldPanel?.querySelector('.canvas-clip-output-image-wrap');
+    const previousPreviewScroll = oldOutputWrap
+        ? {left: oldOutputWrap.scrollLeft, top: oldOutputWrap.scrollTop}
+        : null;
     if (oldPanel) oldPanel.remove();
 
     const target = getClipOutputTarget();
@@ -7261,6 +7478,7 @@ function renderClipOutputPanel() {
 
     const panel = document.createElement('div');
     panel.className = 'canvas-clip-output-panel';
+    panel.dataset.clipId = String(target.clip.id);
     panel.dataset.clipSizeKey = `${target.selection.id}:${target.clip.id}:${target.clip.imageWidth}x${target.clip.imageHeight}`;
     // Retain a manual size only for the same clip, never for a new selection/image.
     if (oldPanel?.dataset.clipSizeKey === panel.dataset.clipSizeKey && oldPanel.dataset.manualSize === '1') {
@@ -7271,20 +7489,20 @@ function renderClipOutputPanel() {
     }
 
     const previewClip = getTopVisibleInpaintClipForSelection(target.selection, target.clip);
-    const showInpaintPreview = Boolean(!isClipInpaintMergedSourceMode && isClipInpaintPreviewMode && previewClip);
+    const showInpaintPreview = Boolean(isClipInpaintPreviewMode && previewClip);
 
-    // 통합 ON이면 인페인팅 결과 보기 토글보다 통합 소스 미리보기를 우선한다.
-    // OFF일 때는 기존처럼 원본 클립 또는 인페인팅 결과 미리보기를 보여준다.
+    // 결과 보기는 요청 소스의 통합 설정과 독립적으로 전환한다.
     const mergedPreviewKey = isClipInpaintMergedSourceMode
         ? buildClipMergedSourcePreviewKey(target.selection, target.clip)
         : '';
 
     const hasMergedPreview =
+        !showInpaintPreview &&
         isClipInpaintMergedSourceMode &&
         clipMergedSourcePreviewCache.key === mergedPreviewKey &&
         clipMergedSourcePreviewCache.dataUrl;
 
-    if (isClipInpaintMergedSourceMode && !hasMergedPreview) {
+    if (isClipInpaintMergedSourceMode && !showInpaintPreview && !hasMergedPreview) {
         ensureClipMergedSourcePreview(target.selection, target.clip);
     }
 
@@ -7314,10 +7532,10 @@ function renderClipOutputPanel() {
             <span>${displayClip.imageWidth} × ${displayClip.imageHeight}px</span>
             <span class="clip-preview-zoom-readout">${Math.round(clipPreviewZoom * 100)}%</span>
             ${
-                isClipInpaintMergedSourceMode
-                    ? `<span class="clip-preview-mode-label">${hasMergedPreview ? '통합 소스 보기' : '통합 소스 생성 중...'}</span>`
-                    : showInpaintPreview && previewClip
-                        ? `<span class="clip-preview-mode-label" title="인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}">인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}</span>`
+                showInpaintPreview && previewClip
+                    ? `<span class="clip-preview-mode-label" title="인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}">인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}</span>`
+                    : isClipInpaintMergedSourceMode
+                        ? `<span class="clip-preview-mode-label">${hasMergedPreview ? '통합 소스 보기' : '통합 소스 생성 중...'}</span>`
                         : `<span class="clip-preview-mode-label">마스크 편집 보기</span>`
             }
         </div>
@@ -7412,9 +7630,10 @@ function renderClipOutputPanel() {
             <img class="clip-output-image" src="${escapeHtml(displayClip.src)}" alt="clip result">
             <canvas class="clip-mask-overlay-canvas"></canvas>
 
-            <div class="clip-inpaint-loading ${isLoading ? 'show' : ''}">
-                <div class="clip-inpaint-loading-spinner"></div>
-                <div class="clip-inpaint-loading-text">${escapeHtml(clipInpaintLoadingMessage)}</div>
+            <div class="clip-inpaint-loading ${isLoading ? 'show' : ''}" aria-hidden="${!isLoading}">
+                <div class="clip-inpaint-loading-spinner" aria-hidden="true"></div>
+                <div class="clip-inpaint-loading-text" role="status" aria-live="polite">${escapeHtml(clipInpaintLoadingMessage)}</div>
+                <div class="clip-inpaint-loading-track" aria-hidden="true"></div>
             </div>
         </div>
         <div class="clip-output-size-actions">
@@ -7441,6 +7660,13 @@ function renderClipOutputPanel() {
     }
 
     bindClipMaskEditor(panel, target.clip);
+    syncClipInpaintProcessing(panel);
+    if (previousPreviewScroll && oldPanel.dataset.clipSizeKey === panel.dataset.clipSizeKey && outputWrap) {
+        // Restore only after zoom establishes the new scroll range.
+        applyClipPreviewZoom(outputWrap, panel.querySelector('.clip-output-image'), target.clip);
+        outputWrap.scrollLeft = previousPreviewScroll.left;
+        outputWrap.scrollTop = previousPreviewScroll.top;
+    }
 }
 
 function getOrCreateSelectionInpaintFolder(selection, preparedFocus = null) {
@@ -7583,6 +7809,7 @@ async function requestClipInpainting(clipId) {
             imageHeight: clip.imageHeight,
             x: clip.x,
             y: clip.y,
+            rotation: CanvasSelectionRotation.angle(clip.rotation),
             layerWidth: clip.layerWidth,
             layerHeight: clip.layerHeight,
             createdAt: Date.now()
@@ -7611,7 +7838,7 @@ async function requestClipInpainting(clipId) {
 
         renderLayerList();
         renderCanvasLayersOnSurface();
-        renderClipOutputPanel();
+        animateClipInpaintResult(resultClip.id);
         saveCanvasState();
     } catch (error) {
         alert(`인페인팅 실패: ${error.message || error}`);
@@ -8170,25 +8397,10 @@ function collectAutoMaskSourceCandidateLayers(layers, output = []) {
 
 function collectAutoMaskSourceLayersForSelection(selection) {
     if (!selection) return [];
-
-    const selectionX = Number(selection.x || 0);
-    const selectionY = Number(selection.y || 0);
-    const selectionWidth = Number(selection.layerWidth || 0);
-    const selectionHeight = Number(selection.layerHeight || 0);
-
     return collectAutoMaskSourceCandidateLayers(canvasLayers)
         .filter((layer) => {
             const rect = getAutoMaskSourceLayerRect(layer, selection);
-            return rectsIntersect(
-                selectionX,
-                selectionY,
-                selectionWidth,
-                selectionHeight,
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height
-            );
+            return CanvasSelectionRotation.intersects(selection, rect);
         });
 }
 
@@ -8200,25 +8412,23 @@ function getAutoMaskSourceLayerRect(layer, selection) {
         return {
             x: 0,
             y: 0,
-            width: Number(layer.canvasWidth || currentCanvasWidth || selection?.layerWidth || 0),
-            height: Number(layer.canvasHeight || currentCanvasHeight || selection?.layerHeight || 0)
+            layerWidth: Number(layer.canvasWidth || currentCanvasWidth || selection?.layerWidth || 0),
+            layerHeight: Number(layer.canvasHeight || currentCanvasHeight || selection?.layerHeight || 0)
         };
     }
 
     return {
         x: Number(layer.x ?? selectionX),
         y: Number(layer.y ?? selectionY),
-        width: Number(layer.layerWidth || layer.imageWidth || selection?.layerWidth || 0),
-        height: Number(layer.layerHeight || layer.imageHeight || selection?.layerHeight || 0)
+        layerWidth: Number(layer.layerWidth || layer.imageWidth || selection?.layerWidth || 0),
+        layerHeight: Number(layer.layerHeight || layer.imageHeight || selection?.layerHeight || 0),
+        rotation: CanvasSelectionRotation.angle(layer.rotation)
     };
 }
 
 function autoMaskSourceLayerContainsCanvasPoint(layer, selection, x, y) {
     const rect = getAutoMaskSourceLayerRect(layer, selection);
-    return x >= rect.x &&
-        x <= rect.x + rect.width &&
-        y >= rect.y &&
-        y <= rect.y + rect.height;
+    return CanvasSelectionRotation.containsPoint(rect, {x, y});
 }
 
 function findAutoMaskSourceLayerAtMaskPoint(selection, clip, point, maskCanvas) {
@@ -8226,8 +8436,17 @@ function findAutoMaskSourceLayerAtMaskPoint(selection, clip, point, maskCanvas) 
 
     const selectionWidth = Number(selection.layerWidth || clip.imageWidth || maskCanvas.width || 1);
     const selectionHeight = Number(selection.layerHeight || clip.imageHeight || maskCanvas.height || 1);
-    const canvasX = Number(selection.x || 0) + (point.x / Math.max(1, maskCanvas.width)) * selectionWidth;
-    const canvasY = Number(selection.y || 0) + (point.y / Math.max(1, maskCanvas.height)) * selectionHeight;
+    let canvasX = Number(selection.x || 0) + (point.x / Math.max(1, maskCanvas.width)) * selectionWidth;
+    let canvasY = Number(selection.y || 0) + (point.y / Math.max(1, maskCanvas.height)) * selectionHeight;
+    if (clip.rotation) {
+        const width = Number(clip.layerWidth || selectionWidth);
+        const height = Number(clip.layerHeight || selectionHeight);
+        const radians = CanvasSelectionRotation.angle(clip.rotation) * Math.PI / 180;
+        const x = point.x / maskCanvas.width * width - width / 2;
+        const y = point.y / maskCanvas.height * height - height / 2;
+        canvasX = Number(clip.x || 0) + width / 2 + x * Math.cos(radians) - y * Math.sin(radians);
+        canvasY = Number(clip.y || 0) + height / 2 + x * Math.sin(radians) + y * Math.cos(radians);
+    }
     const topFirstLayers = collectAutoMaskSourceLayersForSelection(selection).slice().reverse();
 
     return topFirstLayers
@@ -8248,6 +8467,8 @@ function applyAutoMaskAboveSourceLayer(selection, clip, targetLayer, maskCanvas)
     const scaleY = maskCanvas.height / Math.max(1, selectionHeight);
     const selectionX = Number(selection.x || 0);
     const selectionY = Number(selection.y || 0);
+    const previewRect = {x: selectionX, y: selectionY, layerWidth: selectionWidth,
+        layerHeight: selectionHeight, rotation: clip.rotation};
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
@@ -8258,13 +8479,20 @@ function applyAutoMaskAboveSourceLayer(selection, clip, targetLayer, maskCanvas)
     ctx.globalCompositeOperation = 'destination-out';
     layers.slice(targetIndex + 1).forEach((layer) => {
         const rect = getAutoMaskSourceLayerRect(layer, selection);
-        const x = Math.round((rect.x - selectionX) * scaleX);
-        const y = Math.round((rect.y - selectionY) * scaleY);
-        const width = Math.round(rect.width * scaleX);
-        const height = Math.round(rect.height * scaleY);
-
-        if (width > 0 && height > 0) {
-            ctx.fillRect(x, y, width, height);
+        if (rect.layerWidth <= 0 || rect.layerHeight <= 0) return;
+        if (!clip.rotation && !rect.rotation) {
+            ctx.fillRect(Math.round((rect.x - selectionX) * scaleX),
+                Math.round((rect.y - selectionY) * scaleY),
+                Math.round(rect.layerWidth * scaleX), Math.round(rect.layerHeight * scaleY));
+        } else {
+            ctx.beginPath();
+            CanvasSelectionRotation.corners(rect).forEach((point, index) => {
+                const local = CanvasSelectionRotation.localPoint(previewRect, point);
+                if (index === 0) ctx.moveTo(local.x * scaleX, local.y * scaleY);
+                else ctx.lineTo(local.x * scaleX, local.y * scaleY);
+            });
+            ctx.closePath();
+            ctx.fill();
         }
     });
 
@@ -8510,16 +8738,7 @@ function collectPromptSourceLayersFromSelection(selection) {
 
             normalizeImageLayerGeometry(layer);
 
-            if (!rectsIntersect(
-                selection.x,
-                selection.y,
-                selection.layerWidth,
-                selection.layerHeight,
-                layer.x,
-                layer.y,
-                layer.layerWidth,
-                layer.layerHeight
-            )) {
+            if (!CanvasSelectionRotation.intersects(selection, layer)) {
                 return;
             }
 
@@ -9702,6 +9921,7 @@ function startClipTokenEdit(fieldKey, index, token, button) {
     const editor = document.createElement('input');
     editor.type = 'text';
     editor.className = 'prompt-token-edit';
+    editor.setAttribute('data-prompt-autocomplete', '');
     editor.value = getClipEditableTokenValue(token);
 
     editor.onkeydown = (event) => {
@@ -9740,6 +9960,7 @@ function startClipWeightedRangeEdit(fieldKey, part, button) {
     const editor = document.createElement('input');
     editor.type = 'text';
     editor.className = 'prompt-token-edit';
+    editor.setAttribute('data-prompt-autocomplete', '');
     editor.value = part.tokens.map(stripClipWeightMarkers).join(', ');
 
     editor.onkeydown = (event) => {
@@ -10098,7 +10319,7 @@ function renderClipPromptGroupList() {
         `;
         preview.innerText = (group.prompts || []).join(', ');
 
-        const promptArea = document.createElement('textarea');
+        const promptArea = document.createElement('textarea'); promptArea.setAttribute('data-prompt-autocomplete', '');
         promptArea.value = (group.prompts || []).join(', ');
         promptArea.rows = 5;
         promptArea.style.cssText = `
@@ -10340,6 +10561,19 @@ async function renderMergedClipSourceToDataUrl(selection, baseClip) {
     for (const layer of inpaintClips) {
         const img = await loadImageElementForClip(layer.src);
 
+        if (CanvasSelectionRotation.angle(baseClip.rotation) || CanvasSelectionRotation.angle(layer.rotation)) {
+            const baseWidth = Number(baseClip.layerWidth || width);
+            const baseHeight = Number(baseClip.layerHeight || height);
+            ctx.save();
+            ctx.translate(width / 2, height / 2);
+            ctx.scale(width / baseWidth, height / baseHeight);
+            ctx.rotate(-CanvasSelectionRotation.angle(baseClip.rotation) * Math.PI / 180);
+            ctx.translate(-(Number(baseClip.x || 0) + baseWidth / 2), -(Number(baseClip.y || 0) + baseHeight / 2));
+            drawCanvasLayerImage(ctx, img, layer);
+            ctx.restore();
+            continue;
+        }
+
         const drawX = Math.round(Number(layer.x || selectionX) - selectionX);
         const drawY = Math.round(Number(layer.y || selectionY) - selectionY);
         const drawWidth = Math.round(Number(layer.layerWidth || layer.imageWidth || width));
@@ -10359,7 +10593,8 @@ function buildClipMergedSourcePreviewKey(selection, baseClip) {
         `base:${baseClip.id}`,
         `baseSrc:${baseClip.src || ''}`,
         `baseSize:${baseClip.imageWidth || baseClip.layerWidth || 0}x${baseClip.imageHeight || baseClip.layerHeight || 0}`,
-        `selectionPos:${selection.x || 0},${selection.y || 0}`
+        `selectionPos:${selection.x || 0},${selection.y || 0}`,
+        `baseRotation:${baseClip.rotation || 0}`
     ];
 
     const inpaintClips = collectVisibleInpaintClipsForMergedSource(
@@ -10376,7 +10611,8 @@ function buildClipMergedSourcePreviewKey(selection, baseClip) {
             clip.x || 0,
             clip.y || 0,
             clip.layerWidth || clip.imageWidth || 0,
-            clip.layerHeight || clip.imageHeight || 0
+            clip.layerHeight || clip.imageHeight || 0,
+            clip.rotation || 0
         ].join(':'));
     });
 
@@ -11898,10 +12134,13 @@ async function exportMergedCanvasToClassified() {
     canvasExportBusy = true;
     const exportButton = document.getElementById('canvasExportMergedBtn');
     let linkedProject = null;
+    let progress = null;
+    let exported = false;
+    let progressDone = false;
     try {
         linkedProject = window.CanvasProject?.localLink?.() || null;
         let capturedLink = null;
-        let isSameLink = () => true;
+        let isSameLink = () => !window.CanvasProject?.localLink?.();
         let destination = {destination: 'gallery'};
         if (linkedProject) {
             capturedLink = {
@@ -11923,13 +12162,37 @@ async function exportMergedCanvasToClassified() {
             if (destination.destination !== 'project' && destination.destination !== 'gallery') return;
         }
 
+        const stateKey = window.CanvasWorkspaceBridge?.stateKey;
+        const contextLabel = linkedProject
+            ? `${linkedProject.projectName} · ${linkedProject.side === 'back' ? '뒷면' : '앞면'}`
+            : '현재 캔버스';
+        const reset = window.CanvasExportFeedback
+            ? await window.CanvasExportFeedback.chooseReset(contextLabel) : false;
+        if (reset === null || !isSameLink() || stateKey !== window.CanvasWorkspaceBridge?.stateKey) return;
         if (exportButton) exportButton.disabled = true;
+        progress = window.CanvasExportFeedback?.start(contextLabel) || null;
+        const total = reset ? 5 : 3;
+        progress?.update('프롬프트와 내보내기 설정 확인 중…', 0, total);
+        if (reset && linkedProject && !await window.CanvasProject.flush()) {
+            throw new Error('기존 캔버스의 자동 저장을 먼저 완료해 주세요.');
+        }
         const promptInfo = await getCanvasExportPromptInfoAsync();
         const isDakimakura = isCurrentCanvasDakimakuraLike(promptInfo);
         if (!isSameLink()) return;
 
+        progress?.update('이미지 합치는 중…', 1, total);
+        const originalState = reset ? normalizeCanvasStateForCompare(buildCanvasStateSnapshot({preserveMasks: true})) : null;
         const image = await renderMergedCanvasToDataUrl();
         if (!isSameLink()) return;
+        const isSameCanvas = () => isSameLink() && stateKey === window.CanvasWorkspaceBridge?.stateKey
+            && (!reset || originalState === normalizeCanvasStateForCompare(buildCanvasStateSnapshot({preserveMasks: true})));
+        if (!isSameCanvas()) throw new Error('내보내는 동안 캔버스가 변경되었습니다. 다시 내보내 주세요.');
+        let mergedState = null;
+        if (reset) {
+            progress?.update('정리할 캔버스 이미지 준비 중…', 2, total);
+            mergedState = await buildMergedOnlyCanvasStateSnapshot(image, promptInfo);
+            if (!isSameCanvas()) throw new Error('캔버스가 변경되어 내보내기를 중단했습니다.');
+        }
 
         const body = {
             image,
@@ -11945,6 +12208,7 @@ async function exportMergedCanvasToClassified() {
             body.canvasId = destination.canvasId;
         }
 
+        progress?.update('내보낸 파일을 저장하는 중…', reset ? 3 : 2, total);
         const response = await fetch('/api/canvas/export_merged', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -11956,6 +12220,29 @@ async function exportMergedCanvasToClassified() {
         if (!response.ok || data.status !== 'success') {
             throw new Error(data.message || '통합 내보내기에 실패했습니다.');
         }
+        exported = true;
+        if (reset) {
+            if (!isSameCanvas()) throw new Error('캔버스가 변경되어 정리·저장은 건너뛰었습니다. 현재 작업은 유지됩니다.');
+            progress?.update('캔버스를 한 장으로 정리하고 저장하는 중…', 4, total);
+            if (linkedProject) {
+                applyCanvasStateSnapshot(mergedState);
+                saveCanvasState({immediate: true});
+                window.CanvasProject.schedule(true);
+                if (!await window.CanvasProject.flush()) {
+                    throw new Error('정리한 캔버스의 프로젝트 저장에 실패했습니다. 자동 저장 상태에서 다시 시도해 주세요.');
+                }
+            } else {
+                const previous = loadSavedCanvasSetups().find(item => item.id === activeCanvasSetupId);
+                const name = previous?.name || data.name?.replace(/\.png$/i, '') || `캔버스_${new Date().toLocaleString('sv-SE').replace(/[: ]/g, '-')}`;
+                if (previous) await updateCanvasSetupItem(previous.id, name, mergedState, {mode: 'merged'});
+                else await saveCanvasSetupItem(name, mergedState, {mode: 'merged'});
+                if (!isSameCanvas()) throw new Error('캔버스 저장은 완료했지만 화면이 변경되어 적용은 건너뛰었습니다.');
+                applyCanvasStateSnapshot(mergedState);
+                saveCanvasState({immediate: true});
+            }
+        }
+        progress?.finish(reset ? '내보내기와 캔버스 정리·저장을 완료했습니다.' : '통합 내보내기를 완료했습니다.');
+        progressDone = true;
 
         if (destination.destination === 'project') {
             const side = data.side || capturedLink.side;
@@ -11975,8 +12262,13 @@ async function exportMergedCanvasToClassified() {
         }
 
     } catch (error) {
-        alert(`통합 내보내기 실패: ${error.message || error}`);
+        const message = `${exported ? '그림 내보내기는 완료되었습니다. 캔버스 정리·저장 확인 필요' : '통합 내보내기 실패'}: ${error.message || error}`;
+        if (progress) progress.fail(message);
+        else alert(message);
+        progressDone = true;
     } finally {
+        // Early identity checks may abort before a terminal progress message.
+        if (progress && !progressDone) progress.close();
         canvasExportBusy = false;
         if (exportButton) {
             exportButton.disabled = false;
@@ -11986,6 +12278,7 @@ async function exportMergedCanvasToClassified() {
         }
     }
 }
+
 
 function openTagTranslationModal(tag, event = null) {
     const built = buildTagTranslationParts(tag);
@@ -12364,7 +12657,7 @@ function addClipCharPromptEditor(initialValue = '') {
     tokens.id = `clipCharPromptTokens-${id}`;
     tokens.className = 'prompt-token-surface compact';
 
-    const textarea = document.createElement('textarea');
+    const textarea = document.createElement('textarea'); textarea.setAttribute('data-prompt-autocomplete', '');
     textarea.id = `clipCharPromptInput-${id}`;
     textarea.className = 'prompt-raw-textarea';
     textarea.rows = 3;
@@ -13094,6 +13387,17 @@ function handleMultiImageResizeMouseMove(event) {
 
     const scaleX = nextWidth / Math.max(1, drag.startWidth);
     const scaleY = nextHeight / Math.max(1, drag.startHeight);
+
+    if (drag.starts.some((start) => {
+        const layer = findCanvasLayer(start.id)?.layer;
+        return layer?.type === 'selection' && !isSelectionRequestSizeAllowed({
+            ...layer,
+            x: nextX + (start.x - drag.startX) * scaleX,
+            y: nextY + (start.y - drag.startY) * scaleY,
+            layerWidth: snapToSelectionStep(start.width * scaleX),
+            layerHeight: snapToSelectionStep(start.height * scaleY)
+        });
+    })) return;
 
     drag.starts.forEach((start) => {
         const found = findCanvasLayer(start.id);

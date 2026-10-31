@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>그림체 관리 · NAIM</title>
+  <link rel="stylesheet" href="/static/workspace_header.css">
+  <link rel="stylesheet" href="/static/style_workspace.css">
+  <script src="/static/style_workspace.js" defer></script>
+</head>
+<body>
+  <header class="main-header">
+    <nav class="workspace-header-navigation" aria-label="작업 공간">
+      <a id="openGalleryLink" class="gallery-workspace-entry" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>갤러리</span></a>
+      <a id="openDakiDictionary" class="gallery-workspace-entry" href="/#daki&library=dictionary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 5Q12 7 21 5Q19 12 21 19Q12 17 3 19Q5 12 3 5Z"/><path d="M6 8q6 1 12 0M6 16q6-1 12 0"/></svg><span>태그 사전</span></a>
+      <a id="openCanvasLink" class="gallery-workspace-entry" href="/canvas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="3" width="18" height="16" rx="2"/><path d="m6 15 4-5 4 4 2-2 3 4M9 19l-2 3m8-3 2 3"/><circle cx="16.5" cy="7.5" r="1.5"/></svg><span>캔버스</span></a>
+      <a id="openStyleWorkspace" class="gallery-workspace-entry" href="/style-manager" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h2a3 3 0 0 0 0-6h-1a2 2 0 0 1 0-4h2a4 4 0 0 0 0-8Z"/><circle cx="7" cy="10" r="1"/><circle cx="9" cy="6" r="1"/></svg><span>그림체 관리</span></a>
+      <span class="workspace-note">그림체 작업 공간</span>
+    </nav>
+  </header>
+  <main>
+    <div id="workspaceStatus" role="status">
+      <h1>그림체 관리</h1>
+      <p id="workspaceMessage">그림체 관리에 연결하고 있습니다…</p>
+      <button id="workspaceRetry" type="button" hidden>다시 연결</button>
+    </div>
+    <iframe id="styleWorkspaceFrame" title="그림체 관리 작업 화면" hidden allow="clipboard-read; clipboard-write"></iframe>
+  </main>
+</body>
+</html>

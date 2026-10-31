@@ -210,6 +210,38 @@ function styleCheckbox(card) {
     return checkbox;
 }
 
+test('shared list automatically adds and excludes styles while preserving search, selected survivors and cards', async () => {
+    const f = fixture();
+    const catalog = await openStyleList(f);
+    const original = f.content.querySelectorAll('.daki-style-card');
+    selectStyle(original[0]);
+    const search = f.content.querySelector('input');
+    search.value = 'synthetic'; search.oninput();
+    const [id, timer] = [...f.timers][0];
+    assert.equal(timer.delay, 2000); f.timers.delete(id);
+    const refresh = timer.callback();
+    f.reply({styles: [catalog.styles[0], {...catalog.styles[1], id:'added', name:'Synthetic added', src:'/source/added'}]});
+    await refresh;
+    const cards = f.content.querySelectorAll('.daki-style-card');
+    assert.equal(cards.length, 2);
+    assert.equal(cards[0], original[0]);
+    assert.equal(styleCheckbox(cards[0]).checked, true);
+    assert.equal(search.value, 'synthetic');
+    assert.equal(cards[1].children[0].src, '/source/added');
+    f.win.DakiStyles.leave();
+    assert.equal(f.timers.size, 0);
+});
+
+test('a late shared library refresh cannot alter a destination after leaving', async () => {
+    const f = fixture(); await openStyleList(f);
+    const [id, timer] = [...f.timers][0]; f.timers.delete(id);
+    const refresh = timer.callback();
+    f.win.DakiStyles.leave(); f.content.textContent = 'destination';
+    f.reply({styles: []}); await refresh;
+    assert.equal(f.content.textContent, 'destination');
+    assert.equal(f.timers.size, 0);
+});
+
 function selectStyle(card, selected = true) {
     const checkbox = styleCheckbox(card); checkbox.checked = selected; checkbox.onchange();
     return checkbox;

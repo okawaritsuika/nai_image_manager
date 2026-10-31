@@ -12,6 +12,8 @@ from naim.daki_style_filters import normalize_style_filters, matches_style_filte
 
 def register_daki_style_routes(app, catalog_root_provider, tests_root_provider, key_provider, imported_root_provider=None, personal_catalog=None):
     catalog = DakiSharedStyles(catalog_root_provider, imported_root_provider)
+    from naim.storage.shared_library_catalog import build_shared_catalog
+    catalog = build_shared_catalog(app, catalog)
     manager = DakiStyleTests(tests_root_provider, catalog, key_provider, personal_catalog=personal_catalog)
     from naim.web.daki_test_packs import register_daki_test_pack_routes
     manager.test_packs = register_daki_test_pack_routes(app, manager)

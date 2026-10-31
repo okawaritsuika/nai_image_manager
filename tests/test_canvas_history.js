@@ -168,6 +168,74 @@ test('replaceCurrent updates byte accounting and trims oversized replacements', 
     assert.deepEqual(oversized.states(), [replacement]);
 });
 
+test('import refs are collected once per entry, deduplicated, and returned as detached arrays', () => {
+    let calls = 0;
+    const history = createCanvasHistory({
+        collectRefs(state) {
+            calls++;
+            return state.refs;
+        }
+    });
+    const baseline = {refs: ['images/a.png', 'images/a.png']};
+    history.reset(baseline, 'baseline');
+    baseline.refs.push('images/caller-mutation.png');
+    history.record({refs: ['images/b.png']}, 'next');
+    history.record({refs: ['images/c.png', 'images/c.png']}, 'next');
+
+    assert.equal(calls, 3);
+    const refs = history.importRefs();
+    assert.deepEqual(refs.sort(), ['images/a.png', 'images/c.png']);
+    refs.push('images/returned-mutation.png');
+    assert.deepEqual(history.importRefs().sort(), ['images/a.png', 'images/c.png']);
+    assert.equal(calls, 3);
+});
+
+test('import refs follow reset, replaceCurrent, undo, and branch transitions', () => {
+    const history = createCanvasHistory({collectRefs: state => state.refs});
+    history.reset({refs: ['images/a.png']});
+    history.record({refs: ['images/b.png']});
+    assert.deepEqual(history.importRefs().sort(), ['images/a.png', 'images/b.png']);
+
+    history.replaceCurrent({refs: ['images/normalized.png']});
+    assert.deepEqual(history.importRefs().sort(), ['images/a.png', 'images/normalized.png']);
+    assert.deepEqual(history.undo(), {refs: ['images/a.png']});
+    assert.deepEqual(history.importRefs(), ['images/a.png']);
+
+    history.record({refs: ['images/branch.png']});
+    assert.deepEqual(history.importRefs().sort(), ['images/a.png', 'images/branch.png']);
+    history.reset({refs: ['images/new-canvas.png']});
+    assert.deepEqual(history.importRefs(), ['images/new-canvas.png']);
+    history.clear();
+    assert.deepEqual(history.importRefs(), []);
+});
+
+test('import refs follow limit and byte eviction', () => {
+    const limited = createCanvasHistory({limit: 1, collectRefs: state => state.refs});
+    limited.reset({refs: ['images/a.png']});
+    limited.record({refs: ['images/b.png']});
+    limited.record({refs: ['images/c.png']});
+    assert.deepEqual(limited.importRefs().sort(), ['images/b.png', 'images/c.png']);
+
+    const makeState = (value, ref) => ({value, refs: [ref]});
+    const baseline = makeState(0, 'a'.repeat(40));
+    const next = makeState(1, 'b'.repeat(40));
+    const latest = makeState(2, 'c'.repeat(40));
+    const entryBytes = state => JSON.stringify(state).length * 2 + state.refs[0].length * 2;
+    const byBytes = createCanvasHistory({
+        maxBytes: entryBytes(next) + entryBytes(latest),
+        collectRefs: state => state.refs
+    });
+    byBytes.reset(baseline);
+    byBytes.record(next);
+    byBytes.record(latest);
+    assert.deepEqual(byBytes.importRefs().sort(), [next.refs[0], latest.refs[0]].sort());
+});
+
+test('collectRefs errors propagate while creating an entry', () => {
+    const history = createCanvasHistory({collectRefs() { throw new Error('synthetic ref failure'); }});
+    assert.throws(() => history.reset({value: 1}), /synthetic ref failure/);
+});
+
 test('the browser global exposes the CommonJS API', () => {
     assert.equal(globalThis.CanvasHistory.createCanvasHistory, createCanvasHistory);
 });

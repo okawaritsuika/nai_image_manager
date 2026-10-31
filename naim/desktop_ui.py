@@ -91,6 +91,16 @@ def _build_path(controller):
     controller.btn_import.pack(side="left")
 
 
+def _build_style_connection(controller):
+    block, _ = _block(controller.ctrl_panel)
+    controller.btn_style_connection = _button(
+        block, "그림체 프로그램 연결", controller.open_style_connection,
+    )
+    controller.btn_style_connection.pack(side="left", padx=(0, 10))
+    _label(block, "기존 그림체 폴더의 데이터·설정 연결", fg=MUTED,
+           font=SMALL_FONT, wraplength=370, justify="left").pack(side="left", fill="x", expand=True)
+
+
 def _build_classification(controller):
     block, heading = _block(controller.ctrl_panel, "분류 설정")
     controller.btn_reset_history = _button(heading, "이력 초기화", controller.reset_history, danger=True)
@@ -274,6 +284,7 @@ def build_controller_ui(controller):
     controller.ctrl_panel = tk.Frame(controller.main_container, bg=BG, padx=8, pady=8)
     controller.ctrl_panel.pack(side="left", fill="both", expand=True)
     _build_path(controller)
+    _build_style_connection(controller)
     _build_classification(controller)
     _build_ai(controller)
     _build_actions(controller)

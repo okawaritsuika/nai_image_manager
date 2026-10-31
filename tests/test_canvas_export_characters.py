@@ -5,6 +5,8 @@ import types
 import unittest
 from unittest import mock
 
+from flask import Blueprint, g
+
 
 def _load_app_without_flask():
     flask_stub = types.ModuleType("flask")
@@ -12,16 +14,29 @@ def _load_app_without_flask():
     class FakeFlask:
         def __init__(self, *_args, **_kwargs):
             self.config = {}
+            self.extensions = {}
+            self.root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
         def route(self, *_args, **_kwargs):
             return lambda function: function
 
         get = post = put = delete = route
 
+        def after_request(self, function):
+            return function
+
+        def register_blueprint(self, *_args, **_kwargs):
+            return None
+
+        def add_url_rule(self, *_args, **_kwargs):
+            return None
+
         def run(self, *_args, **_kwargs):
             return None
 
     flask_stub.Flask = FakeFlask
+    flask_stub.Blueprint = Blueprint
+    flask_stub.g = g
     flask_stub.jsonify = lambda value=None, **kwargs: value if value is not None else kwargs
     flask_stub.send_file = lambda *args, **kwargs: None
     flask_stub.Response = lambda *args, **kwargs: None

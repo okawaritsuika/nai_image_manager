@@ -17,7 +17,13 @@ const canvasLayerEditContextKeys = [
 ];
 
 function getCanvasEditHistory() {
-    if (!canvasEditHistory) canvasEditHistory = CanvasHistory.createCanvasHistory();
+    if (!canvasEditHistory) canvasEditHistory = CanvasHistory.createCanvasHistory({
+        collectRefs(state) {
+            const refs = new Set();
+            collectCanvasImportRefsFromValue(state, refs);
+            return [...refs];
+        }
+    });
     return canvasEditHistory;
 }
 
@@ -95,9 +101,7 @@ function recordCanvasEditHistory() {
 }
 
 function collectCanvasEditHistoryImportRefs() {
-    const refs = new Set();
-    for (const state of canvasEditHistory?.states() || []) collectCanvasImportRefsFromValue(state, refs);
-    return [...refs];
+    return canvasEditHistory?.importRefs() || [];
 }
 
 function undoCanvasEdit() {

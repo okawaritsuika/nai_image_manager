@@ -54,6 +54,21 @@ class DakiApiTests(unittest.TestCase):
         self.assertEqual(removed.json['project']['candidates']['back'], [])
         self.assertEqual(self.source.read_bytes(), original)
 
+    def test_existing_upscale_candidate_badge_is_read_without_changing_storage(self):
+        project = self.store.create_project('Synthetic', self.source.name, 'front')
+        original = self.path.read_bytes()
+        self.source.with_suffix('.json').write_text(json.dumps({'upscale': {
+            'engine': 'lanczos', 'target_width': 64, 'target_height': 128,
+        }}), encoding='utf-8')
+        url = '/api/daki/projects/' + project['id']
+        candidate = self.client.get(url).json['project']['candidates']['front'][0]
+        self.assertTrue(candidate['upscale']['is_upscaled'])
+        self.assertEqual(candidate['upscale']['engine'], 'lanczos')
+        self.assertEqual(self.path.read_bytes(), original)
+        self.source.with_suffix('.json').write_text('{broken', encoding='utf-8')
+        candidate = self.client.get(url).json['project']['candidates']['front'][0]
+        self.assertFalse(candidate['upscale']['is_upscaled'])
+
     def test_candidate_dates_come_from_original_file_and_are_not_persisted(self):
         project = self.store.create_project('File dates', self.source.name, 'front')
         canvas = self.store.create_canvas(project['id'], {

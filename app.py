@@ -40,6 +40,7 @@ from urllib.parse import urlsplit, unquote, quote
 
 from naim.paths import get_app_dir, get_file_creation_time
 from naim.web.daki import register_daki_routes
+from naim.web.prompt_suggestions import register_prompt_suggestion_routes
 from naim.web.canvas_detail_presets import register_canvas_detail_preset_routes
 from naim.web.daki_image_import import register_daki_image_import_routes
 from naim.web.daki_styles import register_daki_style_routes
@@ -52,6 +53,7 @@ from naim.storage.daki_worldcups import DakiWorldCups
 from naim.web.daki_worldcups import register_daki_worldcup_routes
 from naim.web.daki_drafts import register_daki_draft_routes
 from naim.web.daki_tag_catalog import register_daki_tag_catalog_routes
+from naim.web.daki_dictionary import register_daki_dictionary_routes
 from naim.web.novelai_account import register_novelai_account_routes
 from naim.novelai_account import AccountLookupError, fetch_subscription
 from naim.daki_image_refs import resolve_daki_image_reference, daki_image_prompt_fallback, parse_daki_image_reference
@@ -100,6 +102,7 @@ QUALITY_PRESETS_FILE = os.path.join(CURRENT_DIR, "quality_presets.json")
 TAG_DATA_DIR = os.path.join(CURRENT_DIR, "data")
 TAG_CATEGORY_FILE = os.path.join(TAG_DATA_DIR, "tag_categories_ko.generated.json")
 TAG_CATEGORY_OVERRIDE_FILE = os.path.join(TAG_DATA_DIR, "tag_categories_ko.json")
+register_prompt_suggestion_routes(app, os.path.join(TAG_DATA_DIR, 'prompt_tags'))
 TAG_DB_FILE = os.path.join(TAG_DATA_DIR, "danbooru_tags.sqlite3")
 TAG_GROUP_LABELS = {
     "expression": "표정",
@@ -204,7 +207,9 @@ DAKI_PERSONAL_STYLES = DakiPersonalStyles(
     lambda path: merge_prompt_info_with_fallback(load_prompt_sidecar(path), extract_prompt_info_from_image(path)),
     prompt_fallback=lambda reference: daki_image_prompt_fallback(reference, DAKI_STYLE_TESTS),
 )
-register_daki_personal_style_routes(app, DAKI_PERSONAL_STYLES)
+register_daki_personal_style_routes(
+    app, DAKI_PERSONAL_STYLES, key_provider=lambda: str(load_lab_config_data().get('key') or '').strip(),
+)
 DAKI_STYLE_TESTS = register_daki_style_routes(
     app, lambda: DAKI_SHARED_STYLES_DIR, lambda: DAKI_STYLE_TESTS_DIR,
     lambda: str(load_lab_config_data().get('key') or '').strip(),
@@ -245,6 +250,10 @@ register_project_removal_routes(app, lambda project_id, action, **options: remov
     **options,
 ))
 DAKI_TAG_CATALOG_DIR = os.path.join(os.path.dirname(CURRENT_DIR), 'dakiMaker', 'research', 'tag-catalog')
+register_daki_dictionary_routes(
+    app, os.path.join(CURRENT_DIR, 'data', 'daki_dictionary'),
+    os.path.join(CURRENT_DIR, 'daki_dictionary_user'),
+)
 DAKI_TAG_EXAMPLES = DakiTagExamples(
     lambda: os.path.join(CURRENT_DIR, 'daki_tag_examples'),
     lambda path: resolve_daki_image_path('/image/' + quote(path, safe='/')),
@@ -8058,6 +8067,12 @@ def save_app_translation():
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+from naim.web.style_workspace import register_style_workspace
+STYLE_WORKSPACE = register_style_workspace(app, get_app_dir())
+from naim.web.confirmed_style_import import register_confirmed_style_import
+register_confirmed_style_import(app, DAKI_PERSONAL_STYLES, STYLE_WORKSPACE)
 
 
 def run_server():

@@ -1,0 +1,146 @@
+.daki-dictionary-draft-dialog {
+    box-sizing: border-box;
+    width: min(480px, calc(100vw - 32px));
+    max-width: calc(100vw - 32px);
+    max-height: calc(100dvh - 32px);
+    margin: auto;
+    padding: 16px;
+    overflow: hidden;
+    border: 1px solid #454755;
+    border-radius: 10px;
+    background: #20212b;
+    color: #f1f2f5;
+    color-scheme: dark;
+    box-shadow: 0 14px 44px #0008;
+    font: 13px/1.5 "Segoe UI", "Malgun Gothic", sans-serif;
+}
+
+.daki-dictionary-draft-dialog[open] {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.daki-dictionary-draft-dialog::backdrop {
+    background: #07080db8;
+    backdrop-filter: blur(3px);
+}
+
+.daki-dictionary-draft-dialog * {
+    box-sizing: border-box;
+    min-width: 0;
+}
+
+.daki-dictionary-draft-heading {
+    padding-bottom: 12px;
+    border-bottom: 1px solid #333344;
+}
+
+.daki-dictionary-draft-heading h2 {
+    margin: 0;
+    color: #f1f2f5;
+    font-size: 17px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.daki-dictionary-draft-body {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    overflow: auto;
+    padding: 16px 0;
+}
+
+.daki-dictionary-draft-description,
+.daki-dictionary-draft-status,
+.daki-dictionary-draft-error {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.daki-dictionary-draft-description,
+.daki-dictionary-draft-status {
+    color: #c5c8d2;
+}
+
+.daki-dictionary-draft-error {
+    color: #ff9aa2;
+}
+
+.daki-dictionary-draft-label {
+    display: grid;
+    gap: 6px;
+    color: #d6d8e1;
+    font-weight: 600;
+}
+
+.daki-dictionary-draft-select {
+    width: 100%;
+    min-height: 36px;
+    padding: 7px 9px;
+    border: 1px solid #454755;
+    border-radius: 6px;
+    background: #15161d;
+    color: #f1f2f5;
+    font: inherit;
+}
+
+.daki-dictionary-draft-button {
+    display: inline-flex;
+    min-height: 36px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    padding: 7px 12px;
+    border: 1px solid #454755;
+    border-radius: 6px;
+    font: inherit;
+    font-weight: 600;
+    line-height: 1.35;
+    text-align: center;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.daki-dictionary-draft-button:focus-visible,
+.daki-dictionary-draft-link:focus-visible,
+.daki-dictionary-draft-select:focus-visible {
+    outline: 2px solid #8fa8e8;
+    outline-offset: 2px;
+}
+
+.daki-dictionary-draft-button:disabled {
+    cursor: default;
+    opacity: .62;
+}
+
+.daki-dictionary-draft-primary {
+    border-color: #8fa8e8;
+    background: #8fa8e8;
+    color: #171821;
+}
+
+.daki-dictionary-draft-secondary {
+    background: #2a2a35;
+    color: #f1f2f5;
+}
+
+.daki-dictionary-draft-link {
+    align-self: flex-start;
+    min-height: 36px;
+    padding: 8px 2px;
+    color: #a9baf0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.daki-dictionary-draft-footer {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #333344;
+}

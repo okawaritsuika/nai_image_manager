@@ -25,6 +25,7 @@ from naim.storage.json_files import json_lock, read_json, write_json
 
 SIDES = ('front', 'back')
 _CANVAS_ID_RE = re.compile(r'^[0-9a-f]{32}$')
+MAX_PROJECT_CANDIDATE_NAME_UTF16_UNITS = 120
 _WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>:"/\\|?*')
 _SIDE_DISPLAY_NAMES = {'front': '앞면', 'back': '뒷면'}
 _CANVAS_PREVIEW_LAYER_FIELDS = (
@@ -279,23 +280,17 @@ def project_canvas_result_name(project_name, side, canvas_name, result_index):
     if isinstance(result_index, bool) or not isinstance(result_index, int) or result_index < 1:
         raise ValueError('결과 번호는 양의 정수여야 합니다.')
 
-    prefix = f"{project_name.strip()[:100]}_{_SIDE_DISPLAY_NAMES[side]}_"
-    base_name = canvas_name if canvas_name.startswith(prefix) else prefix + canvas_name
-    safe_base = ''.join(
+    safe_project_name = ''.join(
         '_' if char in _WINDOWS_INVALID_FILENAME_CHARS or unicodedata.category(char) == 'Cc' else char
-        for char in base_name
+        for char in project_name.strip()[:100]
     ).rstrip(' .')
-    if not safe_base:
-        safe_base = '캔버스'
+    if not safe_project_name:
+        safe_project_name = '프로젝트'
 
-    suffix = f'_결과{result_index}.png'
-    available_base_length = 200 - len(suffix)
-    if available_base_length < 1:
-        raise ValueError('결과 번호가 너무 커 파일명을 만들 수 없습니다.')
-    safe_base = safe_base[:available_base_length].rstrip(' .')
-    if not safe_base:
-        safe_base = '캔버스'[:available_base_length]
-    return safe_base + suffix
+    timestamp = datetime.now().astimezone().strftime('%Y-%m-%d_%H%M%S')
+    suffix = f"_{_SIDE_DISPLAY_NAMES[side]}_{timestamp}.png"
+    safe_project_name = safe_project_name[:200 - len(suffix)].rstrip(' .')
+    return safe_project_name + suffix
 
 
 class DakiProjectsStore:
@@ -730,11 +725,18 @@ class DakiProjectsStore:
                         return deepcopy(project)
         raise DakiNotFoundError('다키 캔버스를 찾을 수 없습니다.')
 
-    def add_candidate(self, project_id, path, side, *, canvas_id=None):
+    def add_candidate(self, project_id, path, side, *, canvas_id=None, name=None):
         _validate_side(side)
         if canvas_id is not None and (not isinstance(canvas_id, str)
                 or not _CANVAS_ID_RE.fullmatch(canvas_id)):
             raise ValueError('다키 캔버스 ID가 올바르지 않습니다.')
+        if name is not None:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError('후보명을 입력해 주세요.')
+            name = name.strip()
+            name_units = sum(2 if ord(char) > 0xFFFF else 1 for char in name)
+            if name_units > MAX_PROJECT_CANDIDATE_NAME_UTF16_UNITS:
+                raise ValueError('후보명은 UTF-16 기준 120자 이하여야 합니다.')
         candidate_path = self._prepare_image(path)
         store_path = self.path
         with json_lock(store_path):
@@ -772,6 +774,8 @@ class DakiProjectsStore:
                     'resultIndex': result_index,
                 })
                 canvas['exportCount'] = result_index
+            elif name is not None:
+                candidate['name'] = name
             candidates.append(candidate)
             project['updated_at'] = now
             write_json(store_path, data, indent=2)

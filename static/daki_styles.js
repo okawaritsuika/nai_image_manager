@@ -9,6 +9,7 @@
     const mediumNote = 'Medium: 14 스텝 · Euler Ancestral · Karras 고정. CFG Rescale과 그림체·공통·캐릭터 네거티브는 적용되지 않으며 모델의 고정 네거티브를 사용합니다.';
     let revision = 0;
     let pollTimer;
+    let libraryTimer;
     let settingsDialog;
     let viewFilters;
     let draft = {model: 'nai-diffusion-5-full', output_format: 'webp', prompt: '', negative_prompt: '', char_prompts: []};
@@ -27,7 +28,7 @@
         return result;
     }
     function leave() {
-        revision++; root.clearTimeout(pollTimer);
+        revision++; root.clearTimeout(pollTimer); root.clearTimeout(libraryTimer);
         viewFilters?.dispose(); viewFilters = null;
         if (settingsDialog?.open) settingsDialog.close();
         root.DakiTestLibrary?.leave(); root.DakiTestPacks?.leave(); root.DakiWorldCup?.leave?.(); root.DakiStyleSync?.leave();
@@ -262,10 +263,26 @@
                 try {
                     await loadBatches();
                 } catch (error) { if (current(token)) status.textContent = error.message; }
+                async function syncRootLibrary() {
+                    if (!current(token)) return;
+                    try {
+                        if (!doc.hidden && !settingsDialog?.open) {
+                            const next = await api('/api/daki/shared-styles');
+                            if (!current(token)) return;
+                            if (JSON.stringify(next.styles) !== JSON.stringify(catalog.styles)) {
+                                container.replaceChildren();
+                                await render(params, container);
+                                return;
+                            }
+                        }
+                    } catch (_) { /* Keep existing folders through connection failures. */ }
+                    finally { if (current(token)) libraryTimer = root.setTimeout(syncRootLibrary, 2000); }
+                }
+                libraryTimer = root.setTimeout(syncRootLibrary, 2000);
                 return;
             }
             const overview = category === 'all';
-            const styles = overview ? catalog.styles.filter(style => (style.category || 'upper') === 'v5')
+            let styles = overview ? catalog.styles.filter(style => (style.category || 'upper') === 'v5')
                 : catalog.styles.filter(style => (style.category || 'upper') === category);
             const title = `공유 그림체 · ${overview ? '그림체 일람' : category === 'v5' ? 'V5 그림체' : '상반신'}`;
             heading(title, sharedStyleSubtitle(category, styles.length), baseHash, '← 공유 그림체');
@@ -326,10 +343,11 @@
                     item.card.setAttribute('data-style-selected', String(item.checkbox.checked));
                 });
             }
+            let decorateNewCard = () => {};
             if (overview) {
                 toolbar.append(selectAll, clear, remove);
                 container.appendChild(node('p', 'daki-test-note', '대표 그림을 보고 삭제할 그림체를 선택하세요. 삭제한 그림체는 새 전체 테스트에서 제외되며, 원본 그림과 기존 테스트는 유지됩니다.'));
-                cards.forEach(item => {
+                const decorateSelection = item => {
                     const name = item.card.querySelector('.daki-image-actions').children[0];
                     const label = node('label', 'daki-style-select');
                     const checkbox = item.checkbox = node('input'); checkbox.type = 'checkbox';
@@ -340,7 +358,9 @@
                         updateSelection();
                     };
                     label.append(checkbox, node('span', '', name.textContent)); name.replaceWith(label);
-                });
+                };
+                cards.forEach(decorateSelection);
+                decorateNewCard = decorateSelection;
             }
             const grid = root.Daki.createGrid('daki-style-grid'); container.appendChild(grid);
             const empty = node('p', 'daki-empty', '표시할 그림체가 없습니다.'); container.appendChild(empty);
@@ -350,6 +370,33 @@
                 empty.hidden = !!visible.length; updateSelection();
             }
             search.oninput = refresh; refresh();
+            async function syncLibrary() {
+                if (!current(token)) return;
+                try {
+                    if (!doc.hidden && !busy) {
+                        const next = await api('/api/daki/shared-styles');
+                        if (!current(token) || busy) return;
+                        const incoming = next.styles.filter(style => (style.category || 'upper') === (overview ? 'v5' : category));
+                        if (JSON.stringify(incoming) !== JSON.stringify(styles)) {
+                            const existing = new Map(cards.map(item => [item.id, item]));
+                            styles = incoming;
+                            catalog.styles = next.styles;
+                            cards = incoming.map(style => {
+                                const previous = existing.get(style.id);
+                                if (previous && JSON.stringify(previous.style) === JSON.stringify(style)) return previous;
+                                const item = {id:style.id, name:style.name.toLowerCase(), style, card:styleCard(style)};
+                                decorateNewCard(item); return item;
+                            });
+                            const ids = new Set(incoming.map(style => style.id));
+                            for (const id of selected) if (!ids.has(id)) selected.delete(id);
+                            heading(title, sharedStyleSubtitle(category, cards.length), baseHash, '← 공유 그림체');
+                            refresh();
+                        }
+                    }
+                } catch (_) { /* Keep the current list through transient connection errors. */ }
+                finally { if (current(token)) libraryTimer = root.setTimeout(syncLibrary, 2000); }
+            }
+            libraryTimer = root.setTimeout(syncLibrary, 2000);
         } catch (error) {
             if (!current(token)) return;
             status.textContent = error.message;
@@ -392,9 +439,9 @@
                         <button id="dakiTestNegaTab" type="button" role="tab" aria-controls="dakiTestNegaPanel">Nega</button>
                     </div>
                     <div id="dakiTestBasePanel" class="daki-test-prompt-editor" role="tabpanel" aria-labelledby="dakiTestBaseTab">
-                        <textarea name="prompt" aria-label="공통 프롬프트" rows="6" maxlength="20000" placeholder="모든 그림체에 적용할 구도·배경·표현"></textarea></div>
+                        <textarea data-prompt-autocomplete name="prompt" aria-label="공통 프롬프트" rows="6" maxlength="20000" placeholder="모든 그림체에 적용할 구도·배경·표현"></textarea></div>
                     <div id="dakiTestNegaPanel" class="daki-test-prompt-editor" role="tabpanel" aria-labelledby="dakiTestNegaTab" hidden>
-                        <textarea name="negative_prompt" aria-label="공통 네거티브" rows="6" maxlength="20000" placeholder="모든 그림체에서 제외할 표현"></textarea></div>
+                        <textarea data-prompt-autocomplete name="negative_prompt" aria-label="공통 네거티브" rows="6" maxlength="20000" placeholder="모든 그림체에서 제외할 표현"></textarea></div>
                 </section>
                 <section class="daki-test-settings-section daki-test-characters">
                     <div class="daki-test-section-heading"><h3>캐릭터 프롬프트</h3><button id="dakiTestAddCharacter" type="button">＋ 캐릭터 추가</button></div>
@@ -479,8 +526,8 @@
         const characters = byId('dakiTestCharacters');
         function addCharacter(value = {}) {
             const row = node('fieldset', 'daki-test-character');
-            const positive = node('textarea'); positive.rows = 2; positive.maxLength = 20000; positive.value = value.prompt || ''; positive.setAttribute('aria-label', '캐릭터 프롬프트');
-            const negative = node('textarea'); negative.rows = 2; negative.maxLength = 20000; negative.value = value.negative_prompt || ''; negative.setAttribute('aria-label', '캐릭터 네거티브');
+            const positive = node('textarea'); positive.setAttribute('data-prompt-autocomplete', ''); positive.rows = 2; positive.maxLength = 20000; positive.value = value.prompt || ''; positive.setAttribute('aria-label', '캐릭터 프롬프트');
+            const negative = node('textarea'); negative.setAttribute('data-prompt-autocomplete', ''); negative.rows = 2; negative.maxLength = 20000; negative.value = value.negative_prompt || ''; negative.setAttribute('aria-label', '캐릭터 네거티브');
             negative.disabled = model.value === mediumModel; negative.setAttribute('aria-describedby', 'dakiTestModelNote');
             const baseLabel = node('label', '', 'Base'); baseLabel.appendChild(positive);
             const negaLabel = node('label', '', 'Nega'); negaLabel.appendChild(negative);

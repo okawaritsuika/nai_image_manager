@@ -78,6 +78,10 @@ body.daki-draft-editing #dakiLibrary #dakiPageStatus { margin: 0 0 4px; font-siz
 .daki-draft-result-position { color: var(--draft-muted); font-variant-numeric: tabular-nums; }
 .daki-draft-result-stage { display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--draft-border); border-radius: 8px; background: #171923; }
 .daki-draft-preview-image { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
+.daki-draft-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-height: 0; overflow: hidden; }
+.daki-draft-reference { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; min-height: 0; overflow: hidden; }
+.daki-draft-reference h3 { margin: 0; font-size: 13px; line-height: 1.5; }
+.daki-draft-reference-tag { margin: 0; max-height: 4.5em; overflow: auto; overflow-wrap: anywhere; color: var(--draft-muted); }
 .daki-draft-empty-stage, .daki-draft-stage-placeholder { margin: 0; padding: 18px; color: var(--draft-muted); text-align: center; line-height: 1.6; overflow-wrap: anywhere; }
 .daki-draft-result-caption { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; color: var(--draft-muted); overflow-wrap: anywhere; }
 .daki-draft-result-caption strong { color: #eeeef2; }

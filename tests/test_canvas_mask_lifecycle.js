@@ -292,3 +292,131 @@ test('rendering a closed panel and clearing the canvas both run cleanup', () => 
     const clearEnd = source.indexOf('\nfunction ', clearStart + 10);
     assert.match(source.slice(clearStart, clearEnd), /disposeClipMaskEditor\(\)/);
 });
+
+function renderPanelHarness({oldPanel = true, oldKey, oldScrollLeft = 117, oldScrollTop = 209,
+    clipId = 42, imageWidth = 640, imageHeight = 480} = {}) {
+    const events = [];
+    const clipSizeKey = `41:${clipId}:${imageWidth}x${imageHeight}`;
+    const selection = {id: 41, type: 'selection', name: 'synthetic selection'};
+    const clip = {id: clipId, type: 'clip', src: '/synthetic/clip.png', imageWidth, imageHeight};
+    let newScrollLeft = 0;
+    let newScrollTop = 0;
+    const wrap = {
+        dataset: {},
+        get scrollLeft() { return newScrollLeft; },
+        set scrollLeft(value) { events.push(`scrollLeft:${value}`); newScrollLeft = value; },
+        get scrollTop() { return newScrollTop; },
+        set scrollTop(value) { events.push(`scrollTop:${value}`); newScrollTop = value; }
+    };
+    const image = {style: {}};
+    const oldWrap = {scrollLeft: oldScrollLeft, scrollTop: oldScrollTop};
+    const priorPanel = oldPanel ? {
+        dataset: {clipSizeKey: oldKey ?? clipSizeKey},
+        querySelector: () => oldWrap,
+        remove() { events.push('remove-old-panel'); }
+    } : null;
+    const panel = {
+        dataset: {},
+        style: {},
+        classList: {contains: () => false, toggle() {}},
+        querySelector(selector) {
+            if (selector === '.canvas-clip-output-image-wrap') return wrap;
+            if (selector === '.clip-output-image') return image;
+            return {};
+        }
+    };
+    const stage = {
+        classList: {add() {}, remove() {}},
+        querySelector: () => priorPanel,
+        appendChild() { events.push('append-new-panel'); }
+    };
+    const context = {
+        disposeClipMaskEditor() { events.push('dispose-mask-editor'); },
+        el: () => stage,
+        getClipOutputTarget: () => ({selection, clip}),
+        getTopVisibleInpaintClipForSelection: () => null,
+        isClipInpaintPreviewMode: false,
+        isClipInpaintMergedSourceMode: false,
+        clipMergedSourcePreviewCache: {key: '', dataUrl: ''},
+        clipPreviewZoom: 1,
+        openClipMaskSizeTool: null,
+        activeClipMaskTool: 'brush',
+        CLIP_MASK_BRUSH_MIN: 1,
+        CLIP_MASK_BRUSH_MAX: 256,
+        CLIP_MASK_BRUSH_STEP: 1,
+        clipMaskBrushSize: 96,
+        isSelectionOverlayHidden: false,
+        activeClipAutoMaskPickClipId: null,
+        clipInpaintLoadingClipId: null,
+        clipInpaintLoadingMessage: '',
+        escapeHtml: value => String(value),
+        document: {createElement: () => panel},
+        positionClipOutputPanel() {},
+        fitClipOutputPanelToImage() {},
+        keepDefaultClipOutputPanelVisible() {},
+        bindClipOutputPanelDrag() {},
+        bindClipMaskEditor() { events.push('bindClipMaskEditor'); },
+        syncClipInpaintProcessing() {},
+        applyClipPreviewZoom(outputWrap, outputImage, targetClip) {
+            events.push(['applyClipPreviewZoom', outputWrap, outputImage, targetClip]);
+            // Model scroll range changes caused by laying out the newly sized image.
+            outputWrap.scrollLeft = 5;
+            outputWrap.scrollTop = 7;
+        }
+    };
+    vm.createContext(context);
+    const renderStart = source.indexOf('function renderClipOutputPanel()');
+    const renderEnd = source.indexOf('\nfunction getOrCreateSelectionInpaintFolder(', renderStart);
+    assert.ok(renderStart >= 0 && renderEnd > renderStart, 'renderClipOutputPanel source is present');
+    vm.runInContext(source.slice(renderStart, renderEnd), context);
+    context.renderClipOutputPanel();
+    return {context, events, wrap, image, clip, clipSizeKey};
+}
+
+test('rerendering the same clip restores scroll after applying its preview zoom', () => {
+    const fixture = renderPanelHarness({oldPanel: true, oldScrollLeft: 117, oldScrollTop: 209});
+    assert.equal(fixture.wrap.scrollLeft, 117);
+    assert.equal(fixture.wrap.scrollTop, 209);
+    const bindIndex = fixture.events.indexOf('bindClipMaskEditor');
+    const zoomIndex = fixture.events.findIndex(event => Array.isArray(event)
+        && event[0] === 'applyClipPreviewZoom');
+    assert.ok(bindIndex >= 0, 'mask editor is rebound');
+    assert.ok(zoomIndex > bindIndex, 'preview zoom is applied after binding the mask editor');
+    assert.equal(fixture.events[zoomIndex][1], fixture.wrap);
+    assert.equal(fixture.events[zoomIndex][2], fixture.image);
+    assert.equal(fixture.events[zoomIndex][3], fixture.clip);
+    assert.ok(fixture.events.indexOf('scrollLeft:117') > zoomIndex);
+    assert.ok(fixture.events.indexOf('scrollTop:209') > zoomIndex);
+});
+
+test('rerendering preserves zero scroll coordinates for the same clip', () => {
+    const fixture = renderPanelHarness({oldPanel: true, oldScrollLeft: 0, oldScrollTop: 0});
+    assert.equal(fixture.wrap.scrollLeft, 0);
+    assert.equal(fixture.wrap.scrollTop, 0);
+    assert.ok(fixture.events.includes('scrollLeft:0'));
+    assert.ok(fixture.events.includes('scrollTop:0'));
+});
+
+test('rerendering another clip or image size does not restore the old panel scroll', () => {
+    for (const options of [
+        {clipId: 43, imageWidth: 640, imageHeight: 480},
+        {clipId: 42, imageWidth: 800, imageHeight: 480}
+    ]) {
+        const fixture = renderPanelHarness({oldPanel: true, oldScrollLeft: 117, oldScrollTop: 209,
+            oldKey: '41:42:640x480', ...options});
+        assert.equal(fixture.wrap.scrollLeft, 0);
+        assert.equal(fixture.wrap.scrollTop, 0);
+        assert.equal(fixture.events.includes('scrollLeft:117'), false);
+        assert.equal(fixture.events.includes('scrollTop:209'), false);
+        assert.equal(fixture.events.some(event => Array.isArray(event)
+            && event[0] === 'applyClipPreviewZoom'), false);
+    }
+});
+
+test('rendering the first clip output panel needs no previous panel', () => {
+    const fixture = renderPanelHarness({oldPanel: false});
+    assert.equal(fixture.wrap.scrollLeft, 0);
+    assert.equal(fixture.wrap.scrollTop, 0);
+    assert.equal(fixture.events.some(event => Array.isArray(event)
+        && event[0] === 'applyClipPreviewZoom'), false);
+});

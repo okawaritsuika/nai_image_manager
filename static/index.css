@@ -208,6 +208,16 @@
         #zoomLayer { flex-direction: column; padding: 16px; box-sizing: border-box; gap: 12px; }
         .gallery-zoom-image-stage { flex: 1; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; }
         #zoomLayer #zoomImg { max-width: 100%; max-height: 100%; }
+        #zoomLayer .gallery-zoom-image-stage { overflow: hidden; min-width: 0; }
+        #zoomLayer.gallery-zoom-pinned { cursor: default !important; }
+        #zoomLayer.gallery-zoom-pinned .gallery-zoom-image-stage { cursor: grab; touch-action: none; user-select: none; }
+        #zoomLayer.gallery-zoom-pinned .gallery-zoom-dragging { cursor: grabbing; }
+        #zoomLayer #zoomImg { transform-origin: center; }
+        #galleryZoomPinBtn[aria-pressed="true"] { color: #93c5fd; outline: 1px solid #93c5fd; border-radius: 5px; }
+        #galleryZoomViewHint:empty { display: none; }
+        .gallery-zoom-heading { flex-wrap: wrap; }
+        #galleryZoomFileName { min-width: 0; }
+        .gallery-zoom-heading button { flex-shrink: 0; }
         .gallery-zoom-toolbar { flex: 0 0 auto; width: min(880px, 100%); max-height: 45vh; overflow-y: auto; box-sizing: border-box; padding: 12px 16px; border: 1px solid #3b4555; border-radius: 14px; background: #111722; color: #e7edf6; cursor: default; box-shadow: 0 8px 28px #0008; }
         .gallery-zoom-heading { display: flex; align-items: center; gap: 12px; font-size: 12px; }
         #galleryZoomPosition { flex-shrink: 0; color: #93c5fd; font-weight: bold; }
@@ -2023,10 +2033,10 @@
     z-index: 7000;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-    padding: 10px;
+    gap: 6px;
+    padding: 8px;
     box-sizing: border-box;
-    width: 380px;
+    width: 280px;
     min-width: 0;
     max-width: calc(100vw - 24px);
     align-items: stretch;
@@ -2048,12 +2058,12 @@
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
-    min-height: 42px;
+    min-height: 32px;
     white-space: normal;
     word-break: keep-all;
     overflow-wrap: anywhere;
     text-align: center;
-    padding: 10px 12px !important;
+    padding: 5px 8px !important;
     font-size: 12px !important;
     line-height: 1.5;
 }
@@ -2066,7 +2076,7 @@
         right: 12px;
         transform: none;
         width: auto;
-        max-width: 380px;
+        max-width: 280px;
         max-height: calc(100dvh - var(--gallery-layout-switch-height, 54px) - 24px);
         overflow-y: auto;
     }

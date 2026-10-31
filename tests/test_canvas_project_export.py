@@ -113,12 +113,13 @@ class CanvasProjectExportStorageTests(unittest.TestCase):
                 first['path'], None, project_exports_root=self.export_root)[0]) as image:
             self.assertEqual(image.getpixel((0, 0)), (17, 43, 91, 127))
 
-    def test_exports_get_sequential_names_per_canvas_and_preserve_prefixed_canvas_name(self):
+    def test_exports_use_project_side_timestamp_names_and_keep_export_count(self):
         first = self.export()
         second = self.export(image=self.image((80, 70, 60, 50)))
-        expected_base = 'Synthetic export project_앞면_Front draft'
-        self.assertEqual(first['name'], expected_base + '_결과1.png')
-        self.assertEqual(second['name'], expected_base + '_결과2.png')
+        expected_name = r'^Synthetic export project_앞면_\d{4}-\d{2}-\d{2}_\d{6}\.png$'
+        self.assertRegex(first['name'], expected_name)
+        self.assertRegex(second['name'], expected_name)
+        self.assertNotIn('Front draft', first['name'])
 
         custom = self.store.create_canvas(self.project['id'], {
             'name': 'Synthetic export project_앞면_Directly named',
@@ -126,7 +127,8 @@ class CanvasProjectExportStorageTests(unittest.TestCase):
             'state': {'width': 8, 'height': 6, 'layers': []},
         })
         custom_result = self.export(canvas_id=custom['id'])
-        self.assertEqual(custom_result['name'], 'Synthetic export project_앞면_Directly named_결과1.png')
+        self.assertRegex(custom_result['name'], expected_name)
+        self.assertNotIn('Directly named', custom_result['name'])
 
         reopened = DakiProjectsStore(self.projects_path, self.store.resolve_source)
         self.assertEqual(reopened.get_canvas(self.project['id'], _CANVAS_ID)['exportCount'], 2)
@@ -146,37 +148,40 @@ class CanvasProjectExportStorageTests(unittest.TestCase):
         )
         self.assertEqual(updated['exportCount'], 2)
         third = self.export()
-        self.assertTrue(third['name'].endswith('_결과3.png'))
+        self.assertRegex(third['name'], r'^Synthetic export project_앞면_\d{4}-\d{2}-\d{2}_\d{6}\.png$')
+        self.assertEqual(self.store.get_canvas(self.project['id'], _CANVAS_ID)['exportCount'], 3)
 
     def test_parallel_exports_receive_distinct_sequential_indices(self):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda color: self.export(image=self.image(color)), (
                 (1, 2, 3, 4), (5, 6, 7, 8),
             )))
-        names = {result['name'] for result in results}
-        self.assertEqual(names, {
-            'Synthetic export project_앞면_Front draft_결과1.png',
-            'Synthetic export project_앞면_Front draft_결과2.png',
-        })
+        for result in results:
+            self.assertRegex(result['name'], r'^Synthetic export project_앞면_\d{4}-\d{2}-\d{2}_\d{6}\.png$')
+            self.assertNotIn('Front draft', result['name'])
+        self.assertEqual(len({result['path'] for result in results}), 2)
         self.assertEqual(self.store.get_canvas(self.project['id'], _CANVAS_ID)['exportCount'], 2)
 
-    def test_export_names_replace_windows_invalid_characters_and_keep_result_suffix_under_200(self):
+    def test_export_names_replace_windows_invalid_characters_and_stay_under_200(self):
         name = project_canvas_result_name(
             '프로젝트<>/', 'front', '초안<>:"/\\|?*\x01. ', 1,
         )
-        self.assertTrue(name.endswith('_결과1.png'))
+        self.assertRegex(name, r'^프로젝트____앞면_\d{4}-\d{2}-\d{2}_\d{6}\.png$')
+        self.assertNotIn('초안', name)
         self.assertNotRegex(name, r'[<>:"/\\|?*\x00-\x1f]')
 
         long_name = project_canvas_result_name('프로젝트', 'back', '캔버스' * 300, 12)
         self.assertLessEqual(len(long_name), 200)
-        self.assertTrue(long_name.endswith('_결과12.png'))
+        self.assertRegex(long_name, r'^프로젝트_뒷면_\d{4}-\d{2}-\d{2}_\d{6}\.png$')
+        self.assertNotIn('캔버스', long_name)
 
-    def test_long_project_name_prefix_matches_auto_canvas_name_without_duplication(self):
+    def test_long_project_name_is_truncated_without_adding_canvas_name(self):
         project_name = '가' * 120
         canvas_name = project_name.strip()[:100] + '_앞면_캔버스1'
         name = project_canvas_result_name(project_name, 'front', canvas_name, 1)
-        self.assertEqual(name, canvas_name + '_결과1.png')
+        self.assertRegex(name, r'^가{100}_앞면_\d{4}-\d{2}-\d{2}_\d{6}\.png$')
         self.assertEqual(name.count(project_name[:100]), 1)
+        self.assertNotIn('캔버스1', name)
 
     def test_failed_candidate_json_write_rolls_back_export_and_counter(self):
         with mock.patch(

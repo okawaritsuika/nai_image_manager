@@ -58,6 +58,7 @@ class LegacyImportTests(unittest.TestCase):
             self.assertEqual((target / 'daki_style_tests/synthetic.png').read_bytes(), b'synthetic')
             self.assertEqual((target / 'daki_drafts/synthetic.png').read_bytes(), b'synthetic')
             self.assertEqual((target / 'daki_tag_examples/synthetic.png').read_bytes(), b'synthetic')
+            self.assertEqual((target / 'daki_dictionary_user/synthetic.png').read_bytes(), b'synthetic')
             self.assertEqual((target / 'daki_imported_styles/synthetic.png').read_bytes(), b'synthetic')
             self.assertEqual((target / 'daki_personal_styles/catalog.json').read_bytes(), personal_catalog)
             self.assertEqual((source / 'daki_personal_styles/catalog.json').read_bytes(), personal_catalog)

@@ -1,6 +1,6 @@
 param(
     [string]$Python = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe"),
-    [string]$Version = "1.3.2"
+    [string]$Version = "1.3.3"
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,9 +64,13 @@ $ProtectedFiles = @(
     "canvas_saved_setups.json",
     "daki_projects.json",
     "tag_categories_ko.json",
+    "style_workspace.local.json",
+    "shared_style_library.sqlite",
+    "shared_style_library.sqlite-shm",
+    "shared_style_library.sqlite-wal",
     ".env"
 )
-$ProtectedDirectories = @("TOTAL_CLASSIFIED", "output", "canvas_imports", "daki_generated_temp", "daki_style_tests", "daki_imported_styles", "daki_personal_styles", "daki_worldcups", "daki_drafts", "daki_tag_examples")
+$ProtectedDirectories = @("TOTAL_CLASSIFIED", "output", "canvas_imports", "daki_generated_temp", "daki_style_tests", "daki_imported_styles", "daki_personal_styles", "daki_worldcups", "daki_drafts", "daki_tag_examples", "daki_dictionary_user", ".style-workspace-backups")
 $PayloadFiles = Get-ChildItem -LiteralPath $PortableDir -Recurse -File
 foreach ($file in $PayloadFiles) {
     $relative = Get-PortableRelativePath $PortableDir $file.FullName
@@ -119,7 +123,7 @@ $Manifest = [ordered]@{
     sha256 = $Hash
     size = $ZipItem.Length
     payload_root = "NAI_Image_Manager"
-    summary = "Fixes Hugging Face downloads failing when SSLKEYLOGFILE points to an unavailable path, while preserving certificate verification."
+    summary = "Adds tag dictionary and prompt suggestions, improves rotated canvas editing, export and reference workflows, and connects personal style workspaces with reliability fixes."
 }
 [IO.File]::WriteAllText(
     (Join-Path $Root "release_manifest.json"),

@@ -771,7 +771,7 @@
     function labeledTextarea(doc, parent, labelText, role, maxLength, rows, placeholder) {
         const wrapper = make(doc, 'label', 'canvas-daki-map-custom-field');
         const label = make(doc, 'span', '', labelText);
-        const input = doc.createElement('textarea');
+        const input = doc.createElement('textarea'); input.setAttribute('data-prompt-autocomplete', '');
         input.maxLength = maxLength;
         input.rows = rows;
         input.placeholder = placeholder;

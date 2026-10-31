@@ -218,3 +218,106 @@ test('failed export alerts and reenables the export button', async () => {
     assert.deepEqual(h.alerts, ['통합 내보내기 실패: synthetic failure']);
     assert.equal(h.button.disabled, false);
 });
+
+function enableReset(h, choice = true) {
+    const events = [];
+    let state = {width: 720, height: 960, layers: [{id: 9, type: 'clip'}]};
+    const merged = {width: 720, height: 960, layers: [{id: 1, type: 'image', src: '/synthetic/merged.png'}]};
+    h.context.CanvasWorkspaceBridge = {stateKey: 'synthetic-pane-one'};
+    h.context.CanvasExportFeedback = {
+        async chooseReset() { return choice; },
+        start() { return {
+            update(stage, completed, total) { events.push(['progress', completed, total]); },
+            finish(message) { events.push(['finish', message]); },
+            fail(message) { events.push(['fail', message]); },
+            close() { events.push(['close']); }
+        }; }
+    };
+    h.context.buildCanvasStateSnapshot = () => state;
+    h.context.normalizeCanvasStateForCompare = value => JSON.stringify(value);
+    h.context.buildMergedOnlyCanvasStateSnapshot = async (image, prompt) => {
+        events.push(['merged', image, prompt]); return merged;
+    };
+    h.context.applyCanvasStateSnapshot = value => { events.push(['apply', value]); state = value; };
+    h.context.saveCanvasState = () => { events.push(['local-save']); return true; };
+    h.context.CanvasProject.flush = async () => { events.push(['flush']); return true; };
+    h.context.CanvasProject.schedule = () => events.push(['schedule']);
+    h.context.loadSavedCanvasSetups = () => [{id: 'saved-one', name: 'Synthetic saved canvas'}];
+    h.context.activeCanvasSetupId = 'saved-one';
+    h.context.updateCanvasSetupItem = async (...args) => events.push(['update', ...args]);
+    h.context.saveCanvasSetupItem = async (...args) => events.push(['create', ...args]);
+    return {events, merged, edit: () => { state = {...state, layers: []}; }};
+}
+
+test('reset choice cancellation does not export or alter the canvas', async () => {
+    const h = harness();
+    const r = enableReset(h, null);
+    await h.context.runExport();
+    assert.equal(h.requests.length, 0);
+    assert.deepEqual(r.events, []);
+});
+
+test('successful project export merges only the captured canvas and explicitly saves its project', async () => {
+    const h = harness({link: projectLink(), destination: {destination: 'project', projectId: PROJECT_ID, canvasId: CANVAS_ID}});
+    const r = enableReset(h);
+    await h.context.runExport();
+    assert.equal(h.calls.render, 1, 'the saved canvas reuses the exact exported image');
+    assert.equal(r.events.filter(event => event[0] === 'apply').length, 1);
+    assert.equal(r.events.filter(event => event[0] === 'schedule').length, 1);
+    assert.equal(r.events.filter(event => event[0] === 'flush').length, 2);
+    assert.equal(r.events.some(event => event[0] === 'update' || event[0] === 'create'), false);
+    assert.equal(r.events.at(-1)[0], 'finish');
+    assert.equal(h.requests[0].body.canvasId, CANVAS_ID);
+});
+
+test('gallery export updates the current saved canvas after successful export', async () => {
+    const h = harness();
+    const r = enableReset(h);
+    await h.context.runExport();
+    const update = r.events.find(event => event[0] === 'update');
+    assert.equal(update[1], 'saved-one');
+    assert.equal(update[3], r.merged);
+    assert.equal(r.events.at(-1)[0], 'finish');
+});
+
+test('failed export keeps all original layers and leaves a visible failure state', async () => {
+    const h = harness({responseData: {status: 'error', message: 'synthetic disk full'}});
+    const r = enableReset(h);
+    await h.context.runExport();
+    assert.equal(r.events.some(event => ['apply', 'update', 'create'].includes(event[0])), false);
+    assert.equal(r.events.at(-1)[0], 'fail');
+    assert.match(r.events.at(-1)[1], /synthetic disk full/);
+});
+
+test('switching panes while exporting never resets the newly opened canvas', async () => {
+    const h = harness({link: projectLink()});
+    const r = enableReset(h);
+    h.context.fetch = async () => {
+        h.context.CanvasWorkspaceBridge.stateKey = 'synthetic-pane-two';
+        return {ok: true, json: async () => ({status: 'success'})};
+    };
+    await h.context.runExport();
+    assert.equal(r.events.some(event => ['apply', 'update', 'create', 'schedule'].includes(event[0])), false);
+    assert.match(r.events.at(-1)[1], /그림 내보내기는 완료/);
+});
+
+test('editing while the export response is pending preserves the newer layers', async () => {
+    const h = harness({link: projectLink()});
+    const r = enableReset(h);
+    h.context.fetch = async () => { r.edit(); return {ok: true, json: async () => ({status: 'success'})}; };
+    await h.context.runExport();
+    assert.equal(r.events.some(event => event[0] === 'apply'), false);
+    assert.equal(r.events.at(-1)[0], 'fail');
+});
+
+test('a project save failure reports partial success without repeating the export', async () => {
+    const h = harness({link: projectLink()});
+    const r = enableReset(h);
+    let calls = 0;
+    h.context.CanvasProject.flush = async () => ++calls === 1;
+    await h.context.runExport();
+    assert.equal(h.requests.length, 1);
+    assert.equal(r.events.at(-1)[0], 'fail');
+    assert.match(r.events.at(-1)[1], /그림 내보내기는 완료/);
+    assert.equal(h.button.disabled, false);
+});

@@ -444,8 +444,25 @@ test('actual retained import ref collector keeps assets referenced by deleted la
     initial.layers[0].children[0].sourcePath = '/canvas-imports/images/deleted-synthetic.png?session=fixture';
     initial.layers[0].children[0].maskSrc = '/canvas-imports/masks/deleted-mask-synthetic.png';
     const h = createHarness(initial);
+    const originalCollector = h.context.collectCanvasImportRefsFromValue;
+    let collectionCalls = 0;
+    h.context.collectCanvasImportRefsFromValue = (...args) => {
+        collectionCalls++;
+        return originalCollector(...args);
+    };
     h.sandbox.currentState.layers[0].children = [];
     h.context.saveCanvasState();
+
+    const callsBeforeHistoryRead = collectionCalls;
+    const historyRefs = h.context.collectCanvasEditHistoryImportRefs();
+    assert.equal(collectionCalls, callsBeforeHistoryRead);
+    historyRefs.push('images/caller-mutation.png');
+    assert.equal(collectionCalls, callsBeforeHistoryRead);
+    assert.deepEqual(h.context.collectCanvasEditHistoryImportRefs().sort(), [
+        'images/deleted-synthetic.png',
+        'images/remaining-synthetic.png',
+        'masks/deleted-mask-synthetic.png'
+    ].sort());
 
     const refs = h.context.collectRetainedCanvasImportRefs();
     assert.deepEqual([...refs].sort(), [

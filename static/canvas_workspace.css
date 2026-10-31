@@ -31,17 +31,21 @@ body.canvas-workspace-pane { display: flex; flex-direction: column; overflow: hi
 .canvas-multi .error, .canvas-multi-controls .error, .canvas-multi-picker .error { color: #ffafaf; }
 .canvas-multi-empty { position: absolute; inset: 0; display: flex; gap: 16px; align-items: center; justify-content: center; flex-direction: column; background: var(--bg-color); pointer-events: auto; }
 .canvas-multi-empty[hidden], .canvas-multi-notice[hidden], .canvas-multi-reference[hidden], .canvas-multi-references[hidden], .canvas-multi-picture [hidden] { display: none; }
-.canvas-multi-references { position: absolute; z-index: 45; pointer-events: none; overflow: hidden; }
-.canvas-multi-reference { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--card-bg); box-shadow: var(--shadow-md); pointer-events: auto; overflow: hidden; }
-.canvas-multi-reference-header { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, auto); gap: 4px; padding: 5px; align-items: center; }
-.canvas-multi-reference-title { grid-column: 1 / -1; font-size: 11px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: move; touch-action: none; user-select: none; }
-.canvas-multi-reference-header button { min-width: 0; min-height: 26px; padding: 2px 3px; font-size: 10px; line-height: 18px; white-space: nowrap; }
-.canvas-multi-reference-fit { color: var(--accent-blue); }
-.canvas-multi-picture { display: flex; flex: 1 1 auto; min-height: 0; min-width: 0; width: 100%; padding: 0; margin: 0; border: 0; border-radius: 0; align-items: center; justify-content: center; color: var(--text-muted); background: #08080d; overflow: auto; cursor: pointer; }
-.canvas-multi-picture img { display: block; flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; object-fit: contain; pointer-events: none; }
-.canvas-multi-picture:hover, .canvas-multi-picture:focus { background: #08080d; }
-.canvas-multi-picture span { padding: 8px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.canvas-multi-reference-resize { position: absolute; bottom: 0; right: 0; width: 22px; height: 22px; padding: 0; border-radius: 5px 0 0 0; color: var(--text-main); background: var(--btn-secondary); cursor: nwse-resize; touch-action: none; }
+.canvas-stage.has-multi-references { display: flex; align-items: flex-start; justify-content: center; gap: 16px; min-width: max-content; }
+.canvas-workspace:has(> .canvas-stage.has-multi-references) { padding: 12px; }
+.canvas-multi-references { display: flex; flex: 0 0 auto; align-items: flex-start; gap: 16px; min-width: max-content; overflow: visible; }
+.canvas-multi-reference { position: relative; display: flex; flex: 0 0 auto; flex-direction: column; min-width: 120px; min-height: 32px; padding: 0; overflow: visible; background: transparent; color: var(--text-main); }
+.canvas-multi-reference-picture { position: relative; flex: 0 0 auto; min-width: 120px; min-height: 32px; overflow: visible; }
+.canvas-multi-picture { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-width: 100%; min-height: 100%; margin: 0; padding: 0; border: 0; border-radius: 0; color: var(--text-muted); background: var(--bg-color); cursor: pointer; }
+.canvas-multi-picture img { display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; background: var(--bg-color); pointer-events: none; user-select: none; -webkit-user-drag: none; }
+.canvas-multi-picture:hover, .canvas-multi-picture:focus { background: var(--bg-color); }
+.canvas-multi-picture span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 8px; color: var(--text-muted); font-size: 11px; line-height: 1.5; text-align: center; overflow-wrap: anywhere; }
+.canvas-multi-reference-footer { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 4px; width: 100%; min-width: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--card-bg); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3); }
+.canvas-multi-reference-title { flex: 1 0 100%; min-width: 0; overflow: hidden; color: var(--text-main); font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-multi-reference-footer button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; min-width: 32px; min-height: 28px; max-width: 100%; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-color); color: var(--text-muted); font: 11px/1.2 var(--font-family); white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+.canvas-multi-reference-footer button:hover { color: var(--text-main); }
+.canvas-multi-reference-fit { color: var(--accent-blue) !important; }
+.canvas-multi-reference-resize { position: absolute; z-index: 2; right: 0; bottom: 0; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 0; border: 1px solid var(--border-color); border-radius: var(--radius-sm) 0 0 0; background: var(--card-bg); color: var(--text-main); font: 14px/1 var(--font-family); cursor: nwse-resize; touch-action: none; }
 .canvas-multi-picker { width: min(580px, calc(100vw - 32px)); max-height: calc(100vh - 40px); padding: 18px; border: 1px solid var(--border-color); border-radius: var(--radius-main); background: var(--card-bg); color: var(--text-main); }
 .canvas-multi-picker[open] { display: flex; flex-direction: column; }
 .canvas-multi-picker::backdrop { background: rgba(0,0,0,.65); }

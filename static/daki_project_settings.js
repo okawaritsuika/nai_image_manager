@@ -187,6 +187,7 @@
         const control = makeElement(controlTag || (textarea ? 'textarea' : 'input'));
         control.id = id;
         if (textarea) {
+            control.setAttribute('data-prompt-autocomplete', '');
             control.maxLength = MAX_PROMPT_LENGTH;
             control.rows = 4;
         }
@@ -293,6 +294,7 @@
             heading.append(label, remove);
             const textarea = makeElement('textarea', 'daki-project-settings-character-textarea');
             textarea.id = id;
+            textarea.setAttribute('data-prompt-autocomplete', '');
             textarea.rows = 3;
             textarea.maxLength = MAX_PROMPT_LENGTH;
             textarea.setAttribute('maxlength', String(MAX_PROMPT_LENGTH));

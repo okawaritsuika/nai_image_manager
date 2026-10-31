@@ -27,6 +27,7 @@ PROTECTED_DIRECTORIES = {
     "daki_worldcups",
     "daki_drafts",
     "daki_tag_examples",
+    "daki_dictionary_user",
 }
 PROTECTED_FILES = {
     "artists.json",
@@ -34,6 +35,7 @@ PROTECTED_FILES = {
     "gallery_config.json",
     "gallery_image_tags.json",
     "lab_config.json",
+    "style_workspace.local.json",
     "quality_presets.json",
     "tag_dictionary_user_overrides.json",
     "canvas_saved_setups.json",

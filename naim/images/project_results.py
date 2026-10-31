@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import tempfile
+import unicodedata
 from pathlib import Path
 
 from PIL import Image
@@ -13,10 +14,13 @@ from naim.images.webp_conversion import (
     _digest_file, _identity, convert_image_to_webp, webp_target_path,
 )
 from naim.storage.image_files import IMAGE_FILES_LOCK
-from naim.storage.daki_projects import DakiNotFoundError
+from naim.storage.daki_projects import (
+    DakiNotFoundError, MAX_PROJECT_CANDIDATE_NAME_UTF16_UNITS,
+)
 
 
 _DAKI_ID_RE = re.compile(r'^[a-f0-9]{32}$')
+_WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>:"/\\|?*')
 
 
 def _validate_id(value, label):
@@ -27,6 +31,32 @@ def _validate_id(value, label):
 
 def _canonical_path(path):
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _project_upscale_candidate_name(source_name, source_path, width, height):
+    source_label = source_name if isinstance(source_name, str) and source_name.strip() else Path(source_path).name
+    source_stem = Path(source_label.strip()).stem
+    safe_stem = ''.join(
+        '_' if char in _WINDOWS_INVALID_FILENAME_CHARS or unicodedata.category(char) == 'Cc' else char
+        for char in source_stem
+    ).rstrip(' .')
+    if not safe_stem:
+        safe_stem = 'image'
+
+    suffix = f'_업스케일_{width}x{height}.png'
+    available_units = MAX_PROJECT_CANDIDATE_NAME_UTF16_UNITS - len(suffix.encode('utf-16-le')) // 2
+    stem_parts = []
+    stem_units = 0
+    for char in safe_stem:
+        char_units = len(char.encode('utf-16-le')) // 2
+        if stem_units + char_units > available_units:
+            break
+        stem_parts.append(char)
+        stem_units += char_units
+    safe_stem = ''.join(stem_parts).rstrip(' .')
+    if not safe_stem:
+        safe_stem = 'image'
+    return safe_stem + suffix
 
 
 def validate_project_image_context(store, project_context, source_path):
@@ -70,6 +100,7 @@ def validate_project_image_context(store, project_context, source_path):
         'projectName': project.get('name', ''),
         'side': side,
         'candidatePath': candidate_path,
+        'candidateName': candidate.get('name'),
         'sourceFullPath': candidate_full_path,
         'sourceRelativePath': candidate_relative_path or source_relative_path,
     }
@@ -196,6 +227,9 @@ def process_project_upscale_job(job, progress_callback, *, store, export_root,
         }
         with Image.open(target_path) as output_image:
             output_image.load()
+            candidate_name = _project_upscale_candidate_name(
+                validated.get('candidateName'), validated['sourceFullPath'], *output_image.size,
+            )
             with output_image.convert('RGBA') as rgba_image:
                 saved = save_project_candidate_image(
                     store,
@@ -206,6 +240,7 @@ def process_project_upscale_job(job, progress_callback, *, store, export_root,
                     prompt_info,
                     source_label='NAI Image Manager Daki Project Upscale',
                     sidecar_extra={'upscale': upscale_info},
+                    candidate_name=candidate_name,
                 )
 
     return {

@@ -359,7 +359,23 @@
         resultHeading.append(node('h2', '', '결과 미리보기'), node('span', 'daki-draft-result-position', '')); resultPane.appendChild(resultHeading);
         const stage = node('div', 'daki-draft-result-stage'); stage.setAttribute('aria-live', 'polite');
         const resultCaption = node('div', 'daki-draft-result-caption'), resultActions = node('div', 'daki-draft-result-actions');
-        resultPane.append(stage, resultCaption, resultActions);
+        const reference = folder.settings?.dictionary_reference;
+        if (reference) {
+            const comparison = node('div', 'daki-draft-comparison');
+            const referencePane = node('section', 'daki-draft-reference');
+            referencePane.appendChild(node('h3', '', '자세 참고 그림'));
+            const referenceStage = node('div', 'daki-draft-result-stage');
+            const referenceImage = node('img', 'daki-draft-preview-image');
+            referenceImage.alt = reference.tag || '태그사전 참고 그림';
+            referenceImage.src = '/api/daki/dictionary/images/' + encodeURIComponent(reference.image_id) + '/file';
+            referenceImage.onerror = () => {
+                referenceStage.replaceChildren(node('p', 'daki-draft-empty-stage', '참고 그림을 읽을 수 없습니다. 태그사전의 폴더 연결을 확인해 주세요.'));
+            };
+            referenceStage.appendChild(referenceImage);
+            referencePane.append(referenceStage, node('p', 'daki-draft-reference-tag', reference.tag));
+            comparison.append(stage, referencePane); resultPane.appendChild(comparison);
+        } else resultPane.appendChild(stage);
+        resultPane.append(resultCaption, resultActions);
         const history = node('aside', 'daki-draft-history'), historyHeading = node('div', 'daki-draft-history-heading');
         historyHeading.append(node('h2', '', '생성 기록'), node('span', 'daki-draft-history-count', '0장'));
         const historyList = node('div', 'daki-draft-history-list'), historyFooter = node('div', 'daki-draft-history-footer');
@@ -468,7 +484,7 @@
         }
         async function command(url, values, retrySettings) {
             if (busy || running() || !loaded || !current(token)) return;
-            const body = {...JSON.parse(JSON.stringify(values)), allow_anlas: false}; if (url === endpoint) body.folder_id = folder.id;
+            const body = {...JSON.parse(JSON.stringify(values)), ...(reference ? {dictionary_reference: reference} : {}), allow_anlas: false}; if (url === endpoint) body.folder_id = folder.id;
             const recipe = retrySettings || body, steps = recipe.model === 'nai-diffusion-5-full-medium' ? 14 : recipe.options?.steps ?? 28;
             let sent = false; busy = true; requestRevision++; root.clearTimeout(timer); controls(); renderRecords(); status.textContent = '생성을 요청하는 중…';
             try {
@@ -500,7 +516,8 @@
             const values = localEditor.read(); if (!values) return;
             busy = true; requestRevision++; controls(); renderRecords(); status.textContent = '폴더 설정을 저장하는 중…';
             try {
-                const data = await api(folderUrl(folder.id), 'PUT', {name: folder.name, settings: values});
+                const data = await api(folderUrl(folder.id), 'PUT', {name: folder.name,
+                    settings: {...values, ...(reference ? {dictionary_reference: reference} : {})}});
                 if (!current(token)) return;
                 requestRevision++;
                 folder = data.folder || {...folder, settings: values}; status.textContent = '폴더 설정을 저장했습니다.';

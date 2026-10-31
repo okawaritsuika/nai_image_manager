@@ -487,7 +487,7 @@ test('preview captures a scaled merged canvas while inactive and returns it in c
     assert.deepEqual(plain(result), {ok: true, preview: 'data:image/png;base64,merged-preview'});
     assert.deepEqual(plain(h.context.snapshotOptions), {preserveMasks: true});
     assert.deepEqual(plain(h.context.previewOptions), {
-        state: {layers: [{id: 1}]}, maxDimension: 1024,
+        state: {layers: [{id: 1}]}, maxDimension: 1600,
     });
 
     h.dispatch(command(PANE_ID, 'preview', {requestId: 'preview-request'}));
@@ -498,17 +498,17 @@ test('preview captures a scaled merged canvas while inactive and returns it in c
     });
 });
 
-test('preview copies the visible retouch overlay at a maximum dimension of 1024', async () => {
+test('preview copies the visible retouch overlay at the opposite-reference limit of 1600', async () => {
     const overlay = {width: 2048, height: 1024};
     const h = harness({mode: 'pane', overlayCanvas: overlay});
     h.context.CanvasWorkspaceBridge.ready();
     const result = await h.context.CanvasWorkspaceBridge.execute('preview');
 
     assert.deepEqual(plain(result), {ok: true, preview: 'data:image/png;base64,overlay-preview'});
-    assert.equal(h.previewCanvas.width, 1024);
-    assert.equal(h.previewCanvas.height, 512);
+    assert.equal(h.previewCanvas.width, 1600);
+    assert.equal(h.previewCanvas.height, 800);
     assert.equal(h.previewDrawCalls.length, 1);
-    assert.deepEqual(h.previewDrawCalls[0], [overlay, 0, 0, 1024, 512]);
+    assert.deepEqual(h.previewDrawCalls[0], [overlay, 0, 0, 1600, 800]);
     assert.equal(h.context.previewOptions, undefined);
 });
 

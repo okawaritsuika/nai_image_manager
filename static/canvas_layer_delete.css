@@ -1,0 +1,106 @@
+.canvas-layer-delete-dialog {
+    box-sizing: border-box;
+    width: min(440px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-main);
+    background: var(--card-bg);
+    color: var(--text-main);
+}
+
+.canvas-layer-delete-dialog:not([open]) {
+    display: none;
+}
+
+.canvas-layer-delete-dialog[open] {
+    display: flex;
+    flex-direction: column;
+}
+
+.canvas-layer-delete-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.canvas-layer-delete-header {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 18px;
+}
+
+.canvas-layer-delete-header h2 {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+.canvas-layer-delete-close {
+    display: flex;
+    flex: 0 0 28px;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.canvas-layer-delete-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 18px 16px;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.canvas-layer-delete-name {
+    max-height: 120px;
+    overflow: auto;
+    margin-bottom: 12px;
+    font-weight: 700;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.canvas-layer-delete-description {
+    margin: 0;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+.canvas-layer-delete-footer {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--border-color);
+}
+
+.canvas-layer-delete-dialog .canvas-layer-delete-footer button {
+    min-height: 36px;
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .canvas-layer-delete-dialog,
+    .canvas-layer-delete-dialog::backdrop {
+        animation: none;
+        transition: none;
+    }
+}

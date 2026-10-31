@@ -293,6 +293,26 @@ test('generation snapshots editor values, sends folder_id once, blocks duplicate
     assert.equal(f.requests.filter(request => request.method === 'POST').length, 1);
 });
 
+test('dictionary reference appears beside results and survives settings saves and generation', async () => {
+    const reference = {image_id: 42, tag: 'synthetic_pose'};
+    const saved = {...clone(settings), dictionary_reference: reference,
+        char_prompts: [{prompt: 'synthetic_pose', negative_prompt: '', x: .5, y: .5}]};
+    const f = fixture(); await f.mountFolder({selectedFolder: folder({settings: saved}), edit: true});
+    assert.equal(f.byClass('daki-draft-comparison').length, 1);
+    const image = f.byClass('daki-draft-reference')[0].descendants().find(item => item.tagName === 'IMG');
+    assert.equal(image.src, '/api/daki/dictionary/images/42/file');
+    assert.deepEqual(clone(f.editors[0].initial.char_prompts), saved.char_prompts);
+    f.value({...settings, prompt: 'edited'});
+    const save = f.button('설정 저장').onclick();
+    assert.deepEqual(clone(f.requests.at(-1).body.settings.dictionary_reference), reference);
+    f.reply({folder: folder({settings: {...settings, dictionary_reference: reference}})}); await save;
+    const creation = f.submit();
+    assert.deepEqual(clone(f.requests.at(-1).body.dictionary_reference), reference);
+    f.reply({draft: draft('new')}); await creation;
+    assert.equal(f.byClass('daki-draft-reference').length, 1);
+    image.onerror(); assert.match(f.content.textContent, /참고 그림을 읽을 수 없습니다/);
+});
+
 test('paid generation cancellation and approval preserve the frozen request; Medium uses its free effective 14 steps', async () => {
     const f = fixture(); await f.mountFolder({edit: true});
     const selected = {...settings, width: 640, height: 2048, options: {steps: 29}}; f.value(selected);

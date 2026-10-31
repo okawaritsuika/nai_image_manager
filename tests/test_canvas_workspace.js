@@ -187,19 +187,33 @@ function harness({panes = [pane(PANE_ID, 'Original')], activeId = PANE_ID,
         createElement(tag) {
             const value = new Element(tag, created);
             if (value.tagName === 'IFRAME') {
+                const editorShell = new Element('section', created);
+                editorShell.className = 'canvas-workspace-shell';
+                const editorHud = new Element('section', created);
+                editorHud.id = 'canvasDakiFocus'; editorHud.className = 'canvas-daki-focus canvas-daki-hud';
+                editorHud.hidden = true;
                 const editorWorkspace = new Element('div', created);
                 editorWorkspace.className = 'canvas-workspace';
                 const editorControlsSlot = new Element('div', created);
                 editorControlsSlot.id = 'canvasWorkspaceControls';
+                const editorStage = new Element('div', created);
+                editorStage.id = 'canvasStage'; editorStage.className = 'canvas-stage';
                 const editorSurface = new Element('div', created);
                 editorSurface.id = 'canvasSurface'; editorSurface.rect = {left: 0, top: 0, width: 400, height: 600};
-                editorWorkspace.append(editorControlsSlot, editorSurface);
+                editorStage.append(editorSurface);
+                editorWorkspace.append(editorControlsSlot, editorStage);
+                editorShell.append(editorHud, editorWorkspace);
+                value.editorShell = editorShell;
+                value.editorHud = editorHud;
                 value.editorWorkspace = editorWorkspace;
+                value.editorStage = editorStage;
                 value.editorControlsSlot = editorControlsSlot;
                 value.contentDocument = {
                     querySelector(selector) {
+                        if (selector === '.canvas-workspace-shell') return editorShell;
                         if (selector === '.canvas-workspace') return editorWorkspace;
                         if (selector === '#canvasWorkspaceControls') return editorControlsSlot;
+                        if (selector === '#canvasStage') return editorStage;
                         if (selector === '#canvasSurface') return editorSurface;
                         return null;
                     },
@@ -209,20 +223,31 @@ function harness({panes = [pane(PANE_ID, 'Original')], activeId = PANE_ID,
         },
         addEventListener() {},
         querySelector(selector) {
+            if (selector === '.canvas-workspace-shell') return rootShell;
             if (selector === '.canvas-workspace') return rootWorkspace;
+            if (selector === '#canvasStage') return rootStage;
+            if (selector === '#canvasSurface') return rootSurface;
             return this.body.querySelector(selector);
         },
     };
     document.body = new Element('body', created);
+    const rootShell = new Element('section', created);
+    rootShell.className = 'canvas-workspace-shell';
+    const rootHud = new Element('section', created);
+    rootHud.id = 'canvasDakiFocus'; rootHud.className = 'canvas-daki-focus canvas-daki-hud'; rootHud.hidden = true;
     const rootWorkspace = new Element('main', created);
     rootWorkspace.className = 'canvas-workspace';
     rootWorkspace.id = 'canvasWorkspace';
     const rootControlsSlot = new Element('div', created);
     rootControlsSlot.id = 'canvasWorkspaceControls';
+    const rootStage = new Element('div', created);
+    rootStage.id = 'canvasStage'; rootStage.className = 'canvas-stage';
     const rootSurface = new Element('div', created);
     rootSurface.id = 'canvasSurface'; rootSurface.rect = {left: 0, top: 0, width: 400, height: 600};
-    rootWorkspace.append(rootControlsSlot, rootSurface, new Element('section', created));
-    document.body.append(rootWorkspace);
+    rootStage.append(rootSurface);
+    rootWorkspace.append(rootControlsSlot, rootStage, new Element('section', created));
+    rootShell.append(rootHud, rootWorkspace);
+    document.body.append(rootShell);
     const window = {
         CanvasWorkspaceState: WorkspaceState,
         CanvasRetouchState: RetouchState,
@@ -342,7 +367,7 @@ function harness({panes = [pane(PANE_ID, 'Original')], activeId = PANE_ID,
     start();
 
     return {
-        window, document, rootWorkspace, storage, created, timers, workspace, manifestKey,
+        window, document, rootShell, rootHud, rootWorkspace, rootStage, rootSurface, storage, created, timers, workspace, manifestKey,
         rootControlsSlot,
         dispatchMessage, frames, frameFor, referenceFor, storedManifest, ready, lastCommand, sendResponse,
         attachCalls, readyCalls, bridgeCommands, assignedUrls,
@@ -375,7 +400,10 @@ test('start keeps the original editor inline and rejects forged frame messages',
     assert.ok(referenceFrame);
     assert.equal(referenceFrame.hidden, true);
     assert.equal(referenceFrame.inert, true);
-    assert.equal(h.referenceFor(SECOND_PANE_ID).style.top, '56px', 'the default reference clears the body-map HUD');
+    assert.equal(h.referenceFor(SECOND_PANE_ID).style.top, undefined, 'references use normal flow instead of saved overlay coordinates');
+    assert.equal(h.referenceFor(SECOND_PANE_ID).style.left, undefined);
+    assert.strictEqual(h.referenceContainer.parentNode, h.rootStage);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), true);
     assert.deepEqual(h.attachCalls, [{workspaceId: WORKSPACE_ID, paneId: PANE_ID}]);
     assert.deepEqual(h.readyCalls, [true]);
     assert.strictEqual(h.rootWorkspace, originalWorkspace);
@@ -387,6 +415,46 @@ test('start keeps the original editor inline and rejects forged frame messages',
     h.dispatchMessage({source: {postMessage() {}}, data: fake});
     assert.equal(h.storedManifest().panes[1].name, 'Reference');
     assert.equal(h.referenceFor(SECOND_PANE_ID).querySelector('.canvas-multi-reference-title').textContent, 'Reference');
+});
+
+test('reference cards follow the canvas inside its stage and appear only while visible', () => {
+    const thirdId = '1'.repeat(32);
+    const h = harness({panes: [pane(PANE_ID, 'Main'), pane(SECOND_PANE_ID, 'Back',
+        {reference: {visible: true, x: 350, y: 420, width: 220, height: 240}}), pane(thirdId, 'Side',
+        {reference: {visible: true, x: 800, y: 510, width: 260, height: 280}})], activeId: PANE_ID});
+    h.ready(SECOND_PANE_ID); h.ready(thirdId);
+
+    const rail = h.referenceContainer;
+    assert.strictEqual(rail.parentNode, h.rootStage);
+    assert.strictEqual(h.rootSurface.parentNode, h.rootStage);
+    assert.equal(rail.children.length, 3, 'each mounted reference remains in a single normal-flow row');
+    assert.ok(h.rootStage.children.indexOf(h.rootSurface) < h.rootStage.children.indexOf(rail),
+        'references follow the editable canvas like the opposite-side preview');
+    assert.equal(h.referenceFor(SECOND_PANE_ID).style.left, undefined);
+    assert.equal(h.referenceFor(SECOND_PANE_ID).style.top, undefined);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), true);
+    assert.deepEqual(h.storedManifest().panes[1].reference,
+        {visible: true, x: 350, y: 420, width: 220, height: 240}, 'legacy coordinates remain stored unchanged');
+
+    h.workspace.toggle(SECOND_PANE_ID);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), true,
+        'one remaining visible reference keeps the preview row active');
+    h.workspace.toggle(thirdId);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), false,
+        'hiding every reference removes the preview row from the stage');
+    h.workspace.toggle(SECOND_PANE_ID);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), true);
+    assert.equal(h.workspace.select(SECOND_PANE_ID), true);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), false,
+        'the active pane is excluded from picture references');
+    assert.strictEqual(rail.parentNode, h.frameFor(SECOND_PANE_ID).editorStage);
+    assert.equal(h.frameFor(SECOND_PANE_ID).editorStage.classList.contains('has-multi-references'), true,
+        'the former main is shown beside the newly active editor');
+
+    assert.match(WORKSPACE_CSS, /\.canvas-stage\.has-multi-references\s*\{[^}]*display:\s*flex[^}]*min-width:\s*max-content/s);
+    assert.match(WORKSPACE_CSS, /\.canvas-multi-references\s*\{[^}]*display:\s*flex[^}]*gap:\s*16px[^}]*min-width:\s*max-content[^}]*overflow:\s*visible/s);
+    assert.match(WORKSPACE_CSS, /\.canvas-multi-reference-footer\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap[^}]*margin-top:\s*8px[^}]*padding:\s*6px/s);
+    assert.doesNotMatch(WORKSPACE_CSS, /canvas-multi-has-references|\.canvas-multi-references\s*\{[^}]*overflow:\s*auto/s);
 });
 
 test('selection waits for readiness and swaps reference slots while preserving both editor contexts', () => {
@@ -412,9 +480,11 @@ test('selection waits for readiness and swaps reference slots while preserving b
     assert.strictEqual(frame.contentWindow, childWindow);
     assert.equal(h.window.document.body.classList.contains('canvas-workspace-root-inactive'), true);
     assert.equal(h.referenceFor(SECOND_PANE_ID).hidden, true, 'the active pane has no duplicate reference card');
-    assert.strictEqual(h.referenceContainer.parentNode, frame.editorWorkspace);
+    assert.strictEqual(h.referenceContainer.parentNode, frame.editorStage);
     assert.equal(h.referenceFor(PANE_ID).parentNode, h.referenceContainer);
     assert.equal(h.referenceFor(PANE_ID).hidden, false);
+    assert.equal(h.referenceFor(PANE_ID).style.left, undefined);
+    assert.equal(h.referenceFor(PANE_ID).style.top, undefined);
     assert.ok(h.bridgeCommands.some(command => command.action === 'preview'),
         'the former main gets a picture preview after switching away');
 
@@ -427,7 +497,7 @@ test('selection waits for readiness and swaps reference slots while preserving b
     assert.equal(frame.inert, true);
     assert.strictEqual(frame.contentWindow, childWindow);
     assert.equal(h.window.document.body.classList.contains('canvas-workspace-root-inactive'), false);
-    assert.strictEqual(h.referenceContainer.parentNode, h.rootWorkspace);
+    assert.strictEqual(h.referenceContainer.parentNode, h.rootStage);
 });
 
 test('main selector follows the active editor, waits for readiness, and renders names as text', () => {
@@ -478,6 +548,7 @@ test('visibility checkboxes toggle references, stay open, and restore their stat
     referenceCheckbox.checked = false;
     referenceCheckbox.onchange();
     assert.equal(h.storedManifest().panes[1].reference.visible, false);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), false);
     assert.equal(menu.open, true);
     assert.equal(checkboxFor(h.controls, SECOND_PANE_ID).checked, false);
 
@@ -487,6 +558,7 @@ test('visibility checkboxes toggle references, stay open, and restore their stat
     failedCheckbox.onchange();
     assert.equal(h.storedManifest().panes[1].reference.visible, false);
     assert.equal(failedCheckbox.checked, false, 'a rejected save restores the previous checkbox state');
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), false);
     assert.equal(menu.open, true);
 });
 
@@ -528,6 +600,7 @@ test('show and hide toggles preserve the inactive iframe and display a returned 
     h.workspace.toggle(SECOND_PANE_ID);
     assert.equal(card.hidden, true);
     assert.equal(h.storedManifest().panes[1].reference.visible, false);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), false);
     assert.strictEqual(h.frameFor(SECOND_PANE_ID), frame);
     assert.strictEqual(frame.contentWindow, childWindow);
     assert.equal(frame.hidden, true);
@@ -536,6 +609,7 @@ test('show and hide toggles preserve the inactive iframe and display a returned 
     const queuedPreview = h.lastCommand(frame, 'preview');
     assert.ok(queuedPreview?.requestId);
     assert.equal(card.hidden, false);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), true);
     assert.strictEqual(h.frameFor(SECOND_PANE_ID), frame);
     h.sendResponse(frame, SECOND_PANE_ID, queuedPreview.requestId, true, '', 'data:image/png;base64,stale');
     await new Promise(resolve => setImmediate(resolve));
@@ -585,6 +659,8 @@ test('close waits for its matching flush and ignores a preview response arriving
     assert.equal(h.frames().length, 0);
     assert.equal(h.storedManifest().panes[1].closed, true);
     assert.equal(card.parentNode, null);
+    assert.equal(h.rootStage.classList.contains('has-multi-references'), false,
+        'closing the final visible reference clears the stage layout');
     assert.equal(optionFor(h.mainSelect, SECOND_PANE_ID), undefined);
     assert.equal(checkboxFor(h.controls, SECOND_PANE_ID), undefined);
 
@@ -692,8 +768,8 @@ test('gallery prioritizes the active project, searches names, and previews proje
         if (url === '/api/daki/projects') return {status: 'success', projects: [
             {id: otherProjectId, name: 'Beta project', canvases: {front: [{id: '3'.repeat(32), name: 'Other front', revision: 2}]}},
             {id: PROJECT_ID, name: 'Alpha project', canvases: {
-                front: [{id: CANVAS_ID, name: 'Front view', revision: 5}],
-                back: [{id: backCanvasId, name: 'Back view', revision: 6}],
+                front: [{id: CANVAS_ID, name: 'Front view', revision: 5, width: 1024, height: 3276}],
+                back: [{id: backCanvasId, name: 'Back view', revision: 6, width: 512, height: 512}],
             }},
         ]};
         return {status: 'success', setups: [{id: 'saved-setup', name: 'Saved study', savedAt: 123,
@@ -707,6 +783,10 @@ test('gallery prioritizes the active project, searches names, and previews proje
     assert.ok(titles.indexOf('다른 프로젝트') < titles.indexOf('저장한 캔버스'));
     assert.deepEqual(dialog.querySelectorAll('.canvas-multi-picker-card').map(card => card.querySelector('strong').textContent),
         ['Front view', 'Back view', 'Other front', 'Saved study']);
+    assert.equal(pickerCardFor(h.document, 'Front view').querySelector('.canvas-multi-picker-card-toggle').children[2].textContent,
+        'Alpha project · 앞면 · 1024 × 3276 px');
+    assert.equal(pickerCardFor(h.document, 'Saved study').querySelector('.canvas-multi-picker-card-toggle').children[2].textContent,
+        '512 × 256 px');
     assert.strictEqual(pickerCardFor(h.document, 'Front view').parentNode, pickerCardFor(h.document, 'Back view').parentNode,
         'the active project front and back canvases share one grid');
     assert.notStrictEqual(pickerCardFor(h.document, 'Other front').parentNode, pickerCardFor(h.document, 'Front view').parentNode,
@@ -718,9 +798,9 @@ test('gallery prioritizes the active project, searches names, and previews proje
         && value.item.savedAt === 123 && Array.isArray(value.item.state.layers)));
 
     const search = dialog.querySelector('.canvas-multi-picker-search');
-    search.value = 'back'; search.oninput();
-    assert.equal(pickerCardFor(h.document, 'Back view').hidden, false);
-    assert.equal(pickerCardFor(h.document, 'Front view').hidden, true);
+    search.value = '3276'; search.oninput();
+    assert.equal(pickerCardFor(h.document, 'Front view').hidden, false, 'project dimensions can be searched');
+    assert.equal(pickerCardFor(h.document, 'Back view').hidden, true);
     assert.equal(pickerCardFor(h.document, 'Other front').hidden, true);
     assert.equal(previews.filter(value => value.kind === 'dispose').length, 0,
         'search keeps the existing preview session and completed thumbnails usable');
@@ -803,10 +883,12 @@ test('closing the picker ignores late list responses and disposes its previews',
     assert.equal(disposed, 1);
 });
 
-test('fit matches the displayed canvas height, preserves its ratio, and keeps large cards scrollable', () => {
+test('fit and resize match the displayed canvas height and keep actions below the picture', () => {
     const h = harness({panes: [pane(PANE_ID, 'Main'), pane(SECOND_PANE_ID, 'Reference')], activeId: PANE_ID});
     h.ready(SECOND_PANE_ID);
     const card = h.referenceFor(SECOND_PANE_ID), image = card.querySelector('img');
+    const pictureWrapper = card.querySelector('.canvas-multi-reference-picture');
+    const footer = card.querySelector('.canvas-multi-reference-footer');
     const fit = card.querySelector('.canvas-multi-reference-fit');
     assert.equal(fit.disabled, true, 'fit stays disabled until preview dimensions are available');
     image.naturalWidth = 100; image.naturalHeight = 200; image.dispatch('load');
@@ -815,13 +897,18 @@ test('fit matches the displayed canvas height, preserves its ratio, and keeps la
     let reference = h.storedManifest().panes.find(value => value.id === SECOND_PANE_ID).reference;
     assert.equal(reference.fitHeight, 600);
     assert.equal(reference.fitRatio, 0.5);
-    assert.equal(image.style.height, '600px');
-    assert.equal(image.style.width, '300px');
-    assert.equal(card.style.height, '650px', 'the card adds its header and borders outside the 600px image');
+    assert.equal(pictureWrapper.style.height, '600px');
+    assert.equal(pictureWrapper.style.width, '302px');
+    assert.equal(image.style.height, undefined);
+    assert.equal(image.style.width, undefined);
+    assert.equal(card.style.height, '', 'the card height follows the picture and footer in normal flow');
+    assert.strictEqual(card.children[0], pictureWrapper);
+    assert.strictEqual(card.children[1], footer);
+    assert.equal(reference.height, 656, 'the saved height includes the footer and its 8px gap');
     assert.equal(h.storedManifest().activeId, PANE_ID, 'fitting does not replace the active editor');
     assert.deepEqual(h.snapshotCalls, [], 'fitting does not read or rewrite the canvas source state');
-    assert.match(WORKSPACE_CSS, /\.canvas-multi-picture\s*\{[^}]*overflow:\s*auto/s,
-        'a tall fitted image scrolls inside its picture while header and resize controls remain in the capped card');
+    assert.match(WORKSPACE_CSS, /\.canvas-stage\.has-multi-references\s*\{[^}]*min-width:\s*max-content/s,
+        'the workspace scrolls to the full in-stage preview row');
 
     const resize = card.querySelector('.canvas-multi-reference-resize');
     resize.dispatch('pointerdown', {button: 0, pointerId: 9, clientX: 100, clientY: 100,
@@ -831,9 +918,12 @@ test('fit matches the displayed canvas height, preserves its ratio, and keeps la
     reference = h.storedManifest().panes.find(value => value.id === SECOND_PANE_ID).reference;
     assert.equal(reference.fitHeight, 700);
     assert.equal(reference.fitRatio, 0.5);
-    assert.equal(image.style.height, '700px');
-    assert.equal(image.style.width, '350px');
-    assert.equal(card.style.height, '700px', 'the card stays within the host while its fitted image keeps the full height');
+    assert.equal(pictureWrapper.style.height, '700px');
+    assert.equal(pictureWrapper.style.width, '352px');
+    assert.equal(image.style.height, undefined);
+    assert.equal(image.style.width, undefined);
+    assert.equal(card.style.height, '', 'the full picture and footer stay in normal flow');
+    assert.equal(reference.height, 756);
     assert.equal(h.workspace.select(SECOND_PANE_ID), true);
     let panes = h.storedManifest().panes;
     assert.equal(panes.find(value => value.id === PANE_ID).reference.fitHeight, undefined,

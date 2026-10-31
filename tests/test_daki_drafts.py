@@ -29,6 +29,16 @@ def synthetic_image(key, payload):
 
 
 class DraftSettingsTests(unittest.TestCase):
+    def test_dictionary_reference_round_trips_without_affecting_generation(self):
+        reference = {'image_id': 42, 'tag': 'synthetic_pose', 'path': 'discarded'}
+        settings = normalize_draft_settings(synthetic_settings(dictionary_reference=reference))
+        self.assertEqual(settings['dictionary_reference'], {'image_id': 42, 'tag': 'synthetic_pose'})
+        self.assertEqual(normalize_draft_settings(settings), settings)
+        self.assertEqual(build_draft_payload(settings), build_draft_payload(normalize_draft_settings(synthetic_settings())))
+        for value in ({'image_id': True}, {'image_id': 0}, {'image_id': '../x'}, [], 'bad'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                normalize_draft_settings(synthetic_settings(dictionary_reference=value))
+
     def test_defaults_and_selected_style_metadata_do_not_repeat_style_prompts(self):
         defaults = normalize_draft_settings({})
         self.assertEqual((defaults['width'], defaults['height'], defaults['seed']), (512, 768, -1))

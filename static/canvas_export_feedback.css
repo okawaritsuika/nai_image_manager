@@ -1,0 +1,169 @@
+.canvas-export-feedback-dialog {
+    box-sizing: border-box;
+    width: min(520px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    color: var(--text-main);
+    font-family: var(--font-family);
+}
+
+.canvas-export-feedback-dialog:not([open]) {
+    display: none;
+}
+
+.canvas-export-feedback-dialog[open] {
+    display: flex;
+    flex-direction: column;
+}
+
+.canvas-export-feedback-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.canvas-export-feedback-header {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding: 20px 20px 12px;
+}
+
+.canvas-export-feedback-header h2 {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    font-size: 20px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.canvas-export-feedback-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 20px 20px;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.canvas-export-feedback-context {
+    min-width: 0;
+    margin: 0 0 12px;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.canvas-export-feedback-question {
+    margin: 0 0 8px;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.canvas-export-feedback-description {
+    margin: 0;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+.canvas-export-feedback-stage {
+    min-width: 0;
+    margin: 16px 0 10px;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.canvas-export-feedback-progress-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px 12px;
+    min-width: 0;
+}
+
+.canvas-export-feedback-progress-row label {
+    grid-column: 1 / -1;
+    min-width: 0;
+    color: var(--text-muted);
+}
+
+.canvas-export-feedback-progress-row progress {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    height: 12px;
+    accent-color: var(--accent-color, #4d8dff);
+}
+
+.canvas-export-feedback-percent {
+    min-width: 3.5em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.canvas-export-feedback-elapsed {
+    min-width: 0;
+    margin-top: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+
+.canvas-export-feedback-footer {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    min-width: 0;
+    padding: 12px 20px 20px;
+    border-top: 1px solid var(--border-color);
+}
+
+.canvas-export-feedback-dialog .canvas-export-feedback-footer button {
+    min-width: 0;
+    min-height: 40px;
+    flex: 0 1 auto;
+    padding: 8px 12px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.4;
+}
+
+.canvas-export-feedback-footer button:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+@media (max-width: 420px) {
+    .canvas-export-feedback-header {
+        padding: 16px 16px 10px;
+    }
+
+    .canvas-export-feedback-body {
+        padding: 0 16px 16px;
+    }
+
+    .canvas-export-feedback-footer {
+        padding: 10px 16px 16px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .canvas-export-feedback-dialog,
+    .canvas-export-feedback-dialog::backdrop {
+        animation: none;
+        transition: none;
+    }
+}

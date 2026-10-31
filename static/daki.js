@@ -3,6 +3,7 @@
     'use strict';
     const sides = {front: '앞면', back: '뒷면'};
     const libraryCovers = {
+        dictionary: `<svg viewBox="0 0 96 96" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="M48 26c-9-7-21-9-34-6v53c13-3 25-1 34 6 9-7 21-9 34-6V20c-13-3-25-1-34 6Z" fill="currentColor" fill-opacity=".055"/><path d="M48 26v53M25 34c5 0 9 1 13 3M25 45c5 0 9 1 13 3M25 56c5 0 9 1 13 3M58 37c4-2 8-3 13-3M58 48c4-2 8-3 13-3M58 59c4-2 8-3 13-3"/></svg>`,
         shared: `<svg viewBox="0 0 96 96" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><rect x="16" y="18" width="45" height="54" rx="9" fill="currentColor" fill-opacity=".035" opacity=".6"/><rect x="16" y="18" width="45" height="54" rx="9" opacity=".55"/><rect x="31" y="27" width="49" height="55" rx="10" fill="currentColor" fill-opacity=".055"/><rect x="31" y="27" width="49" height="55" rx="10"/><circle cx="65" cy="42" r="4.5" fill="currentColor" fill-opacity=".24"/><path d="m38 70 11-14 9 10 8-11 8 15"/><path d="M39 71h34" opacity=".48"/></svg>`,
         personal: `<svg viewBox="0 0 96 96" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="M48 17c-19 0-32 14-32 32s14 33 32 33c8 0 13-4 13-11 0-5-4-8-4-12 0-5 4-9 9-9h6c10 0 15-6 15-15 0-10-17-18-39-18Z" fill="currentColor" fill-opacity=".055"/><circle cx="35" cy="42" r="4.2" fill="currentColor" fill-opacity=".22"/><circle cx="49" cy="32" r="4.2" fill="currentColor" fill-opacity=".22"/><circle cx="65" cy="35" r="4.2" fill="currentColor" fill-opacity=".22"/><circle cx="40" cy="59" r="4.2" fill="currentColor" fill-opacity=".22"/><circle cx="57" cy="57" r="4.2" fill="currentColor" fill-opacity=".22"/></svg>`,
         worldcups: `<svg viewBox="0 0 96 96" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="M32 22h32l-3 20c-1.4 9-6.5 15-13 16.5V68h10v8H38v-8h10V58.5C41.5 57 36.4 51 35 42l-3-20Z" fill="currentColor" fill-opacity=".07"/><path d="M32 29H22v7c0 8 5.5 13 14 14M64 29h10v7c0 8-5.5 13-14 14"/><path d="m48 31 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L48 31Z" fill="currentColor" fill-opacity=".32"/></svg>`,
@@ -543,6 +544,11 @@
         const library = byId('dakiLibrary');
         if (!library) return;
         const active = isActive();
+        const galleryEntry = byId('openGalleryLink');
+        if (galleryEntry) {
+            if (active) galleryEntry.removeAttribute('aria-current');
+            else galleryEntry.setAttribute('aria-current', 'page');
+        }
         const wasActive = doc.body.classList.contains('gallery-daki-active');
         if (active && !wasActive) galleryScrollY = root.scrollY || 0;
         doc.body.classList.toggle('gallery-daki-active', active);
@@ -777,6 +783,7 @@
     }
 
     function renderList(projects, container) {
+        const revision = pageRevision;
         byId('dakiTitle').textContent = 'Daki 프로젝트';
         byId('dakiSubtitle').textContent = `${projects.length}개 프로젝트 · 갤러리 이미지 우클릭 → 프로젝트에 추가`;
         byId('dakiBack').hidden = true;
@@ -796,7 +803,26 @@
                 preview.appendChild(face);
             }
             card.replaceChild(preview, card.firstChild);
-            cards.push(card);
+            const removal = root.DakiProjectRemoval?.createButton({
+                project,
+                isCurrent: () => revision === pageRevision && isActive()
+                    && !new URLSearchParams(root.location.hash.slice(1)).has('project')
+                    && !new URLSearchParams(root.location.hash.slice(1)).has('library'),
+                onDeleted: async result => {
+                    await renderPage();
+                    if (isActive() && !new URLSearchParams(root.location.hash.slice(1)).has('project')
+                        && !new URLSearchParams(root.location.hash.slice(1)).has('library')) {
+                        byId('dakiPageStatus').textContent = result.warning || '프로젝트를 삭제했습니다.';
+                    }
+                    if (result.gallery_changed) root.loadData?.();
+                },
+            });
+            if (removal) {
+                const wrapper = element('div', 'card daki-project-card daki-project-list-card');
+                card.classList.remove('card'); card.classList.add('daki-project-list-link');
+                const actions = element('div', 'daki-project-list-actions'); actions.appendChild(removal);
+                wrapper.append(card, actions); cards.push(wrapper);
+            } else cards.push(card);
         }
         container.appendChild(createGrid('daki-project-grid', cards, false));
     }
@@ -937,7 +963,10 @@
             panel.appendChild(title);
             for (const candidate of candidates) {
                 const card = element('figure', 'item-box daki-candidate');
-                card.appendChild(projectKindBadge('image', '그림'));
+                const upscaled = candidate.upscale?.is_upscaled === true;
+                const kindBadge = projectKindBadge(upscaled ? 'upscale' : 'image', upscaled ? '⬆ UPSCALE' : '그림');
+                if (upscaled) kindBadge.title = '업스케일 이미지';
+                card.appendChild(kindBadge);
                 if (candidate.missing) card.appendChild(element('div', 'daki-missing-image', '원본을 찾을 수 없음'));
                 else {
                     const img = element('img', 'zoomable'); img.src = imageSrc(candidate); img.alt = candidate.name || candidate.path.split('/').pop(); img.loading = 'lazy';
@@ -1036,6 +1065,7 @@
         root.DakiPersonalStyles?.leave?.();
         root.DakiWorldCup?.leave?.();
         root.DakiDrafts?.leave?.();
+        root.DakiDictionary?.leave?.();
         syncLibraryView();
         const container = byId('dakiContent');
         const revision = ++pageRevision;
@@ -1053,6 +1083,11 @@
         status.textContent = '불러오는 중…';
         try {
             const params = new URLSearchParams(root.location.hash.slice(1));
+            if (params.get('library') === 'dictionary' && root.DakiDictionary) {
+                if (create) create.hidden = true;
+                await root.DakiDictionary.render(params, container);
+                return;
+            }
             if (params.get('library') === 'drafts' && root.DakiDrafts) {
                 if (create) create.hidden = true;
                 await root.DakiDrafts.render(params, container);
@@ -1112,6 +1147,7 @@
         root.addEventListener('hashchange', renderPage);
         root.addEventListener('resize', relayout);
         root.addEventListener('pagehide', () => {
+            root.DakiDictionary?.leave?.();
             projectReference?.dispose();
             projectReference = null;
             closeCanvasOpenModal(false);

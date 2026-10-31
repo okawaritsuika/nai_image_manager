@@ -492,9 +492,9 @@
             name.type = 'text'; name.id = 'canvasDetailPresetName'; name.maxLength = 80; name.autocomplete = 'off';
             const category = element('input', '');
             category.type = 'text'; category.id = 'canvasDetailPresetCategoryInput'; category.maxLength = 40; category.autocomplete = 'off';
-            const base = element('textarea', '');
+            const base = element('textarea', ''); base.setAttribute('data-prompt-autocomplete', '');
             base.id = 'canvasDetailPresetBase'; base.maxLength = 10000; base.rows = 4;
-            const negative = element('textarea', '');
+            const negative = element('textarea', ''); negative.setAttribute('data-prompt-autocomplete', '');
             negative.id = 'canvasDetailPresetNegative'; negative.maxLength = 10000; negative.rows = 4;
             const nameGroup = element('div', 'canvas-detail-preset-form-group');
             nameGroup.append(labelFor('이름', name), name);

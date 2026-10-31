@@ -16,6 +16,10 @@
     overflow-wrap: anywhere;
     cursor: pointer;
 }
+.daki-project-list-card { display: flex; flex-direction: column; min-width: 0; cursor: default; }
+.daki-project-list-card:hover { transform: none; }
+.daki-project-list-link { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.daki-project-list-actions { display: flex; justify-content: flex-end; padding: 10px; min-width: 0; }
 .daki-project-remove-button:hover { border-color: #ff8d98; background: #ff8d9814; }
 
 .daki-project-removal-dialog {

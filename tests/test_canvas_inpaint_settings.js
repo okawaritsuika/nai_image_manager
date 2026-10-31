@@ -34,7 +34,7 @@ const effectiveClipSource = section(canvasSource,
 const snapshotSource = section(canvasSource,
     'function buildCanvasStateSnapshot(options = {}) {', '\nfunction cloneCanvasLayersForState(');
 const mergedSnapshotSource = section(canvasSource,
-    'async function buildMergedOnlyCanvasStateSnapshot() {', '\nfunction getPrimaryPromptSourceLayer(');
+    'async function buildMergedOnlyCanvasStateSnapshot(', '\nfunction getPrimaryPromptSourceLayer(');
 
 class FakeClassList {
     constructor() { this.values = new Set(); }
@@ -384,6 +384,13 @@ test('autosave and image-only setup snapshots include settings, and legacy resto
     context.CanvasInpaintSettings.update(chosen);
     assert.deepEqual(plain(context.buildCanvasStateSnapshot().inpaintSettings), chosen);
     assert.deepEqual(plain((await context.buildMergedOnlyCanvasStateSnapshot()).inpaintSettings), chosen);
+    context.renderMergedCanvasToDataUrl = async () => { throw new Error('must reuse the exported image'); };
+    let uploadedImage;
+    context.saveClipDataUrlToServer = async image => { uploadedImage = image; return '/synthetic/exported.png'; };
+    const exportedPrompt = {basePrompt: 'synthetic exported prompt'};
+    const merged = await context.buildMergedOnlyCanvasStateSnapshot('data:image/png;base64,ZXhwb3J0', exportedPrompt);
+    assert.equal(uploadedImage, 'data:image/png;base64,ZXhwb3J0');
+    assert.deepEqual(plain(merged.layers[0].promptInfo), exportedPrompt);
 
     const restoreIndex = setupSource.indexOf('CanvasInpaintSettings.restore(');
     const migrationIndex = setupSource.indexOf('const needsLegacyPromptMigration', restoreIndex);
