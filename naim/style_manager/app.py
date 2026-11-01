@@ -5510,5 +5510,3 @@ def thumbnails(filename):
     if safe_name != filename:
         return json_response({"ok": False, "error": "잘못된 파일 경로입니다."}, 400)
     return send_from_directory(THUMBNAIL_DIR, safe_name)
-
-
