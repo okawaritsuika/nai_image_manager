@@ -222,7 +222,7 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         self.assertIn("loadImageElementForClip(layer.src)", merge_body)
         self.assertIn('request.args.get("preview")', app)
         self.assertIn("def serve_image_preview", app)
-        self.assertIn("preview.thumbnail(", app)
+        self.assertIn("source.thumbnail(", app)
         self.assertIn("IMAGE_PREVIEW_CACHE.get(", app)
         self.assertIn("response.set_etag", app)
 

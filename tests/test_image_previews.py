@@ -95,6 +95,35 @@ class ImagePreviewTests(unittest.TestCase):
         self.assertNotEqual(before[0], after[0])
         self.assertEqual(after, app.build_image_preview_bytes(str(path), 256))
 
+    def test_large_previews_resize_before_orientation_copy_and_preserve_exif(self):
+        for orientation in (1, 2, 3, 4, 5, 6, 7, 8):
+            with self.subTest(orientation=orientation):
+                path = self.library / 'oriented.jpg'
+                exif = Image.Exif()
+                exif[274] = orientation
+                source = Image.new('RGB', (1200, 600), 'red')
+                source.paste('blue', (600, 0, 1200, 600))
+                source.save(path, exif=exif)
+                source.close()
+                original = path.read_bytes()
+                transpose = app.ImageOps.exif_transpose
+                sizes = []
+
+                def oriented_thumbnail(image):
+                    sizes.append(image.size)
+                    return transpose(image)
+
+                with mock.patch.object(app.ImageOps, 'exif_transpose', side_effect=oriented_thumbnail):
+                    data, mime = app.build_image_preview_bytes(str(path), 256)
+                self.assertEqual(sizes, [(256, 128)])
+                self.assertEqual(mime, 'image/jpeg')
+                with Image.open(io.BytesIO(data)) as result:
+                    self.assertEqual(result.size, (128, 256) if orientation >= 5 else (256, 128))
+                    left_or_top = result.getpixel((32, 32))
+                    blue_first = orientation in (2, 3, 7, 8)
+                    self.assertGreater(left_or_top[2 if blue_first else 0], 200)
+                self.assertEqual(path.read_bytes(), original)
+
     def test_key_contains_all_identity_fields_without_disclosing_source(self):
         first = preview_key('synthetic-private-name.png', 1, 2, 256)
         self.assertRegex(first, r'^[0-9a-f]{64}$')

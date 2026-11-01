@@ -22,6 +22,7 @@ from naim.novelai import generate_text_image
 from naim.storage.json_files import write_json
 from naim.storage.daki_style_sources import source_metadata
 from naim.shared_style_recipe import load_style_artist_names, style_duplicate_key
+from naim.shared_style_selection import filter_styles, model_family
 from naim.storage.daki_style_dates import style_sort_date
 from naim.images.webp_conversion import convert_png_to_webp, resolve_webp_image
 
@@ -274,6 +275,8 @@ class DakiStyleTests:
         result = {key: deepcopy(batch.get(key)) for key in ('id', 'status', 'created_at', 'updated_at', 'model', 'prompt', 'width', 'height', 'origin')}
         result['name'] = batch.get('name') or ''
         result['library'] = batch.get('library') or 'shared'
+        if 'target_filters' in batch:
+            result['target_filters'] = deepcopy(batch['target_filters'])
         result['output_format'] = batch.get('output_format', 'png')
         cover = next((item for item in batch['items'] if item['status'] == 'completed'), None)
         result['cover_src'] = (f"/api/daki/style-tests/{batch['id']}/images/{quote(cover['style_id'], safe='')}"
@@ -299,13 +302,20 @@ class DakiStyleTests:
                         # Unparseable saved recipes still match by ID.
                         return None
 
+                def scoped_key(style):
+                    key = duplicate_key(style)
+                    if key is None or 'target_filters' not in batch:
+                        return key
+                    return (style.get('source_library', 'naim'), model_family(style.get('model')), key)
+
                 existing_keys = {key for item in batch['items']
-                                 if (key := duplicate_key(item['style'])) is not None}
+                                 if (key := scoped_key(item['style'])) is not None}
                 missing = []
-                for style in self.catalog.list_styles():
+                filters = batch.get('target_filters') or {}
+                for style in filter_styles(self.catalog.list_styles(), filters.get('source', 'all'), filters.get('model', 'all')):
                     if style['id'] in existing:
                         continue
-                    key = duplicate_key(style)
+                    key = scoped_key(style)
                     if key is not None and key in existing_keys:
                         continue
                     missing.append(style['id'])
@@ -370,6 +380,13 @@ class DakiStyleTests:
             raise ValueError('공유 그림체 또는 개인 그림체를 선택해 주세요.')
         catalog = self.personal_catalog if library == 'personal' else self.catalog
         styles = catalog.list_styles() if catalog is not None else []
+        target_filters = data.get('target_filters')
+        if target_filters is not None:
+            if not isinstance(target_filters, dict):
+                raise ValueError('그림체 대상 필터를 확인해 주세요.')
+            target_filters = {'source': target_filters.get('source', 'all'), 'model': target_filters.get('model', 'all')}
+            candidates = [{**style, 'source_library': 'personal'} for style in styles] if library == 'personal' else styles
+            styles = filter_styles(candidates, target_filters['source'], target_filters['model'])
         if 'style_ids' in data:
             selected = data['style_ids']
             if (not isinstance(selected, list) or not 1 <= len(selected) <= 10000
@@ -394,6 +411,8 @@ class DakiStyleTests:
                           'payload': build_style_test_payload(style, request)})
         batch = {'id': uuid.uuid4().hex, 'name': name, 'library': library,
                  'status': 'ready', 'created_at': _now(), **request, 'items': items}
+        if target_filters is not None:
+            batch['target_filters'] = target_filters
         with self.lock:
             root = self._root()
             self._recover(root)

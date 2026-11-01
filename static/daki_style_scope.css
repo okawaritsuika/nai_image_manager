@@ -1,0 +1,251 @@
+.daki-style-scope {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+}
+.daki-style-scope > label {
+    display: flex;
+    flex: 0 1 180px;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.daki-test-dialog .daki-test-targets .daki-style-scope > label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 0 1 180px;
+    min-width: 0;
+    max-width: 100%;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.daki-style-scope select {
+    width: 100%;
+    min-width: 0;
+}
+.daki-style-toolbar {
+    min-width: 0;
+}
+.daki-style-toolbar > .daki-style-scope {
+    flex: 1 0 100%;
+}
+.daki-library-controls > .daki-style-scope {
+    flex: 1 0 100%;
+}
+.daki-style-toolbar > button {
+    flex-shrink: 0;
+}
+
+#dakiLibrary .daki-shared-controls {
+    position: relative;
+    z-index: 5;
+    container-type: inline-size;
+    container-name: daki-shared-controls;
+    overflow: visible;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    overflow: visible;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar > input[type="search"] {
+    flex: 1 1 150px;
+    width: auto;
+    min-width: 100px;
+    max-width: 200px;
+    height: 32px;
+    min-height: 32px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 10px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-style-scope {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    max-width: 100%;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-style-scope > label {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    margin: 0;
+    color: #a0a0b0;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-style-scope select {
+    flex: 0 0 auto;
+    height: 32px;
+    min-height: 32px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 8px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-style-scope select[name="daki_scope_source"] {
+    width: 144px;
+    min-width: 144px;
+    max-width: 144px;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-style-scope select[name="daki_scope_model"] {
+    width: 112px;
+    min-width: 112px;
+    max-width: 112px;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar > button,
+#dakiLibrary .daki-shared-secondary-actions > button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+    min-height: 32px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 10px;
+    border: 1px solid #ffffff30;
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    cursor: pointer;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-shared-primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 700;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-shared-more-button {
+    display: none;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-shared-compact-label {
+    display: none;
+}
+#dakiLibrary .daki-shared-secondary-actions {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 6px;
+    min-width: 0;
+}
+#dakiLibrary .daki-shared-secondary-actions > .daki-shared-delete {
+    border-color: var(--danger, #ff8b9c);
+    background: transparent;
+    color: var(--danger, #ff8b9c);
+}
+#dakiLibrary .daki-shared-secondary-actions > .daki-shared-delete:disabled {
+    border-color: #ffffff20;
+    background: transparent;
+    color: var(--danger, #ff8b9c);
+    cursor: not-allowed;
+}
+#dakiLibrary .daki-shared-controls .daki-shared-toolbar button:disabled,
+#dakiLibrary .daki-shared-controls .daki-shared-secondary-actions button:disabled {
+    cursor: not-allowed;
+}
+@container daki-shared-controls (max-width: 1040px) {
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-shared-secondary-actions {
+        display: none;
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-shared-more-button {
+        display: inline-flex;
+        flex: 0 0 auto;
+        border-color: #ffffff30;
+        background: var(--bg);
+        color: var(--text);
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar.daki-actions-open > .daki-shared-secondary-actions {
+        position: absolute;
+        z-index: 60;
+        top: calc(100% + 8px);
+        right: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        width: 180px;
+        max-width: calc(100vw - 32px);
+        max-height: min(260px, 60vh);
+        overflow-y: auto;
+        box-sizing: border-box;
+        padding: 8px;
+        gap: 4px;
+        border: 1px solid #ffffff30;
+        border-radius: 8px;
+        background: var(--card);
+        box-shadow: 0 12px 36px rgba(0, 0, 0, .35);
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar.daki-actions-open > .daki-shared-secondary-actions > button {
+        flex: 0 0 32px;
+        width: 100%;
+        justify-content: flex-start;
+        text-align: left;
+    }
+}
+@container daki-shared-controls (max-width: 680px) {
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar {
+        gap: 6px;
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar > input[type="search"] {
+        flex: 1 1 100px;
+        min-width: 80px;
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-style-scope {
+        gap: 6px;
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-style-scope > label > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-shared-full-label {
+        display: none;
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-shared-compact-label {
+        display: inline;
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-shared-primary {
+        padding-right: 8px;
+        padding-left: 8px;
+    }
+    #dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-shared-more-button {
+        width: 32px;
+        padding-right: 0;
+        padding-left: 0;
+    }
+}

@@ -1,6 +1,6 @@
 param(
     [string]$Python = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe"),
-    [string]$Version = "1.3.3"
+    [string]$Version = "1.3.4"
 )
 
 $ErrorActionPreference = "Stop"
@@ -123,7 +123,7 @@ $Manifest = [ordered]@{
     sha256 = $Hash
     size = $ZipItem.Length
     payload_root = "NAI_Image_Manager"
-    summary = "Adds tag dictionary and prompt suggestions, improves rotated canvas editing, export and reference workflows, and connects personal style workspaces with reliability fixes."
+    summary = "Embeds style management in NAIM, shares settings and Chrome login internally, and improves shared-style galleries and paging."
 }
 [IO.File]::WriteAllText(
     (Join-Path $Root "release_manifest.json"),

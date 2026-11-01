@@ -701,6 +701,36 @@ class DakiStyleSyncTests(unittest.TestCase):
         self.assertEqual(defaults['start_date'], defaults['end_date'])
         self.assertEqual(defaults['basis'], 'today')
 
+    def test_period_defaults_ignore_newer_artist_source_date(self):
+        candidate = {**source_image(), 'source_posted_at': '2026-01-02'}
+        self.run_job([candidate])
+        artist_style = {'id': 'artist-style', 'source_library': 'artist',
+                        'model': 'nai-diffusion-5-full', 'source_posted_at': '2026-03-10',
+                        'source_url': 'https://arca.live/b/aiart/987'}
+        original_list_styles = self.catalog.list_styles
+
+        with mock.patch.object(self.catalog, 'list_styles', side_effect=lambda include_excluded=False:
+                               [*original_list_styles(include_excluded=include_excluded), artist_style]):
+            defaults = self.manager.status()['defaults']
+
+        self.assertEqual(defaults['start_date'], '2026-01-02')
+        self.assertEqual(defaults['basis'], 'latest_style')
+
+    def test_artist_duplicate_recipe_does_not_block_new_naim_import(self):
+        artist_style = {'id': 'artist-style', 'source_library': 'artist', 'model': 'nai-diffusion-5-full',
+                        'category': 'artist', 'positive': 'artist:synthetic, watercolor',
+                        'negative': 'lowres', 'source_url': 'https://arca.live/b/aiart/987'}
+        original_list_styles = self.catalog.list_styles
+
+        with mock.patch.object(self.catalog, 'list_styles', side_effect=lambda include_excluded=False:
+                               [*original_list_styles(include_excluded=include_excluded), artist_style]):
+            job = self.run_job([source_image(color='red')])
+
+        manifest = json.loads((self.imported / 'sync_catalog.json').read_text(encoding='utf-8'))
+        self.assertEqual((job['status'], job['added'], job['skipped']), ('completed', 1, 0))
+        self.assertEqual(len(manifest['styles']), 1)
+        self.assertEqual(manifest['styles'][0]['positive'], artist_style['positive'])
+
     def test_legacy_styles_use_public_article_dates_without_rewriting_catalog(self):
         self.run_job()
         path = self.imported / 'sync_catalog.json'
@@ -1373,9 +1403,9 @@ class DakiStyleSyncApiTests(unittest.TestCase):
             self.assertEqual(len(archive.namelist()), 4)
             script = archive.read('nai_arca_session_bridge/popup.js').decode()
             self.assertIn('127.0.0.1:5000', script)
-            self.assertIn('127.0.0.1:5001', script)
+            self.assertNotIn('127.0.0.1:5001', script)
             manifest = json.loads(archive.read('nai_arca_session_bridge/manifest.json'))
-            self.assertEqual(manifest['version'], '1.1.1')
+            self.assertEqual(manifest['version'], '1.2.0')
         response.close()
 
 

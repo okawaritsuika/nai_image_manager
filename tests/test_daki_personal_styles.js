@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-function fixture() {
+function fixture(withProgressive = false) {
     class Element {
         constructor(tag) {
             this.tagName = tag.toUpperCase(); this.children = []; this.attributes = {}; this.dataset = {};
@@ -74,6 +74,8 @@ function fixture() {
             requests.push(request); return new Promise(resolve => pending.push({request, resolve}));
         },
     };
+    vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_style_scope.js'), 'utf8'), {window: win});
+    if (withProgressive) vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_progressive_grid.js'), 'utf8'), {window: win});
     vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_personal_styles.js'), 'utf8'), {window: win, URLSearchParams});
     function reply(data, status = 200) {
         const entry = pending.shift(); assert.ok(entry, 'Expected API request');
@@ -115,11 +117,45 @@ test('personal library reuses gallery interactions, excludes imageless recipes f
     assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 2);
     assert.equal(f.content.querySelectorAll('.daki-personal-placeholder').length, 1);
     assert.deepEqual(f.batchCards.map(batch => batch.id), ['two']);
-    f.button('전체 그림체로 테스트 만들기').onclick(); assert.deepEqual(clone(f.tests[0]), {styles, library: 'personal'});
+    f.button('전체 그림체로 테스트 만들기').onclick(); assert.deepEqual(clone(f.tests[0]), {
+        styles: styles.map(item => ({...item, source_library: 'personal'})), library: 'personal',
+        target_filters: {source: 'personal', model: 'all'},
+    });
     f.button('태그 그림 이상형 월드컵').onclick();
     assert.equal(f.cups[0][0].length, 1); assert.equal(f.cups[0][0][0].path, f.bindings[0]);
     const search = f.content.querySelector('input'); search.value = 'manual'; search.oninput();
     assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 1);
+});
+
+test('large personal libraries render in 80-card pages while test and worldcup actions use every visible match', async () => {
+    const f = fixture(true);
+    const styles = Array.from({length: 3000}, (_, index) => style({
+        id: `personal_${index}`, name: `Synthetic personal ${index}`, source_path: `synthetic/${index}.png`,
+    }));
+    const loaded = f.render(); f.reply({styles}); await flush(); f.reply({batches: []}); await loaded;
+    const grid = f.content.querySelector('.daki-style-grid');
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 80);
+    assert.equal(f.bindings.length, 80);
+    assert.equal(grid.galleryZoomImagesAll.length, 3000);
+    assert.equal(f.content.querySelector('.daki-progressive-count').textContent, '전체 3,000개 중 80개 표시');
+    f.button('더 보기').onclick();
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 160);
+    assert.equal(f.bindings.length, 160);
+
+    f.button('전체 그림체로 테스트 만들기').onclick();
+    assert.equal(f.tests[0].styles.length, 3000);
+    f.button('태그 그림 이상형 월드컵').onclick();
+    assert.equal(f.cups[0][0].length, 3000);
+
+    const search = f.content.querySelectorAll('input').find(input => input.type === 'search');
+    search.value = 'synthetic personal 2999'; search.oninput();
+    assert.equal(f.content.querySelectorAll('.daki-personal-card').length, 1);
+    assert.equal(f.content.querySelector('.daki-progressive-count').textContent, '전체 1개 중 1개 표시');
+    f.button('전체 그림체로 테스트 만들기').onclick();
+    assert.deepEqual(f.tests[1].styles.map(item => item.id), ['personal_2999']);
+    f.button('태그 그림 이상형 월드컵').onclick();
+    assert.deepEqual(Array.from(f.cups[1][0], item => item.path), ['__daki_personal__/personal_2999.png']);
+    f.win.DakiPersonalStyles.leave();
 });
 
 test('personal filtering uses representative references and passes only displayed images to its tournament', async () => {
@@ -140,6 +176,19 @@ test('personal filtering uses representative references and passes only displaye
     assert.deepEqual(Array.from(f.cups[0][0], image => image.path), ['__daki_personal__/personal_second.png']);
     assert.equal(f.cups[0][2], 'personal');
     f.win.DakiPersonalStyles.leave(); assert.equal(disposed, true);
+});
+
+test('personal list keeps source fixed, filters by original model, and passes visible styles to test setup', async () => {
+    const f = fixture();
+    const records = [style(), style({id: 'personal_v45', name: 'V4.5 style', model: 'nai-diffusion-4-5-full'})];
+    const loaded = f.render(); f.reply({styles: records}); await flush(); f.reply({batches: []}); await loaded;
+    const selects = f.content.querySelectorAll('select');
+    assert.deepEqual(selects.map(select => select.name), ['daki_scope_model']);
+    const model = selects[0]; model.value = 'v4_5'; model.onchange();
+    assert.deepEqual(f.content.querySelectorAll('.daki-personal-card').map(card => card.textContent.includes('V4.5 style')), [true]);
+    f.button('전체 그림체로 테스트 만들기').onclick();
+    assert.deepEqual(Array.from(f.tests[0].styles, item => item.id), ['personal_v45']);
+    assert.deepEqual(clone(f.tests[0].target_filters), {source: 'personal', model: 'v4_5'});
 });
 
 test('manual editor posts entered recipe only when saved, without a seed or copied image', async () => {

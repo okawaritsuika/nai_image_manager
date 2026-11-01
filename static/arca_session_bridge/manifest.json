@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Arca Session Bridge (NAI Apps)",
-  "version": "1.1.1",
-  "description": "Chrome의 Arca 로그인을 NAI Image Manager와 NAImakeArtistGroup에 연결합니다.",
+  "name": "Arca Session Bridge for NAI Image Manager",
+  "version": "1.2.0",
+  "description": "Chrome의 Arca 로그인을 NAI Image Manager에 연결합니다.",
   "permissions": [
     "cookies"
   ],

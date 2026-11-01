@@ -8,6 +8,7 @@ from naim.daki_style_tests import DakiStyleTests, DakiStyleTestConflict, DakiAnl
 from naim.storage.daki_shared_styles import DakiSharedStyles
 from naim.storage.daki_projects import DakiNotFoundError
 from naim.daki_style_filters import normalize_style_filters, matches_style_filters
+from naim.shared_style_selection import filter_styles, model_family
 
 
 def register_daki_style_routes(app, catalog_root_provider, tests_root_provider, key_provider, imported_root_provider=None, personal_catalog=None):
@@ -49,9 +50,10 @@ def register_daki_style_routes(app, catalog_root_provider, tests_root_provider, 
     def daki_shared_styles():
         summaries = []
         include_prompts = request.args.get('include_prompts') == '1'
-        for style in catalog.list_styles():
+        for style in filter_styles(catalog.list_styles(), request.args.get('source', 'all'), request.args.get('model_family', 'all')):
             summaries.append({**{key: style.get(key) for key in ('id', 'name', 'model', 'category', 'source_url', 'source_image_id', 'seed',
                                                                'recommendation_count', 'recommendation_collected_at', 'sort_date')},
+                              'source_library': style.get('source_library', 'naim'), 'model_family': model_family(style.get('model')),
                               **({key: style.get(key, '') for key in ('positive', 'negative')} if include_prompts else {}),
                               'src': style_src(style), 'width': style['preview']['width'], 'height': style['preview']['height']})
         return jsonify(status='success', styles=summaries, configured=bool(key_provider()))

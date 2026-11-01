@@ -1,8 +1,7 @@
-"""Copy confirmed recipes from the linked artist app into personal storage."""
+"""Copy native confirmed recipes into NAIM personal storage."""
 from functools import wraps
 from urllib.parse import quote
 
-import requests
 from flask import jsonify, request, Response
 
 from naim.daki_style_tests import GENERATION_DEFAULTS
@@ -14,26 +13,25 @@ class ConfirmedStyleSource:
         self.service = service
 
     def fetch(self, suffix, *, origin, image=False):
-        port = self.service.start(origin)
-        try:
-            with requests.Session() as session:
-                session.trust_env = False
-                with session.get(f'http://127.0.0.1:{port}' + suffix,
-                                 timeout=(5, 30), allow_redirects=False, stream=image) as response:
-                    if response.status_code == 404:
-                        raise DakiNotFoundError('확정 그림체 또는 대표 그림을 찾을 수 없습니다.')
-                    if response.status_code != 200:
-                        raise RuntimeError('확정 그림체를 불러오지 못했습니다. 그림체 관리 연결을 확인해 주세요.')
-                    if not image:
-                        return response.json()
-                    data = bytearray()
-                    for chunk in response.iter_content(65536):
-                        data.extend(chunk)
-                        if len(data) > 32 * 1024 * 1024:
-                            raise ValueError('대표 그림은 32MB 이하여야 합니다.')
-                    return bytes(data), response.headers.get('Content-Type', 'application/octet-stream')
-        except (requests.RequestException, requests.exceptions.JSONDecodeError):
-            raise RuntimeError('그림체 관리 앱에 연결하지 못했습니다. 다시 시도해 주세요.') from None
+        self.service.start(origin)
+        with self.service.application.test_client() as client:
+            response = client.get(suffix, buffered=False)
+            try:
+                if response.status_code == 404:
+                    raise DakiNotFoundError('확정 그림체 또는 대표 그림을 찾을 수 없습니다.')
+                if response.status_code != 200:
+                    raise RuntimeError('확정 그림체를 불러오지 못했습니다. 다시 시도해 주세요.')
+                if not image:
+                    return response.get_json()
+                data = bytearray()
+                for chunk in response.iter_encoded():
+                    data.extend(chunk)
+                    if len(data) > 32 * 1024 * 1024:
+                        raise ValueError('대표 그림은 32MB 이하여야 합니다.')
+                return bytes(data), response.headers.get('Content-Type', 'application/octet-stream')
+            finally:
+                response.close()
+
 
 
 def _recipe(source):

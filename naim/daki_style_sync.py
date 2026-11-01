@@ -18,6 +18,7 @@ from naim.daki_style_filters import normalize_style_filters, matches_style_filte
 from naim.shared_style_recipe import (extract_recipe, load_style_artist_names, original_options,
                                       recipe_fingerprint, style_duplicate_key)
 from naim.daki_style_tests import build_style_test_payload
+from naim.shared_style_selection import filter_styles
 from naim.storage.daki_shared_styles import excluded_style
 from naim.storage.json_files import json_lock, write_json
 from naim.storage.daki_style_dates import latest_posted_date, post_date
@@ -104,7 +105,8 @@ class DakiStyleSync:
                         # A crash can occur between catalog publication and job persistence.
                         self._job['published'] = None
             today = datetime.now().astimezone().date()
-            latest = latest_posted_date(self.catalog.list_styles(), today=today)
+            latest = latest_posted_date(
+                filter_styles(self.catalog.list_styles(), source='naim', model='v5'), today=today)
             return {'connected': self.client.connected, 'job': deepcopy(self._job),
                     'defaults': {'start_date': latest or today.isoformat(), 'end_date': today.isoformat(),
                                  'basis': 'latest_style' if latest else 'today'}}
@@ -297,7 +299,8 @@ class DakiStyleSync:
                 or not isinstance(previous.get('seen_images', []), list)
                 or previous.get('source_image_root') != '.'):
             raise ValueError('공유 그림체 최신화 자료의 형식이 올바르지 않습니다.')
-        existing = {style['id']: style for style in self.catalog.list_styles(include_excluded=True)}
+        existing = {style['id']: style for style in filter_styles(
+            self.catalog.list_styles(include_excluded=True), source='naim', model='v5')}
         records = {style['id']: deepcopy(style) for style in previous['styles']}
         previous_import = self._read(root / 'catalog.json', {})
         fingerprints = set()
@@ -404,7 +407,7 @@ class DakiStyleSync:
         style_keys = set()
         pixel_hashes = set(previous_import.get('pixel_hashes', {}).values())
         pixel_hashes.update(style.get('pixel_sha256') for style in manifest['styles'] if style.get('pixel_sha256'))
-        existing = self.catalog.list_styles(include_excluded=True)
+        existing = filter_styles(self.catalog.list_styles(include_excluded=True), source='naim', model='v5')
         imported_posts = {post for style in [*existing, *manifest['styles'], *previous_import.get('styles', [])]
                           if style.get('category') != 'upper' and (post := source_url(style.get('source_url')))}
         # Include manually excluded cards: importing a duplicate must not revive them.

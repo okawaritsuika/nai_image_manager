@@ -1,4 +1,5 @@
 import json
+import importlib
 import os
 import sqlite3
 import sys
@@ -100,6 +101,7 @@ class GalleryModelFamilyMigrationTests(unittest.TestCase):
             def __init__(self, *_args, **_kwargs):
                 self.config = {}
                 self.extensions = {}
+                self.wsgi_app = lambda environ, start_response: []
                 self.root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
             def route(self, *_args, **_kwargs):
@@ -129,8 +131,12 @@ class GalleryModelFamilyMigrationTests(unittest.TestCase):
         flask_stub.g = g
         flask_stub.jsonify = lambda value=None, **kwargs: value if value is not None else kwargs
         flask_stub.send_file = lambda *args, **kwargs: None
+        flask_stub.redirect = lambda *args, **kwargs: None
         flask_stub.request = types.SimpleNamespace(args={}, form={}, files={})
 
+        # Keep the catalog module and its package attribute in sync after the
+        # temporary sys.modules snapshot is restored by patch.dict.
+        importlib.import_module("naim.storage.shared_library_catalog")
         previous_app = sys.modules.pop("app", None)
         with mock.patch.dict(sys.modules, {"flask": flask_stub}):
             import app as app_module
@@ -237,6 +243,7 @@ class GalleryModelFamilyMigrationTests(unittest.TestCase):
             classified_root = os.path.join(directory, "TOTAL_CLASSIFIED")
             os.makedirs(classified_root, exist_ok=True)
             with mock.patch.object(utils, "get_app_dir", return_value=directory), \
+                    mock.patch("naim.storage.history.get_app_dir", return_value=directory), \
                     mock.patch.object(app_module, "CLASSIFIED_DIR", classified_root):
                 db = utils.HistoryDB()
                 db.upsert_gallery_image_records([

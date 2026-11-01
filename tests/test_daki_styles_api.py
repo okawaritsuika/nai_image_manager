@@ -33,7 +33,9 @@ class DakiStylesApiTests(unittest.TestCase):
         self.personal = DakiPersonalStyles(lambda: self.root / 'personal',
             lambda reference: (self.preview, reference), lambda path: {})
         register_daki_personal_style_routes(self.app, self.personal)
-        with mock.patch('naim.web.daki_styles.DakiSharedStyles', return_value=self.catalog):
+        with mock.patch('naim.web.daki_styles.DakiSharedStyles', return_value=self.catalog), \
+                mock.patch('naim.storage.shared_library_catalog.build_shared_catalog',
+                           side_effect=lambda app, legacy: legacy):
             self.manager = register_daki_style_routes(self.app, lambda: self.root, lambda: self.root / 'tests',
                                                       lambda: self.key, personal_catalog=self.personal)
         self.manager.generator = mock.Mock(side_effect=lambda key, payload: Image.new('RGB',
@@ -45,6 +47,22 @@ class DakiStylesApiTests(unittest.TestCase):
         result = self.client.post('/api/daki/style-tests', json=synthetic_request())
         self.assertEqual(result.status_code, 201, result.json)
         return result.json['batch']
+
+    def test_source_and_model_list_filters_and_test_creation(self):
+        self.styles[0].update(source_library='naim', model='nai-diffusion-5-full')
+        self.styles[1].update(source_library='artist', model='NovelAI Diffusion V4.5 4BDE2A90')
+        response = self.client.get('/api/daki/shared-styles?source=artist&model_family=v4_5')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([style['id'] for style in response.json['styles']], ['style-1'])
+        self.assertEqual(response.json['styles'][0]['model_family'], 'v4_5')
+        self.assertEqual(self.client.get('/api/daki/shared-styles?source=naim&model_family=v4_5').json['styles'], [])
+        self.assertEqual(self.client.get('/api/daki/shared-styles?source=invalid').status_code, 400)
+        self.assertEqual(self.client.get('/api/daki/shared-styles?model_family=invalid').status_code, 400)
+        response = self.client.post('/api/daki/style-tests', json=synthetic_request(
+            target_filters={'source': 'artist', 'model': 'v4_5'}))
+        self.assertEqual(response.status_code, 201, response.json)
+        self.assertEqual(response.json['batch']['total'], 1)
+        self.assertEqual(response.json['batch']['items'][0]['model'], 'nai-diffusion-5-full')
 
     def test_target_filter_reuses_import_query_and_exclusions_without_writes(self):
         self.styles = synthetic_styles(4)
@@ -537,8 +555,10 @@ class DakiStyleRemovalApiTests(unittest.TestCase):
                            ('generation_manifest.json', {'jobs': jobs})):
             (self.source / name).write_text(json.dumps(data), encoding='utf-8')
         app = Flask(__name__)
-        self.manager = register_daki_style_routes(app, lambda: self.source,
-            lambda: self.root / 'batches', lambda: 'synthetic-key', lambda: self.imported)
+        with mock.patch('naim.storage.shared_library_catalog.build_shared_catalog',
+                        side_effect=lambda app, legacy: legacy):
+            self.manager = register_daki_style_routes(app, lambda: self.source,
+                lambda: self.root / 'batches', lambda: 'synthetic-key', lambda: self.imported)
         self.manager.generator = mock.Mock(side_effect=lambda key, payload: Image.new('RGB', (64, 128), 'blue'))
         self.addCleanup(lambda: self.manager.wait(5))
         self.client = app.test_client()

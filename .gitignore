@@ -41,6 +41,8 @@ tests/
 !tests/
 !tests/*.py
 !tests/*.js
+!tests/style_manager/
+!tests/style_manager/**
 patch_notes/
 canvas_imports/
 daki_generated_temp/
@@ -67,3 +69,7 @@ desktop.ini
 /style_workspace.local.json
 /.style-workspace-backups/
 /data/shared_style_library.sqlite*
+
+/data/style_manager/
+/data/.style_manager_import_*/
+/tests/data/shared_style_library.sqlite*

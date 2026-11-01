@@ -381,6 +381,41 @@
         return item;
     }
 
+    function projectPageLoading(container, title) {
+        const state = element('div', 'gallery-load-state daki-page-loading');
+        state.setAttribute('role', 'status');
+        state.setAttribute('aria-live', 'polite');
+        const spinner = element('div', 'gallery-load-spinner');
+        spinner.setAttribute('aria-hidden', 'true');
+        state.append(spinner,
+            element('h2', 'gallery-load-title', title),
+            element('p', 'gallery-load-message', '처음에는 큰 그림의 미리보기를 준비하느라 시간이 걸릴 수 있습니다.'));
+        container.appendChild(state);
+        container.setAttribute('aria-busy', 'true');
+        return state;
+    }
+
+    function clearProjectPageLoading(container, state) {
+        if (state?.parentNode === container) state.remove();
+        container.setAttribute('aria-busy', 'false');
+    }
+
+    function showPreviewLoading(host) {
+        host.classList.add('daki-image-loading-host');
+        host.setAttribute('aria-busy', 'true');
+        const state = element('span', 'daki-preview-loading');
+        state.setAttribute('role', 'status');
+        state.setAttribute('aria-live', 'polite');
+        const spinner = element('span', 'daki-preview-spinner');
+        spinner.setAttribute('aria-hidden', 'true');
+        state.append(spinner, element('span', '', '미리보기 준비 중…'));
+        host.appendChild(state);
+        return () => {
+            if (state.parentNode === host) state.remove();
+            host.setAttribute('aria-busy', 'false');
+        };
+    }
+
     function imageSrc(candidate, preview = true) {
         const src = candidate.src || `/image/${candidate.path.split('/').map(encodeURIComponent).join('/')}`;
         return preview ? `${src}${src.includes('?') ? '&' : '?'}preview=768` : src;
@@ -391,7 +426,7 @@
         grid.dakiLayout = () => {
             const layout = root.getGalleryGridLayout?.(grid) || {columns: 3, fixed: false};
             const fixed = imageGrid && layout.fixed;
-            grid.galleryZoomImages = items.filter(item => !item.hidden && item.dataset?.path)
+            grid.galleryZoomImages = grid.galleryZoomImagesAll || items.filter(item => !item.hidden && item.dataset?.path)
                 .map(item => ({path: item.dataset.path}));
             grid.className = `flex-masonry ${className}${fixed ? ' gallery-fixed-size-grid' : ''}`;
             grid.replaceChildren();
@@ -758,12 +793,21 @@
 
     function previewCandidate(container, candidate, fallback) {
         if (!candidate || candidate.missing) { container.textContent = candidate?.missing ? '원본을 찾을 수 없음' : fallback; return; }
-        const img = element('img');
-        img.src = imageSrc(candidate);
+        const host = element('div', 'daki-image-loading-host daki-project-preview-image-host');
+        const img = element('img', 'daki-project-preview-image');
         img.alt = fallback;
         img.loading = 'lazy';
-        img.onerror = () => { container.textContent = '원본을 찾을 수 없음'; container.classList.add('daki-warning'); };
-        container.appendChild(img);
+        img.decoding = 'async';
+        host.appendChild(img);
+        const finishLoading = showPreviewLoading(host);
+        img.onload = finishLoading;
+        img.onerror = () => {
+            finishLoading();
+            container.textContent = '원본을 찾을 수 없음';
+            container.classList.add('daki-warning');
+        };
+        img.src = imageSrc(candidate);
+        container.appendChild(host);
     }
 
     function previewCanvas(container, projectId, canvas) {
@@ -969,14 +1013,21 @@
                 card.appendChild(kindBadge);
                 if (candidate.missing) card.appendChild(element('div', 'daki-missing-image', '원본을 찾을 수 없음'));
                 else {
-                    const img = element('img', 'zoomable'); img.src = imageSrc(candidate); img.alt = candidate.name || candidate.path.split('/').pop(); img.loading = 'lazy';
+                    const imageHost = element('div', 'daki-image-loading-host daki-candidate-image-host');
+                    const img = element('img', 'zoomable daki-project-preview-image');
+                    img.alt = candidate.name || candidate.path.split('/').pop(); img.loading = 'lazy'; img.decoding = 'async';
                     img.tabIndex = 0; img.setAttribute('role', 'button');
                     bindImage(card, img, candidate.path, {
                         projectId: project.id,
                         side,
                         candidateId: candidate.id
                     });
-                    card.appendChild(img);
+                    imageHost.appendChild(img);
+                    const finishLoading = showPreviewLoading(imageHost);
+                    img.onload = finishLoading;
+                    img.onerror = finishLoading;
+                    img.src = imageSrc(candidate);
+                    card.appendChild(imageHost);
                 }
                 const details = element('figcaption', 'gallery-card-actions daki-image-actions');
                 const name = element('span', candidate.missing ? 'daki-warning' : '', candidate.name || candidate.path.split('/').pop());
@@ -1069,18 +1120,26 @@
         syncLibraryView();
         const container = byId('dakiContent');
         const revision = ++pageRevision;
-        if (!container || !isActive()) return;
+        if (!container) return;
+        if (!isActive()) {
+            const loadingState = Array.from(container.children).find(child => child.classList?.contains('daki-page-loading'));
+            if (loadingState) loadingState.remove();
+            container.setAttribute('aria-busy', 'false');
+            return;
+        }
         const create = byId('dakiCreate');
         if (create) create.hidden = false;
         byId('dakiBack').href = '#daki';
         byId('dakiBack').textContent = '← 프로젝트 목록';
         container.replaceChildren();
+        container.setAttribute('aria-busy', 'false');
         const status = byId('dakiPageStatus');
         if (!loaded || !enabled) {
             status.textContent = !loaded ? 'Daki 설정을 불러오지 못했습니다. 도구 → 설정에서 다시 시도해 주세요.' : 'Daki 사용이 꺼져 있습니다. 도구 → 설정에서 켜면 보관된 프로젝트를 볼 수 있습니다.';
             return;
         }
         status.textContent = '불러오는 중…';
+        let loadingState = null;
         try {
             const params = new URLSearchParams(root.location.hash.slice(1));
             if (params.get('library') === 'dictionary' && root.DakiDictionary) {
@@ -1109,14 +1168,18 @@
                 return;
             }
             const id = params.get('project');
+            loadingState = projectPageLoading(container, id ? '프로젝트를 여는 중…' : '프로젝트 목록을 불러오는 중…');
+            status.textContent = '';
             const data = await api(id ? `/api/daki/projects/${encodeURIComponent(id)}` : '/api/daki/projects');
             if (revision !== pageRevision || !isActive()) return;
+            clearProjectPageLoading(container, loadingState);
             status.textContent = '';
             canvasPreviews = root.DakiCanvasPreviews?.create?.() || null;
             if (id) renderProject(data.project, container); else renderList(data.projects, container);
             relayout();
         } catch (error) {
             if (revision !== pageRevision || !isActive()) return;
+            if (loadingState) clearProjectPageLoading(container, loadingState);
             status.textContent = error.message;
             const retry = element('button', '', '다시 불러오기');
             retry.onclick = renderPage;

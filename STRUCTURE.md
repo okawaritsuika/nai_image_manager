@@ -298,6 +298,8 @@ EXE 검사는 두 실제 spec을 합성 사전 데이터로 빌드하여 서버 
 
 ## daki 프로젝트의 편집 캔버스
 
+- `static/daki.js`와 `daki_canvas_previews.js`는 프로젝트 목록·상세 API 대기와 그림·합성 미리보기 준비를 별도 로딩 상태로 표시한다. 갤러리의 회전 표시를 재사용하고 완료·오류·화면 이탈 때 해제한다. `daki_image_import.js/.css`는 본문 스크롤과 관계없이 하단에 검사·분류·저장 단계를 표시한다. 원본 이미지와 저장 형식은 보존한다. 회귀: `test_daki.js`, `test_daki_canvas_previews.js`, `test_daki_image_import_classification.js`; 합성 화면은 1280×900·800×800에서 확인한다.
+
 - 앞면·뒷면 그림 카드의 `가로 × 세로 px`는 `naim/web/daki.py`가 실제 원본에서 읽은 `width/height`를 사용한다. `naim/images/previews.py`의 EXIF 표시 방향 규칙을 캔버스 업로드와 공유하며 파일 경로·수정 시각·용량을 키로 최대 512개를 메모리에 캐시한다. 전체 프로젝트 요약 목록에서는 크기를 읽지 않는다. 원본 누락·읽기 실패는 null/`크기 확인 불가`이며 후보 JSON에는 크기를 추가하지 않는다.
 - 프로젝트의 인페인팅 참고 이미지 UI는 `static/daki_project_reference.js/.css`가 소유한다. 기존 `/api/canvas/upload_image`로 추가·교체하고 최신 `canvas-settings`를 읽어 revision 검증과 함께 `inpaintReference`만 변경한다. 기존 그림체·면별 프롬프트·생성 설정을 보존하며 충돌 시 새로고침을 안내한다. 프로젝트 공용 이미지 한 개를 미리보기·크게 보기로 확인하고 기존 캔버스의 `프로젝트에서 가져오기`로 불러온다. `static/canvas_inpaint_reference.js`의 검증을 재사용하고, 페이지 이동 시 요청·이벤트·뷰어를 정리한다. 회귀: `tests/test_daki_project_reference.js`, `tests/test_daki.js`, `tests/test_daki_api.py`, `tests/test_project_canvas_settings.py`, `tests/test_canvas_inpaint_reference_api.py`.
 - 참고 이미지·크기 표시 검증: 관련 JavaScript 135개·격리 Python 46개 통과. `.qa/verify_project_reference.cjs`와 `.qa/project_reference_transport.py`의 합성 자료로 업로드·설정 보존·재열기·캔버스 가져오기·오류 재시도 등 12개 검사를 통과했다. 1280×900·800×800, 브라우저 배율 100%, deviceScaleFactor 1에서 긴 파일명·양면 카드·크게 보기의 실제 캡처와 조작 접근을 확인했다. 원본은 크게 보기를 열 때만 브라우저에 로드한다. 사용자 자료와 실제 생성 요청은 검증에 사용하지 않았다.
@@ -444,29 +446,31 @@ EXE 검사는 두 실제 spec을 합성 사전 데이터로 빌드하여 서버 
 - 검증 진입점: `tests/test_prompt_suggestions.py`, `tests/test_prompt_autocomplete.js`. 화면 검증은 `.qa/prompt-autocomplete/`의 합성 데이터로 1280×900·800×800, 배율 100%에서 수행한다.
 
 
-### 그림체 관리의 공통 설정과 자동 목록 갱신
+### 그림체 관리의 NAIM 공통 설정과 공유 목록
 
-`naim/web/style_shared_settings.py`가 기존 `lab_config.json`의 NAI 키와 공통 생성 기본값(model, width, height, steps, scale, cfg_rescale, sampler, noise_schedule)의 단일 저장 경계를 제공합니다. `style_workspace.py`는 실행마다 만든 인증 토큰을 연결 프로세스의 환경으로 전달합니다. 연결 앱의 `naim_shared_settings.py`는 키 읽기/변경/삭제를 이 API로 연결하며 기존 독립 실행 설정 파일은 보존합니다. 브라우저용 응답에는 키를 포함하지 않습니다. 프롬프트·평가·생성 기록은 공유 대상이 아닙니다.
+`naim/web/style_workspace.py`는 내장 그림체 관리 작업 공간을 NAIM WSGI 프로세스 안에 `/style-workspace`로 마운트하고 `/style-manager`를 해당 화면으로 안내한다. `naim/style_manager/integration.py`는 `lab_config.json`의 NovelAI 키와 공통 생성 기본값을 기존 NAIM 설정 검증·저장 경계에 연결한다. 이미 연결된 NAIM Arca 클라이언트가 있으면 같은 프로세스에서 검증된 쿠키 세션을 재사용하고, 브라우저 응답에는 키를 넣지 않는다.
 
-`static/daki_styles.js`와 연결 앱의 `static/naim_shared_library.js`는 표시 중인 공유 목록을 2초마다 조회합니다. 추가·제외를 반영하고 검색과 남은 선택을 유지하며, NAIM에서는 기존 카드 DOM을 재사용하고 화면 이탈 시 예약을 해제합니다. 연결 앱의 `static/naim_shared_settings.js`는 공통 생성 필드만 부분 저장하고 편집 중인 필드는 원격 조회로 덮지 않습니다. 연결 변경 후 서버 재시작이 필요합니다. 검증: `tests/test_style_shared_settings.py`, `tests/test_daki_styles.js`.
+`static/daki_styles.js`와 `naim/style_manager/static/naim_shared_library.js`는 표시 중인 공유 목록을 2초마다 갱신한다. `naim/style_manager/naim_shared_library.py`는 NAIM 프로세스에 등록된 `shared_style_library` 카탈로그를 직접 읽으므로 별도 앱 포트로 요청하지 않는다. 추가·제외를 반영하고 검색과 남은 선택을 유지하며 화면을 나가면 갱신 예약을 해제한다. `naim/style_manager/static/naim_shared_settings.js`는 공통 생성 필드만 저장하고 편집 중인 필드는 조회로 덮지 않는다. 검증: `tests/test_style_shared_settings.py`, `tests/test_daki_styles.js`, `tests/test_native_style_workspace.py`, `tests/test_internal_style_library.py`.
+
+공유 목록은 `기존 공유 그림체`와 `그림체 관리 공유 그림체` 폴더로 구분한다. 공용 저장소는 유지하되 `artist` 출처 자료는 출처·원본 모델별 중복 키를 사용하고 V4.5·기타 모델도 제공한다. 이전 common ID·별칭·미리보기·테스트 스냅샷은 이력으로 보존한다. `naim/shared_style_selection.py`와 `static/daki_style_scope.js/.css`가 출처(`naim`/`artist`/`personal`)·원본 모델(`v5`/`v4_5`/`other`) 필터를 담당한다. 목록 API는 `source`·`model_family` 쿼리를 지원하며 테스트 생성의 선택적 `target_filters`는 대상과 이후 신규 그림체 안내 범위를 저장한다. 실제 생성 `model`은 원본 모델 필터와 독립적이다. 개인 목록과 테스트에 그림체 추가도 동일 필터를 사용한다. 검증: `test_shared_library_models.py`, `test_daki_style_tests.py`, `test_daki_styles_api.py`, `test_daki_style_scope.js` 및 기존 그림체 UI 회귀. 합성 화면은 1280×900·800×800에서 확인한다.
+
+공유·개인 목록은 `static/daki_progressive_grid.js`가 처음 80개와 스크롤/더보기마다 80개씩 카드를 생성한다. 출처·모델·태그 조건과 전체 선택·테스트·월드컵·확대 탐색은 전체 일치 자료를 사용하고, 화면 이탈 시 관찰자와 예약 프레임을 정리한다. 공용 API는 활성 출처의 recipe당 원본 메타데이터 하나만 읽고 파일·DB 변경에 따라 목록 캐시를 갱신하며 미리보기 유무는 매 요청 확인한다. 그림 가져오기는 검증한 픽셀을 메타데이터 분석에 재사용하고 검사 중에는 저장용 RGBA 복사본을 만들지 않는다. 미리보기는 축소 후 EXIF 방향을 적용해 원본 크기 복사를 피한다. 원본 이미지·PNG/EXIF/stealth 우선순위·저장 형식은 유지한다. 회귀: `test_daki_progressive_grid.js`, 그림체 UI 회귀, `test_shared_library_models.py`, `test_daki_image_import.py`, `test_image_previews.py`, `test_inpaint_metadata_backend.py`.
 
 ### 확정 그림체 복사와 개인 그림체·프로젝트 삭제
 
-naim/web/confirmed_style_import.py는 연결된 작가 앱의 확정 목록·대표 그림을 로컬 HTTP로 읽고 기존 개인 저장소의 create_snapshot을 호출합니다. 아티스트 프롬프트·네거티브·지원 생성 설정과 대표 이미지 원본 바이트를 독립 복사하며 원본 앱을 수정하지 않습니다. 개인 저장소 내부 images 폴더만 소유하고 기존 외부 이미지 링크는 유지합니다. DELETE /api/daki/personal-styles/<id>는 등록 항목과 복사한 자체 이미지만 정리하며 저장 실패 시 복구합니다.
+`naim/web/confirmed_style_import.py`는 내장 그림체 관리 앱의 확정 목록·상세·대표 그림을 같은 프로세스의 내부 Flask 클라이언트로 읽고 개인 저장소의 `create_snapshot`을 호출합니다. 로컬 HTTP나 별도 앱 연결은 사용하지 않습니다. 아티스트 프롬프트·네거티브·지원 생성 설정과 대표 이미지 원본 바이트를 독립 복사하며, 대표 그림은 32MiB까지 받습니다. 개인 저장소 내부 `images` 폴더만 소유하고 기존 외부 이미지 링크는 유지합니다. `DELETE /api/daki/personal-styles/<id>`는 등록 항목과 복사한 자체 이미지만 정리하며 저장 실패 시 복구합니다.
 
 static/daki_personal_styles.js/.css는 확정 그림체 검색·60개씩 더 보기·복사와 취소 우선 삭제 모달을 담당합니다. static/daki.js의 프로젝트 목록 카드는 링크와 별도 삭제 조작을 두고 기존 DakiProjectRemoval 모달의 그림 보관/영구 삭제 선택을 재사용합니다. 검증: test_confirmed_style_import.py, test_daki_personal_styles.py/.js, test_project_removal.py, test_daki_project_removal.js, test_daki.js; 합성 브라우저 QA .qa/check_personal_project_actions.py (1280×900, 800×800).
 
 
 
-### 리모콘에서 기존 그림체 프로그램 연결
+### NAIM EXE에 포함된 그림체 관리
 
-`naim/desktop_ui.py`의 그림체 프로그램 연결 버튼 → `main_executor.pyw`의 `open_style_connection` → `naim/style_connection_ui.py`의 폴더 선택·미리보기·키 충돌 선택 → `naim/style_connection.py`의 읽기 전용 확인과 원자 저장 순서다. 실행 중인 서버·작업이 있으면 연결 저장을 막고, 서버를 정지한 뒤 저장하고 다음 서버 시작부터 적용한다.
+그림체 관리 버튼은 `/style-manager`를 열고 `/style-workspace/?naim=1` 화면으로 이동한다. `naim/web/style_workspace.py`는 `naim/style_manager`의 Flask 앱을 같은 NAIM 프로세스의 WSGI 경로로 연결한다. iframe, 하위 실행 프로세스, 별도 헬퍼 EXE, 외부 Python·`source_dir`·`naim_runner.py` 런타임 의존성은 없다.
 
-프로그램 폴더, 소스 저장소의 `artist_rater/`, 데이터 폴더에서 `artist_rater.sqlite`를 찾는다. 여러 후보가 있으면 직접 선택한다. 선택한 데이터 폴더를 `style_workspace.local.json`의 `data_dir`로 기록하며, 기존 호환 실행 소스와 Python 연결을 재사용한다. 원본 DB·이미지·설정 파일은 복사하거나 초기화하지 않는다. 이후 그림체 관리의 편집은 연결된 데이터 폴더에 저장된다.
+쓰기 가능한 그림체 관리 자료는 `appRoot/data/style_manager/`에, 공유 카탈로그 SQLite는 `appRoot/data/shared_style_library.sqlite`에 둔다. `NAI_Image_Manager.spec`은 그림체 관리의 `templates/`, `static/`, 공개 `arca_style_seed.sqlite`, `arca_image_archive_legacy.json`을 EXE 자료로 포함한다. 사용자 변경 자료는 EXE에 넣지 않는다. `naim/style_connection.py`는 기존 연결 자료를 점검하고 설정하던 레거시 유틸리티이며 현재 작업 공간의 런타임 진입점은 아니다. 이전 외부 설정 파일은 수정하지 않으며 새 런타임에서 참조하지 않는다.
 
-그림체 `settings.json`에 `novelai_app_key`가 저장돼 있고 NAIM `lab_config.json`의 키와 다르면 저장 전에 어느 쪽을 사용할지 반드시 선택한다. 키 값은 화면이나 로그에 표시하지 않는다. 그림체 쪽 키를 선택하면 NAIM 공통 키만 변경하고 기존 그림체 프로그램 설정은 보존한다. 공통 생성 기본값은 기존 NAIM 설정 경계를 유지하며, 브라우저에만 저장된 프롬프트·화면 배치·생성 입력값은 폴더 연결로 가져오지 않는다.
-
-미리보기 이후 파일이 변경되면 다시 선택하도록 안내한다. 손상된 JSON은 자동 초기화하지 않는다. `style_workspace.local.json`은 업데이트 보호 대상이며, 기존 자료 가져오기에도 포함한다. 검증: `tests/test_style_connection.py`, `tests/test_style_connection_ui.py`, `tests/test_desktop_controller.py`, `tests/test_naim_updater.py`; Tk 배치 캡처는 `.qa/style-connection/`.
+작업 공간의 공유 갤러리 상세는 기본 접힘, 원본 수집·보기 상세는 기본 펼침이다. 목록 스크롤 뒤에 페이지 조작을 두고 간격은 8px로 유지한다. 검증 진입점: `tests/test_native_style_workspace.py`, `tests/test_internal_style_library.py`, `tests/style_manager/`.
 
 ### 프로젝트 확대 그림 비교
 
@@ -485,3 +489,7 @@ tools/copy_dictionary_webp.py는 기본 읽기 전용 점검, --apply로 별도 
 naim/daki_dictionary_pack_format.py가 공개 형식·수량·용량·경로 계약을 소유하고 tools/export_dictionary_image_pack.py가 원본 WebP 바이트를 재압축 없이 내보냅니다. naim/daki_dictionary_download.py는 기존 공개 HF 다운로드와 이어받기·해시 검증을 재사용하며 최신 커밋에 고정된 주소에서 받아 ZIP 항목·개별 해시·실제 이미지·프롬프트까지 검증합니다. 관리 폴더에 게시한 뒤 ImageCatalog.install_image_pack이 이미지 없는 색인을 원자적으로 연결하며 기존 사용자 편집과 사용 가능한 연결은 유지합니다. 실행 중 폴더 변경·중지·프로세스 종료는 기존 연결을 덮지 않습니다.
 
 naim/web/daki_dictionary.py의 image-pack GET은 로컬 작업 상태만 조회하며, POST가 명시 다운로드를 시작하고 image-pack/stop POST가 중지합니다. static/daki_dictionary_download.js와 두 HTML 진입점이 버튼·진행 상태·중지·재시도·복귀 조회를 연결합니다. 상태 행은 헤더 아래에 있어 접힌 폴더 상세나 그림 탭에 가려지지 않습니다. 검증: test_daki_dictionary*.py, test_dictionary_image_export.py, test_daki_dictionary_download.js, test_daki_dictionary_view.js. 실제 공개 저장소 다운로드를 빈 임시 사전에 설치해 이미지1093장·태그 연결16241개·원본 바이트·ID·프롬프트·편집 보존을 확인했으며 화면1280×900/800×800을 확인했습니다.
+
+### 내장 그림체 관리의 NAIM Arca 세션 재사용
+
+`naim/style_manager/integration.py`는 NAIM의 `naim_arca_sync.client`가 연결된 경우 기존 검증 쿠키 jar와 user agent를 같은 프로세스 안에서 그림체 관리의 세션 검사로 전달한다. 연결된 세션이 없으면 내장 화면의 기존 Arca 로그인 흐름을 사용한다. Chrome 확장 브리지는 NAIM의 고정 5000번 포트로만 전송하며 그림체 관리와 별도 프로세스 사이에 인증 쿠키를 전달하지 않는다. 검증: `tests/test_native_style_workspace.py`, `tests/test_arca_session_bridge.js`.

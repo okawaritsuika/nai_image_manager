@@ -1,0 +1,133 @@
+/* One NAIM document owns workspace and feature navigation. */
+body.naim-embedded {
+  --bg: #17181c;
+  --panel: #24262d;
+  --panel-soft: #2b2e37;
+  --line: #3c404b;
+  --border: #3c404b;
+  --text: #f1f2f5;
+  --muted: #b0b6c3;
+  --accent: #ff8795;
+  --accent-strong: #ffb3bc;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+  font-size: 13px;
+}
+body.naim-embedded > .topbar { display: none; }
+.naim-style-sidebar {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  padding: 22px 16px;
+  border-right: 1px solid var(--line);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #606777 #202229;
+}
+.naim-style-brand { display: flex; align-items: center; gap: 10px; margin: 0 0 26px; }
+.naim-style-mark { display: grid; place-items: center; flex: 0 0 34px; height: 34px; border: 1px solid #94606b; border-radius: 9px; color: var(--accent-strong); background: #3c2931; font-size: 19px; font-weight: 700; }
+.naim-style-brand h1 { font-size: 17px; line-height: 1.4; }
+.naim-style-brand p { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.naim-style-sidebar .tabs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; }
+.naim-navigation-heading { color: #8f97a7; font-size: 11px; font-weight: 600; padding: 15px 10px 5px; }
+.naim-navigation-heading:first-child { padding-top: 0; }
+.naim-style-sidebar .tabs > button {
+  width: 100%; min-width: 0; min-height: 38px; padding: 9px 11px;
+  border: 1px solid transparent; border-radius: 7px; background: transparent;
+  color: #c2c7d2; font-size: 13px; font-weight: 500; text-align: left;
+  white-space: normal; overflow-wrap: anywhere; line-height: 1.45;
+}
+.naim-style-sidebar .tabs > button:hover { color: var(--text); background: #292c34; border-color: var(--line); }
+.naim-style-sidebar .tabs > button.active { color: #ffe0e5; background: #432e38; border-color: #825460; box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.naim-style-sidebar .tabs > .naim-settings-entry { margin-top: 19px; border-top: 1px solid var(--line); border-radius: 0; color: var(--muted); }
+.naim-style-note { margin: 26px 10px 0; color: #8f97a7; font-size: 11px; line-height: 1.7; }
+body.naim-embedded > main,
+body.naim-embedded.style-maker-active > main {
+  grid-column: 2; grid-row: 2; height: 100%; min-height: 0; min-width: 0;
+  padding: 18px; overflow: hidden; container-type: inline-size; container-name: naim-content;
+}
+body.naim-embedded .view { min-width: 0; min-height: 0; }
+body.naim-embedded .view.active { height: 100%; overflow: auto; }
+body.naim-embedded #style-maker-tab.active { overflow: hidden; }
+body.naim-embedded .panel { border-radius: 10px; }
+body.naim-embedded .primary { color: #28161c; }
+body.naim-embedded .secondary { background: #30343f; }
+body.naim-embedded :focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+/* Closed, absolutely positioned help text must not widen its scroll owner. */
+body.naim-embedded .help-tooltip-content:not(.is-open) { display: none; }
+body.naim-embedded .workspace-panel-toolbar button[aria-expanded="true"],
+body.naim-embedded #styleScoreButtons button.active { background: #432e38; }
+body.naim-embedded #styleMakerSettings .style-settings-body { overflow-y: auto; }
+body.naim-embedded #generationRemote { overflow-y: auto; }
+
+/* Feature breakpoints follow the available content width, including the sidebar. */
+@container naim-content (max-width: 1100px) {
+  .style-manager-view.active.has-detail { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto; align-content: start; }
+  .style-manager-view.has-detail .style-manager-list-pane,
+  .style-manager-view.has-detail .style-manager-detail { max-height: none; overflow: visible; }
+  #styleMakerLayout { --settings-width: 248px; --generation-width: 0px; --history-width: 42px; }
+  #styleMakerLayout.history-open { --history-width: 42px; }
+  #styleMakerGeneration { position: absolute; right: 52px; top: 0; bottom: 0; width: 310px; z-index: 15; box-shadow: -10px 0 28px #0005; }
+  #styleMakerHistory:not(.history-collapsed) { position: absolute; right: 0; top: 0; bottom: 0; width: 250px; z-index: 16; box-shadow: -10px 0 28px #0005; }
+  .comparison-editor,
+  .comparison-editor.detail-collapsed,
+  .comparison-editor.settings-collapsed,
+  .comparison-editor.detail-collapsed.settings-collapsed,
+  .comparison-gallery-view { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .comparison-detail-pane.is-collapsed .comparison-column-head,
+  .comparison-settings-pane.is-collapsed .comparison-column-head { writing-mode: horizontal-tb; }
+  .comparison-result-detail { max-height: none; overflow: visible; }
+}
+@container naim-content (max-width: 900px) {
+  .nai-artist-test-editor-layout, .nai-artist-test-target-browser,
+  .nai-artist-test-layout { grid-template-columns: minmax(0, 1fr); }
+  .arca-style-collector-view.active { display: block; }
+  .arca-collector-panel, .arca-collector-panel:not([open]) { width: auto; height: auto; overflow: visible; margin: 0 0 16px; padding-right: 14px; }
+  .arca-style-main { overflow: visible; }
+  .arca-style-list-scroll { padding-right: 0; }
+  .arca-statistics-section-head { grid-template-columns: minmax(0, 1fr); }
+}
+@container naim-content (max-width: 760px) {
+  .pick-layout { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .pick-layout > .conditions, .pick-layout > .workspace { max-height: none; height: auto; overflow: visible; }
+  #styleMakerLayout { --settings-width: 0px; --generation-width: 0px; --history-width: 36px; gap: 5px; }
+  #styleMakerLayout.history-open { --history-width: 36px; }
+  #styleMakerSettings { position: absolute; left: 0; top: 0; bottom: 0; width: min(290px, calc(100% - 42px)); z-index: 18; box-shadow: 10px 0 28px #0005; }
+  #styleMakerGeneration { width: min(310px, calc(100% - 44px)); right: 42px; }
+  #styleMakerHistory:not(.history-collapsed) { width: min(280px, calc(100% - 8px)); }
+  .workspace-panel-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+  .workspace-panel-toolbar button { min-height: 44px; padding: 5px; white-space: normal; font-size: 11px; }
+  .style-group-form-grid, .style-group-target-columns, .style-group-review-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 1000px) {
+  body.naim-embedded { grid-template-columns: 168px minmax(0, 1fr); }
+  .naim-style-sidebar { padding: 16px 10px; }
+  .naim-style-brand { gap: 8px; }
+  .naim-style-brand h1 { font-size: 15px; }
+  .naim-style-mark { flex-basis: 28px; height: 28px; font-size: 16px; }
+  body.naim-embedded > main, body.naim-embedded.style-maker-active > main { padding: 12px; }
+}
+@media (max-width: 720px) {
+  body.naim-embedded { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
+  .naim-style-sidebar { grid-column: 1; grid-row: 2; max-height: 160px; padding: 10px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .naim-style-brand { margin-bottom: 8px; }
+  .naim-style-brand p { display: none; }
+  .naim-style-sidebar .tabs { display: flex; flex-wrap: wrap; gap: 5px; }
+  .naim-style-sidebar .tabs > button { width: auto; flex: 1 0 auto; min-height: 44px; font-size: 12px; padding: 8px 10px; text-align: center; }
+  .naim-style-sidebar .tabs > .naim-settings-entry { margin: 0; border: 1px solid var(--line); border-radius: 7px; }
+  .naim-navigation-heading, .naim-style-note { display: none; }
+  body.naim-embedded > main, body.naim-embedded.style-maker-active > main { grid-column: 1; grid-row: 3; padding: 8px; }
+  body.naim-embedded .modal-dialog { max-width: calc(100vw - 16px); }
+  body.naim-embedded #generationRemote { max-width: calc(100vw - 32px); }
+}
+
+body.naim-embedded > .main-header { grid-column:1 / -1; grid-row:1; min-width:0; padding:16px 24px; border-bottom:1px solid var(--line); }
+.naim-embedded .workspace-note { margin-left:auto; color:var(--muted); font-size:12px; }
+@media (max-width:720px) { body.naim-embedded > .main-header { padding:10px 12px; } .naim-embedded .workspace-note { display:none; } }

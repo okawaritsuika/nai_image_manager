@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-function fixture() {
+function fixture(withScope = false, withProgressive = false) {
     class Element {
         constructor(tag) {
             this.tagName = tag.toUpperCase();
@@ -57,6 +57,10 @@ function fixture() {
         addEventListener(name, callback) {
             const callbacks = this.listeners.get(name) || []; callbacks.push(callback); this.listeners.set(name, callbacks);
         }
+        removeEventListener(name, callback) {
+            this.listeners.set(name, (this.listeners.get(name) || []).filter(item => item !== callback));
+        }
+        contains(candidate) { return candidate === this || this.children.some(child => child.contains(candidate)); }
         showModal() { this.open = true; }
         close() { this.open = false; (this.listeners.get('close') || []).forEach(callback => callback()); }
         focus() { doc.activeElement = this; }
@@ -90,7 +94,17 @@ function fixture() {
             }
         }
     }
-    const doc = {body: new Element('body'), createElement: tag => new Element(tag)};
+    const documentListeners = new Map();
+    const doc = {
+        body: new Element('body'), createElement: tag => new Element(tag),
+        addEventListener(name, callback) {
+            const callbacks = documentListeners.get(name) || []; callbacks.push(callback); documentListeners.set(name, callbacks);
+        },
+        removeEventListener(name, callback) {
+            documentListeners.set(name, (documentListeners.get(name) || []).filter(item => item !== callback));
+        },
+        dispatchEvent(event) { (documentListeners.get(event.type) || []).forEach(callback => callback(event)); },
+    };
     doc.getElementById = id => doc.body.descendants().find(el => el.id === id) || null;
     for (const id of ['dakiTitle', 'dakiSubtitle', 'dakiBack', 'dakiPageStatus', 'dakiContent']) {
         const element = new Element('div'); element.id = id; doc.body.appendChild(element);
@@ -140,6 +154,8 @@ function fixture() {
     };
     vm.runInNewContext(fs.readFileSync(require.resolve('../static/generation_settings.js'), 'utf8'), win);
     vm.runInNewContext(fs.readFileSync(require.resolve('../static/common_anlas_warning.js'), 'utf8'), {window: win});
+    if (withScope) vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_style_scope.js'), 'utf8'), {window: win});
+    if (withProgressive) vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_progressive_grid.js'), 'utf8'), {window: win});
     win.showAnlasWarningModal = options => { warnings.push(JSON.parse(JSON.stringify(options))); return new Promise(resolve => approvals.push(resolve)); };
     vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_styles.js'), 'utf8'), {window: win, URL});
     const content = doc.getElementById('dakiContent');
@@ -155,9 +171,11 @@ function fixture() {
     }
     const buttons = () => doc.body.querySelectorAll('button');
     const button = text => {
-        const result = buttons().find(el => el.textContent === text); assert.ok(result, text); return result;
+        const result = buttons().find(el => el.textContent === text || el.attributes['aria-label'] === text || el.title === text);
+        assert.ok(result, text); return result;
     };
     return {win, doc, requests, pending, timers, reply, fireTimer, content, button, renames, appends, worldcups, syncs, testPackOpens,
+        documentListenerCount(name) { return (documentListeners.get(name) || []).length; },
         warnings, confirm(value) { assert.ok(approvals.length); approvals.shift()(value); return new Promise(resolve => setImmediate(resolve)); },
         setActive(value) { active = value; },
         render(params = 'batch=test-one') { return win.DakiStyles.render(new URLSearchParams(params), content); }};
@@ -230,6 +248,60 @@ test('shared list automatically adds and excludes styles while preserving search
     assert.equal(cards[1].children[0].src, '/source/added');
     f.win.DakiStyles.leave();
     assert.equal(f.timers.size, 0);
+});
+
+test('large shared lists render in 80-card pages while tests, worldcup, selection, polling, and zoom metadata use all matches', async () => {
+    const f = fixture(true, true);
+    const styles = Array.from({length: 3000}, (_, index) => ({
+        id: `style-${String(index).padStart(4, '0')}`, name: `Synthetic style ${index}`,
+        category: 'v5', source_library: 'naim', model_family: 'v5', model: 'nai-diffusion-5-full', src: `/source/${index}`,
+    }));
+    const catalog = {configured: true, styles};
+    const render = f.render('library=shared&category=all'); f.reply(catalog); await render;
+    const grid = f.content.querySelector('.daki-style-grid');
+    assert.equal(f.content.querySelectorAll('.daki-style-card').length, 80);
+    assert.equal(grid.galleryZoomImagesAll.length, 3000);
+    assert.equal(f.content.querySelector('.daki-progressive-count').textContent, '전체 3,000개 중 80개 표시');
+    f.button('더 보기').onclick();
+    assert.equal(f.content.querySelectorAll('.daki-style-card').length, 160);
+
+    const targetCatalogs = [];
+    f.win.DakiTestTargets = {create({catalog}) {
+        targetCatalogs.push(catalog);
+        return {element: f.doc.createElement('section'), selection: () => ({count: catalog.styles.length, error: ''}), dispose() {}};
+    }};
+    const opening = f.button('표시된 그림체로 테스트 만들기').onclick();
+    f.reply(settingsOptions()); await opening;
+    assert.equal(targetCatalogs[0].styles.length, 3000);
+    f.doc.getElementById('dakiTestCancel').onclick();
+    f.button('태그 그림 이상형 월드컵').onclick();
+    assert.equal(f.worldcups[0][0].length, 3000);
+    f.button('표시된 그림체 모두 선택').onclick();
+    assert.equal(f.button('선택한 그림체 삭제 (3000)').disabled, false);
+    const loadedCheckboxes = f.content.querySelectorAll('.daki-style-card').flatMap(card => card.querySelectorAll('input'));
+    assert.equal(loadedCheckboxes.filter(input => input.checked).length, 160);
+
+    const search = f.content.querySelector('input');
+    search.value = 'synthetic style 2999'; search.oninput();
+    assert.equal(f.content.querySelectorAll('.daki-style-card').length, 1);
+    assert.equal(f.button('선택한 그림체 삭제 (1)').disabled, false);
+    assert.equal(f.content.querySelector('.daki-progressive-count').textContent, '전체 1개 중 1개 표시');
+
+    search.value = ''; search.oninput();
+    assert.equal(f.content.querySelectorAll('.daki-style-card').length, 80);
+    assert.equal(f.button('더 보기').disabled, false);
+    const retainedCard = f.content.querySelector('.daki-style-card');
+    const pollEntry = [...f.timers.entries()].find(([, timer]) => timer.delay === 2000);
+    assert.ok(pollEntry);
+    f.timers.delete(pollEntry[0]);
+    const polling = pollEntry[1].callback();
+    f.reply({styles: [...styles, {id: 'style-new', name: 'Synthetic style new', category: 'v5',
+        source_library: 'naim', model_family: 'v5', model: 'nai-diffusion-5-full', src: '/source/new'}]});
+    await polling;
+    assert.equal(f.content.querySelectorAll('.daki-style-card').length, 80);
+    assert.equal(f.content.querySelector('.daki-style-card'), retainedCard);
+    assert.equal(f.content.querySelector('.daki-style-grid').galleryZoomImagesAll.length, 3001);
+    f.win.DakiStyles.leave();
 });
 
 test('a late shared library refresh cannot alter a destination after leaving', async () => {
@@ -1085,13 +1157,116 @@ test('shared folder presents tests as gallery folders and excludes personal batc
     assert.equal(f.content.querySelector('.daki-test-record').href, '#daki&library=shared&batch=test-one');
     assert.equal(f.content.querySelector('.daki-style-card'), null);
     const folders = f.content.querySelectorAll('a');
-    assert.equal(folders.length, 3);
+    assert.equal(folders.length, 4);
     assert.ok(folders.some(folder => folder.textContent === 'Shared named gallery' && folder.querySelector('img').src === '/covers/shared.png'));
     assert.equal(folders.some(folder => folder.textContent === 'Personal named gallery'), false);
-    assert.ok(folders.some(folder => folder.textContent === '그림체 일람' && folder.href === '#daki&library=shared&category=all'));
+    assert.ok(folders.some(folder => folder.textContent === '기존 공유 그림체' && folder.href === '#daki&library=shared&category=all'));
+    assert.ok(folders.some(folder => folder.textContent === '그림체 관리 공유 그림체' && folder.href === '#daki&library=shared&category=artist'));
     assert.ok(folders.some(folder => folder.textContent === '상반신' && folder.href === '#daki&library=shared&category=upper'));
     assert.equal(folders.some(folder => folder.href === '#daki&library=shared&category=v5'), false);
 
+});
+
+test('shared sources and original models stay separated in folders, filters, test targets, and polling', async () => {
+    const catalog = {configured: true, styles: [
+        {id: 'naim-v5', name: 'Same style V5', category: 'v5', source_library: 'naim', model: 'nai-diffusion-5-full', model_family: 'v5', src: '/source/naim-v5'},
+        {id: 'naim-v45', name: 'Same style V4.5', category: 'v5', source_library: 'naim', model: 'nai-diffusion-4-5-full', model_family: 'v4_5', src: '/source/naim-v45'},
+        {id: 'artist-v5', name: 'Same style V5', category: 'artist', source_library: 'artist', model: 'V5 Full', model_family: 'v5', src: '/source/artist-v5'},
+        {id: 'legacy-upper', name: 'Legacy upper', category: 'upper', source_library: 'naim', model: 'nai-diffusion-5-full', src: '/source/upper'},
+    ]};
+    const f = fixture(true), rootRender = f.render('library=shared');
+    f.reply(catalog); await new Promise(resolve => setImmediate(resolve)); f.reply({batches: []}); await rootRender;
+    const folders = f.content.querySelectorAll('a');
+    const existing = folders.find(folder => folder.href.endsWith('category=all'));
+    const artist = folders.find(folder => folder.href.endsWith('category=artist'));
+    assert.equal(existing.textContent, '기존 공유 그림체'); assert.equal(existing.folder.count, 2);
+    assert.equal(artist.textContent, '그림체 관리 공유 그림체'); assert.equal(artist.folder.count, 1);
+    assert.equal(f.button('전체 그림체로 테스트 만들기').disabled, false);
+
+    let targetCatalog;
+    f.win.DakiTestTargets = {create(options) {
+        targetCatalog = JSON.parse(JSON.stringify(options.catalog));
+        return {element: f.doc.createElement('section'), selection: () => ({styleIds: null, count: options.catalog.styles.length, error: ''}),
+            filters: () => options.catalog.target_filters || {source: 'all', model: 'all'}, dispose() {}};
+    }};
+    const openingRoot = f.button('전체 그림체로 테스트 만들기').onclick();
+    f.reply(settingsOptions()); await openingRoot;
+    assert.deepEqual(targetCatalog.styles.map(style => style.id), ['naim-v5', 'naim-v45', 'artist-v5']);
+    const rootForm = f.doc.getElementById('dakiTestForm'); rootForm.elements.namedItem('name').value = 'Both sources';
+    const saveRoot = rootForm.onsubmit({preventDefault() {}});
+    const rootRequest = f.reply({batch: {id: 'root-test', library: 'shared'}}); await saveRoot;
+    assert.deepEqual(rootRequest.body.target_filters, {source: 'all', model: 'all'});
+
+    const listRender = f.render('library=shared&category=all'); f.reply(catalog); await listRender;
+    const model = f.content.descendants().find(item => item.name === 'daki_scope_model');
+    assert.ok(model); assert.equal(model.value, 'all');
+    const v45Card = f.content.querySelectorAll('.daki-style-card').find(card => card.dataset.path.endsWith('/naim-v45.png'));
+    const v45Checkbox = v45Card.querySelector('input'); v45Checkbox.checked = true; v45Checkbox.onchange();
+    model.value = 'v5'; model.onchange();
+    assert.equal(f.button('선택한 그림체 삭제 (0)').disabled, true);
+    model.value = 'v4_5'; model.onchange();
+    assert.deepEqual(f.content.querySelectorAll('.daki-style-card').map(card => card.dataset.path), ['__daki_shared__/naim-v45.png']);
+    const createDisplayed = f.button('표시된 그림체로 테스트 만들기');
+    const openingFiltered = createDisplayed.onclick(); f.reply(settingsOptions()); await openingFiltered;
+    assert.deepEqual(targetCatalog.styles.map(style => style.id), ['naim-v45']);
+    assert.deepEqual(targetCatalog.target_filters, {source: 'naim', model: 'v4_5'});
+    const filteredForm = f.doc.getElementById('dakiTestForm'); filteredForm.elements.namedItem('name').value = 'V4.5 only';
+    const saveFiltered = filteredForm.onsubmit({preventDefault() {}});
+    assert.equal(f.pending.length, 1, f.doc.getElementById('dakiTestSettingsStatus').textContent);
+    const filteredRequest = f.reply({batch: {id: 'filtered-test', library: 'shared'}}); await saveFiltered;
+    assert.deepEqual(filteredRequest.body.target_filters, {source: 'naim', model: 'v4_5'});
+
+    const timerEntry = [...f.timers.entries()].find(([, timer]) => timer.delay === 2000);
+    assert.ok(timerEntry);
+    f.timers.delete(timerEntry[0]);
+    const poll = timerEntry[1].callback();
+    const refreshed = {...catalog, styles: [...catalog.styles, {id: 'naim-v45-new', name: 'New V4.5', category: 'v5',
+        source_library: 'naim', model: 'nai-diffusion-4-5-full', model_family: 'v4_5', src: '/source/new'}]};
+    assert.equal(f.reply(refreshed).url, '/api/daki/shared-styles'); await poll;
+    assert.equal(model.value, 'v4_5');
+    assert.deepEqual(f.content.querySelectorAll('.daki-style-card').map(card => card.dataset.path),
+        ['__daki_shared__/naim-v45.png', '__daki_shared__/naim-v45-new.png']);
+
+    f.content.replaceChildren();
+    const legacyV5Render = f.render('library=shared&category=v5'); f.reply(catalog); await legacyV5Render;
+    const legacyV5Model = f.content.descendants().find(item => item.name === 'daki_scope_model');
+    assert.equal(legacyV5Model.value, 'v5');
+    assert.deepEqual(f.content.querySelectorAll('.daki-style-card').map(card => card.dataset.path), ['__daki_shared__/naim-v5.png']);
+    legacyV5Model.value = 'v4_5'; legacyV5Model.onchange();
+    assert.deepEqual(f.content.querySelectorAll('.daki-style-card').map(card => card.dataset.path), ['__daki_shared__/naim-v45.png']);
+    assert.match(f.doc.getElementById('dakiTitle').textContent, /V4\.5 그림체/);
+
+    f.content.replaceChildren();
+    const artistRender = f.render('library=shared&category=artist'); f.reply(catalog); await artistRender;
+    assert.deepEqual(f.content.querySelectorAll('.daki-style-card').map(card => card.dataset.path), ['__daki_shared__/artist-v5.png']);
+    const checkbox = f.content.querySelector('.daki-style-card').querySelector('input');
+    checkbox.checked = true; checkbox.onchange();
+    const remove = f.button('선택한 그림체 삭제 (1)'); const deleting = remove.onclick();
+    assert.deepEqual(f.reply({}).body, {style_ids: ['artist-v5']}); await deleting;
+});
+
+test('original-model target filter stays independent from the generation model selector', async () => {
+    const f = fixture(true);
+    f.win.addEventListener = () => {}; f.win.removeEventListener = () => {};
+    vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_test_targets.js'), 'utf8'), {window: f.win});
+    const createTargets = f.win.DakiTestTargets.create; let targets;
+    f.win.DakiTestTargets.create = options => (targets = createTargets(options));
+    const catalog = {library: 'shared', target_filters: {source: 'artist', model: 'v4_5'}, styles: [
+        {id: 'naim-v5', source_library: 'naim', model: 'nai-diffusion-5-full'},
+        {id: 'artist-v5', source_library: 'artist', model: 'V5 Full'},
+        {id: 'artist-v45', source_library: 'artist', model: 'V4.5'},
+    ]};
+    const opened = f.win.DakiStyles.openSettings(catalog); f.reply(settingsOptions()); await opened;
+    const form = f.doc.getElementById('dakiTestForm');
+    const generationModel = form.elements.namedItem('model');
+    const targetModel = form.querySelectorAll('select').find(select => select.name === 'daki_scope_model');
+    assert.ok(targetModel); assert.equal(targetModel.value, 'v4_5');
+    generationModel.value = 'nai-diffusion-4-5-full'; generationModel.onchange();
+    targetModel.value = 'v5'; targetModel.onchange();
+    assert.equal(generationModel.value, 'nai-diffusion-4-5-full');
+    assert.deepEqual(JSON.parse(JSON.stringify(targets.selection().styleIds)), ['artist-v5']);
+    assert.deepEqual(JSON.parse(JSON.stringify(targets.filters())), {source: 'artist', model: 'v5'});
+    f.doc.getElementById('dakiTestCancel').onclick();
 });
 
 test('upper opens a persistent test with preserved results and adds only missing shared styles', async () => {
@@ -1223,7 +1398,7 @@ test('shared style overview and new-test targets use V5-only styles before upper
     const allRender = f.render('library=shared&category=all'); f.reply(catalog); await allRender;
     assert.deepEqual(f.content.querySelectorAll('.daki-style-card').map(card => card.dataset.path),
         ['__daki_shared__/v5-one.png', '__daki_shared__/v5-two.png']);
-    assert.equal(f.doc.getElementById('dakiSubtitle').textContent, '2개 그림체 · V5 원본 공유 그림체');
+    assert.equal(f.doc.getElementById('dakiSubtitle').textContent, '2개 그림체 · 기존 공유 그림체');
 
 });
 
@@ -1242,6 +1417,56 @@ test('shared-style worldcup receives only images visible in the current category
     search.value = 'no matching styles'; search.oninput(); f.button('태그 그림 이상형 월드컵').onclick();
     assert.equal(f.worldcups[2][0].length, 0);
     assert.equal(f.requests.length, 1);
+});
+
+test('shared toolbar keeps filter and actions grouped, and narrow disclosure closes accessibly and cleans up', async () => {
+    const f = fixture(true); await openStyleList(f);
+    const toolbar = f.content.querySelector('.daki-shared-toolbar');
+    const secondary = toolbar.querySelector('.daki-shared-secondary-actions');
+    const more = f.button('추가 그림체 작업');
+    const primary = f.button('표시된 그림체로 테스트 만들기');
+    assert.deepEqual(toolbar.children.map(child => child.tagName), ['INPUT', 'DIV', 'BUTTON', 'DIV', 'BUTTON']);
+    assert.equal(toolbar.children[0].placeholder, '이름 검색');
+    assert.equal(toolbar.children[0].attributes['aria-label'], '그림체 이름 검색');
+    assert.deepEqual(primary.children.map(child => [child.className, child.textContent, child.attributes['aria-hidden']]), [
+        ['daki-shared-full-label', '테스트 만들기', undefined],
+        ['daki-shared-compact-label', '테스트', 'true'],
+    ]);
+    assert.equal(primary.attributes['aria-label'], '표시된 그림체로 테스트 만들기');
+    assert.deepEqual(more.children.map(child => [child.className, child.textContent, child.attributes['aria-hidden']]), [
+        ['daki-shared-full-label', '더보기 ▾', undefined],
+        ['daki-shared-compact-label', '⋯', 'true'],
+    ]);
+    assert.deepEqual(secondary.children.map(child => child.textContent), ['월드컵', '모두 선택', '선택 해제', '삭제 (0)']);
+    assert.equal(more.attributes['aria-controls'], secondary.id);
+    assert.equal(more.attributes['aria-expanded'], 'false');
+    assert.equal(f.documentListenerCount('click'), 1);
+
+    more.onclick();
+    assert.equal(more.attributes['aria-expanded'], 'true');
+    assert.ok(toolbar.className.split(/\s+/).includes('daki-actions-open'));
+    f.doc.dispatchEvent({type: 'click', target: f.content});
+    assert.equal(more.attributes['aria-expanded'], 'false');
+
+    let focusCount = 0; more.focus = () => { focusCount++; };
+    more.onclick();
+    let prevented = false;
+    toolbar.listeners.get('keydown')[0]({key: 'Escape', preventDefault() { prevented = true; }});
+    assert.equal(prevented, true); assert.equal(focusCount, 1); assert.equal(more.attributes['aria-expanded'], 'false');
+
+    more.onclick(); f.button('선택 해제').onclick();
+    assert.equal(focusCount, 1); assert.equal(more.attributes['aria-expanded'], 'false');
+    const card = f.content.querySelector('.daki-style-card'); selectStyle(card);
+    const remove = f.button('선택한 그림체 삭제 (1)');
+    assert.equal(remove.textContent, '삭제 (1)');
+    assert.equal(remove.title, '선택한 그림체 삭제 (1)');
+    more.onclick(); const deleting = remove.onclick();
+    assert.equal(more.attributes['aria-expanded'], 'false');
+    assert.deepEqual(f.reply({removed: 1}).body, {style_ids: ['one']}); await deleting;
+
+    more.onclick(); f.win.DakiStyles.leave();
+    assert.equal(f.documentListenerCount('click'), 0);
+    assert.equal(more.attributes['aria-expanded'], 'false');
 });
 
 test('source links identify the original post independently of the image ID and open safely in a new tab', async () => {

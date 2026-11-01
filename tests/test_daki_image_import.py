@@ -64,6 +64,28 @@ class DakiImageImportTests(unittest.TestCase):
         self.assertEqual((response.json['width'], response.json['height']), (16, 24))
         self.assertFalse((self.root / 'imports').exists())
 
+    def test_inspection_reuses_decoded_pixels_without_allocating_an_export_bitmap(self):
+        raw = self.image(True)
+        with mock.patch('naim.web.daki_image_import.ImageOps.exif_transpose',
+                        side_effect=AssertionError('inspection created an export bitmap')), \
+                mock.patch.object(app.Image, 'open', wraps=Image.open) as opened:
+            response = self.post('/api/daki/image-import/inspect', raw=raw)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(response.json['promptInfo']['basePrompt'], 'synthetic base')
+        self.assertEqual(opened.call_count, 2, 'validation and one decode; metadata reuses the decoded image')
+        self.assertFalse((self.root / 'imports').exists())
+
+    def test_reused_metadata_image_remains_open_and_keeps_stealth_precedence(self):
+        with Image.open(io.BytesIO(self.image(True))) as decoded:
+            decoded.load()
+            upload = type('SyntheticUpload', (), {'stream': None, 'decoded_image': decoded})()
+            with mock.patch.object(app.Image, 'open', side_effect=AssertionError('decoded image reopened')), \
+                    mock.patch.object(app.image_logic, 'read_stealth_info',
+                                      return_value=json.dumps({'prompt': 'synthetic stealth'})):
+                result = app.extract_prompt_info_from_image_filelike(upload)
+            self.assertEqual(result['basePrompt'], 'synthetic stealth')
+            self.assertEqual(decoded.getpixel((0, 0)), (30, 60, 90, 255))
+
     def test_auto_import_retains_prompt_and_works_in_existing_viewer(self):
         response = self.post(raw=self.image(True), side='back')
         path = self.saved(response)

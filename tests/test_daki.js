@@ -222,7 +222,7 @@ test('daki routes preserve project links and let gallery navigation override the
     }
 });
 
-function inlineLibraryFixture(path = '/#daki', readyState = 'loading', deferDraftFolders = false) {
+function inlineLibraryFixture(path = '/#daki', readyState = 'loading', deferDraftFolders = false, withProgressive = false) {
     class Element {
         constructor(tagName = '') {
             this.children = [];
@@ -269,6 +269,7 @@ function inlineLibraryFixture(path = '/#daki', readyState = 'loading', deferDraf
             return old;
         }
         setAttribute(name, value) { this.attributes[name] = value; }
+        getAttribute(name) { return this.attributes[name] ?? null; }
         removeAttribute(name) { delete this.attributes[name]; }
         addEventListener(name, callback) { this.listeners.set(name, callback); }
         focus(options) { this.focusOptions = options; if (this.ownerDocument) this.ownerDocument.activeElement = this; }
@@ -279,6 +280,12 @@ function inlineLibraryFixture(path = '/#daki', readyState = 'loading', deferDraf
             if (wasOpen) this.listeners.get('close')?.({target: this});
         }
         getBoundingClientRect() { return this.rect || {left: 100, top: 100, right: 500, bottom: 500}; }
+        remove() {
+            if (!this.parentNode) return;
+            const index = this.parentNode.children.indexOf(this);
+            if (index >= 0) this.parentNode.children.splice(index, 1);
+            this.parentNode = null;
+        }
         querySelector(selector) {
             assert.equal(selector, '.daki-nav');
             return this.children.find(node => node.classList.contains('daki-nav')) || null;
@@ -352,6 +359,7 @@ function inlineLibraryFixture(path = '/#daki', readyState = 'loading', deferDraf
         },
     };
     vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki.js'), 'utf8'), {window: win, URLSearchParams});
+    if (withProgressive) vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_progressive_grid.js'), 'utf8'), {window: win});
     return {
         nodes, doc, win, requests, previewSessions, galleryImage, windowEvents, confirmations, detailOpens, detailCloses,
         initialize: () => domEvents.get('DOMContentLoaded')(),
@@ -578,7 +586,10 @@ test('project list prefers the first canvas per side and falls back to the first
     const faces = classed(projectCard, 'daki-project-preview-face');
     assert.equal(faces.length, 2);
     assert.equal(faces[0].children.length, 0, 'canvas preview is delegated to the shared preview manager');
-    assert.equal(faces[1].children[0].src, '/image/back-candidate.png?preview=768');
+    const previewHost = classed(faces[1], 'daki-image-loading-host')[0];
+    const previewImage = classed(previewHost, 'daki-project-preview-image')[0];
+    assert.equal(previewImage.src, '/image/back-candidate.png?preview=768');
+    assert.equal(previewHost.getAttribute?.('aria-busy'), 'true');
     assert.equal(f.nodes.get('dakiTitle').textContent, 'Daki 프로젝트');
     const libraryLinks = classed(f.nodes.get('dakiContent'), 'daki-project-card').map(card => card.href);
     assert.deepEqual(libraryLinks.filter(href => href.startsWith('#daki&library=')).sort(), [
@@ -588,6 +599,112 @@ test('project list prefers the first canvas per side and falls back to the first
     assert.equal(f.doc.body.classList.contains('daki-project-active'), false);
     assert.equal(f.win.Daki.mountNavigation(f.nodes.get('nav-tabs')), undefined);
     assert.equal(f.nodes.get('nav-tabs').children[0].textContent, 'Daki');
+});
+
+test('project folder preview spinners clear after an image loads or fails', async () => {
+    const f = inlineLibraryFixture();
+    await f.initialize();
+    f.requests.shift().reply({projects: [{
+        id: 'sample', name: 'Synthetic project',
+        candidates: {front: [{path: 'front.png'}], back: [{path: 'back.png'}]},
+        canvases: {front: [], back: []},
+    }]});
+    await new Promise(resolve => setImmediate(resolve));
+    const card = classed(f.nodes.get('dakiContent'), 'daki-project-card').find(item => item.href === '#project=sample');
+    const hosts = classed(card, 'daki-project-preview-image-host');
+    const images = hosts.map(host => classed(host, 'daki-project-preview-image')[0]);
+    assert.ok(hosts.every(host => host.getAttribute('aria-busy') === 'true'));
+    images[0].onload();
+    assert.equal(hosts[0].getAttribute('aria-busy'), 'false');
+    assert.equal(classed(hosts[0], 'daki-preview-loading').length, 0);
+    images[1].onerror();
+    assert.equal(hosts[1].getAttribute('aria-busy'), 'false');
+    assert.equal(classed(hosts[1], 'daki-preview-loading').length, 0);
+    assert.equal(classed(card, 'daki-project-preview-face')[1].textContent, '원본을 찾을 수 없음');
+});
+
+test('Daki grid keeps full zoom navigation metadata when only progressive pages are materialized and after resize', () => {
+    const f = inlineLibraryFixture('/#daki', 'loading', false, true);
+    const records = Array.from({length: 3000}, (_, index) => ({id: String(index), path: `__daki_shared__/${index}.png`}));
+    const wrapper = f.win.DakiProgressiveGrid.create({className: 'daki-style-grid',
+        renderItem: item => { const card = f.doc.createElement('article'); card.dataset.path = item.path; return card; },
+        pathOf: item => item.path,
+    });
+    f.nodes.get('dakiContent').appendChild(wrapper);
+    wrapper.setItems(records);
+    const grid = classed(wrapper, 'daki-style-grid')[0];
+    assert.equal(grid.galleryZoomImages.length, 3000);
+    assert.equal(grid.children.filter(child => child.classList.contains('flex-masonry-col')).flatMap(column => column.children).length, 80);
+    f.win.getGalleryGridLayout = () => ({columns: 2, fixed: true});
+    f.win.Daki.relayout();
+    assert.equal(grid.galleryZoomImages.length, 3000);
+    assert.equal(grid.children.length, 80, 'resize lays out only the currently materialized page');
+    assert.deepEqual(Array.from(grid.galleryZoomImages.slice(0, 2), item => item.path), ['__daki_shared__/0.png', '__daki_shared__/1.png']);
+    wrapper.dispose();
+});
+
+test('project and candidate loading states clear on success, failure, and after a newer page begins loading', async () => {
+    const f = inlineLibraryFixture();
+    await f.initialize();
+    const listRequest = f.requests.shift();
+    const loadingState = classed(f.nodes.get('dakiContent'), 'daki-page-loading')[0];
+    assert.ok(loadingState);
+    assert.equal(loadingState.getAttribute('role'), 'status');
+    assert.equal(loadingState.getAttribute('aria-live'), 'polite');
+    assert.equal(loadingState.children[0].classList.contains('gallery-load-spinner'), true);
+    assert.equal(f.nodes.get('dakiContent').attributes['aria-busy'], 'true');
+    assert.equal(classed(loadingState, 'gallery-load-title')[0].textContent, '프로젝트 목록을 불러오는 중…');
+    assert.match(classed(loadingState, 'gallery-load-message')[0].textContent, /처음에는 큰 그림의 미리보기를 준비하느라/);
+
+    listRequest.reply({projects: []});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(classed(f.nodes.get('dakiContent'), 'daki-page-loading').length, 0);
+    assert.equal(f.nodes.get('dakiContent').attributes['aria-busy'], 'false');
+
+    const next = f.navigate('#project=sample');
+    const detailRequest = f.requests.shift();
+    const detailLoader = classed(f.nodes.get('dakiContent'), 'daki-page-loading')[0];
+    assert.equal(classed(detailLoader, 'gallery-load-title')[0].textContent, '프로젝트를 여는 중…');
+    detailRequest.reply({message: 'Synthetic project error'}, 500);
+    await next;
+    assert.equal(classed(f.nodes.get('dakiContent'), 'daki-page-loading').length, 0);
+    assert.equal(f.nodes.get('dakiContent').attributes['aria-busy'], 'false');
+    assert.equal(f.nodes.get('dakiPageStatus').textContent, 'Synthetic project error');
+    assert.equal(classed(f.nodes.get('dakiContent'), 'gallery-load-actions').length, 0);
+    assert.ok(f.nodes.get('dakiContent').children.some(child => child.textContent === '다시 불러오기'));
+
+    const first = f.navigate('#daki');
+    const staleRequest = f.requests.shift();
+    const newer = f.navigate('#project=current');
+    const currentRequest = f.requests.shift();
+    const currentLoader = classed(f.nodes.get('dakiContent'), 'daki-page-loading')[0];
+    staleRequest.reply({projects: []});
+    await first;
+    assert.equal(classed(f.nodes.get('dakiContent'), 'daki-page-loading')[0], currentLoader);
+    assert.equal(f.nodes.get('dakiContent').attributes['aria-busy'], 'true');
+    currentRequest.reply({project: {id: 'current', name: 'Current', candidates: {front: [], back: []}, canvases: {front: [], back: []}}});
+    await newer;
+    assert.equal(classed(f.nodes.get('dakiContent'), 'daki-page-loading').length, 0);
+    assert.equal(f.nodes.get('dakiContent').attributes['aria-busy'], 'false');
+});
+
+test('project image cards keep a preview spinner until the image succeeds or fails', async () => {
+    const f = await projectPageFixture({
+        id: 'sample', name: 'Synthetic project',
+        candidates: {front: [{id: 'front-image', path: 'front.png'}], back: [{id: 'back-image', path: 'back.png'}]},
+        canvases: {front: [], back: []},
+    });
+    const cards = classed(f.nodes.get('dakiContent'), 'daki-candidate');
+    const hosts = cards.map(card => classed(card, 'daki-image-loading-host')[0]);
+    const images = hosts.map(host => classed(host, 'daki-project-preview-image')[0]);
+    assert.ok(hosts.every(host => host.getAttribute('aria-busy') === 'true'));
+    assert.ok(hosts.every(host => classed(host, 'daki-preview-loading').length === 1));
+    images[0].onload();
+    assert.equal(hosts[0].getAttribute('aria-busy'), 'false');
+    assert.equal(classed(hosts[0], 'daki-preview-loading').length, 0);
+    images[1].onerror();
+    assert.equal(hosts[1].getAttribute('aria-busy'), 'false');
+    assert.equal(classed(hosts[1], 'daki-preview-loading').length, 0);
 });
 
 test('project sides combine canvas and image cards in one gallery grid with kind badges', async () => {

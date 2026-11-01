@@ -19,15 +19,46 @@ body.gallery-layout-modern.gallery-daki-active .gallery-modern-sidebar #nav-tabs
 .daki-library-description p { margin: 0; }
 #dakiPageStatus { font-size: 14px; color: #999; }
 #dakiPageStatus:empty { display: none; }
+#dakiLibrary .daki-page-loading {
+    max-width: 560px;
+    min-height: 180px;
+    margin: 24px auto;
+    padding: 28px;
+}
+#dakiLibrary .daki-page-loading .gallery-load-spinner { width: 32px; height: 32px; border-width: 3px; margin: 0 auto 12px; }
+#dakiLibrary .daki-page-loading .gallery-load-title { margin: 0 0 8px; font-size: 16px; line-height: 1.5; }
+#dakiLibrary .daki-page-loading .gallery-load-message { margin: 0; color: #aaa; font-size: 13px; line-height: 1.6; }
 #dakiLibrary .flex-masonry { padding-left: 0; padding-right: 0; }
 .daki-project-card { min-width: 0; }
 .daki-project-preview.card-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2px; line-height: 1.5; }
 .daki-project-preview > div { min-width: 0; height: 100%; overflow: hidden; display: flex; align-items: center; justify-content: center; text-align: center; color: #999; font-size: 13px; }
 .daki-project-preview img { width: 100%; height: 100%; object-fit: contain; }
+.daki-project-preview .daki-project-preview-image-host { width: 100%; height: 100%; }
 .daki-canvas-preview { min-width: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #999; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .daki-canvas-preview[aria-busy="true"], .daki-canvas-preview.daki-warning { padding: 12px; }
+.daki-canvas-preview[aria-busy="true"] { flex-direction: column; gap: 8px; }
 .daki-project-preview .daki-canvas-preview { width: 100%; }
 .daki-canvas-preview > .daki-canvas-preview-image { display: block; width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; }
+.daki-image-loading-host { position: relative; min-width: 0; overflow: hidden; }
+.daki-preview-loading {
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 12px;
+    background: rgba(15, 15, 20, .76);
+    color: #aaa;
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+.daki-preview-spinner { display: block; width: 24px; height: 24px; flex: 0 0 24px; border: 2px solid #555; border-top-color: var(--accent); border-radius: 50%; animation: gallerySpin .9s linear infinite; }
 .daki-side { min-width: 0; }
 #dakiLibrary .daki-project-generate-link {
     display: inline-flex;
@@ -68,8 +99,10 @@ body.daki-project-active #dakiLibrary .daki-side > .section-title { margin: 12px
 .daki-project-canvas { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border: 1px solid #ffffff30; border-radius: 8px; background: var(--card); font-size: 13px; line-height: 1.5; }
 .daki-project-canvas:hover { border-color: var(--accent); }
 .daki-project-items .daki-project-canvas > .daki-canvas-preview,
-.daki-project-items .daki-candidate > img.zoomable,
+.daki-project-items .daki-candidate > .daki-candidate-image-host,
 .daki-project-items .daki-candidate > .daki-missing-image { width: 100%; height: var(--daki-project-image-height) !important; flex: 0 0 var(--daki-project-image-height); min-height: 0; aspect-ratio: auto; object-fit: contain; }
+.daki-project-items .daki-candidate > .daki-candidate-image-host { display: flex; align-items: center; justify-content: center; }
+.daki-project-items .daki-candidate-image-host > img.zoomable { width: 100%; height: 100%; object-fit: contain; }
 .daki-project-canvas-info { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; gap: 4px; padding: 12px; overflow-wrap: anywhere; }
 .daki-project-canvas-heading { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .daki-project-canvas-heading > strong { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -109,6 +142,10 @@ body.daki-project-active .zoomable { cursor: zoom-in !important; }
 body.gallery-layout-modern #dakiLibrary { padding: 0 0 160px; }
 body.gallery-layout-modern .daki-library-description,
 body.gallery-layout-modern .daki-empty { color: #bec4d1; }
+@media (prefers-reduced-motion: reduce) {
+    #dakiLibrary .daki-page-loading .gallery-load-spinner,
+    #dakiLibrary .daki-preview-spinner { animation: none; }
+}
 .daki-dialog { width: min(510px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; padding: 26px; background: var(--card); color: var(--text); border: 1px solid #555; border-radius: 12px; font: inherit; font-size: 14px; line-height: 1.6; box-shadow: 0 20px 80px #0008; }
 .daki-style-sync-dialog { box-sizing: border-box; width: min(1000px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 14px; }
 .daki-dialog::backdrop { background: #000b; }
@@ -201,6 +238,11 @@ body.gallery-layout-modern .daki-empty { color: #bec4d1; }
 .daki-style-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
 .daki-style-toolbar input { flex: 1; min-width: 160px; max-width: 360px; }
 .daki-style-card { min-width: 0; }
+.daki-progressive-grid { min-width: 0; }
+.daki-progressive-footer { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.daki-progressive-count { min-width: 0; flex: 1 1 auto; color: #aab1bd; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+#dakiLibrary .daki-progressive-more { min-width: 0; max-width: 100%; min-height: 32px; flex: 0 0 auto; padding: 6px 10px; font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+.daki-progressive-sentinel { width: 1px; height: 1px; flex: 0 0 1px; }
 .daki-style-card[data-style-selected=true] { outline: 3px solid var(--accent, #7d85e5); outline-offset: -3px; }
 .daki-style-select { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
 .daki-style-select input { margin: 0; flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--accent, #7d85e5); }

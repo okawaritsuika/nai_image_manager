@@ -88,6 +88,11 @@ class SharedLibraryStore:
                 previous = conn.execute('SELECT * FROM shared_sources WHERE origin=? AND source_id=?',
                                         (entry['origin'], str(entry['source_id']))).fetchone()
                 if previous and previous['recipe_id'] != sid:
+                    previous_recipe = conn.execute('SELECT excluded_by_user FROM shared_recipes WHERE id=?',
+                                                    (previous['recipe_id'],)).fetchone()
+                    if previous_recipe and previous_recipe['excluded_by_user']:
+                        # Preserve an explicit user exclusion when a source gets a new recipe key.
+                        conn.execute('UPDATE shared_recipes SET excluded=1,excluded_by_user=1 WHERE id=?', (sid,))
                     # Retain the earlier source snapshot for already saved common IDs.
                     historical_id = str(entry['source_id']) + '@' + previous['recipe_id']
                     historical_source = json.loads(previous['source_json'])
@@ -152,6 +157,53 @@ class SharedLibraryStore:
             for row in conn.execute("SELECT * FROM shared_sources ORDER BY CASE origin WHEN 'naim' THEN 0 ELSE 1 END,rowid"):
                 grouped.setdefault(row['recipe_id'], []).append(dict(row))
             return grouped
+
+    def public_sources(self, recipe_ids):
+        """Load public source metadata and at most one raw snapshot per recipe."""
+        ids = list(dict.fromkeys(recipe_ids))
+        grouped = {}
+        for offset in range(0, len(ids), 400):
+            chunk = ids[offset:offset + 400]
+            placeholders = ','.join('?' for _ in chunk)
+            # Keep large raw snapshots out of the window-ranking intermediates.
+            query = f'''WITH source_rows AS (
+                    SELECT rowid AS source_rowid,origin,source_id,recipe_id,source_json,
+                        image_path,thumbnail_path,raw_json<>'{{}}' AS has_raw,
+                        COALESCE(json_extract(source_json,'$._historical'),0) AS historical
+                    FROM shared_sources WHERE recipe_id IN ({placeholders})
+                ), active_flags AS (
+                    SELECT *,MAX(CASE WHEN historical=0 THEN 1 ELSE 0 END)
+                        OVER (PARTITION BY recipe_id) AS has_active
+                    FROM source_rows
+                ), selected_sources AS (
+                    SELECT * FROM active_flags WHERE has_active=0 OR historical=0
+                ), ranked_sources AS (
+                    SELECT *,ROW_NUMBER() OVER (PARTITION BY recipe_id ORDER BY
+                        CASE WHEN has_raw THEN 0 ELSE 1 END,
+                        CASE origin WHEN 'naim' THEN 0 ELSE 1 END,source_rowid) AS raw_rank
+                    FROM selected_sources
+                )
+                SELECT origin,source_id,recipe_id,source_json,image_path,thumbnail_path,
+                    CASE WHEN has_raw AND raw_rank=1 THEN
+                        (SELECT raw_json FROM shared_sources raw WHERE raw.rowid=ranked_sources.source_rowid)
+                        ELSE '{{}}' END AS raw_json
+                FROM ranked_sources
+                ORDER BY CASE origin WHEN 'naim' THEN 0 ELSE 1 END,source_rowid'''
+            with closing(self.connect()) as conn:
+                for row in conn.execute(query, chunk):
+                    grouped.setdefault(row['recipe_id'], []).append(dict(row))
+        return grouped
+
+    def selection_origins(self):
+        """Return one source origin per recipe without loading source snapshots."""
+        with closing(self.connect()) as conn:
+            rows = conn.execute('''SELECT recipe_id,origin FROM shared_sources
+                ORDER BY COALESCE(json_extract(source_json,'$._historical'),0),
+                    CASE origin WHEN 'naim' THEN 0 ELSE 1 END,rowid''')
+            origins = {}
+            for row in rows:
+                origins.setdefault(row['recipe_id'], row['origin'])
+            return origins
 
     def exclude(self, ids):
         if not isinstance(ids, list) or not 1 <= len(ids) <= 10000 or any(not isinstance(sid, str) or not sid or len(sid) > 128 for sid in ids):

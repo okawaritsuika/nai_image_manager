@@ -12,6 +12,8 @@
     let libraryTimer;
     let settingsDialog;
     let viewFilters;
+    let viewActionsDispose;
+    let viewGrid;
     let draft = {model: 'nai-diffusion-5-full', output_format: 'webp', prompt: '', negative_prompt: '', char_prompts: []};
     const byId = id => doc.getElementById(id);
     const node = (tag, className, text) => {
@@ -29,6 +31,8 @@
     }
     function leave() {
         revision++; root.clearTimeout(pollTimer); root.clearTimeout(libraryTimer);
+        viewGrid?.dispose?.(); viewGrid = null;
+        viewActionsDispose?.(); viewActionsDispose = null;
         viewFilters?.dispose(); viewFilters = null;
         if (settingsDialog?.open) settingsDialog.close();
         root.DakiTestLibrary?.leave(); root.DakiTestPacks?.leave(); root.DakiWorldCup?.leave?.(); root.DakiStyleSync?.leave();
@@ -41,13 +45,38 @@
         back.hidden = false; back.href = backHref; back.textContent = backText;
     }
     function sharedStyleSubtitle(category, count) {
-        const detail = category === 'upper' ? '실사 표현이 있는 그림체 제외' : 'V5 원본 공유 그림체';
+        const detail = category === 'upper' ? '실사 표현이 있는 그림체 제외'
+            : category === 'artist' ? '그림체 관리에서 수집한 공유 그림체' : '기존 공유 그림체';
         return `${count}개 그림체 · ${detail}`;
+    }
+    function sourceMatches(style, source) {
+        if (style.category === 'upper') return false;
+        if (root.DakiStyleScope?.matches) return root.DakiStyleScope.matches(style, {source, model: 'all'});
+        return source === 'artist' ? style.source_library === 'artist' : style.source_library !== 'artist';
+    }
+    function folderStyles(styles, source) {
+        return styles.filter(style => {
+            if (!sourceMatches(style, source)) return false;
+            if (root.DakiStyleScope) return true;
+            return source === 'artist' ? style.source_library === 'artist' || style.category === 'artist'
+                : style.category === 'v5';
+        });
+    }
+    function familyMatches(style, model) {
+        if (root.DakiStyleScope?.matches) return root.DakiStyleScope.matches(style, {source: 'all', model});
+        if (model === 'all') return true;
+        return model === 'v5' ? style.category === 'v5' : false;
     }
     function button(text, action) {
         const el = node('button', 'nav-btn', text);
         el.type = 'button'; el.onclick = action;
         return el;
+    }
+    function setCompactButtonLabels(buttonElement, fullText, compactText) {
+        const fullLabel = node('span', 'daki-shared-full-label', fullText);
+        const compactLabel = node('span', 'daki-shared-compact-label', compactText);
+        compactLabel.setAttribute('aria-hidden', 'true');
+        buttonElement.replaceChildren(fullLabel, compactLabel);
     }
     function picture(src, name, full = src + '?full=1') {
         const img = node('img', 'zoomable'); img.src = src; img.alt = name; img.loading = 'lazy';
@@ -205,10 +234,12 @@
             if (!current(token)) return;
             status.textContent = '';
             const category = params.get('category');
-            if (!['all', 'upper', 'v5'].includes(category)) {
+            if (!['all', 'upper', 'v5', 'artist'].includes(category)) {
                 heading('공유 그림체', '기본 폴더 · 공유 그림체 목록과 테스트', '#daki', '← daki 프로젝트');
                 const toolbar = node('div', 'daki-style-toolbar');
-                const sharedCatalog = {...catalog, styles: catalog.styles.filter(style => style.category === 'v5')};
+                const sharedCatalog = {...catalog, styles: root.DakiStyleScope
+                    ? catalog.styles.filter(style => style.category !== 'upper')
+                    : catalog.styles.filter(style => style.category === 'v5')};
                 const create = button('전체 그림체로 테스트 만들기', () => openSettings(sharedCatalog));
                 create.disabled = !sharedCatalog.styles.length;
                 toolbar.appendChild(create);
@@ -245,12 +276,16 @@
                     if (job.post_limited > 0) status.textContent += ` · 게시물 제한 ${job.post_limited}`;
                 }})));
                 container.appendChild(toolbar);
-                const folders = [['all', '그림체 일람'], ['upper', '상반신']].map(([id, name]) => {
-                    const styles = id === 'all' ? catalog.styles.filter(style => (style.category || 'upper') === 'v5')
-                        : catalog.styles.filter(style => (style.category || 'upper') === id);
-                    return id === 'all' || styles.length ? root.Daki.folderCard(name, baseHash + '&category=' + id, styles.length,
-                        id === 'all' ? '원본 공유 그림체 · 대표 그림 보기 · 선택 삭제' : '', styles[0]?.src) : null;
-                }).filter(Boolean);
+                const folders = [
+                    ['all', '기존 공유 그림체', 'naim', '원본 공유 그림체 · 대표 그림 보기 · 선택 삭제'],
+                    ['artist', '그림체 관리 공유 그림체', 'artist', '그림체 관리에서 수집한 공유 그림체 · 대표 그림 보기 · 선택 삭제'],
+                ].map(([id, name, source, detail]) => {
+                    const styles = folderStyles(catalog.styles, source);
+                    return root.Daki.folderCard(name, baseHash + '&category=' + id, styles.length, detail, styles[0]?.src);
+                });
+                const upperStyles = catalog.styles.filter(style => (style.category || 'upper') === 'upper');
+                if (upperStyles.length) folders.push(root.Daki.folderCard('상반신', baseHash + '&category=upper', upperStyles.length,
+                    '기존 상반신 결과', upperStyles[0]?.src));
                 const grid = root.Daki.createGrid('daki-project-grid', folders, false);
                 container.appendChild(grid);
                 async function loadBatches() {
@@ -281,93 +316,194 @@
                 libraryTimer = root.setTimeout(syncRootLibrary, 2000);
                 return;
             }
-            const overview = category === 'all';
-            let styles = overview ? catalog.styles.filter(style => (style.category || 'upper') === 'v5')
-                : catalog.styles.filter(style => (style.category || 'upper') === category);
-            const title = `공유 그림체 · ${overview ? '그림체 일람' : category === 'v5' ? 'V5 그림체' : '상반신'}`;
-            heading(title, sharedStyleSubtitle(category, styles.length), baseHash, '← 공유 그림체');
-            const toolbar = node('div', 'daki-style-toolbar');
-            const search = node('input', 'filter-select'); search.type = 'search'; search.placeholder = '그림체 이름 검색'; search.setAttribute('aria-label', '그림체 이름 검색');
+            const folderSource = category === 'artist' ? 'artist' : 'naim';
+            const overview = category === 'all' || category === 'artist';
+            let styles = folderStyles(catalog.styles, folderSource);
+            const initialModel = category === 'v5' ? 'v5' : 'all';
+            const modelTitles = {all: '전체 원본 모델', v5: 'V5 그림체', v4_5: 'V4.5 그림체', other: '기타 원본 모델'};
+            let scope;
+            const titleForScope = () => `공유 그림체 · ${category === 'artist' ? '그림체 관리 공유 그림체'
+                : overview ? '기존 공유 그림체' : category === 'v5' ? modelTitles[scope?.values().model || initialModel] : '상반신'}`;
+            let title = titleForScope();
+            heading(title, sharedStyleSubtitle(category, styles.filter(style => familyMatches(style, initialModel)).length), baseHash, '← 공유 그림체');
+            const toolbar = node('div', 'daki-style-toolbar daki-shared-toolbar');
+            const search = node('input', 'filter-select'); search.type = 'search'; search.placeholder = '이름 검색'; search.setAttribute('aria-label', '그림체 이름 검색');
             toolbar.append(search);
-            let cards = styles.map(style => ({id: style.id, name: style.name.toLowerCase(), style, card: styleCard(style)}));
+            let cards = styles.map(style => ({id: style.id, name: style.name.toLowerCase(), style, card: null, checkbox: null}));
+            const materializedItems = new Set();
+            const selected = new Set();
+            let busy = false;
+            scope = root.DakiStyleScope?.create({source: folderSource, model: initialModel, onChange: () => {
+                if (current(token)) refresh();
+            }});
+            if (scope) toolbar.appendChild(scope.element);
             const galleryKey = 'shared:' + category;
             const filters = viewFilters = root.DakiGalleryFilters?.create({galleryKey, title,
                 shareTagAssignment: true,
                 recommendationOf: item => recommendationCount(item.style), dateOf: item => item.style.sort_date,
                 onChange: () => { if (current(token)) refresh(); }});
             const imageTools = root.Daki.createImageTools?.({tagChoices: !filters});
-            const libraryControls = node('div', 'daki-library-controls');
+            const libraryControls = node('div', 'daki-library-controls daki-shared-controls');
             libraryControls.appendChild(toolbar);
             if (imageTools) libraryControls.appendChild(imageTools);
             if (filters) libraryControls.appendChild(filters.element);
             container.appendChild(libraryControls);
-            toolbar.appendChild(button('태그 그림 이상형 월드컵', () => {
+            const createVisible = button('테스트 만들기', () => {
+                const targetStyles = visibleCards().map(item => item.style);
+                return openSettings({...catalog, library: 'shared', styles: targetStyles,
+                    target_filters: {source: folderSource, model: scope?.values().model || initialModel}});
+            });
+            createVisible.classList.add('daki-shared-primary');
+            setCompactButtonLabels(createVisible, '테스트 만들기', '테스트');
+            createVisible.setAttribute('aria-label', '표시된 그림체로 테스트 만들기');
+            createVisible.title = '표시된 그림체로 테스트 만들기';
+            toolbar.appendChild(createVisible);
+            const secondaryActions = node('div', 'daki-shared-secondary-actions');
+            secondaryActions.id = 'daki-shared-secondary-actions-' + token;
+            const worldcup = button('월드컵', () => {
+                setActionsOpen(false);
                 const ids = new Set(visibleCards().map(item => item.id));
                 root.DakiWorldCup.open(styles.filter(style => ids.has(style.id)).map(style => ({
                     path: `__daki_shared__/${style.id}.png`, src: style.src, name: style.name,
                 })), title, galleryKey);
-            }));
-            const selected = new Set();
-            let busy = false;
+            });
+            worldcup.setAttribute('aria-label', '태그 그림 이상형 월드컵'); worldcup.title = '태그 그림 이상형 월드컵';
+            secondaryActions.appendChild(worldcup);
             const visibleCards = () => {
                 const q = search.value.trim().toLowerCase();
-                const found = cards.filter(item => item.name.includes(q));
+                const found = (scope ? scope.apply(cards, item => item.style) : cards).filter(item => item.name.includes(q));
                 return filters ? filters.apply(found, item => `__daki_shared__/${item.id}.png`) : found;
             };
-            const selectAll = button('표시된 그림체 모두 선택', () => {
+            const selectAll = button('모두 선택', () => {
+                setActionsOpen(false);
                 if (busy) return;
-                visibleCards().forEach(item => selected.add(item.id)); updateSelection();
+                const visible = visibleCards();
+                visible.forEach(item => selected.add(item.id)); updateSelection(visible);
             });
-            const clear = button('선택 해제', () => { if (!busy) { selected.clear(); updateSelection(); } });
-            const remove = button('선택한 그림체 삭제 (0)', async () => {
+            selectAll.setAttribute('aria-label', '표시된 그림체 모두 선택'); selectAll.title = '표시된 그림체 모두 선택';
+            const clear = button('선택 해제', () => {
+                setActionsOpen(false);
+                if (!busy) { selected.clear(); updateSelection(); }
+            });
+            clear.setAttribute('aria-label', '선택 해제'); clear.title = '선택 해제';
+            const remove = button('삭제 (0)', async () => {
+                setActionsOpen(false);
                 if (busy || !selected.size) return;
-                const ids = [...selected];
-                busy = true; updateSelection(); status.textContent = '선택한 그림체를 삭제하는 중…';
+                const visible = visibleCards();
+                const visibleIds = new Set(visible.map(item => item.id));
+                const ids = [...selected].filter(id => visibleIds.has(id));
+                if (!ids.length) return;
+                busy = true; updateSelection(visible); status.textContent = '선택한 그림체를 삭제하는 중…';
                 try {
                     await api('/api/daki/shared-styles/remove', 'POST', {style_ids: ids});
                     if (!current(token)) return;
                     cards = cards.filter(item => !selected.has(item.id)); selected.clear();
-                    heading(title, sharedStyleSubtitle(category, cards.length), baseHash, '← 공유 그림체');
+                    pruneMaterializedItems();
                     status.textContent = `${ids.length}개 그림체를 삭제했습니다. 새 전체 테스트에서 제외됩니다.`;
                     refresh();
                 } catch (error) { if (current(token)) status.textContent = error.message; }
                 finally { busy = false; if (current(token)) updateSelection(); }
             });
-            function updateSelection() {
-                selectAll.disabled = busy || !visibleCards().some(item => !selected.has(item.id));
+            remove.classList.add('daki-shared-delete');
+            secondaryActions.append(selectAll, clear, remove);
+            if (!overview) { selectAll.remove(); clear.remove(); remove.remove(); }
+            toolbar.appendChild(secondaryActions);
+            const moreButton = button('더보기 ▾', () => setActionsOpen(!actionsOpen()));
+            moreButton.classList.add('daki-shared-more-button');
+            moreButton.setAttribute('aria-label', '추가 그림체 작업');
+            moreButton.setAttribute('aria-controls', secondaryActions.id);
+            moreButton.setAttribute('aria-expanded', 'false');
+            setCompactButtonLabels(moreButton, '더보기 ▾', '⋯');
+            moreButton.title = '추가 그림체 작업';
+            toolbar.appendChild(moreButton);
+            function actionsOpen() { return toolbar.className.split(/\s+/).includes('daki-actions-open'); }
+            function setActionsOpen(open) {
+                const classes = toolbar.className.split(/\s+/).filter(Boolean).filter(name => name !== 'daki-actions-open');
+                if (open) classes.push('daki-actions-open');
+                toolbar.className = classes.join(' ');
+                moreButton.setAttribute('aria-expanded', String(open));
+            }
+            const onToolbarKeydown = event => {
+                if (event.key !== 'Escape' || !actionsOpen()) return;
+                event.preventDefault(); setActionsOpen(false); moreButton.focus({preventScroll: true});
+            };
+            const onDocumentClick = event => {
+                if (actionsOpen() && !toolbar.contains(event.target)) setActionsOpen(false);
+            };
+            toolbar.addEventListener('keydown', onToolbarKeydown);
+            doc.addEventListener?.('click', onDocumentClick);
+            viewActionsDispose = () => {
+                toolbar.removeEventListener('keydown', onToolbarKeydown);
+                doc.removeEventListener?.('click', onDocumentClick);
+                setActionsOpen(false);
+            };
+            function updateSelection(visible = visibleCards()) {
+                createVisible.disabled = busy || !visible.length;
+                selectAll.disabled = busy || !visible.some(item => !selected.has(item.id));
                 clear.disabled = remove.disabled = busy || !selected.size;
-                remove.textContent = `선택한 그림체 삭제 (${selected.size})`;
-                cards.forEach(item => {
+                const removeLabel = `선택한 그림체 삭제 (${selected.size})`;
+                remove.textContent = `삭제 (${selected.size})`;
+                remove.setAttribute('aria-label', removeLabel); remove.title = removeLabel;
+                materializedItems.forEach(item => {
                     if (!item.checkbox) return;
                     item.checkbox.checked = selected.has(item.id); item.checkbox.disabled = busy;
                     item.card.setAttribute('data-style-selected', String(item.checkbox.checked));
                 });
             }
-            let decorateNewCard = () => {};
-            if (overview) {
-                toolbar.append(selectAll, clear, remove);
-                container.appendChild(node('p', 'daki-test-note', '대표 그림을 보고 삭제할 그림체를 선택하세요. 삭제한 그림체는 새 전체 테스트에서 제외되며, 원본 그림과 기존 테스트는 유지됩니다.'));
-                const decorateSelection = item => {
-                    const name = item.card.querySelector('.daki-image-actions').children[0];
-                    const label = node('label', 'daki-style-select');
-                    const checkbox = item.checkbox = node('input'); checkbox.type = 'checkbox';
-                    checkbox.setAttribute('aria-label', name.textContent + ' 선택');
-                    checkbox.onchange = () => {
-                        if (busy) return;
-                        if (checkbox.checked) selected.add(item.id); else selected.delete(item.id);
-                        updateSelection();
-                    };
-                    label.append(checkbox, node('span', '', name.textContent)); name.replaceWith(label);
+            const decorateSelection = item => {
+                const name = item.card.querySelector('.daki-image-actions').children[0];
+                const label = node('label', 'daki-style-select');
+                const checkbox = item.checkbox = node('input'); checkbox.type = 'checkbox';
+                checkbox.setAttribute('aria-label', name.textContent + ' 선택');
+                checkbox.checked = selected.has(item.id); checkbox.disabled = busy;
+                checkbox.onchange = () => {
+                    if (busy) return;
+                    if (checkbox.checked) selected.add(item.id); else selected.delete(item.id);
+                    updateSelection();
                 };
-                cards.forEach(decorateSelection);
-                decorateNewCard = decorateSelection;
+                label.append(checkbox, node('span', '', name.textContent)); name.replaceWith(label);
+                item.card.setAttribute('data-style-selected', String(checkbox.checked));
+            };
+            function ensureCard(item) {
+                if (!item.card) {
+                    item.card = styleCard(item.style);
+                    materializedItems.add(item);
+                    if (overview) decorateSelection(item);
+                } else if (item.checkbox) {
+                    item.checkbox.checked = selected.has(item.id); item.checkbox.disabled = busy;
+                    item.card.setAttribute('data-style-selected', String(item.checkbox.checked));
+                }
+                return item.card;
             }
-            const grid = root.Daki.createGrid('daki-style-grid'); container.appendChild(grid);
+            function pruneMaterializedItems() {
+                const activeItems = new Set(cards);
+                for (const item of materializedItems) if (!activeItems.has(item)) materializedItems.delete(item);
+            }
+            if (overview) {
+                container.appendChild(node('p', 'daki-test-note', '대표 그림을 보고 삭제할 그림체를 선택하세요. 삭제한 그림체는 새 전체 테스트에서 제외되며, 원본 그림과 기존 테스트는 유지됩니다.'));
+            }
+            const progressive = root.DakiProgressiveGrid?.create?.({className: 'daki-style-grid',
+                renderItem: ensureCard, pathOf: item => `__daki_shared__/${item.id}.png`});
+            const grid = progressive || root.Daki.createGrid('daki-style-grid');
+            viewGrid = progressive;
+            container.appendChild(grid);
             const empty = node('p', 'daki-empty', '표시할 그림체가 없습니다.'); container.appendChild(empty);
+            function filteredCards() {
+                const q = search.value.trim().toLowerCase();
+                const scoped = scope ? scope.apply(cards, item => item.style) : cards;
+                const found = scoped.filter(item => item.name.includes(q));
+                return {scoped, visible: filters ? filters.apply(found, item => `__daki_shared__/${item.id}.png`) : found};
+            }
             function refresh() {
-                const visible = visibleCards(); grid.setItems(visible.map(item => item.card));
+                const {scoped, visible} = filteredCards();
+                if (progressive) grid.setItems(visible); else grid.setItems(visible.map(ensureCard));
+                const visibleIds = new Set(visible.map(item => item.id));
+                for (const id of selected) if (!visibleIds.has(id)) selected.delete(id);
                 filters?.setResultCount?.(visible.length, cards.length);
-                empty.hidden = !!visible.length; updateSelection();
+                empty.hidden = !!visible.length; updateSelection(visible);
+                const scopedCount = scoped.length;
+                title = titleForScope();
+                heading(title, sharedStyleSubtitle(category, scopedCount), baseHash, '← 공유 그림체');
             }
             search.oninput = refresh; refresh();
             async function syncLibrary() {
@@ -376,7 +512,7 @@
                     if (!doc.hidden && !busy) {
                         const next = await api('/api/daki/shared-styles');
                         if (!current(token) || busy) return;
-                        const incoming = next.styles.filter(style => (style.category || 'upper') === (overview ? 'v5' : category));
+                        const incoming = folderStyles(next.styles, folderSource);
                         if (JSON.stringify(incoming) !== JSON.stringify(styles)) {
                             const existing = new Map(cards.map(item => [item.id, item]));
                             styles = incoming;
@@ -384,12 +520,11 @@
                             cards = incoming.map(style => {
                                 const previous = existing.get(style.id);
                                 if (previous && JSON.stringify(previous.style) === JSON.stringify(style)) return previous;
-                                const item = {id:style.id, name:style.name.toLowerCase(), style, card:styleCard(style)};
-                                decorateNewCard(item); return item;
+                                return {id:style.id, name:style.name.toLowerCase(), style, card:null, checkbox:null};
                             });
+                            pruneMaterializedItems();
                             const ids = new Set(incoming.map(style => style.id));
                             for (const id of selected) if (!ids.has(id)) selected.delete(id);
-                            heading(title, sharedStyleSubtitle(category, cards.length), baseHash, '← 공유 그림체');
                             refresh();
                         }
                     }
@@ -581,6 +716,8 @@
                     char_prompts: value.char_prompts.map(character => ({...character, negative_prompt: ''}))} : value;
                 if (!batch) {
                     request.name = nameInput.value.trim(); request.library = catalog.library || 'shared';
+                    const targetFilters = targets?.filters?.() || catalog.target_filters;
+                    if (targetFilters) request.target_filters = targetFilters;
                     if (styleIds !== null) request.style_ids = styleIds;
                     else if (request.library === 'shared') request.style_ids = catalog.styles.map(style => style.id);
                 }

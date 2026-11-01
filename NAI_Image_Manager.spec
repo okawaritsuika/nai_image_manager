@@ -1,10 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_all
+
+playwright_datas, playwright_binaries, playwright_imports = collect_all('playwright')
 
 
 datas = [
     ("style_workspace.html", "."),
+    ("naim/style_manager/templates", "naim/style_manager/templates"),
+    ("naim/style_manager/static", "naim/style_manager/static"),
+    ("naim/style_manager/arca_style_seed.sqlite", "naim/style_manager"),
+    ("naim/style_manager/arca_image_archive_legacy.json", "naim/style_manager"),
     ("index.html", "."),
     ("canvas.html", "."),
     ("legacy_generation.html", "."),
@@ -26,9 +32,9 @@ datas = [
 a = Analysis(
     ["main_executor.pyw"],
     pathex=[],
-    binaries=[],
-    datas=datas,
-    hiddenimports=collect_submodules("PIL"),
+    binaries=playwright_binaries,
+    datas=datas + playwright_datas,
+    hiddenimports=collect_submodules("PIL") + playwright_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

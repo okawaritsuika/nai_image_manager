@@ -13,6 +13,7 @@
     let confirmedPicker = null;
     let personalDeleteDialog = null;
     let viewFilters;
+    let viewGrid;
     const byId = id => doc.getElementById(id);
     const node = (tag, className, text) => {
         const item = doc.createElement(tag);
@@ -32,6 +33,7 @@
     }
     function leave() {
         revision++; view = null; editorRevision++;
+        viewGrid?.dispose?.(); viewGrid = null;
         viewFilters?.dispose(); viewFilters = null;
         if (confirmedPicker) closeConfirmedPicker(confirmedPicker, false);
         if (personalDeleteDialog) closePersonalDeleteDialog(personalDeleteDialog, false, true);
@@ -69,11 +71,16 @@
         const back = byId('dakiBack'); back.hidden = false; back.href = '#daki'; back.textContent = '← daki 프로젝트';
         const status = byId('dakiPageStatus'); status.textContent = '개인 그림체를 불러오는 중…';
         try {
-            const {styles} = await api(endpoint);
+            const {styles: records} = await api(endpoint);
             if (!current(token)) return;
+            const styles = records.map(style => ({...style, source_library: 'personal'}));
             status.textContent = '';
             const toolbar = node('div', 'daki-style-toolbar');
-            const createTest = button('전체 그림체로 테스트 만들기', () => root.DakiStyles.openSettings({styles, library: 'personal'}));
+            let scope;
+            const createTest = button('전체 그림체로 테스트 만들기', () => root.DakiStyles.openSettings({
+                styles: visibleCards().map(item => item.style), library: 'personal',
+                target_filters: {source: 'personal', model: scope?.values().model || 'all'},
+            }));
             createTest.disabled = !styles.length;
             toolbar.append(button('＋ 개인 그림체', () => openEditor()),
                 button('확정 그림체 가져오기', openConfirmedPicker), createTest);
@@ -87,23 +94,33 @@
                 shareTagAssignment: true,
                 onChange: () => { if (current(token)) filter(); }});
             const tools = root.Daki.createImageTools?.({tagChoices: !filters});
+            scope = root.DakiStyleScope?.create({personal: true, onChange: () => { if (current(token)) filter(); }});
             const libraryControls = node('div', 'daki-library-controls');
             libraryControls.append(toolbar, searchRow);
+            if (scope) libraryControls.appendChild(scope.element);
             if (tools) libraryControls.appendChild(tools);
             if (filters) libraryControls.appendChild(filters.element);
             container.appendChild(libraryControls);
-            const cards = styles.map(style => ({style, card: styleCard(style, view)}));
-            const grid = root.Daki.createGrid('daki-style-grid'); container.appendChild(grid);
+            const cards = styles.map(style => ({style, card: null}));
+            const ensureCard = item => item.card || (item.card = styleCard(item.style, view));
+            const progressive = root.DakiProgressiveGrid?.create?.({className: 'daki-style-grid',
+                renderItem: ensureCard, pathOf: item => imageFor(item.style)?.path});
+            const grid = progressive || root.Daki.createGrid('daki-style-grid');
+            viewGrid = progressive;
+            container.appendChild(grid);
             const empty = node('p', 'daki-empty', '개인 그림체가 없습니다. 직접 입력하거나 그림에서 가져와 추가하세요.');
             container.appendChild(empty);
             function visibleCards() {
                 const query = search.value.trim().toLowerCase();
-                const found = cards.filter(item => item.style.name.toLowerCase().includes(query));
+                const found = (scope ? scope.apply(cards, item => item.style) : cards).filter(item => item.style.name.toLowerCase().includes(query));
                 return filters ? filters.apply(found, item => imageFor(item.style)?.path || '') : found;
             }
             function filter() {
                 const shown = visibleCards();
-                grid.setItems(shown.map(item => item.card)); empty.hidden = !!shown.length;
+                if (progressive) grid.setItems(shown); else grid.setItems(shown.map(ensureCard));
+                empty.hidden = !!shown.length;
+                createTest.disabled = !shown.length;
+                worldcup.disabled = !shown.some(item => imageFor(item.style));
                 empty.textContent = styles.length ? '검색·필터에 맞는 그림체가 없습니다.' : '개인 그림체가 없습니다. 직접 입력하거나 그림에서 가져와 추가하세요.';
             }
             search.oninput = filter; filter();

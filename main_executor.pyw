@@ -34,7 +34,7 @@ def run_server_mode_if_requested():
     server_app.run_server()
     sys.exit(0)
 
-if sys.prefix == sys.base_prefix:
+if not is_frozen_app() and sys.prefix == sys.base_prefix:
     venv_python_candidates = []
 
     if os.name == "nt":
@@ -722,17 +722,12 @@ class NaiaHyperExecutor:
         return not utils.is_port_active(5000)
 
     def open_style_connection(self):
-        from naim.style_connection_ui import open_style_connection
-
-        dialog = getattr(self, '_style_connection_dialog', None)
-        if dialog is not None and dialog.winfo_exists():
-            dialog.lift()
-            dialog.focus_set()
+        if not utils.is_port_active(5000):
+            if self.show_alert_var.get():
+                messagebox.showwarning("경고", "서버가 켜져 있지 않습니다.")
             return
-        self._style_connection_dialog = open_style_connection(
-            self.root, APP_DIR, can_save=self._can_save_style_connection,
-            on_saved=lambda: self.log('그림체 프로그램 연결을 저장했습니다. 다음 서버 시작부터 적용됩니다.'),
-        )
+        webbrowser.open("http://127.0.0.1:5000/style-manager")
+        self.log("그림체 관리를 열었습니다.")
 
     def open_legacy_import(self):
         if self.update_in_progress or self._active_job is not None:

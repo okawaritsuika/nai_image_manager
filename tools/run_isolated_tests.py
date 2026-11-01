@@ -41,6 +41,14 @@ def copy_source(root, staging):
                 shutil.copy2(source, target)
 
 
+    for name in ('arca_style_seed.sqlite', 'arca_image_archive_legacy.json'):
+        source = root / 'naim/style_manager' / name
+        if source.is_file():
+            destination = staging / 'naim/style_manager' / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="naim-tests-") as temporary:

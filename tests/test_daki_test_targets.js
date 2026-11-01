@@ -15,7 +15,7 @@ const batch = id => ({id, name: 'Same name', created_at: id === testA ? '2026-10
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const clone = value => JSON.parse(JSON.stringify(value));
 
-function fixture(input = catalog) {
+function fixture(input = catalog, withScope = false) {
     class Element {
         constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.attributes = {}; this.text = ''; this.value = ''; this.hidden = false; this.disabled = false; }
         set value(value) { this._value = String(value); }
@@ -40,6 +40,7 @@ function fixture(input = catalog) {
             const picker = {closed: false, close() { this.closed = true; options.onClose?.(); }};
             galleryOpens.push({options, picker}); return picker;
         }}};
+    if (withScope) vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_style_scope.js'), 'utf8'), {window: win});
     vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_test_targets.js'), 'utf8'), {window: win});
     const target = win.DakiTestTargets.create({catalog: input, onChange: () => changes++});
     const field = suffix => target.element.descendants().find(item => item.name === 'daki_target_' + suffix);
@@ -68,6 +69,44 @@ test('all styles start without API calls or synchronous callbacks and use the nu
     const f = fixture(); assert.deepEqual(f.result(), {styleIds: null, count: 3, error: ''});
     assert.equal(f.requests.length, 0); assert.equal(f.changes(), 0); assert.equal(f.field('rank').disabled, true);
     assert.deepEqual(catalog.styles.map(style => style.id), ['style_a', 'style_b', 'style_c']);
+});
+
+test('source and original-model filters intersect all, tag, worldcup, and manual targets and reset picker selection', async () => {
+    const scopedCatalog = {target_filters: {source: 'naim', model: 'v5'}, styles: [
+        {id: 'naim-v5', source_library: 'naim', model: 'nai-diffusion-5-full'},
+        {id: 'naim-v45', source_library: 'naim', model: 'nai-diffusion-4-5-full'},
+        {id: 'artist-v5', source_library: 'artist', model: 'V5 Full'},
+        {id: 'artist-other', source_library: 'artist', model: 'unrecognized'},
+    ]};
+    const f = fixture(scopedCatalog, true);
+    assert.deepEqual(f.result(), {styleIds: ['naim-v5'], count: 1, error: ''});
+    assert.deepEqual(JSON.parse(JSON.stringify(f.target.filters())), {source: 'naim', model: 'v5'});
+    f.tags[sharedPath('naim-v5')] = f.tags[sharedPath('artist-v5')] = 'keep';
+    f.change('mode', 'tag'); assert.deepEqual(f.result().styleIds, ['naim-v5']);
+
+    await cupsLoaded(f, [record()]);
+    f.change('worldcup', cupA); f.change('rank', '10');
+    f.reply({record: record(cupA, 'shared:all', [
+        {path: sharedPath('artist-v5'), rank: 1}, {path: sharedPath('naim-v45'), rank: 2},
+        {path: sharedPath('naim-v5'), rank: 3},
+    ])}); await flush();
+    assert.deepEqual(f.result().styleIds, ['naim-v5']);
+
+    f.change('mode', 'all');
+    const gallery = f.target.element.descendants().find(item => item.tagName === 'BUTTON' && item.textContent === '갤러리에서 선택');
+    gallery.onclick();
+    assert.deepEqual(f.galleryOpens[0].options.catalog.styles.map(style => style.id), ['naim-v5']);
+    f.galleryOpens[0].options.onApply(['naim-v5']);
+    const source = f.target.element.descendants().find(item => item.name === 'daki_scope_source');
+    source.value = 'artist'; source.onchange();
+    assert.equal(f.galleryOpens[0].picker.closed, true);
+    f.change('mode', 'all');
+    assert.deepEqual(f.result(), {styleIds: ['artist-v5'], count: 1, error: ''});
+    assert.deepEqual(JSON.parse(JSON.stringify(f.target.filters())), {source: 'artist', model: 'v5'});
+    const model = f.target.element.descendants().find(item => item.name === 'daki_scope_model');
+    model.value = 'v4_5'; model.onchange();
+    assert.equal(f.result().count, 0); assert.match(f.result().error, /조건에 맞는/);
+    assert.deepEqual(JSON.parse(JSON.stringify(f.target.filters())), {source: 'artist', model: 'v4_5'});
 });
 
 test('manual gallery selection applies only active IDs, preserves selection on cancel, and ignores callbacks after disposal', () => {

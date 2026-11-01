@@ -667,7 +667,9 @@ class NaiaSetupManager:
             "flask",
             "requests",
             "pillow",
-            "numpy"
+            "numpy",
+            "browser-cookie3==0.20.1",
+            "playwright==1.60.0"
         ]
 
         self.run_cmd_thread(

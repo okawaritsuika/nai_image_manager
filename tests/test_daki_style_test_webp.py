@@ -117,7 +117,9 @@ class DakiStyleTestWebpTests(unittest.TestCase):
 
     def test_api_round_trip_serves_webp_full_image_with_webp_mime_type(self):
         app = Flask(__name__)
-        with mock.patch('naim.web.daki_styles.DakiSharedStyles', return_value=self.catalog):
+        with mock.patch('naim.web.daki_styles.DakiSharedStyles', return_value=self.catalog), \
+                mock.patch('naim.storage.shared_library_catalog.build_shared_catalog',
+                           side_effect=lambda app, legacy: legacy):
             manager = register_daki_style_routes(
                 app, lambda: self.root / 'catalog', lambda: self.root / 'api-tests', lambda: self.key)
         manager.generator = self.generator

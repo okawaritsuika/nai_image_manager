@@ -10,6 +10,7 @@ from flask import jsonify, request, send_file
 
 from naim.novelai import generate_text_image
 from naim.storage.daki_projects import DakiNotFoundError
+from naim.shared_style_selection import filter_styles, model_family
 
 
 def register_daki_personal_style_routes(app, store, key_provider=None):
@@ -49,10 +50,12 @@ def register_daki_personal_style_routes(app, store, key_provider=None):
             return jsonify(status='success', style=public(style)), 201
         summaries = []
         include_prompts = request.args.get('include_prompts') == '1'
-        for style in store.list_styles():
+        for style in filter_styles([{**item, 'source_library': 'personal'} for item in store.list_styles()],
+                                  request.args.get('source', 'all'), request.args.get('model_family', 'all')):
             summary = {key: style.get(key) for key in
                        ('id', 'name', 'model', 'category', 'source_path', 'source_url', 'source_image_id', 'seed')}
             summary.update(width=style['preview']['width'], height=style['preview']['height'])
+            summary.update(source_library='personal', model_family=model_family(style.get('model')))
             if include_prompts:
                 summary.update({key: style.get(key, '') for key in ('positive', 'negative')})
             summaries.append(public(summary))

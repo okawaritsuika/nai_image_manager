@@ -1,6 +1,5 @@
 const applications = [
   {name: "NAI Image Manager", endpoint: "http://127.0.0.1:5000/api/arca-styles/browser-session/extension", statusId: "managerStatus"},
-  {name: "NAImakeArtistGroup", endpoint: "http://127.0.0.1:5001/api/arca-styles/browser-session/extension", statusId: "artistStatus"},
 ];
 const connectButton = document.getElementById("connectSession");
 const statusElement = document.getElementById("status");
@@ -54,7 +53,7 @@ async function requestApplication(application, payload, token) {
       return "disconnected";
     }
     const message = response.status === 404
-      ? "연결 API가 없습니다. 이 앱을 최신 버전으로 실행해 주세요."
+      ? "연결 API가 없습니다. NAI Image Manager를 최신 버전으로 실행해 주세요."
       : result?.message || result?.error || `로그인을 확인하지 못했습니다. (HTTP ${response.status})`;
     if (!checking && result?.connected === true) {
       setApplicationStatus(application, `새 로그인 연결을 확인하지 못했습니다. 기존 연결은 유지됩니다. ${message}`, "error");
@@ -77,17 +76,17 @@ function summarize(results, checking = false) {
   const connected = applications.filter((application, index) => ["connected", "retained"].includes(results[index]));
   if (connected.length) {
     const names = connected.map(application => application.name).join(" · ");
-    setStatus(results.includes("retained") ? `${names} 연결 유지 중 · 로그인 갱신 결과는 앱별 안내를 확인해 주세요.`
+    setStatus(results.includes("retained") ? `${names} 연결 유지 중 · 로그인 갱신 결과는 아래 안내를 확인해 주세요.`
       : `${names} ${checking ? "연결됨" : "연결 완료"}`, "success");
   } else {
-    setStatus(results.includes("unavailable") ? "앱 연결 상태를 확인하지 못했습니다. 아래 앱별 안내를 확인해 주세요."
-      : "연결된 앱이 없습니다. 아래 앱별 안내를 확인해 주세요.", "error");
+    setStatus(results.includes("unavailable") ? "NAI Image Manager 연결 상태를 확인하지 못했습니다. 아래 안내를 확인해 주세요."
+      : "NAI Image Manager에 연결된 로그인 세션이 없습니다. 아래 안내를 확인해 주세요.", "error");
   }
 }
 
 async function checkConnections() {
   const token = ++revision;
-  setStatus("앱별 연결 상태 확인 중…");
+  setStatus("NAI Image Manager 연결 상태 확인 중…");
   const results = await Promise.all(applications.map(application => requestApplication(application, undefined, token)));
   if (revision === token) summarize(results, true);
 }
@@ -96,7 +95,7 @@ connectButton.addEventListener("click", async () => {
   if (connectButton.disabled) return;
   const token = ++revision;
   connectButton.disabled = true;
-  setStatus("Chrome 로그인 확인 중…");
+  setStatus("NAI Image Manager 로그인 확인 중…");
   applications.forEach(application => setApplicationStatus(application, "연결 대기 중"));
   try {
     const cookies = await chrome.cookies.getAll({ domain: "arca.live" });

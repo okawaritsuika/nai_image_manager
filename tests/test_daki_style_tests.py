@@ -76,6 +76,32 @@ class DakiStyleTestsTests(unittest.TestCase):
     def new_manager(self):
         return DakiStyleTests(lambda: self.root, self.catalog, lambda: self.key, self.generator)
 
+    def test_target_source_and_model_filters_preserve_separate_generation_model(self):
+        self.styles[0].update(source_library='naim', model='nai-diffusion-5-full')
+        self.styles[1].update(source_library='artist', model='nai-diffusion-4-5-full')
+        self.styles[2].update(source_library='artist', model='nai-diffusion-5-full')
+        filters = {'source': 'artist', 'model': 'v4_5'}
+        batch = self.manager.create(synthetic_request(target_filters=filters))
+        self.assertEqual(batch['total'], 1)
+        self.assertEqual(batch['target_filters'], filters)
+        self.assertEqual(batch['items'][0]['style_id'], 'style-1')
+        self.assertEqual(batch['items'][0]['source_model'], 'nai-diffusion-4-5-full')
+        self.assertEqual(batch['items'][0]['model'], 'nai-diffusion-5-full')
+        self.assertEqual(self.manager.get(batch['id'])['target_filters'], filters)
+        added = synthetic_styles(5)
+        added[3].update(source_library='artist', model='nai-diffusion-4-5-full')
+        added[4].update(source_library='artist', model='nai-diffusion-5-full')
+        self.styles.extend(added[3:])
+        self.assertEqual(self.manager.get(batch['id'])['missing_shared_style_ids'], ['style-3'])
+
+    def test_target_filters_reject_invalid_empty_and_outside_explicit_selection(self):
+        for filters in ([], {'source': 'invalid'}, {'model': 'invalid'}, {'source': 'artist'}):
+            with self.subTest(filters=filters), self.assertRaises(ValueError):
+                self.manager.create(synthetic_request(target_filters=filters))
+        self.styles[0]['source_library'] = 'artist'
+        with self.assertRaises(ValueError):
+            self.manager.create(synthetic_request(target_filters={'source': 'artist'}, style_ids=['style-1']))
+
     def test_upper_test_import_is_stable_and_persistent_without_generation(self):
         source = synthetic_upper_source(self.styles[:1])
         self.catalog.upper_test_source.return_value = source

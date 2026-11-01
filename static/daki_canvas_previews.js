@@ -27,7 +27,12 @@
         }
 
         function loading(container) {
-            container.textContent = '불러오는 중…';
+            const spinner = root.document.createElement('span');
+            spinner.className = 'daki-preview-spinner';
+            spinner.setAttribute('aria-hidden', 'true');
+            const label = root.document.createElement('span');
+            label.textContent = '미리보기 준비 중…';
+            container.replaceChildren(spinner, label);
             container.classList?.remove('daki-warning');
             setBusy(container, true);
         }

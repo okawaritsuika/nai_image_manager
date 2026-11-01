@@ -50,7 +50,7 @@
         return {dialog, form, body, status, footer, live: () => token === revision && active === dialog && dialog.open,
             isBusy: () => busy, setBusy(value) {
                 busy = value;
-                form.querySelectorAll('input, button').forEach(input => { input.disabled = value; });
+                form.querySelectorAll('input, button, select').forEach(input => { input.disabled = value; });
             }};
     }
     function rename(batch, onSaved) {
@@ -83,6 +83,7 @@
         let loading = false;
         let loadFailed = false;
         let loadRevision = 0;
+        let scope;
         ui.body.appendChild(node('p', 'daki-test-library-note', '이미 포함된 그림체는 제외했습니다. 추가한 그림체는 대기 목록에 들어가며, 현재 테스트 설정으로 이어서 생성할 수 있습니다.'));
         const toolbar = node('div', 'daki-style-toolbar daki-test-library-search');
         const search = node('input', 'filter-select'); search.type = 'search'; search.placeholder = '그림체 이름 검색';
@@ -95,17 +96,23 @@
         const create = button('＋ 새 개인 그림체', () => {
             root.DakiPersonalStyles.openEditor({onSaved: style => { if (ui.live()) return reload(style.id); }});
         });
-        toolbar.append(search, selectAll, create); ui.body.appendChild(toolbar);
+        scope = root.DakiStyleScope?.create({onChange: render});
+        toolbar.append(search, selectAll);
+        if (scope) toolbar.appendChild(scope.element);
+        toolbar.appendChild(create); ui.body.appendChild(toolbar);
         const count = node('p', 'daki-test-library-count'); count.setAttribute('aria-live', 'polite'); ui.body.appendChild(count);
         const list = node('div', 'daki-test-style-list'); list.setAttribute('role', 'group'); list.setAttribute('aria-label', '추가할 그림체 목록'); ui.body.appendChild(list);
         const retry = button('다시 불러오기', () => reload()); retry.hidden = true; ui.body.appendChild(retry);
         const save = button('선택한 그림체 추가', null, 'daki-primary'); save.type = 'submit'; ui.footer.appendChild(save);
         function filtered() {
             const query = search.value.trim().toLowerCase();
-            return entries.filter(entry => entry.style.name.toLowerCase().includes(query));
+            const scoped = scope ? scope.apply(entries, entry => entry.style) : entries;
+            return scoped.filter(entry => entry.style.name.toLowerCase().includes(query));
         }
         function render() {
             const shown = filtered();
+            const visibleIds = new Set(shown.map(entry => entry.style.id));
+            if (!loading) for (const id of selected) if (!visibleIds.has(id)) selected.delete(id);
             list.replaceChildren();
             for (const entry of shown) {
                 entry.checkbox.checked = selected.has(entry.style.id);
@@ -113,10 +120,11 @@
             }
             if (!shown.length) list.appendChild(node('p', 'daki-empty', loading ? '그림체를 불러오는 중…'
                 : entries.length ? '검색한 그림체가 없습니다.' : '추가할 그림체가 없습니다. 새 개인 그림체를 등록할 수 있습니다.'));
-            count.textContent = `${shown.length}개 표시 · ${selected.size}개 선택`;
+            const selectedShown = shown.filter(entry => selected.has(entry.style.id)).length;
+            count.textContent = `${shown.length}개 표시 · ${selectedShown}개 선택`;
             selectAll.disabled = ui.isBusy() || loading || !shown.length;
             selectAll.textContent = shown.length && shown.every(entry => selected.has(entry.style.id)) ? '표시 항목 선택 해제' : '표시 항목 전체 선택';
-            save.disabled = ui.isBusy() || loading || loadFailed || !selected.size;
+            save.disabled = ui.isBusy() || loading || loadFailed || !selectedShown;
         }
         function cardFor(style, source) {
             const card = node('label', 'item-box daki-test-style-choice');
@@ -135,13 +143,15 @@
             const token = ++loadRevision;
             loading = true; loadFailed = false; entries = []; retry.hidden = true; ui.status.textContent = ''; render();
             try {
-                const sources = ['공유 그림체', '개인 그림체'];
+                const sources = ['기존 공유 그림체', '개인 그림체'];
                 const catalogs = await Promise.allSettled([api('/api/daki/shared-styles'), api('/api/daki/personal-styles')]);
                 if (!ui.live() || token !== loadRevision) return;
                 const seen = new Set(existing);
                 entries = catalogs.flatMap((catalog, index) => catalog.status === 'fulfilled'
-                    ? catalog.value.styles.filter(style => { if (seen.has(style.id)) return false; seen.add(style.id); return true; })
-                        .map(style => cardFor(style, sources[index])) : []);
+                    ? catalog.value.styles.map(style => index === 1 ? {...style, source_library: 'personal'} : style)
+                        .filter(style => { if (seen.has(style.id)) return false; seen.add(style.id); return true; })
+                        .map(style => cardFor(style, index === 1 ? sources[index]
+                            : style.source_library === 'artist' ? '그림체 관리 공유 그림체' : sources[index])) : []);
                 const available = new Set(entries.map(entry => entry.style.id));
                 for (const id of selected) if (!available.has(id)) selected.delete(id);
                 if (selectId && available.has(selectId)) { selected.add(selectId); search.value = ''; }
@@ -159,10 +169,12 @@
         search.oninput = render;
         ui.form.onsubmit = async event => {
             event.preventDefault();
-            if (ui.isBusy() || loading || loadFailed || !selected.size) return;
+            const selectedVisible = filtered().filter(entry => selected.has(entry.style.id));
+            if (ui.isBusy() || loading || loadFailed || !selectedVisible.length) return;
             ui.setBusy(true); ui.status.textContent = '그림체를 대기 목록에 추가하는 중…';
             try {
-                const result = await api(endpoint + encodeURIComponent(batch.id) + '/styles', 'POST', {style_ids: [...selected]});
+                const result = await api(endpoint + encodeURIComponent(batch.id) + '/styles', 'POST',
+                    {style_ids: selectedVisible.map(entry => entry.style.id)});
                 if (!ui.live()) return;
                 ui.dialog.close(); onSaved?.(result.batch);
             } catch (error) { if (ui.live()) ui.status.textContent = error.message; }

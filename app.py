@@ -6,6 +6,7 @@ import shutil
 import re
 import json
 import threading
+from contextlib import nullcontext
 from flask import Flask, jsonify, send_file, request
 import image_logic
 from naim.images.comics import decorate_comic_node
@@ -3032,12 +3033,15 @@ def build_cached_image_preview(file_path, mtime_ns, file_size, max_side):
 
 def build_image_preview_bytes(file_path, max_side):
     with Image.open(file_path) as source:
-        preview = ImageOps.exif_transpose(source)
-        preview.thumbnail(
+        # A square bound is unchanged by EXIF rotation. Resize before making
+        # the oriented copy so large originals are not copied at full size.
+        # JPEG also keeps Pillow's reduced-resolution decoder available.
+        source.thumbnail(
             (max_side, max_side),
             Image.Resampling.LANCZOS,
             reducing_gap=3.0
         )
+        preview = ImageOps.exif_transpose(source)
 
         has_alpha = "A" in preview.getbands() or "transparency" in preview.info
         output = io.BytesIO()
@@ -4471,7 +4475,8 @@ from naim.gallery.rules import (
 
 
 def extract_prompt_info_from_image_filelike(file_storage):
-    with Image.open(file_storage.stream) as img:
+    decoded = getattr(file_storage, 'decoded_image', None)
+    with (nullcontext(decoded) if isinstance(decoded, Image.Image) else Image.open(file_storage.stream)) as img:
         raw_meta = ""
         stealth_data = image_logic.read_stealth_info(img)
         if stealth_data:

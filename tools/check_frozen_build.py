@@ -23,7 +23,9 @@ from run_isolated_tests import copy_source
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5000)
-    port = parser.parse_args().port
+    parser.add_argument('--skip-legacy', action='store_true')
+    options = parser.parse_args()
+    port = options.port
     # An alternate port changes only the temporary test copy.
     # Never stop an existing program to obtain it.
     with socket.socket() as probe:
@@ -31,11 +33,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix='naim-frozen-test-') as temporary:
         root = Path(temporary)
         copy_source(Path(__file__).resolve().parents[1], root)
+        (root / 'data/prompt_tags').mkdir(parents=True, exist_ok=True)
         if port != 5000:
             server_source = root / 'app.py'
             original = server_source.read_text(encoding='utf-8')
             assert original.count('port=5000,') == 1
             server_source.write_text(original.replace('port=5000,', f'port={port},'), encoding='utf-8')
+        server_source = root / 'app.py'
+        diagnostic = "\n@app.errorhandler(Exception)\ndef frozen_smoke_error(error):\n    import traceback\n    from pathlib import Path\n    Path(get_app_dir(), 'frozen-smoke-error.txt').write_text(traceback.format_exc(), encoding='utf-8')\n    return 'Synthetic smoke failure', 500\n\n"
+        server_source.write_text(server_source.read_text(encoding='utf-8').replace('def run_server():', diagnostic + 'def run_server():'), encoding='utf-8')
         (root / 'data').mkdir(exist_ok=True)
         dictionary = root / 'data/daki_dictionary'
         dictionary.mkdir()
@@ -53,6 +59,7 @@ def main():
         for path in (root / 'danbooru_tags.db', root / 'data/danbooru_tags.sqlite3'):
             with closing(sqlite3.connect(path)) as db:
                 db.execute('CREATE TABLE tags (name TEXT, category INTEGER, post_count INTEGER)')
+                db.execute('CREATE TABLE danbooru_tags (name TEXT, category INTEGER, post_count INTEGER)')
                 db.commit()
         nonce = uuid.uuid4().hex
         (root / 'static' / f'{nonce}.txt').write_text(nonce)
@@ -81,6 +88,8 @@ def main():
         (install / naim_updater.MANAGED_MANIFEST).write_text(json.dumps({'files': managed}), encoding='utf-8')
         archives = sorted((Path(__file__).resolve().parents[1] / 'release_assets').rglob('*-exe_windows.zip'))
         payload = install
+        if options.skip_legacy:
+            archives = []
         for index, archive in enumerate(archives):
             legacy = naim_updater.safe_extract(archive, root / f'legacy-{index}', 'NAI_Image_Manager')
             fixtures = {
@@ -153,6 +162,19 @@ def main():
                     assert response.status == 200, url
             with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/daki/dictionary/health', timeout=5) as response:
                 assert json.load(response)['tags'] == 1
+            native_request = urllib.request.Request(
+                f'http://127.0.0.1:{port}/api/style-workspace/connect', data=b'',
+                headers={'X-NAIM-Workspace': '1'}, method='POST')
+            with urllib.request.urlopen(native_request, timeout=90) as response:
+                assert json.load(response)['url'] == '/style-workspace/?naim=1'
+            for suffix in ('/?naim=1', '/static/naim_workspace.js', '/api/ratings',
+                           '/api/naim-shared-library', '/api/confirmed-styles'):
+                with urllib.request.urlopen(f'http://127.0.0.1:{port}/style-workspace' + suffix, timeout=60) as response:
+                    assert response.status == 200, suffix
+            assert not (install / 'style_workspace.local.json').exists()
+            assert (install / 'data/style_manager/artist_rater.sqlite').is_file()
+            assert not list(install.rglob('DanbooruArtistRater.exe'))
+            print('NATIVE_STYLE_OK: bundled workspace, API, static assets and owned data work without an external application.', flush=True)
             with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/upscale/models', timeout=5) as response:
                 assert {row['id'] for row in json.load(response)['models']} == {
                     'realcugan', 'waifu2x', 'illustrationjanai', 'animesharp'}
@@ -177,6 +199,11 @@ def main():
             with urllib.request.urlopen(shutdown, timeout=10) as response:
                 assert json.load(response)['stopped'] is True
             print('FROZEN_BUILD_OK: both EXEs built; packaged server, scripts, portable settings and job shutdown verified.', flush=True)
+        except Exception:
+            diagnostic = install / 'frozen-smoke-error.txt'
+            if diagnostic.is_file():
+                print(diagnostic.read_text(encoding='utf-8'), flush=True)
+            raise
         finally:
             process.terminate()
             process.wait(timeout=10)

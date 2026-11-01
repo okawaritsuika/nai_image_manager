@@ -195,7 +195,10 @@
 .daki-image-import-dialog button.daki-image-import-icon-button { min-height: 35px; padding: 6px 9px; border: 1px solid #ffffff24; border-radius: 8px; background: #ffffff05; color: #b5b1c0; font-size: 10px; }
 .daki-image-import-dialog button.daki-image-import-icon-button:hover { border-color: #d68f8f; color: #ffbbbb; }
 .daki-image-import-footer { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 10px; min-width: 0; padding: 16px 24px; border-top: 1px solid #ffffff16; background: #121219; }
-.daki-image-import-footer button { min-width: 104px; }
+.daki-image-import-progress { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; margin-right: auto; color: #b9b9c9; font-size: 12px; line-height: 1.5; }
+.daki-image-import-progress .gallery-load-spinner { width: 20px; height: 20px; flex: 0 0 20px; margin: 0; border-width: 2px; }
+.daki-image-import-progress-text { min-width: 0; overflow-wrap: anywhere; }
+.daki-image-import-footer button { min-width: 104px; flex: 0 0 auto; }
 .daki-image-import-dialog :focus-visible { outline: 2px solid #c4a8f5; outline-offset: 3px; }
 .daki-image-import-dialog [hidden] { display: none !important; }
 
@@ -217,6 +220,11 @@
     .daki-image-import-region-row select { grid-column: 1 / -1; grid-row: 2; }
     .daki-image-import-region-row textarea { grid-column: 1; grid-row: 3; }
     .daki-image-import-region-row button { grid-column: 2; grid-row: 3; }
-    .daki-image-import-footer { padding: 13px 16px; }
+    .daki-image-import-footer { flex-wrap: wrap; padding: 13px 16px; }
+    .daki-image-import-progress { flex-basis: 100%; }
     .daki-image-import-dialog .daki-image-import-footer button { min-width: 0; flex: 1 1 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .daki-image-import-progress .gallery-load-spinner { animation: none; }
 }

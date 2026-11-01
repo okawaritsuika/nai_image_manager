@@ -14,6 +14,7 @@ from naim.paths import get_app_dir
 
 def register_daki_style_sync_routes(app, root_provider, catalog):
     manager = DakiStyleSync(root_provider, catalog)
+    app.extensions['naim_arca_sync'] = manager
 
     def guarded(function):
         @wraps(function)

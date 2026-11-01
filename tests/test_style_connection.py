@@ -319,37 +319,26 @@ class StyleConnectionTests(unittest.TestCase):
             "data_dir": str(self.source / "data"),
         })
 
-    def test_saved_folder_is_used_by_runner_and_shared_catalog(self):
+    def test_shared_catalog_uses_native_data_even_with_saved_external_connection(self):
         from flask import Flask
-        from naim.web.style_workspace import StyleService
         from naim.storage.shared_library_catalog import build_shared_catalog
 
-        installed = self.root / 'old-install'
-        data = installed / 'data'
-        self._make_database(data)
+        installed = self.root / "old-install"
+        self._make_database(installed / "data")
         preview = inspect_connection(self.app_dir, installed)
         save_connection(preview)
-        process = Mock()
-        process.poll.return_value = None
-
-        def launch(command, **kwargs):
-            ready = Path(command[command.index('--ready-file') + 1])
-            ready.write_text('{"port": 54321}', encoding='utf-8')
-            return process
-
-        service = StyleService(self.app_dir / 'style_workspace.local.json')
-        with patch('naim.web.style_workspace.subprocess.Popen', side_effect=launch) as start:
-            try:
-                self.assertEqual(service.start('http://127.0.0.1:5000'), 54321)
-                command = start.call_args.args[0]
-                self.assertEqual(command[command.index('--data-dir') + 1], str(data.resolve()))
-                self.assertEqual(Path(command[2]), self.source / 'naim_runner.py')
-            finally:
-                service.stop()
+        config_path = self.app_dir / "style_workspace.local.json"
+        saved_config = config_path.read_bytes()
         app = Flask(__name__)
-        with patch('naim.storage.shared_library_catalog.SharedLibraryCatalog') as catalog:
-            build_shared_catalog(app, Mock(), root=self.app_dir, artist_names=set())
-            self.assertEqual(catalog.call_args.args[2], data.resolve())
+        legacy = Mock()
+        with patch("naim.storage.shared_library_catalog.SharedLibraryCatalog") as catalog:
+            built = build_shared_catalog(app, legacy, root=self.app_dir, artist_names=set())
+            catalog.assert_called_once_with(
+                legacy, self.app_dir / "data/shared_style_library.sqlite",
+                self.app_dir / "data/style_manager", artist_names=set())
+            self.assertIs(built, catalog.return_value)
+            self.assertIs(app.extensions["shared_style_library"], built)
+        self.assertEqual(config_path.read_bytes(), saved_config)
 
 
 if __name__ == "__main__":

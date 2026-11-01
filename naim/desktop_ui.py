@@ -94,10 +94,10 @@ def _build_path(controller):
 def _build_style_connection(controller):
     block, _ = _block(controller.ctrl_panel)
     controller.btn_style_connection = _button(
-        block, "그림체 프로그램 연결", controller.open_style_connection,
+        block, "그림체 관리 열기", controller.open_style_connection,
     )
     controller.btn_style_connection.pack(side="left", padx=(0, 10))
-    _label(block, "기존 그림체 폴더의 데이터·설정 연결", fg=MUTED,
+    _label(block, "NAIM 내부의 그림체 관리", fg=MUTED,
            font=SMALL_FONT, wraplength=370, justify="left").pack(side="left", fill="x", expand=True)
 
 

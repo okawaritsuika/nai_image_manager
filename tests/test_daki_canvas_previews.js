@@ -10,16 +10,25 @@ class Container {
         this.children = [];
         this.attributes = {};
         this.classes = new Set();
-        this.textContent = '';
+        this._textContent = '';
         this.classList = {
             add: name => this.classes.add(name),
             remove: name => this.classes.delete(name),
             contains: name => this.classes.has(name),
         };
     }
+    get textContent() { return this._textContent + this.children.map(child => child.textContent || '').join(''); }
+    set textContent(value) { this._textContent = String(value); this.children = []; }
     setAttribute(name, value) { this.attributes[name] = value; }
     removeAttribute(name) { delete this.attributes[name]; }
-    replaceChildren(...children) { this.children = children; this.textContent = ''; }
+    getAttribute(name) { return this.attributes[name] ?? null; }
+    replaceChildren(...children) { this.children = children; this._textContent = ''; }
+}
+
+class PreviewElement {
+    constructor(tagName) { this.tagName = tagName.toUpperCase(); this.attributes = {}; this.textContent = ''; this.className = ''; }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    getAttribute(name) { return this.attributes[name] ?? null; }
 }
 
 class FakeImage {
@@ -52,10 +61,7 @@ function harness({intersection = true, render, imageAutoLoad = true} = {}) {
         AbortController,
         URL,
         location: new URL('http://localhost/daki'),
-        document: {createElement: tag => {
-            assert.equal(tag, 'img');
-            return {className: '', src: '', alt: '', title: ''};
-        }},
+        document: {createElement: tag => new PreviewElement(tag)},
         Image: class extends FakeImage {
             constructor() { super(typeof imageAutoLoad === 'function' ? imageAutoLoad() : imageAutoLoad); images.push(this); }
         },
@@ -115,8 +121,11 @@ test('IntersectionObserver defers work and the manager runs at most two previews
     containers.forEach((node, index) => manager.observe(node, 'project-a', canvas(`c${index}`)));
 
     assert.equal(h.requests.length, 0);
-    assert.equal(containers[0].textContent, '불러오는 중…');
+    assert.equal(containers[0].textContent, '미리보기 준비 중…');
     assert.equal(containers[0].attributes['aria-busy'], 'true');
+    assert.equal(containers[0].attributes.role, 'status');
+    assert.equal(containers[0].children[0].className, 'daki-preview-spinner');
+    assert.equal(containers[0].children[0].getAttribute('aria-hidden'), 'true');
     assert.equal(h.observers[0].options.rootMargin, '200px');
 
     h.observers[0].trigger(containers[0]);
@@ -154,6 +163,10 @@ test('same project, canvas and revision share one request and one composite acro
     await flush();
     assert.equal(first.children[0].src, 'data:image/png;base64,synthetic');
     assert.equal(second.children[0].src, 'data:image/png;base64,synthetic');
+    assert.equal(first.children.length, 1);
+    assert.equal(second.children.length, 1);
+    assert.equal(first.attributes['aria-busy'], 'false');
+    assert.equal(second.attributes['aria-busy'], 'false');
     assert.equal(first.children[0].alt, 'Canvas shared · 통합 미리보기');
     assert.equal(first.children[0].title, first.children[0].alt);
     assert.equal(first.attributes['aria-busy'], 'false');
@@ -189,6 +202,7 @@ test('invalid or failed saved-state composites show an error without fetching de
     assert.equal(h.requests.length, 0);
     assert.equal(h.renderCalls.length, 1);
     assert.equal(failed.textContent, '통합 그림을 표시할 수 없습니다.');
+    assert.equal(failed.children.length, 0, 'the spinner is removed after failure');
     assert.equal(failed.classList.contains('daki-warning'), true);
 });
 
@@ -218,8 +232,8 @@ test('dispose prevents a late saved-state composite from changing its container'
     manager.dispose();
     composite.resolve('data:image/png;base64,late');
     await flush();
-    assert.equal(node.textContent, '불러오는 중…');
-    assert.equal(node.children.length, 0);
+    assert.equal(node.textContent, '미리보기 준비 중…');
+    assert.equal(node.children.length, 2);
 });
 
 test('failed response validation shows a card error and skips compositing', async () => {
@@ -248,8 +262,8 @@ test('dispose aborts pending work and prevents a late response from changing the
     reply(request, result('project-a', 'late'));
     await flush();
     manager.observe(new Container(), 'project-a', canvas('after-dispose'));
-    assert.equal(node.textContent, '불러오는 중…');
-    assert.equal(node.children.length, 0);
+    assert.equal(node.textContent, '미리보기 준비 중…');
+    assert.equal(node.children.length, 2);
     assert.equal(h.requests.length, 1);
     assert.equal(h.renderCalls.length, 0);
 });
@@ -273,7 +287,7 @@ test('dispose releases image sources and removes the image load listeners', asyn
     await flush();
     assert.equal(h.images[0].src, '');
     assert.equal(h.images[0].listeners.size, 0);
-    assert.equal(node.textContent, '불러오는 중…');
+    assert.equal(node.textContent, '미리보기 준비 중…');
 });
 
 test('an image decode failure shows an error and does not block the next queued preview', async () => {
@@ -465,10 +479,10 @@ test('disposing with shared image waiters aborts and clears the pending cached i
     await flush();
     assert.equal(h.images[0].src, '');
     assert.equal(h.images[0].listeners.size, 0);
-    assert.equal(first.textContent, '불러오는 중…');
-    assert.equal(second.textContent, '불러오는 중…');
-    assert.equal(first.children.length, 0);
-    assert.equal(second.children.length, 0);
+    assert.equal(first.textContent, '미리보기 준비 중…');
+    assert.equal(second.textContent, '미리보기 준비 중…');
+    assert.equal(first.children.length, 2);
+    assert.equal(second.children.length, 2);
 });
 
 test('separate preview managers load the same source independently', async () => {

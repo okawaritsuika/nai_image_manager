@@ -35,6 +35,7 @@ function fixture() {
             const request = {url, method: options.method, body: options.body && JSON.parse(options.body)};
             requests.push(request); return new Promise(resolve => pending.push({request, resolve}));
         }};
+    vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_style_scope.js'), 'utf8'), {window: win});
     vm.runInNewContext(fs.readFileSync(require.resolve('../static/daki_test_library.js'), 'utf8'), {window: win});
     function reply(data, status = 200, url) {
         const index = url ? pending.findIndex(entry => entry.request.url === url) : 0;
@@ -46,6 +47,7 @@ function fixture() {
     return {win, doc, requests, pending, editorOptions, reply,
         dialog: () => doc.body.querySelector('dialog'),
         button(text) { const found = doc.body.querySelectorAll('button').find(button => button.textContent === text); assert.ok(found, text); return found; },
+        scope(name) { const found = doc.body.querySelectorAll('select').find(select => select.name === 'daki_scope_' + name); assert.ok(found, name); return found; },
         submit() { return doc.body.querySelector('form').onsubmit({preventDefault() {}}); },
         search(text) { const input = doc.body.querySelectorAll('input').find(input => input.type === 'search'); input.value = text; input.oninput(); },
         choose(name, value = true) { const input = doc.body.querySelectorAll('input').find(input => input.attributes['aria-label'] === name + ' 선택'); assert.ok(input, name); input.checked = value; input.onchange(); },
@@ -80,7 +82,7 @@ test('failed rename preserves the draft and re-enables saving', async () => {
     assert.match(f.dialog().textContent, /Synthetic failure/);
 });
 
-test('append loads both libraries, omits existing styles, preserves filtered selections and only queues new ids', async () => {
+test('append loads both libraries, omits existing styles and submits only selected visible IDs', async () => {
     const f = fixture(), saved = [];
     f.win.DakiTestLibrary.append(batch, value => saved.push(value));
     assert.deepEqual(f.requests.map(request => request.url), ['/api/daki/shared-styles', '/api/daki/personal-styles']);
@@ -91,9 +93,41 @@ test('append loads both libraries, omits existing styles, preserves filtered sel
     const pending = f.submit();
     const request = f.reply({batch: {...batch, items: [...batch.items, {style_id: 'shared-one', status: 'pending'}]}}); await pending;
     assert.deepEqual(request, {url: '/api/daki/style-tests/test-example/styles', method: 'POST',
-        body: {style_ids: ['shared-one', 'personal-one', 'shared-two']}});
+        body: {style_ids: ['shared-two']}});
     assert.equal(saved.length, 1); assert.equal(f.dialog(), null);
     assert.equal(f.requests.some(request => request.url.endsWith('/run')), false);
+});
+
+test('append scope filters source and model together, preserves conditions on reload, and limits saved IDs to visible choices', async () => {
+    const f = fixture(); f.win.DakiTestLibrary.append(batch);
+    const mixedShared = [
+        {id: 'naim-v5', name: 'NAIM V5', model: 'nai-diffusion-5-full'},
+        {id: 'naim-v45', name: 'NAIM V4.5', model: 'nai-diffusion-4-5-full'},
+        {id: 'artist-v5', name: 'Artist V5', source_library: 'artist', model: 'V5 Full'},
+        {id: 'artist-v45', name: 'Artist V4.5', source_library: 'artist', model: 'V4.5'},
+    ];
+    const mixedPersonal = [
+        {id: 'personal-v5', name: 'Personal V5', model: 'nai-diffusion-5-full'},
+        {id: 'personal-v45', name: 'Personal V4.5', model: 'nai-diffusion-4-5-full'},
+    ];
+    f.reply({styles: mixedShared}); f.reply({styles: mixedPersonal}); await flush();
+    const source = f.scope('source'), model = f.scope('model');
+    source.value = 'artist'; source.onchange(); model.value = 'v4_5'; model.onchange();
+    assert.deepEqual(f.cards().map(card => card.textContent.includes('Artist V4.5')), [true]);
+    f.choose('Artist V4.5');
+
+    const retry = f.button('다시 불러오기').onclick();
+    assert.equal(source.value, 'artist'); assert.equal(model.value, 'v4_5');
+    assert.equal(f.doc.body.querySelector('.daki-test-library-count').textContent, '0개 표시 · 0개 선택');
+    assert.equal(f.button('표시 항목 전체 선택').disabled, true);
+    f.reply({styles: mixedShared}); f.reply({styles: mixedPersonal}); await retry;
+    assert.equal(source.value, 'artist'); assert.equal(model.value, 'v4_5');
+    assert.equal(f.cards().length, 1);
+    assert.equal(f.doc.body.querySelectorAll('input').find(input => input.attributes['aria-label'] === 'Artist V4.5 선택').checked, true);
+    const pending = f.submit();
+    assert.equal(source.disabled, true); assert.equal(model.disabled, true);
+    const request = f.reply({batch}); await pending;
+    assert.deepEqual(request.body, {style_ids: ['artist-v45']});
 });
 
 test('new personal styles refresh the candidates and are selected without starting generation', async () => {

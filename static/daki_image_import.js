@@ -330,20 +330,28 @@
         body.append(filePanel, settingsPanel);
 
         const footer = node('footer', 'daki-image-import-footer');
+        const progress = node('div', 'daki-image-import-progress');
+        progress.setAttribute('role', 'status');
+        progress.setAttribute('aria-live', 'polite');
+        progress.hidden = true;
+        const spinner = node('span', 'gallery-load-spinner');
+        spinner.setAttribute('aria-hidden', 'true');
+        const progressText = node('span', 'daki-image-import-progress-text');
+        progress.append(spinner, progressText);
         const cancel = node('button', 'daki-image-import-secondary', '취소');
         cancel.type = 'button';
         cancel.dataset.importControl = 'true';
         const save = node('button', 'daki-image-import-primary', '후보에 추가');
         save.type = 'button';
         save.disabled = true;
-        footer.append(cancel, save);
+        footer.append(progress, cancel, save);
         dialog.append(header, body, footer);
         doc.body.appendChild(dialog);
 
         const state = {
             dialog, trigger, projectId: options.projectId, fileInput, dropZone, previewCard, previewImage,
             fileName, fileInfo, message, promptBadge, sideInputs: sides, missingPrompt,
-            promptEditor, enterPrompt, skipPrompt, cancel, closeButton, save,
+            promptEditor, enterPrompt, skipPrompt, progress, progressText, cancel, closeButton, save,
             originalPromptInfo: null, regions: [], file: null, objectUrl: null, inspectController: null,
             inspectRevision: 0, inspectReady: false, inspectError: false, hasPromptInfo: false, promptChoice: null,
             classifyController: null, classifyRevision: 0, classifyTimer: null, classifying: false,
@@ -362,6 +370,11 @@
         function refreshControls() {
             const busy = state.saving;
             const classificationBusy = state.classifying || state.classifyTimer !== null;
+            const progressMessage = state.saving ? '프로젝트에 그림을 추가하는 중…'
+                : state.inspectController ? '그림과 프롬프트를 확인하는 중…'
+                    : classificationBusy ? '프롬프트 부위를 분류하는 중…' : '';
+            if (state.progressText.textContent !== progressMessage) state.progressText.textContent = progressMessage;
+            state.progress.hidden = !progressMessage;
             for (const control of dialog.querySelectorAll('[data-import-control]')) {
                 const count = control.dataset.limit === 'characters' ? state.charRows?.children.length
                     : control.dataset.limit === 'regions' ? state.regionRows?.children.length : 0;

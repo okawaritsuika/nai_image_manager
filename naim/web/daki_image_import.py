@@ -6,6 +6,7 @@ from flask import jsonify, request
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from naim.images.canvas_export import save_project_candidate_image
+from naim.images.previews import get_display_oriented_image_size
 from naim.images.prompt_metadata import (
     has_prompt_info_text, normalize_prompt_info_for_sidecar, normalize_prompt_regions,
     PROMPT_REGION_LABELS,
@@ -19,7 +20,7 @@ MAX_IMAGE_PIXELS = 80_000_000
 
 def register_daki_image_import_routes(app, store, export_root_provider, extract_prompt):
     """Inject the same metadata reader and permanent save path as canvas exports."""
-    def read_image():
+    def read_image(save):
         upload = request.files.get('file')
         if upload is None:
             raise ValueError('가져올 그림을 선택해 주세요.')
@@ -34,16 +35,21 @@ def register_daki_image_import_routes(app, store, export_root_provider, extract_
                     raise ValueError('그림은 8천만 픽셀 이하여야 합니다.')
                 source.verify()
             with Image.open(io.BytesIO(raw)) as source:
-                image = ImageOps.exif_transpose(source).convert('RGBA')
+                # Validate pixels once and reuse this decode for stealth metadata.
+                # Inspection needs dimensions and prompts, not another full-size bitmap.
+                source.load()
+                dimensions = get_display_oriented_image_size(source)
+                try:
+                    prompt = extract_prompt(type('ImportFile', (), {
+                        'stream': io.BytesIO(raw), 'decoded_image': source,
+                    })())
+                    prompt = normalize_prompt_info_for_sidecar(prompt)
+                except Exception:
+                    prompt = {}
+                image = ImageOps.exif_transpose(source).convert('RGBA') if save else None
         except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as error:
             raise ValueError('그림 파일을 읽을 수 없습니다. 다른 파일을 선택해 주세요.') from error
-        try:
-            # Extraction errors must not prevent an ordinary image import.
-            prompt = extract_prompt(type('ImportFile', (), {'stream': io.BytesIO(raw)})())
-            prompt = normalize_prompt_info_for_sidecar(prompt)
-        except Exception:
-            prompt = {}
-        return image, prompt
+        return image, dimensions, prompt
 
     def edited_prompt(extracted):
         text = request.form.get('promptInfo')
@@ -90,10 +96,10 @@ def register_daki_image_import_routes(app, store, export_root_provider, extract_
                 store.get_project(project_id)
                 if side not in ('front', 'back'):
                     raise ValueError('앞면 또는 뒷면을 선택해 주세요.')
-            image, extracted = read_image()
+            image, dimensions, extracted = read_image(save)
             try:
                 if not save:
-                    return jsonify(status='success', width=image.width, height=image.height,
+                    return jsonify(status='success', width=dimensions[0], height=dimensions[1],
                                    promptInfo=extracted, hasPromptInfo=has_prompt_info_text(extracted),
                                    regions=[{'id': key, 'label': label}
                                             for key, label in PROMPT_REGION_LABELS.items()])
@@ -103,7 +109,8 @@ def register_daki_image_import_routes(app, store, export_root_provider, extract_
                 )
                 return jsonify(result)
             finally:
-                image.close()
+                if image is not None:
+                    image.close()
         except (DakiNotFoundError, FileNotFoundError):
             return jsonify(status='error', message='프로젝트를 찾을 수 없습니다.'), 404
         except (ValueError, TypeError) as error:

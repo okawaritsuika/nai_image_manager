@@ -27,6 +27,12 @@
 
 구현 경계와 검증 방법은 [STRUCTURE.md](STRUCTURE.md)의 daki 프로젝트 항목을 참고하세요.
 
+## 그림체 관리
+
+그림체 관리 작업 공간은 NAIM에 포함되어 같은 서버 프로세스에서 실행됩니다. 그림체 관리 버튼은 `/style-manager`로 열리며 `/style-workspace/` 화면으로 안내합니다. 별도 그림체 앱이나 헬퍼 프로세스는 실행하지 않습니다.
+
+NAIM의 공용 그림체 카탈로그와 `lab_config.json`의 NovelAI 키·공통 생성 기본값을 사용하며, 이미 연결된 Arca 세션도 재사용합니다.
+
 ## 공유 그림체 테스트
 
 - v1.3.2부터 공유 그림체·공유 테스트의 Hugging Face 연결은 잘못된 `SSLKEYLOGFILE` 경로 때문에 실패하지 않도록 전용 TLS 설정을 사용합니다. 인증서·호스트명 검증과 ZIP 크기·SHA-256 검증은 유지합니다. 관련 연결 코드는 `naim/hf_http.py`, 회귀 검증은 `tests/test_hf_http.py`에 있습니다.

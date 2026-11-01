@@ -13,6 +13,7 @@ def _load_app_without_flask():
 
     class FakeFlask:
         def __init__(self, *_args, **_kwargs):
+            self.wsgi_app = lambda environ, start_response: []
             self.config = {}
             self.extensions = {}
             self.root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,6 +39,7 @@ def _load_app_without_flask():
     flask_stub.Blueprint = Blueprint
     flask_stub.g = g
     flask_stub.jsonify = lambda value=None, **kwargs: value if value is not None else kwargs
+    flask_stub.redirect = lambda *args, **kwargs: None
     flask_stub.send_file = lambda *args, **kwargs: None
     flask_stub.Response = lambda *args, **kwargs: None
     flask_stub.request = types.SimpleNamespace(args={}, form={}, files={})

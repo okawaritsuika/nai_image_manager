@@ -892,21 +892,26 @@ class DesktopControllerTests(unittest.TestCase):
         self.namespace["utils"].is_port_active.return_value = True
         self.assertFalse(c._can_save_style_connection())
 
-    def test_style_connection_dialog_reuses_existing_window(self):
-        from naim import style_connection_ui
-        c = self.controller
-        window = mock.Mock()
-        window.winfo_exists.return_value = True
-        with mock.patch.object(style_connection_ui, "open_style_connection", return_value=window) as open_dialog:
-            c.open_style_connection()
-            c.open_style_connection()
-            self.assertEqual(open_dialog.call_count, 1)
-            self.assertEqual(open_dialog.call_args.kwargs["can_save"], c._can_save_style_connection)
-            window.lift.assert_called_once()
-            window.focus_set.assert_called_once()
-            window.winfo_exists.return_value = False
-            c.open_style_connection()
-            self.assertEqual(open_dialog.call_count, 2)
+    def test_style_management_opens_native_workspace_when_server_is_running(self):
+        self.namespace["utils"].is_port_active.return_value = True
+        self.controller.open_style_connection()
+        self.namespace["utils"].is_port_active.assert_called_once_with(5000)
+        self.namespace["webbrowser"].open.assert_called_once_with(
+            "http://127.0.0.1:5000/style-manager")
+        self.namespace["messagebox"].showwarning.assert_not_called()
+
+    def test_style_management_does_not_open_when_server_is_stopped(self):
+        self.controller.show_alert_var.set(True)
+        self.controller.open_style_connection()
+        self.namespace["utils"].is_port_active.assert_called_once_with(5000)
+        self.namespace["webbrowser"].open.assert_not_called()
+        self.namespace["messagebox"].showwarning.assert_called_once_with(
+            "경고", "서버가 켜져 있지 않습니다.")
+        self.namespace["messagebox"].showwarning.reset_mock()
+        self.controller.show_alert_var.set(False)
+        self.controller.open_style_connection()
+        self.namespace["webbrowser"].open.assert_not_called()
+        self.namespace["messagebox"].showwarning.assert_not_called()
 
 
 if __name__ == "__main__":

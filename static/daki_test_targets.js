@@ -5,7 +5,14 @@
         const doc = root.document;
         const styles = catalog.styles;
         const library = catalog.library || 'shared';
-        const activeIds = new Set(styles.map(style => style.id));
+        const sourceValues = ['all', 'naim', 'artist', 'personal'];
+        const modelValues = ['all', 'v5', 'v4_5', 'other'];
+        const requestedFilters = catalog.target_filters || {};
+        const initialSource = sourceValues.includes(requestedFilters.source) ? requestedFilters.source
+            : library === 'personal' ? 'personal' : 'all';
+        const initialModel = modelValues.includes(requestedFilters.model) ? requestedFilters.model : 'all';
+        const catalogStyles = library === 'personal'
+            ? styles.map(style => ({...style, source_library: 'personal'})) : styles;
         const node = (tag, className, text) => {
             const item = doc.createElement(tag);
             if (className) item.className = className;
@@ -17,6 +24,21 @@
         heading.append(node('h3', '', '생성 대상'), node('p', '', '현재 그림체 목록에서 조건에 맞는 그림체만 새 테스트로 만듭니다.'));
         element.appendChild(heading);
         const controls = node('div', 'daki-test-target-controls'); element.appendChild(controls);
+        let disposed = false, mode = 'all', source = 'representative', selectedTag = 'tagged', selectedTest = '', selectedCup = '';
+        let selectedStyleIds = [], activePicker = null, manualCatalog = null;
+        const scope = root.DakiStyleScope?.create({source: initialSource, model: initialModel, onChange: () => {
+            activePicker?.close?.(); activePicker = null; selectedStyleIds = []; manualCatalog = null;
+            sync();
+        }});
+        if (scope) controls.appendChild(scope.element);
+        const scopedStyles = () => scope ? scope.apply(catalogStyles) : catalogStyles;
+        const scopeValues = () => scope?.values() || {source: initialSource, model: initialModel};
+        const isUnfiltered = () => scopeValues().source === 'all' && scopeValues().model === 'all';
+        const activeIds = new Set(catalogStyles.map(style => style.id));
+        function uniqueCurrent(ids) {
+            const allowed = new Set(scopedStyles().map(style => style.id));
+            return [...new Set(ids.filter(id => activeIds.has(id) && allowed.has(id)))];
+        }
         function field(parent, name, label, tag = 'select') {
             const wrapper = node('label', '', label), input = node(tag);
             input.name = name; input.setAttribute('aria-label', label); wrapper.appendChild(input); parent.appendChild(wrapper);
@@ -47,8 +69,6 @@
         const count = node('p', 'daki-test-target-count'); element.appendChild(count);
         const status = node('p', 'daki-test-target-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); element.appendChild(status);
         const retry = node('button', '', '목록 다시 불러오기'); retry.type = 'button'; retry.hidden = true; element.appendChild(retry);
-        let disposed = false, mode = 'all', source = 'representative', selectedTag = 'tagged', selectedTest = '', selectedCup = '';
-        let selectedStyleIds = [], activePicker = null, manualCatalog = null;
         const state = () => ({status: 'idle', data: null, error: '', token: 0, id: ''});
         const lists = {tests: state(), cups: state()}, details = {tests: state(), cups: state()};
         const urls = {tests: '/api/daki/style-tests', cups: '/api/daki/worldcups'};
@@ -65,7 +85,6 @@
             const test = path.match(/^__daki_tests__\/[a-f0-9]{32}\/([A-Za-z0-9_-]{1,128})\.png$/);
             return [shared, personal, test].find(match => match?.[0] === path)?.[1] || '';
         }
-        function uniqueCurrent(ids) { return [...new Set(ids.filter(id => activeIds.has(id)))]; }
         function selectedDetail(kind, id) {
             const list = lists[kind], detail = details[kind];
             const object = labels[kind] + (kind === 'tests' ? '를' : '을');
@@ -79,7 +98,11 @@
             return {value: detail.data};
         }
         function selection() {
-            if (mode === 'all') return {styleIds: null, count: styles.length, error: ''};
+            const currentStyles = scopedStyles();
+            if (mode === 'all') return isUnfiltered()
+                ? {styleIds: null, count: currentStyles.length, error: ''}
+                : currentStyles.length ? {styleIds: currentStyles.map(style => style.id), count: currentStyles.length, error: ''}
+                    : failed('조건에 맞는 현재 그림체가 없습니다. 출처나 원본 모델을 바꿔 주세요.');
             if (mode === 'manual') {
                 const ids = uniqueCurrent(selectedStyleIds);
                 return ids.length ? {styleIds: ids, count: ids.length, error: ''}
@@ -95,7 +118,7 @@
                     if (result.error) return failed(result.error);
                     candidates = result.value.items.filter(item => item.status === 'completed' && item.src)
                         .map(item => ({id: item.style_id, path: `__daki_tests__/${selectedTest}/${item.style_id}.png`}));
-                } else candidates = styles.filter(style => library !== 'personal' || style.source_path)
+                } else candidates = currentStyles.filter(style => library !== 'personal' || style.source_path)
                     .map(style => ({id: style.id, path: `__daki_${library === 'personal' ? 'personal' : 'shared'}__/${style.id}.png`}));
                 ids = uniqueCurrent(candidates.filter(item => {
                     const tag = root.getGalleryImageTagId?.(item.path);
@@ -159,8 +182,8 @@
             retry.hidden = !kind || (lists[kind].status !== 'error' && details[kind].status !== 'error');
             retry.textContent = kind && lists[kind].status !== 'error' ? '그림 정보 다시 불러오기' : '목록 다시 불러오기';
             const result = selection();
-            galleryButton.disabled = mode !== 'manual' && !!result.error;
-            count.textContent = `대상 ${result.count}개 / 현재 그림체 ${styles.length}개`;
+            galleryButton.disabled = !scopedStyles().length || (mode !== 'manual' && !!result.error);
+            count.textContent = `대상 ${result.count}개 / 현재 그림체 ${scopedStyles().length}개`;
             status.textContent = result.error;
             if (notify) onChange?.();
         }
@@ -210,10 +233,14 @@
             if (disposed || activePicker && !activePicker.closed || !root.DakiTestTargetGallery?.open) return;
             const result = selection();
             if (mode !== 'manual' && result.error) return;
-            let scopedCatalog = manualCatalog || catalog;
+            const currentStyles = scopedStyles();
+            const baseCatalog = manualCatalog || catalog;
+            let scopedCatalog = {...baseCatalog, styles: scope ? scope.apply(
+                library === 'personal' ? baseCatalog.styles.map(style => ({...style, source_library: 'personal'})) : baseCatalog.styles)
+                : baseCatalog.styles};
             if (mode !== 'manual') {
-                const ids = result.styleIds === null ? styles.map(style => style.id) : result.styleIds;
-                const byId = new Map(styles.map(style => [style.id, style]));
+                const ids = result.styleIds === null ? currentStyles.map(style => style.id) : result.styleIds;
+                const byId = new Map(currentStyles.map(style => [style.id, style]));
                 let scoped = ids.map(id => byId.get(id)).filter(Boolean);
                 if (mode === 'tag' && source === 'test') {
                     const images = new Map(details.tests.data.items.filter(item => item.status === 'completed' && item.src)
@@ -257,7 +284,7 @@
         }
         modeInput.value = mode; sourceInput.value = source;
         refreshTags(); listOptions('tests'); listOptions('cups'); sync(false);
-        return {element, selection, dispose};
+        return {element, selection, dispose, filters: scopeValues};
     }
     root.DakiTestTargets = {create};
 })(typeof window === 'undefined' ? globalThis : window);
