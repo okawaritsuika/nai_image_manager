@@ -2,10 +2,11 @@ body.daki-dictionary-active.daki-dictionary-header-collapsed #galleryWorkspaceHe
 body.daki-dictionary-active.daki-dictionary-header-collapsed .gallery-modern-layout { padding-top: 6px; }
 body.daki-dictionary-active.gallery-layout-modern .gallery-modern-sidebar { display: none; }
 body.daki-dictionary-active.gallery-layout-modern .gallery-modern-layout { grid-template-columns: minmax(0, 1fr); }
+body.daki-dictionary-active #galleryToolsHeader { display: none; }
 body.daki-dictionary-active #dakiLibrary {
-    padding: 10px 16px 12px;
+    padding: 0 16px 12px;
 }
-body.daki-dictionary-active #dakiLibrary > :is(.daki-library-path, .daki-toolbar, .daki-library-description, #dakiPageStatus) {
+body.daki-dictionary-active #dakiLibrary > :is(.daki-toolbar, .daki-library-description, #dakiPageStatus) {
     display: none;
 }
 body.daki-dictionary-active #dakiContent { min-width: 0; min-height: 0; }
@@ -16,10 +17,10 @@ body.daki-dictionary-active #dakiContent { min-width: 0; min-height: 0; }
     border-radius: 8px;
     background: var(--card, #1c1c27);
     color: var(--text, #f1f2f5);
-    font: 13px/1.5 'Segoe UI', 'Malgun Gothic', sans-serif;
+    font: var(--ui-text-body, 12px)/var(--ui-leading-body, 1.5) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
 }
 .daki-dictionary-loading button { padding: 8px 12px; }
 .daki-dictionary-loading a { display: inline-flex; margin-right: 12px; }
 @media (max-width: 900px) {
-    body.daki-dictionary-active #dakiLibrary { padding: 8px 8px 12px; }
+    body.daki-dictionary-active #dakiLibrary { padding: 0 8px 12px; }
 }

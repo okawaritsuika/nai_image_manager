@@ -1,4 +1,4 @@
-.daki-personal-placeholder { aspect-ratio: 3 / 4; display: grid; place-items: center; min-height: 180px; color: #999; font-size: 14px; background: var(--card); }
+.daki-personal-placeholder { aspect-ratio: 3 / 4; display: grid; place-items: center; min-height: 180px; color: #999; font-size: var(--ui-text-meta,12px); background: var(--card); }
 .gallery-fixed-size-grid .daki-personal-placeholder { height: var(--gallery-fixed-image-height, 360px); aspect-ratio: auto; }
 .daki-personal-history { margin-top: 28px; }
 #dakiLibrary .daki-personal-card .daki-image-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -11,23 +11,23 @@
 .daki-personal-header h2 { margin: 0 0 6px; }
 .daki-personal-header p { margin: 0; }
 .daki-personal-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-auto-rows: max-content; align-content: start; gap: 16px 20px; padding: 22px 26px; min-height: 0; overflow-y: auto; }
-.daki-personal-dialog .daki-personal-field { min-width: 0; margin: 0; font-size: 12px; font-weight: 600; color: #c7c9d0; }
+.daki-personal-dialog .daki-personal-field { min-width: 0; margin: 0; font-size: var(--ui-text-body,12px); font-weight: 600; color: #c7c9d0; }
 .daki-personal-field:has(#dakiPersonal-source_path), .daki-personal-prompts, .daki-personal-advanced, .daki-personal-status { grid-column: 1 / -1; }
-.daki-personal-dialog :is(input, select, textarea) { min-width: 0; font-size: 13px; font-weight: 400; }
-.daki-personal-dialog input[type=number] { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; font: inherit; font-size: 13px; }
-.daki-personal-dialog .daki-personal-field > button { margin-top: 8px; padding: 6px 10px; font-size: 12px; }
+.daki-personal-dialog :is(input, select, textarea) { min-width: 0; font-size: var(--ui-text-body,12px); font-weight: 400; }
+.daki-personal-dialog input[type=number] { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; font: inherit; font-size: var(--ui-text-body,12px); }
+.daki-personal-dialog .daki-personal-field > button { margin-top: 8px; padding: 6px 10px; font-size: var(--ui-text-body,12px); }
 .daki-personal-source-note { font-weight: 400; margin: 6px 0 0; line-height: 1.6; }
 .daki-personal-prompts { border: 1px solid #ffffff26; border-radius: 10px; background: var(--bg); overflow: hidden; }
 .daki-personal-prompt-panel { padding: 12px 14px; }
 .daki-personal-prompt-panel textarea { min-height: 180px; line-height: 1.7; }
 .daki-personal-advanced { border-top: 1px solid #ffffff1a; padding-top: 12px; }
-.daki-personal-advanced summary { cursor: pointer; color: #bbb; font-size: 13px; }
+.daki-personal-advanced summary { cursor: pointer; color: #bbb; font-size: var(--ui-text-body,12px); }
 .daki-personal-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
 .daki-personal-dialog .daki-personal-status { margin: 0; color: var(--thumb); overflow-wrap: anywhere; }
 .daki-personal-status:empty { display: none; }
 .daki-personal-actions { margin: 0; padding: 16px 26px; background: var(--card); border-top: 1px solid #ffffff1a; }
 .daki-personal-trial { grid-column: 1 / -1; min-width: 0; border-top: 1px solid #ffffff1a; padding-top: 12px; }
-.daki-personal-trial h3 { margin: 0; font-size: 14px; }
+.daki-personal-trial h3 { margin: 0; font-size: var(--ui-text-section,14px); }
 .daki-personal-trial textarea { display: block; box-sizing: border-box; width: 100%; margin-top: 7px; padding: 10px 12px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid #555; border-radius: 8px; line-height: 1.6; }
 .daki-personal-trial .daki-personal-field { margin-top: 12px; }
 .daki-personal-trial-result { display: grid; justify-items: center; gap: 12px; margin-top: 16px; }
@@ -44,12 +44,12 @@
 .daki-personal-picker-choice { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; min-width: 0; gap: 12px; padding: 10px; text-align: left; white-space: normal; }
 .daki-personal-picker-choice.is-selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
 .daki-personal-picker-choice img { width: 72px; height: 96px; min-width: 0; object-fit: contain; background: var(--bg); }
-.daki-personal-picker-placeholder { display: grid; place-items: center; width: 72px; height: 96px; padding: 4px; background: var(--bg); color: #999; font-size: 11px; line-height: 1.4; text-align: center; overflow-wrap: anywhere; }
+.daki-personal-picker-placeholder { display: grid; place-items: center; width: 72px; height: 96px; padding: 4px; background: var(--bg); color: #999; font-size: var(--ui-text-meta,12px); line-height: 1.4; text-align: center; overflow-wrap: anywhere; }
 .daki-personal-picker-choice-text { display: grid; min-width: 0; gap: 5px; }
 .daki-personal-picker-choice-text > :is(strong, span) { min-width: 0; overflow-wrap: anywhere; }
-.daki-personal-picker-choice-text > strong { font-size: 14px; line-height: 1.45; }
-.daki-personal-picker-choice-text > span { color: #bec4d1; font-size: 12px; line-height: 1.5; }
-.daki-personal-picker-more { margin: 0; color: #999; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.daki-personal-picker-choice-text > strong { font-size: var(--ui-text-body,12px); line-height: 1.45; }
+.daki-personal-picker-choice-text > span { color: #bec4d1; font-size: var(--ui-text-body,12px); line-height: 1.5; }
+.daki-personal-picker-more { margin: 0; color: #999; font-size: var(--ui-text-body,12px); line-height: 1.6; overflow-wrap: anywhere; }
 .daki-personal-picker-dialog .daki-personal-actions { position: static; flex: 0 0 auto; }
 .daki-personal-picker-dialog .daki-personal-actions > button { flex: 0 0 auto; min-width: 88px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 600px) {

@@ -43,6 +43,7 @@ from naim.paths import get_app_dir, get_file_creation_time
 from naim.web.daki import register_daki_routes
 from naim.web.prompt_suggestions import register_prompt_suggestion_routes
 from naim.web.canvas_detail_presets import register_canvas_detail_preset_routes
+from naim.web.canvas_source_tiles import register_canvas_source_tile_routes
 from naim.web.daki_image_import import register_daki_image_import_routes
 from naim.web.daki_styles import register_daki_style_routes
 from naim.web.daki_style_sync import register_daki_style_sync_routes
@@ -190,6 +191,7 @@ DAKI_PROJECTS = register_daki_routes(
         DAKI_PERSONAL_STYLES.references(paths=paths) + DAKI_TAG_EXAMPLES.references(paths=paths)
     ),
     image_deleted=lambda source, relative: project_image_deleted(source, relative),
+    image_rename_references=lambda source, target: project_image_rename_references(source, target),
 )
 register_canvas_detail_preset_routes(app, DAKI_PROJECTS)
 DAKI_SHARED_STYLES_DIR = os.path.join(os.path.dirname(CURRENT_DIR), 'dakiMaker', 'research', 'style-catalog')
@@ -301,6 +303,30 @@ def project_image_deleted(source, relative):
                 db.refresh_gallery_folder_summaries([os.path.dirname(relative).replace('\\', '/')])
             else:
                 db.rebuild_gallery_folder_summaries()
+    finally:
+        db.close()
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def project_image_rename_references(source, target):
+    """Move gallery indexes and tags together; old saved URLs retain aliases."""
+    from naim.storage.webp_conversion import migrate_webp_references
+    if not utils.is_subpath(os.path.realpath(source), os.path.realpath(CLASSIFIED_DIR)):
+        yield
+        return
+    db = utils.HistoryDB()
+    try:
+        with GALLERY_INDEX_DB_LOCK:
+            undo = migrate_webp_references(db, CLASSIFIED_DIR, source, target,
+                                           GALLERY_IMAGE_TAGS_FILE, same_format_rename=True)
+            try:
+                yield
+            except Exception:
+                undo()
+                raise
     finally:
         db.close()
 
@@ -3076,7 +3102,9 @@ def serve_image_preview(file_path, max_side):
 
 
 def resolve_gallery_file_path(relative):
+    from naim.storage.image_renames import resolve_renamed_image_path
     path = utils.resolve_safe_path(CLASSIFIED_DIR, relative, strip_prefix="TOTAL_CLASSIFIED/")
+    path = str(resolve_renamed_image_path(path))
     if os.path.exists(path):
         return path
     old_relative = os.path.relpath(path, CLASSIFIED_DIR).replace('\\', '/')
@@ -5474,6 +5502,8 @@ def list_canvas_import_items():
 def serve_canvas_import(filename):
     try:
         file_path = utils.resolve_safe_path(CANVAS_IMPORT_DIR, filename)
+        from naim.storage.image_renames import resolve_renamed_image_path
+        file_path = str(resolve_renamed_image_path(file_path))
     except ValueError:
         return "Invalid path", 400
 
@@ -5606,6 +5636,30 @@ def canvas_upload_image():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+def resolve_canvas_image_path(image_ref):
+    image_ref = str(image_ref or "").strip()
+    if not image_ref:
+        raise ValueError("이미지 데이터가 없습니다.")
+
+    parsed_path = urlsplit(image_ref).path
+
+    if parsed_path.startswith("/canvas-imports/"):
+        filename = parsed_path[len("/canvas-imports/"):]
+        return utils.resolve_safe_path(CANVAS_IMPORT_DIR, filename)
+
+    if parsed_path.startswith("canvas_imports/"):
+        filename = parsed_path[len("canvas_imports/"):]
+        return utils.resolve_safe_path(CANVAS_IMPORT_DIR, filename)
+
+    if parsed_path.startswith("/image/"):
+        rel_path = unquote(parsed_path[len("/image/"):])
+        reference = resolve_project_image_reference(rel_path)
+        return reference[0] if reference is not None else resolve_gallery_file_path(rel_path)
+
+
+    raise ValueError("캔버스 이미지 경로를 읽을 수 없습니다.")
+
+
 def read_canvas_image_bytes(image_ref):
     image_ref = str(image_ref or "").strip()
     if not image_ref:
@@ -5614,29 +5668,9 @@ def read_canvas_image_bytes(image_ref):
     if "," in image_ref and image_ref.startswith("data:"):
         return base64.b64decode(image_ref.split(",", 1)[1])
 
-    parsed_path = urlsplit(image_ref).path
-
-    if parsed_path.startswith("/canvas-imports/"):
-        filename = parsed_path[len("/canvas-imports/"):]
-        file_path = utils.resolve_safe_path(CANVAS_IMPORT_DIR, filename)
-        with open(file_path, "rb") as f:
-            return f.read()
-
-    if parsed_path.startswith("canvas_imports/"):
-        filename = parsed_path[len("canvas_imports/"):]
-        file_path = utils.resolve_safe_path(CANVAS_IMPORT_DIR, filename)
-        with open(file_path, "rb") as f:
-            return f.read()
-
-    if parsed_path.startswith("/image/"):
-        rel_path = unquote(parsed_path[len("/image/"):])
-        reference = resolve_project_image_reference(rel_path)
-        file_path = reference[0] if reference is not None else resolve_gallery_file_path(rel_path)
-        with open(file_path, "rb") as f:
-            return f.read()
-
-    raise ValueError("캔버스 이미지 경로를 읽을 수 없습니다.")
-
+    file_path = resolve_canvas_image_path(image_ref)
+    with open(file_path, "rb") as f:
+        return f.read()
 
 from naim.images.inpaint import (
     prepare_inpaint_mask_bytes,
@@ -5661,6 +5695,8 @@ def save_canvas_generated_image(raw_bytes, prefix="canvas_inpaint", category=Non
 
 
 from naim.web.canvas_retouch import register_canvas_retouch_routes
+
+register_canvas_source_tile_routes(app, resolve_canvas_image_path, scratch_dir=DAKI_GENERATED_TEMP_DIR)
 
 CANVAS_RETOUCH = register_canvas_retouch_routes(
     app, read_canvas_image_bytes, save_canvas_generated_image,

@@ -1,6 +1,7 @@
 """One deduplicated shared recipe catalog; source files remain untouched."""
 from contextlib import closing
 from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -9,6 +10,59 @@ import sqlite3
 
 def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
+def _timestamp(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 100:
+        return None
+    text = value.strip()
+    if text.endswith(('Z', 'z')):
+        text = text[:-1] + '+00:00'
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.astimezone(timezone.utc)
+
+
+def _recommendation(entry):
+    record = entry.get('record') or {}
+    count = record.get('recommendation_count')
+    if type(count) is not int or count < 0:
+        return None
+    collected_at = record.get('recommendation_collected_at')
+    return count, collected_at if _timestamp(collected_at) is not None else None
+
+
+def _newest_recommendation(candidates):
+    selected = None
+    selected_at = None
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        count, collected_at = candidate
+        parsed = _timestamp(collected_at)
+        if selected is None or (parsed is not None and (selected_at is None or parsed > selected_at)):
+            selected = candidate
+            selected_at = parsed
+    return selected
+
+
+def _should_update_recommendation(record, candidate):
+    if candidate is None:
+        return False
+    count = record.get('recommendation_count')
+    if type(count) is not int or count < 0:
+        return True
+    current_at = _timestamp(record.get('recommendation_collected_at'))
+    incoming_at = _timestamp(candidate[1])
+    if current_at is None and incoming_at is None:
+        return True
+    if incoming_at is None:
+        return False
+    return current_at is None or incoming_at > current_at
 
 
 class SharedLibraryStore:
@@ -66,12 +120,14 @@ class SharedLibraryStore:
                          (_json({'signature': signature, 'warnings': list(warnings)}),))
 
     def ingest(self, entries):
-        """Publish one verified batch atomically, retaining the first recipe snapshot."""
+        """Publish one verified batch atomically, retaining recipes and current recommendations."""
         added = 0
         exclusions = {}
+        recommendations = {}
         for entry in entries:
             key = _json(entry['key'])
             exclusions[key] = exclusions.get(key, True) and bool(entry.get('excluded'))
+            recommendations.setdefault(key, []).append(_recommendation(entry))
         with closing(self.connect()) as conn, conn:
             for entry in entries:
                 key = _json(entry['key'])
@@ -88,6 +144,12 @@ class SharedLibraryStore:
                 previous = conn.execute('SELECT * FROM shared_sources WHERE origin=? AND source_id=?',
                                         (entry['origin'], str(entry['source_id']))).fetchone()
                 if previous and previous['recipe_id'] != sid:
+                    previous_record = conn.execute('SELECT record_json FROM shared_recipes WHERE id=?',
+                                                   (previous['recipe_id'],)).fetchone()
+                    if previous_record:
+                        previous_recommendation = _recommendation({'record': json.loads(previous_record['record_json'])})
+                        if previous_recommendation is not None:
+                            recommendations[key].insert(0, previous_recommendation)
                     previous_recipe = conn.execute('SELECT excluded_by_user FROM shared_recipes WHERE id=?',
                                                     (previous['recipe_id'],)).fetchone()
                     if previous_recipe and previous_recipe['excluded_by_user']:
@@ -110,6 +172,18 @@ class SharedLibraryStore:
                 for alias in entry.get('aliases', []):
                     # Legacy identities are immutable; their saved snapshots remain readable.
                     conn.execute('INSERT OR IGNORE INTO shared_aliases VALUES(?,?)', (alias, sid))
+            for key, candidates in recommendations.items():
+                candidate = _newest_recommendation(candidates)
+                if candidate is None:
+                    continue
+                sid = 'common-' + hashlib.sha256(key.encode()).hexdigest()[:24]
+                row = conn.execute('SELECT record_json FROM shared_recipes WHERE id=?', (sid,)).fetchone()
+                if row is None:
+                    continue
+                record = json.loads(row['record_json'])
+                if _should_update_recommendation(record, candidate):
+                    record['recommendation_count'], record['recommendation_collected_at'] = candidate
+                    conn.execute('UPDATE shared_recipes SET record_json=? WHERE id=?', (_json(record), sid))
         return added
 
     @staticmethod
@@ -135,15 +209,83 @@ class SharedLibraryStore:
     def get_record(self, sid):
         with closing(self.connect()) as conn:
             canonical = self.resolve(conn, sid)
+            record = json.loads(conn.execute('SELECT record_json FROM shared_recipes WHERE id=?', (canonical,)).fetchone()[0])
+            self._overlay_active_recommendations(conn, canonical, record)
             if sid != canonical:
                 originals = conn.execute("SELECT source_json FROM shared_sources WHERE origin='naim' AND recipe_id=?", (canonical,)).fetchall()
                 for original in originals:
                     saved = json.loads(original[0]).get('_legacy_record')
                     if isinstance(saved, dict) and saved.get('id') == sid:
+                        saved = deepcopy(saved)
+                        saved['recommendation_count'] = record.get('recommendation_count')
+                        saved['recommendation_collected_at'] = record.get('recommendation_collected_at')
                         return saved
-            record = json.loads(conn.execute('SELECT record_json FROM shared_recipes WHERE id=?', (canonical,)).fetchone()[0])
             record['id'] = sid
             return record
+
+    @staticmethod
+    def _overlay_active_recommendations(conn, recipe_id, record):
+        historical = conn.execute('''SELECT origin,source_id FROM shared_sources WHERE recipe_id=?
+            AND COALESCE(json_extract(source_json,'$._historical'),0)=1''', (recipe_id,)).fetchall()
+        for source in historical:
+            suffix = '@' + recipe_id
+            if not source['source_id'].endswith(suffix):
+                continue
+            original_source_id = source['source_id'][:-len(suffix)]
+            active = conn.execute('''SELECT recipe_id FROM shared_sources WHERE origin=? AND source_id=?
+                AND COALESCE(json_extract(source_json,'$._historical'),0)=0''',
+                               (source['origin'], original_source_id)).fetchone()
+            if active is None or active['recipe_id'] == recipe_id:
+                continue
+            row = conn.execute('SELECT record_json FROM shared_recipes WHERE id=?', (active['recipe_id'],)).fetchone()
+            if row is None:
+                continue
+            current = json.loads(row['record_json'])
+            candidate = _recommendation({'record': current})
+            if _should_update_recommendation(record, candidate):
+                record['recommendation_count'], record['recommendation_collected_at'] = candidate
+
+    def update_recommendations(self, source_url, count, collected_at):
+        """Update matching recipes only when the collected recommendation data is newer."""
+        if not isinstance(source_url, str) or not source_url.strip() or len(source_url) > 2048:
+            raise ValueError('원본 주소를 확인해 주세요.')
+        if type(count) is not int or count < 0:
+            raise ValueError('추천수는 0 이상의 정수여야 합니다.')
+        incoming_at = _timestamp(collected_at)
+        if incoming_at is None:
+            raise ValueError('추천수 수집 시각을 확인해 주세요.')
+        return self.update_recommendations_many([{
+            'source_url': source_url.strip(), 'recommendation_count': count,
+            'recommendation_collected_at': collected_at.strip()}])
+
+    def update_recommendations_many(self, updates):
+        """Apply source vote changes with one catalog read, without re-ingesting images."""
+        by_url = {}
+        for update in updates:
+            url = update.get('source_url')
+            candidate = _recommendation({'record': update})
+            if not isinstance(url, str) or not url.strip() or candidate is None:
+                continue
+            url = url.strip()
+            by_url[url] = _newest_recommendation([by_url.get(url), candidate])
+        if not by_url:
+            return 0
+        changed = 0
+        with closing(self.connect()) as conn, conn:
+            candidates = {}
+            for row in conn.execute('''SELECT recipe_id,json_extract(source_json,'$.source_url') AS url
+                FROM shared_sources WHERE COALESCE(json_extract(source_json,'$._historical'),0)=0'''):
+                if row['url'] in by_url:
+                    sid = row['recipe_id']
+                    candidates[sid] = _newest_recommendation([candidates.get(sid), by_url[row['url']]])
+            for row in conn.execute('SELECT id,record_json FROM shared_recipes').fetchall():
+                record = json.loads(row['record_json'])
+                candidate = _newest_recommendation([candidates.get(row['id']), by_url.get(record.get('source_url'))])
+                if _should_update_recommendation(record, candidate):
+                    record['recommendation_count'], record['recommendation_collected_at'] = candidate
+                    changed += conn.execute('UPDATE shared_recipes SET record_json=? WHERE id=?',
+                                            (_json(record), row['id'])).rowcount
+        return changed
 
     def sources(self, sid):
         with closing(self.connect()) as conn:

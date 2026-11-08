@@ -440,17 +440,65 @@ class WebPConversionTests(unittest.TestCase):
     def test_concurrent_output_creation_is_not_overwritten(self):
         source = self.make_png()
         original = source.read_bytes()
-        real_link = os.link
+        real_publish = conversion._publish_webp
 
         def collide(temporary, target):
             Path(target).write_bytes(b"concurrent output")
-            return real_link(temporary, target)
+            return real_publish(temporary, target)
 
-        with mock.patch.object(conversion.os, "link", side_effect=collide):
+        with mock.patch.object(conversion, "_publish_webp", side_effect=collide):
             result = conversion.convert_png_to_webp(source)
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(source.read_bytes(), original)
         self.assertEqual(source.with_suffix(".webp").read_bytes(), b"concurrent output")
+
+    @unittest.skipUnless(os.name == "nt", "Windows publication semantics")
+    def test_windows_publication_retries_transient_access_denied(self):
+        source = self.make_png()
+        real_rename = os.rename
+        attempts = []
+
+        def fail_once(temporary, target):
+            attempts.append((temporary, target))
+            if len(attempts) == 1:
+                error = PermissionError(5, "Access is denied", str(temporary))
+                error.winerror = 5
+                raise error
+            return real_rename(temporary, target)
+
+        with mock.patch.object(conversion.os, "rename", side_effect=fail_once), \
+             mock.patch.object(conversion.time, "sleep") as sleep:
+            result = conversion.convert_png_to_webp(source)
+
+        self.assertEqual(result["status"], "converted", result)
+        self.assertEqual(len(attempts), 2)
+        sleep.assert_called_once_with(conversion._WINDOWS_PUBLISH_RETRY_DELAYS[0])
+        self.assertFalse(source.exists())
+        self.assertTrue(source.with_suffix(".webp").is_file())
+        self.assertEqual(list(self.root.glob(".naim-webp-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows publication semantics")
+    def test_windows_publication_exhaustion_preserves_source_and_cleans_temp(self):
+        source = self.make_png()
+        original = source.read_bytes()
+        attempts = []
+
+        def keep_failing(temporary, _target):
+            attempts.append(temporary)
+            error = PermissionError(32, "Sharing violation", str(temporary))
+            error.winerror = 32
+            raise error
+
+        with mock.patch.object(conversion.os, "rename", side_effect=keep_failing), \
+             mock.patch.object(conversion.time, "sleep") as sleep:
+            result = conversion.convert_png_to_webp(source)
+
+        self.assertEqual(result["status"], "skipped", result)
+        self.assertEqual(len(attempts), len(conversion._WINDOWS_PUBLISH_RETRY_DELAYS) + 1)
+        self.assertEqual(sleep.call_count, len(conversion._WINDOWS_PUBLISH_RETRY_DELAYS))
+        self.assertEqual(source.read_bytes(), original)
+        self.assertFalse(source.with_suffix(".webp").exists())
+        self.assertEqual(list(self.root.glob(".naim-webp-*")), [])
 
     def test_unsupported_bit_depth_animation_and_dimensions_keep_png(self):
         for name, image, options in (
@@ -507,7 +555,7 @@ class WebPConversionTests(unittest.TestCase):
         encoding = threading.Barrier(2)
         verification = threading.Barrier(2)
         real_save, real_verify = Image.Image.save, conversion._verify_webp
-        real_link, real_unlink = os.link, Path.unlink
+        real_publish, real_unlink = conversion._publish_webp, Path.unlink
         phases = []
 
         def save(image, filename, format=None, **options):
@@ -522,10 +570,10 @@ class WebPConversionTests(unittest.TestCase):
             real_verify(*args)
             verification.wait(timeout=5)
 
-        def link(*args):
+        def publish(*args):
             self.assertTrue(conversion.IMAGE_FILES_LOCK._is_owned())
             phases.append("publish")
-            return real_link(*args)
+            return real_publish(*args)
 
         def callback(*_):
             self.assertTrue(conversion.IMAGE_FILES_LOCK._is_owned())
@@ -538,7 +586,7 @@ class WebPConversionTests(unittest.TestCase):
 
         with mock.patch.object(Image.Image, "save", save), \
              mock.patch.object(conversion, "_verify_webp", verify), \
-             mock.patch.object(conversion.os, "link", link), \
+             mock.patch.object(conversion, "_publish_webp", publish), \
              mock.patch.object(Path, "unlink", unlink), \
              ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(conversion.convert_png_to_webp, source, lossless=index == 0,

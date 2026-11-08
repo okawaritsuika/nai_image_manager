@@ -17,7 +17,7 @@
     color: var(--text-color, #eee);
     box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--ui-text-body, 12px);
     line-height: 1.4;
 }
 

@@ -46,6 +46,7 @@ function harness({intersection = true} = {}) {
         Daki: {createGrid(className) {
             const grid = new Element('div'); grid.className = `flex-masonry ${className}`;
             grid.setItems = items => grid.replaceChildren(...items);
+            grid.appendItems = items => grid.append(...items);
             return grid;
         }},
         requestAnimationFrame(callback) { const id = ++nextFrame; frames.set(id, callback); return id; },
@@ -141,5 +142,26 @@ test('without IntersectionObserver the enabled button loads pages and empty resu
     more.onclick(); h.flushFrame();
     assert.equal(wrapper.querySelector('.daki-style-grid').children.length, 81);
     assert.equal(more.disabled, true);
+    wrapper.dispose();
+});
+
+test('loading 1000 records renders each card and resolves each zoom path only once', () => {
+    const h = harness({intersection: false});
+    let rendered = 0, paths = 0;
+    const wrapper = h.create({className: 'daki-style-grid',
+        renderItem: () => { rendered++; return new Element('article'); },
+        pathOf: item => { paths++; return item.path; }});
+    wrapper.setItems(Array.from({length: 1000}, (_, index) => ({path: `synthetic/${index}.png`})));
+    h.flushFrame();
+    const grid = wrapper.querySelector('.daki-style-grid');
+    const original = grid.children[0];
+    const navigation = grid.galleryZoomImagesAll;
+    const more = wrapper.querySelector('.daki-progressive-more');
+    while (!more.disabled) { more.onclick(); h.flushFrame(); }
+    assert.equal(rendered, 1000);
+    assert.equal(paths, 1000);
+    assert.equal(grid.children[0], original);
+    assert.equal(grid.galleryZoomImagesAll, navigation);
+    assert.equal(grid.children.length, 1000);
     wrapper.dispose();
 });

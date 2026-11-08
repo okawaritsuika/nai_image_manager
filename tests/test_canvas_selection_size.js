@@ -6,6 +6,7 @@ const {afterEach, test} = require('node:test');
 
 const canvasSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'canvas.js'), 'utf8');
 const CanvasInpaintReference = require(path.join(__dirname, '..', 'static', 'canvas_inpaint_reference.js'));
+const CanvasSelectionRotation = require(path.join(__dirname, '..', 'static', 'canvas_selection_rotation.js'));
 const FREE_AREA_LIMIT = 1024 * 1024;
 
 afterEach(() => {
@@ -55,6 +56,7 @@ function makeTooltipContext({referenceApi, windowWidth = 1280, windowHeight = 90
         SELECTION_MIN_SIZE: 64,
         SELECTION_SIZE_STEP: 64,
         NAI_FREE_AREA_LIMIT: FREE_AREA_LIMIT,
+        CanvasSelectionRotation,
         getSelectionSizeTooltip: () => tooltip,
         window: {innerWidth: windowWidth, innerHeight: windowHeight}
     };
@@ -62,6 +64,10 @@ function makeTooltipContext({referenceApi, windowWidth = 1280, windowHeight = 90
     vm.createContext(context);
     vm.runInContext([
         extractFunction(canvasSource, 'snapToSelectionStep'),
+        extractFunction(canvasSource, 'normalizeSelectionAreaGeometry'),
+        extractFunction(canvasSource, 'setCanvasLayerNodePosition'),
+        extractFunction(canvasSource, 'updateCanvasLayerNodeGeometry'),
+        extractFunction(canvasSource, 'getCanvasSizeWarning'),
         extractFunction(canvasSource, 'updateSelectionSizeTooltip')
     ].join('\n'), context);
     return {context, tooltip};
@@ -115,6 +121,24 @@ test('selection with a reference crosses the free-area threshold using total req
     assert.equal(tooltip.innerText,
         '선택 768 × 1024px · 참고 폭 320px\n전체 1088 × 1024px · Anlas 가능');
     assert.equal(tooltip.classList.contains('danger'), true);
+});
+
+test('selection fill follows the warning threshold as geometry and reference inclusion change', () => {
+    restoreReference(320, true);
+    const {context} = makeTooltipContext({referenceApi: CanvasInpaintReference});
+    const node = makeTooltip();
+    node.style.setProperty = () => {};
+    const layer = {type: 'selection', x: 0, y: 0, layerWidth: 704, layerHeight: 1024};
+    const updateFill = () => {
+        context.updateCanvasLayerNodeGeometry(layer, 1, node);
+        return node.classList.contains('selection-anlas-warning');
+    };
+
+    assert.equal(updateFill(), false);
+    layer.layerWidth = 768;
+    assert.equal(updateFill(), true);
+    restoreReference(320, false);
+    assert.equal(updateFill(), false);
 });
 
 test('selection tooltip uses reference widths of 64px and 384px from the reference module', () => {

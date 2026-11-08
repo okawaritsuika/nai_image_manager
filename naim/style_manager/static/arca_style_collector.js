@@ -2,8 +2,11 @@ const arcaState = {
   loaded: false, collecting: false, selectedId: null, selectedItem: null, timer: null, pollTimer: null,
   loginPollTimer: null, activeJobId: null, browserConnected: false,
   pendingCollectionPayload: null, loginImporting: false, browserSessionLoadPromise: null,
+  confirmedImportRevision: 0,
+  confirmedImportBusy: false,
   imageRestoreEstimate: null,
   statsRefreshModel: "v5", statsRefreshStarting: false,
+  cardColumns: null, cardSizePreset: "medium",
   coverageTimer: null, statisticsLoaded: false, statisticsData: null, statisticsView: "artist",
   page: 1, totalPages: 1, totalItems: 0,
   statisticTables: {
@@ -632,6 +635,11 @@ function setArcaCollectionControlsDisabled(disabled) {
 function renderArcaBrowserSession(status) {
   arcaState.browserConnected = Boolean(status?.connected);
   arcaSetStatus("arcaBrowserSessionState", arcaBrowserSessionText(status), status?.connected ? "ok" : status?.error ? "error" : "");
+  const button = arcaEl("importArcaBrowserSession");
+  if (button) {
+    button.textContent = status?.connected ? "다시 연결" : "자동 연결 / 전용 로그인 창";
+    button.title = status?.connected ? "이미 연결된 로그인을 다시 확인합니다." : "브라우저 로그인을 연결하고, 필요한 경우 로그인 창을 엽니다.";
+  }
 }
 
 function clearArcaBrowserSessionPoll() {
@@ -946,6 +954,212 @@ async function controlArcaCollection(action) {
   }
 }
 
+let arcaImageContextMenu = null;
+let arcaImageMenuContext = null;
+let arcaImageMenuRevision = 0;
+let arcaImageMenuTrigger = null;
+const arcaImageMenuScrollPositions = new Map();
+
+function closeArcaImageContextMenu(restoreFocus = false) {
+  arcaImageMenuRevision += 1;
+  if (arcaImageContextMenu) arcaImageContextMenu.hidden = true;
+  arcaImageMenuContext = null;
+  const trigger = arcaImageMenuTrigger;
+  arcaImageMenuTrigger = null;
+  arcaImageMenuScrollPositions.clear();
+  if (restoreFocus && trigger?.isConnected) trigger.focus();
+}
+
+function getArcaImageContextMenu() {
+  if (arcaImageContextMenu) return arcaImageContextMenu;
+  const menu = document.createElement("div");
+  menu.id = "arcaImageContextMenu";
+  menu.className = "arca-image-context-menu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "공유 그림체 이미지 작업");
+  menu.tabIndex = -1;
+  menu.hidden = true;
+  document.body.append(menu);
+  arcaImageContextMenu = menu;
+  document.addEventListener("mousedown", (event) => {
+    if (!menu.hidden && !menu.contains(event.target)) closeArcaImageContextMenu();
+  });
+  document.addEventListener("scroll", (event) => {
+    if (menu.hidden || menu.contains(event.target)) return;
+    const owner = event.target === document ? document.scrollingElement : event.target;
+    const initial = arcaImageMenuScrollPositions.get(owner);
+    // Ignore queued scroll events whose position already matched at opening.
+    if (!initial || owner.scrollLeft !== initial.left || owner.scrollTop !== initial.top) closeArcaImageContextMenu();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (menu.hidden) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeArcaImageContextMenu(true);
+    } else if (event.key === "Tab") {
+      closeArcaImageContextMenu(true);
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const buttons = [...menu.querySelectorAll("button:not(:disabled)")];
+      const current = buttons.indexOf(document.activeElement);
+      const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[index]?.focus();
+    }
+  }, true);
+  window.addEventListener("resize", () => closeArcaImageContextMenu());
+  window.addEventListener("pagehide", () => closeArcaImageContextMenu());
+  return menu;
+}
+
+function canImportArcaImage(image) {
+  return Number.isInteger(Number(image?.id)) && Number(image.id) > 0
+    && image.image_available !== false && Boolean(image.image_url);
+}
+
+async function arcaImageClipboardBlob(image) {
+  const response = await fetch(`/style-workspace/api/arca-styles/images/${Number(image.id)}/clipboard`);
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.error || `이미지를 불러올 수 없습니다. (HTTP ${response.status})`);
+  }
+  return response.blob();
+}
+
+async function copyArcaContextImage(context) {
+  if (!context?.isCurrent() || !context.image?.image_url || context.image.image_available === false) return;
+  try {
+    if (typeof navigator.clipboard?.write !== "function" || typeof ClipboardItem === "undefined") {
+      throw new Error("현재 브라우저가 이미지 복사를 지원하지 않습니다.");
+    }
+    context.setStatus("이미지를 복사하는 중…");
+    // Start the clipboard write during the click, before loading/converting the original.
+    await navigator.clipboard.write([new ClipboardItem({"image/png": arcaImageClipboardBlob(context.image)})]);
+    if (context.isCurrent()) context.setStatus("이미지를 복사했습니다.", "success");
+  } catch (error) {
+    if (context.isCurrent()) context.setStatus(`이미지 복사 실패: ${error.message || error}`, "error");
+  }
+}
+
+async function importArcaContextImage(context) {
+  if (arcaState.confirmedImportBusy || !canImportArcaImage(context.image) || !context.isCurrent()) return;
+  const revision = ++arcaState.confirmedImportRevision;
+  const menuRevision = arcaImageMenuRevision;
+  const isCurrent = () => revision === arcaState.confirmedImportRevision
+    && menuRevision === arcaImageMenuRevision && context.isCurrent();
+  arcaState.confirmedImportBusy = true;
+  context.setStatus("확정 그림체 정보를 불러오는 중…");
+  try {
+    if (typeof globalThis.openConfirmedStyleFromArca !== "function") throw new Error("확정 그림체 화면을 준비하지 못했습니다.");
+    await globalThis.openConfirmedStyleFromArca(context.image, isCurrent);
+    if (isCurrent()) context.setStatus("");
+  } catch (error) {
+    if (isCurrent()) context.setStatus(error.message, "error");
+  } finally {
+    arcaState.confirmedImportBusy = false;
+    if (!isCurrent() && context.isCurrent()) context.setStatus("");
+    if (arcaImageContextMenu && !arcaImageContextMenu.hidden && arcaImageMenuContext?.isCurrent()) {
+      const action = arcaImageContextMenu.querySelector(".arca-image-menu-import");
+      action.disabled = !canImportArcaImage(arcaImageMenuContext.image);
+    }
+  }
+}
+
+function fillArcaImageContextMenu(menu, context) {
+  arcaImageMenuContext = context;
+  menu.replaceChildren();
+  const addAction = (className, label, description, disabled, action) => {
+    const button = document.createElement("button");
+    button.className = `arca-image-menu-item ${className}`;
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.disabled = disabled;
+    const title = document.createElement("span"); title.textContent = label;
+    const help = document.createElement("small"); help.textContent = description;
+    button.append(title, help);
+    button.addEventListener("click", () => {
+      if (!context?.isCurrent()) { closeArcaImageContextMenu(); return; }
+      closeArcaImageContextMenu();
+      action();
+    });
+    menu.append(button);
+  };
+  const available = context && canImportArcaImage(context.image);
+  addAction("arca-image-menu-import", "확정 그림체로 가져오기",
+    context && !available ? "로컬에 저장된 이미지가 있어야 가져올 수 있습니다."
+      : "선택한 이미지 1장의 정보를 확인한 뒤 확정 그림체로 저장합니다.",
+    !available || arcaState.confirmedImportBusy, () => { void importArcaContextImage(context); });
+  const reference = context?.image && hasArcaDependencyArtists(context.image);
+  addAction("arca-image-menu-reference", "이 이미지를 기준 그림체로 확정",
+    context && !reference ? "작가 프롬프트를 인식할 수 없어 기준으로 확정할 수 없습니다."
+      : "이 이미지의 인식된 작가와 설정을 그림체 제작에 적용합니다.", !reference, () => {
+      const setter = globalThis.setSharedDependencyReferenceFromArca;
+      if (typeof setter !== "function") context.setStatus("그림체 제작 탭을 준비하지 못했습니다.", "error");
+      else setter(context.image, context.item);
+    });
+  const copyAvailable = context && canImportArcaImage(context.image);
+  addAction("arca-image-menu-copy", "이미지 복사",
+    context && !copyAvailable ? "로컬에 저장된 이미지가 있어야 복사할 수 있습니다."
+      : "이 그림을 복사해 다른 곳에 붙여넣습니다.",
+    !copyAvailable, () => { void copyArcaContextImage(context); });
+}
+
+async function openArcaImageContextMenu(event, loadContext) {
+  event.preventDefault();
+  event.stopPropagation();
+  closeArcaImageContextMenu();
+  const revision = ++arcaImageMenuRevision;
+  const menu = getArcaImageContextMenu();
+  const trigger = event.currentTarget;
+  arcaImageMenuTrigger = trigger;
+  for (let owner = trigger; owner; owner = owner.parentElement) {
+    arcaImageMenuScrollPositions.set(owner, {left: owner.scrollLeft, top: owner.scrollTop});
+  }
+  const box = trigger.getBoundingClientRect();
+  const x = Number.isFinite(event.clientX) ? event.clientX : box.left + 12;
+  const y = Number.isFinite(event.clientY) ? event.clientY : box.top + 12;
+  const position = () => {
+    menu.style.left = `${Math.max(12, Math.min(x, window.innerWidth - menu.offsetWidth - 12))}px`;
+    menu.style.top = `${Math.max(12, Math.min(y, window.innerHeight - menu.offsetHeight - 12))}px`;
+  };
+  fillArcaImageContextMenu(menu, null);
+  menu.setAttribute("aria-busy", "true");
+  menu.hidden = false;
+  position();
+  menu.focus({preventScroll: true});
+  try {
+    const context = await loadContext();
+    if (revision !== arcaImageMenuRevision || menu.hidden) return;
+    if (!context.isCurrent()) { closeArcaImageContextMenu(); return; }
+    fillArcaImageContextMenu(menu, context);
+    menu.setAttribute("aria-busy", "false");
+    position();
+    menu.querySelector("button:not(:disabled)")?.focus({preventScroll: true});
+  } catch (error) {
+    if (revision !== arcaImageMenuRevision || menu.hidden) return;
+    menu.setAttribute("aria-busy", "false");
+    const status = document.createElement("p");
+    status.className = "arca-image-menu-status";
+    status.textContent = error.message;
+    menu.append(status);
+    position();
+  }
+}
+
+function bindArcaImageContextMenu(target, loadContext) {
+  target.setAttribute("aria-haspopup", "menu");
+  target.setAttribute("aria-controls", "arcaImageContextMenu");
+  target.title = "오른쪽 클릭으로 그림체 작업 메뉴 열기";
+  target.addEventListener("contextmenu", (event) => { void openArcaImageContextMenu(event, loadContext); });
+  target.addEventListener("keydown", (event) => {
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")
+        || (target.tagName !== "BUTTON" && ["Enter", " "].includes(event.key))) {
+      void openArcaImageContextMenu(event, loadContext);
+    }
+  });
+}
+
 function renderArcaCard(item) {
   const card = document.createElement("article");
   card.className = "arca-style-card";
@@ -954,11 +1168,28 @@ function renderArcaCard(item) {
   thumbnail.className = "arca-style-thumb-button";
   thumbnail.setAttribute("aria-label", `확인 및 수정: ${item.title || "수집 그림체"}`);
   thumbnail.addEventListener("click", () => { void openArcaStyle(item.id); });
+  bindArcaImageContextMenu(thumbnail, async () => {
+    const modelQuery = arcaStyleDetailQuery(arcaEl("arcaModelFilter")?.value);
+    const suffix = modelQuery.toString() ? `?${modelQuery}` : "";
+    const detail = await arcaFetch(`/style-workspace/api/arca-styles/${item.id}${suffix}`);
+    const images = [...(detail.images || []), ...(detail.style_groups || []).flatMap((group) => group.images || [])];
+    const image = images.find((candidate) => candidate.image_url && candidate.image_url === item.representative_image_url);
+    if (!image) throw new Error("대표 이미지 정보를 찾지 못했습니다. 상세 화면에서 이미지를 선택해 주세요.");
+    let previousStatus = null;
+    return {image, item: detail,
+      isCurrent: () => thumbnail.isConnected && Boolean(arcaEl("arca-style-collector-tab")?.classList.contains("active")),
+      setStatus: (message, type) => {
+        if (previousStatus === null) previousStatus = arcaEl("arcaStyleListStatus")?.textContent || "";
+        arcaSetStatus("arcaStyleListStatus", message || previousStatus, type);
+      }};
+  });
   if (item.representative_image_url) {
     const image = document.createElement("img");
     image.className = "arca-style-thumb";
-    image.src = item.representative_image_url;
+    image.src = item.representative_thumbnail_url || item.representative_image_url;
     image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
     thumbnail.append(image);
   } else {
     const empty = document.createElement("div");
@@ -971,29 +1202,28 @@ function renderArcaCard(item) {
   body.className = "arca-style-body";
   const title = document.createElement("h3");
   title.textContent = item.title || "제목 없음";
+  title.title = item.title || "제목 없음";
+  const postedDate = document.createElement("div");
+  postedDate.className = "arca-style-posted-date";
+  const dateLabel = document.createElement("span");
+  dateLabel.textContent = "게시일";
+  const postedAt = String(item.posted_at || "").trim();
+  const dateValue = document.createElement(postedAt ? "time" : "span");
+  dateValue.textContent = postedAt || "미상";
+  if (postedAt) dateValue.dateTime = postedAt;
+  postedDate.title = postedAt ? `원문 게시일: ${postedAt}` : "원문 게시일 정보가 없습니다.";
+  postedDate.append(dateLabel, dateValue);
   const meta = document.createElement("div");
   meta.className = "arca-style-meta";
   const recommendations = item.recommendation_count == null ? "추천 -" : `추천 ${Number(item.recommendation_count).toLocaleString()}`;
-  const views = item.view_count == null ? "조회 -" : `조회 ${Number(item.view_count).toLocaleString()}`;
-  [item.board_tab, item.posted_at, recommendations, views, `그룹 ${item.style_group_count || 0}`, `이미지 ${item.image_count || 0}`].filter(Boolean).forEach((value) => {
+  [recommendations, `이미지 ${item.image_count || 0}`].forEach((value) => {
     const badge = document.createElement("span");
     badge.textContent = value;
     meta.append(badge);
   });
   const models = Array.isArray(item.models) ? item.models : [item.model];
   models.filter((value, index, values) => values.some(Boolean) && values.indexOf(value) === index).forEach((model) => meta.append(createArcaModelBadge(model)));
-  const prompt = document.createElement("p");
-  prompt.className = "arca-style-prompt-preview";
-  prompt.textContent = item.prompt || "";
-  const actions = document.createElement("div");
-  actions.className = "arca-style-actions";
-  const source = document.createElement("a");
-  source.href = item.source_url;
-  source.target = "_blank";
-  source.rel = "noreferrer";
-  source.textContent = "출처 열기";
-  actions.append(source, arcaButton("확인 및 수정", () => openArcaStyle(item.id)), arcaButton("삭제", () => deleteArcaStyle(item.id)));
-  body.append(title, meta, prompt, actions);
+  body.append(title, postedDate, meta);
   card.append(body);
   return card;
 }
@@ -1024,9 +1254,200 @@ function renderArcaPagination(result) {
   if (arcaEl("arcaStyleNextPage")) arcaEl("arcaStyleNextPage").disabled = page >= totalPages;
 }
 
-function applyArcaCardSize() {
-  const size = arcaEl("arcaStyleCardSize")?.value || "medium";
-  if (arcaEl("arcaStyleList")) arcaEl("arcaStyleList").dataset.cardSize = size;
+const ARCA_CARD_SIZE_MIN = 120;
+const ARCA_CARD_GAP = 8;
+const ARCA_CARD_SIZE_PRESETS = Object.freeze({ xsmall: 120, small: 220, medium: 280, large: 360 });
+const ARCA_CARD_LAYOUT_STORAGE_KEY = "naim_arca_style_card_layout_v1";
+const ARCA_CARD_VISUAL_STEPS = Object.freeze([
+  [120, 48, 140],
+  [220, 88, 170],
+  [280, 120, 190],
+  [360, 148, 220],
+]);
+let arcaCardResizeObserver = null;
+let arcaCardObservedList = null;
+let arcaLastMeasuredCardListWidth = null;
+let arcaCardResizeLifecycleBound = false;
+let arcaCardControlsBound = false;
+
+function restoreArcaCardLayout() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(ARCA_CARD_LAYOUT_STORAGE_KEY) || "null");
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return;
+    if (Object.hasOwn(ARCA_CARD_SIZE_PRESETS, stored.preset)) {
+      arcaState.cardSizePreset = stored.preset;
+    } else if (stored.preset === null && Number.isSafeInteger(stored.columns) && stored.columns > 0) {
+      arcaState.cardSizePreset = null;
+      arcaState.cardColumns = stored.columns;
+    }
+  } catch (_) { /* Storage can be disabled or contain invalid data. */ }
+}
+
+function saveArcaCardLayout() {
+  try {
+    localStorage.setItem(ARCA_CARD_LAYOUT_STORAGE_KEY, JSON.stringify({
+      preset: arcaState.cardSizePreset,
+      columns: arcaState.cardSizePreset ? null : arcaState.cardColumns,
+    }));
+  } catch (_) { /* Storage can be disabled. */ }
+}
+
+function arcaCardListContentWidth(list) {
+  if (!list || !list.clientWidth) return 0;
+  const styles = globalThis.getComputedStyle?.(list);
+  const padding = (Number.parseFloat(styles?.paddingLeft) || 0) + (Number.parseFloat(styles?.paddingRight) || 0);
+  return Math.max(0, list.clientWidth - padding);
+}
+
+function arcaCardMaximumColumns(width) {
+  return width > 0 ? Math.max(1, Math.floor((width + ARCA_CARD_GAP) / (ARCA_CARD_SIZE_MIN + ARCA_CARD_GAP))) : 0;
+}
+
+function arcaClampCardColumns(value, maximum, fallback) {
+  const parsed = Number(value);
+  const safeFallback = Math.max(1, Math.min(maximum, Number.isInteger(fallback) ? fallback : 1));
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return safeFallback;
+  return Math.max(1, Math.min(maximum, parsed));
+}
+
+function arcaPresetColumns(width, preset, maximum) {
+  const targetWidth = ARCA_CARD_SIZE_PRESETS[preset];
+  if (!targetWidth || width <= 0 || maximum <= 0) return 1;
+  return Math.max(1, Math.min(maximum, Math.floor((width + ARCA_CARD_GAP) / (targetWidth + ARCA_CARD_GAP))));
+}
+
+function arcaInterpolateCardVisual(width, valueIndex) {
+  const clampedWidth = Math.max(ARCA_CARD_VISUAL_STEPS[0][0], Math.min(ARCA_CARD_VISUAL_STEPS.at(-1)[0], width));
+  for (let index = 1; index < ARCA_CARD_VISUAL_STEPS.length; index += 1) {
+    const right = ARCA_CARD_VISUAL_STEPS[index];
+    if (clampedWidth > right[0]) continue;
+    const left = ARCA_CARD_VISUAL_STEPS[index - 1];
+    const progress = (clampedWidth - left[0]) / (right[0] - left[0]);
+    return left[valueIndex] + (right[valueIndex] - left[valueIndex]) * progress;
+  }
+  return ARCA_CARD_VISUAL_STEPS.at(-1)[valueIndex];
+}
+
+function updateArcaCardColumnButtons(maximum, columns) {
+  const group = arcaEl("arcaStyleCardColumns");
+  if (!group) return;
+  if (Number(group.dataset.maxColumns) !== maximum || group.childElementCount !== maximum) {
+    const focusedColumns = group.querySelector("button:focus")?.dataset.columns;
+    const buttons = Array.from({ length: maximum }, (_, index) => {
+      const count = index + 1;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "arca-card-column-button";
+      button.dataset.columns = String(count);
+      button.textContent = String(count);
+      button.setAttribute("aria-label", `한 줄 ${count}개`);
+      button.addEventListener("click", () => applyArcaCardColumns(button.dataset.columns));
+      return button;
+    });
+    group.replaceChildren(...buttons);
+    group.dataset.maxColumns = String(maximum);
+    if (focusedColumns && Number(focusedColumns) <= maximum) {
+      group.querySelector(`[data-columns="${focusedColumns}"]`)?.focus({ preventScroll: true });
+    }
+  }
+  group.querySelectorAll("button[data-columns]").forEach((button) => {
+    const active = Number(button.dataset.columns) === columns;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function updateArcaCardPresetButtons() {
+  arcaEl("arcaStyleCardSize")?.querySelectorAll("[data-card-size]").forEach((button) => {
+    const active = button.dataset.cardSize === arcaState.cardSizePreset;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function renderArcaCardSize(width, maximum, columns) {
+  const list = arcaEl("arcaStyleList");
+  const output = arcaEl("arcaStyleCardScaleValue");
+  const summary = `한 줄 ${columns}개`;
+  if (output) {
+    output.textContent = summary;
+    output.setAttribute("aria-label", summary);
+  }
+  updateArcaCardPresetButtons();
+  if (list) {
+    const cardWidth = Math.max(0, (width - (columns - 1) * ARCA_CARD_GAP) / columns);
+    list.dataset.cardSize = arcaState.cardSizePreset || "custom";
+    list.style.setProperty("--arca-card-columns", String(columns));
+    list.style.setProperty("--arca-card-min", `${cardWidth.toFixed(2)}px`);
+    list.style.setProperty("--arca-card-thumb", `${arcaInterpolateCardVisual(cardWidth, 1).toFixed(2)}px`);
+    list.style.setProperty("--arca-card-height", `${arcaInterpolateCardVisual(cardWidth, 2).toFixed(2)}px`);
+    list.style.setProperty("--arca-card-gap", `${ARCA_CARD_GAP}px`);
+  }
+  updateArcaCardColumnButtons(maximum, columns);
+}
+
+function applyArcaCardSize(preset) {
+  if (preset !== undefined) {
+    arcaState.cardSizePreset = Object.hasOwn(ARCA_CARD_SIZE_PRESETS, preset) ? preset : "medium";
+    saveArcaCardLayout();
+  }
+  const list = arcaEl("arcaStyleList");
+  const width = arcaCardListContentWidth(list);
+  const maximum = arcaCardMaximumColumns(width);
+  if (!maximum) {
+    updateArcaCardPresetButtons();
+    return;
+  }
+  const columns = arcaState.cardSizePreset
+    ? arcaPresetColumns(width, arcaState.cardSizePreset, maximum)
+    : arcaClampCardColumns(arcaState.cardColumns, maximum, 1);
+  arcaState.cardColumns = columns;
+  renderArcaCardSize(width, maximum, columns);
+}
+
+function applyArcaCardColumns(value) {
+  const list = arcaEl("arcaStyleList");
+  const width = arcaCardListContentWidth(list);
+  const maximum = arcaCardMaximumColumns(width);
+  if (!maximum) return;
+  const currentColumns = arcaState.cardColumns || 1;
+  arcaState.cardSizePreset = null;
+  arcaState.cardColumns = arcaClampCardColumns(value, maximum, currentColumns);
+  saveArcaCardLayout();
+  renderArcaCardSize(width, maximum, arcaState.cardColumns);
+}
+
+function observeArcaCardList() {
+  const list = arcaEl("arcaStyleList");
+  if (!list) return;
+  if (typeof ResizeObserver === "undefined") {
+    applyArcaCardSize();
+    return;
+  }
+  if (!arcaCardResizeObserver) {
+    arcaCardResizeObserver = new ResizeObserver(() => {
+      const width = arcaCardListContentWidth(list);
+      if (!width || width === arcaLastMeasuredCardListWidth) return;
+      arcaLastMeasuredCardListWidth = width;
+      applyArcaCardSize();
+    });
+  }
+  if (arcaCardObservedList !== list) {
+    arcaCardResizeObserver.disconnect();
+    arcaCardObservedList = list;
+    arcaLastMeasuredCardListWidth = null;
+    arcaCardResizeObserver.observe(list);
+  }
+  if (!arcaCardResizeLifecycleBound && typeof window !== "undefined") {
+    window.addEventListener("pagehide", () => arcaCardResizeObserver?.disconnect());
+    window.addEventListener("pageshow", () => {
+      arcaLastMeasuredCardListWidth = null;
+      if (arcaCardObservedList) arcaCardResizeObserver?.observe(arcaCardObservedList);
+      applyArcaCardSize();
+    });
+    arcaCardResizeLifecycleBound = true;
+  }
+  applyArcaCardSize();
 }
 
 async function goToArcaPage(page) {
@@ -1244,8 +1665,10 @@ function createArcaStatisticsImageCard(image, label, compact = false) {
   previewButton.className = "arca-tag-image-preview";
   previewButton.addEventListener("click", () => openArcaTagImage(image, label));
   const preview = document.createElement("img");
-  preview.src = image.image_url;
+  preview.src = image.thumbnail_url || image.image_url;
   preview.alt = `${label} 적용 이미지`;
+  preview.loading = "lazy";
+  preview.decoding = "async";
   previewButton.append(preview);
   const caption = document.createElement("figcaption");
   const weightText = Number.isFinite(Number(image.weight)) ? `가중치 ${formatArcaWeight(image.weight)} · ` : "";
@@ -1493,8 +1916,10 @@ function renderArcaStyleGroupsLegacy(groups) {
     thumbs.className = "arca-group-thumbnails";
     for (const image of group.images || []) {
       const img = document.createElement("img");
-      img.src = image.image_url;
+      img.src = image.thumbnail_url || image.image_url;
       img.alt = "";
+      img.loading = "lazy";
+      img.decoding = "async";
       thumbs.append(img);
     }
     const tabs = document.createElement("div");
@@ -1559,6 +1984,9 @@ function renderArcaStyleGroups(groups) {
     selectedLayout.className = "arca-selected-image-layout";
     const previewFrame = document.createElement("div");
     previewFrame.className = "arca-selected-image-frame";
+    previewFrame.tabIndex = 0;
+    previewFrame.setAttribute("role", "button");
+    previewFrame.setAttribute("aria-label", "선택한 이미지의 그림체 작업");
     const preview = document.createElement("img");
     preview.className = "arca-selected-image-preview";
     preview.alt = "";
@@ -1571,7 +1999,25 @@ function renderArcaStyleGroups(groups) {
     generationSettings.setAttribute("aria-live", "polite");
     fields.append(generationSettings, base.label, negative.label, character.label);
     const buttons = [];
+    let selectedImageIndex = 0;
+    const actionStatus = document.createElement("p");
+    actionStatus.className = "arca-image-action-status";
+    actionStatus.setAttribute("role", "status");
+    actionStatus.hidden = true;
+    const imageContext = (image, index) => {
+      const item = arcaState.selectedItem;
+      return {image, item,
+        isCurrent: () => root.isConnected && arcaState.selectedItem === item && selectedImageIndex === index
+          && !arcaEl("arcaStyleDialog")?.classList.contains("hidden"),
+        setStatus: (message, type) => {
+          actionStatus.textContent = message;
+          actionStatus.hidden = !message;
+          actionStatus.classList.toggle("error", type === "error");
+        }};
+    };
     const selectImage = (image, selectedIndex) => {
+      selectedImageIndex = selectedIndex;
+      actionStatus.hidden = true;
       const values = imagePromptFields(image);
       if (values.image_url) preview.src = values.image_url;
       else preview.removeAttribute("src");
@@ -1589,47 +2035,28 @@ function renderArcaStyleGroups(groups) {
         button.classList.toggle("selected", selected);
         button.setAttribute("aria-pressed", selected ? "true" : "false");
       });
-      referenceAction.dataset.selectedIndex = String(selectedIndex);
-      referenceAction.disabled = !hasArcaDependencyArtists(image);
-      referenceHint.textContent = referenceAction.disabled
-        ? "작가 프롬프트를 인식할 수 없어 기준으로 확정할 수 없습니다."
-        : "이 이미지의 인식된 작가와 설정을 그림체 제작에 적용합니다.";
     };
+    bindArcaImageContextMenu(previewFrame, () => imageContext(group.images?.[selectedImageIndex], selectedImageIndex));
     (group.images || []).forEach((image, imageIndex) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "arca-image-choice";
       button.setAttribute("aria-label", `이미지 ${imageIndex + 1} 프롬프트 보기`);
       const thumbnail = document.createElement("img");
-      thumbnail.src = image.image_url;
+      thumbnail.src = image.thumbnail_url || image.image_url;
       thumbnail.alt = "";
+      thumbnail.loading = "lazy";
+      thumbnail.decoding = "async";
       button.append(thumbnail, createArcaModelBadge(image.model));
       button.addEventListener("click", () => selectImage(image, imageIndex));
+      bindArcaImageContextMenu(button, () => {
+        selectImage(image, imageIndex);
+        return imageContext(image, imageIndex);
+      });
       buttons.push(button);
       thumbnails.append(button);
     });
-    const referenceAction = document.createElement("button");
-    referenceAction.type = "button";
-    referenceAction.className = "primary arca-set-reference-button";
-    referenceAction.textContent = "이 이미지를 기준 그림체로 확정";
-    referenceAction.disabled = true;
-    referenceAction.addEventListener("click", () => {
-      const image = group.images?.[Number(referenceAction.dataset.selectedIndex)];
-      if (!image || !hasArcaDependencyArtists(image)) return;
-      const setter = globalThis.setSharedDependencyReferenceFromArca;
-      if (typeof setter !== "function") {
-        arcaSetStatus("arcaStyleDialogStatus", "그림체 제작 탭을 준비하지 못했습니다.", "error");
-        return;
-      }
-      setter(image, arcaState.selectedItem || {});
-    });
-    const referenceHint = document.createElement("p");
-    referenceHint.className = "arca-reference-hint";
-    referenceHint.textContent = "작가 프롬프트를 인식할 수 있는 이미지만 확정할 수 있습니다.";
-    const referenceActions = document.createElement("div");
-    referenceActions.className = "arca-reference-actions";
-    referenceActions.append(referenceAction, referenceHint);
-    selectedLayout.append(previewFrame, fields, referenceActions);
+    selectedLayout.append(previewFrame, fields, actionStatus);
     section.append(heading, thumbnails, selectedLayout);
     root.append(section);
     if ((group.images || []).length) selectImage(group.images[0], 0);
@@ -1637,7 +2064,14 @@ function renderArcaStyleGroups(groups) {
   return root;
 }
 
+let arcaStylesRequestRevision = 0;
+let arcaStylesController = null;
+
 async function loadArcaStyles() {
+  const requestRevision = ++arcaStylesRequestRevision;
+  arcaStylesController?.abort();
+  const controller = typeof AbortController === "undefined" ? null : new AbortController();
+  arcaStylesController = controller;
   try {
     const query = arcaListQuery({
       q: arcaEl("arcaStyleSearch")?.value,
@@ -1648,7 +2082,8 @@ async function loadArcaStyles() {
       page: arcaState.page,
       per_page: arcaEl("arcaStylePageSize")?.value,
     });
-    const result = await arcaFetch(`/style-workspace/api/arca-styles?${query}`);
+    const result = await arcaFetch(`/style-workspace/api/arca-styles?${query}`, controller ? { signal: controller.signal } : {});
+    if (requestRevision !== arcaStylesRequestRevision) return;
     const items = Array.isArray(result?.items) ? result.items : [];
     renderArcaList(items);
     renderArcaPagination(result);
@@ -1657,7 +2092,10 @@ async function loadArcaStyles() {
     arcaSetStatus("arcaStyleListStatus", `전체 ${Number(result.total || 0).toLocaleString()}개 · ${start}-${end} 표시`);
     arcaState.loaded = true;
   } catch (error) {
+    if (requestRevision !== arcaStylesRequestRevision) return;
     arcaSetStatus("arcaStyleListStatus", error.message, "error");
+  } finally {
+    if (requestRevision === arcaStylesRequestRevision) arcaStylesController = null;
   }
 }
 
@@ -2061,7 +2499,7 @@ function bindArcaCollector() {
   document.querySelectorAll("[data-close-arca-tag-image]").forEach((item) => item.addEventListener("click", closeArcaTagImage));
   document.querySelectorAll("[data-close-arca-sequence]").forEach((item) => item.addEventListener("click", closeArcaSequence));
   arcaEl("saveArcaStyle")?.addEventListener("click", saveArcaStyle);
-  arcaEl("deleteArcaStyle")?.addEventListener("click", deleteArcaStyle);
+  arcaEl("deleteArcaStyle")?.addEventListener("click", () => deleteArcaStyle());
   arcaEl("closeArcaStyle")?.addEventListener("click", () => {
     globalThis.promptTagAutocomplete?.hide?.();
     arcaEl("arcaStyleDialog")?.classList.add("hidden");
@@ -2077,14 +2515,20 @@ function bindArcaCollector() {
       arcaState.timer = setTimeout(loadArcaStyles, 250);
     });
   }
-  arcaEl("arcaStyleCardSize")?.addEventListener("change", applyArcaCardSize);
+  if (!arcaCardControlsBound) {
+    restoreArcaCardLayout();
+    arcaEl("arcaStyleCardSize")?.querySelectorAll("[data-card-size]").forEach((button) => {
+      button.addEventListener("click", () => applyArcaCardSize(button.dataset.cardSize));
+    });
+    arcaCardControlsBound = true;
+  }
   arcaEl("arcaStylePrevPage")?.addEventListener("click", () => goToArcaPage(arcaState.page - 1));
   arcaEl("arcaStyleNextPage")?.addEventListener("click", () => goToArcaPage(arcaState.page + 1));
   arcaEl("arcaStyleGoPage")?.addEventListener("click", () => goToArcaPage(arcaEl("arcaStylePageInput")?.value));
   arcaEl("arcaStylePageInput")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") void goToArcaPage(event.currentTarget.value);
   });
-  applyArcaCardSize();
+  observeArcaCardList();
   arcaEl("arcaKeyword")?.addEventListener("input", scheduleArcaSearchCoverage);
   for (const id of ["arcaTabNai", "arcaTabR18Nai", "arcaStartDate", "arcaEndDate"]) {
     arcaEl(id)?.addEventListener("change", scheduleArcaSearchCoverage);

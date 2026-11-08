@@ -172,5 +172,6 @@ async function renderMergedCanvasToDataUrl(options = null) {
     }
 
     signal?.throwIfAborted();
+    options?.onComposite?.(offscreen);
     return offscreen.toDataURL('image/png');
 }

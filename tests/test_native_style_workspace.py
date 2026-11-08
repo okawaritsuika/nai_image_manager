@@ -61,6 +61,26 @@ with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
         assert b'<iframe' not in page.data
         direct = client.get('/style-manager', follow_redirects=True)
         assert direct.status_code == 200 and b'workspace-header-navigation' in direct.data
+        with patch.object(workspace, 'import_arca_browser_session', side_effect=AssertionError('browser import')), \
+             patch.object(workspace.ARCA_LOGIN_MANAGER, 'start', side_effect=AssertionError('login window')):
+            login_status = client.get('/style-workspace/api/arca-styles/browser-session')
+            assert login_status.status_code == 200
+            assert login_status.json['connected'], 'Existing NAIM login must connect without import POST'
+            assert login_status.json['browser'] == 'NAIM Chrome'
+            assert b'synthetic-cookie' not in login_status.data
+            manager = parent.extensions.pop('naim_arca_sync')
+            with patch.object(workspace, 'connect_arca_cookie_jar', side_effect=AssertionError('no shared login')):
+                retained = client.get('/style-workspace/api/arca-styles/browser-session')
+                assert retained.json['connected'], 'Keep the workspace login when no shared login is available'
+                workspace.clear_arca_browser_session()
+                disconnected = client.get('/style-workspace/api/arca-styles/browser-session')
+                assert not disconnected.json['connected'], 'A status lookup must not open a login window'
+            parent.extensions['naim_arca_sync'] = manager
+            with patch.object(workspace, 'connect_arca_cookie_jar', return_value={'connected':False}):
+                failed = client.get('/style-workspace/api/arca-styles/browser-session')
+                assert not failed.json['connected'], 'Failed sharing must use the existing status path'
+            reconnected = client.get('/style-workspace/api/arca-styles/browser-session')
+            assert reconnected.json['connected'], 'A later lookup must retry the available shared login'
         assert workspace.DB_PATH == root / 'data/style_manager/artist_rater.sqlite'
         assert not (root / 'style_workspace.local.json').exists()
         for url in ['/style-workspace/api/ratings', '/style-workspace/api/arca-styles',
@@ -76,6 +96,13 @@ with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
             headers={'X-NAIM-Workspace':'1'})
         assert changed.status_code == 200
         assert json.loads((root/'lab_config.json').read_text())['steps'] == 30
+        with patch.object(workspace, 'connect_arca_cookie_jar', return_value={'connected':True}) as connect, \
+             patch.object(workspace, 'start_stats_refresh_job', return_value=73) as start:
+            refreshed = client.post('/style-workspace/api/arca-styles/refresh-stats', json={'model':'all'})
+            assert refreshed.status_code == 202 and refreshed.json['job_id'] == 73
+            connect.assert_called_once()
+            start.assert_called_once_with(workspace.DB_PATH, model='all')
+            assert b'synthetic-cookie' not in refreshed.data
         login = client.post('/style-workspace/api/arca-styles/browser-session/import')
         assert login.status_code == 200 and login.json['connected']
         assert b'synthetic-cookie' not in login.data

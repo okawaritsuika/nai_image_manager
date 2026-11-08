@@ -40,8 +40,8 @@
 .canvas-inpaint-settings-header h2 {
     min-width: 0;
     margin: 0;
-    font-size: 18px;
-    line-height: 1.5;
+    font-size: var(--ui-text-title, 16px);
+    line-height: var(--ui-leading-heading, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -61,8 +61,8 @@
 .canvas-inpaint-settings-help {
     margin: 0 0 14px;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -86,14 +86,14 @@
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-control, 1.4);
 }
 
 #inpaintGenerationSettings > small {
     grid-column: 1 / -1;
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 

@@ -738,6 +738,107 @@ class ArtistStyleEndpointTest(unittest.TestCase):
         ) = self.originals
         self.temp_dir.cleanup()
 
+    def _prepare_shared_confirmed_source(self):
+        paths = patch.multiple(app, ARCA_STYLE_IMAGE_DIR=self.data_dir / 'arca',
+                               CONFIRMED_STYLE_IMAGE_DIR=self.data_dir / 'confirmed')
+        paths.start()
+        self.addCleanup(paths.stop)
+        app.ARCA_STYLE_IMAGE_DIR.mkdir()
+        metadata = {
+            'model': 'nai-diffusion-5-full', 'complexity': 'high',
+            'v4_prompt': {'caption': {'base_caption': 'high complexity, artist:beta, watercolor',
+                                    'char_captions': [{'char_caption': 'synthetic character', 'centers': []}]}},
+            'v4_negative_prompt': {'caption': {'base_caption': 'lowres'}},
+        }
+        selected = tiny_png(b'\x00\x00\x00\xff\xff')
+        selected = selected[:-12] + png_chunk(b'tEXt', b'Comment\0' + json.dumps(metadata).encode()) + selected[-12:]
+        files = [tiny_png(), selected]
+        with closing(app.db()) as connection, connection:
+            item_id = connection.execute(
+                'INSERT INTO arca_style_items(source_url,title,collected_at,updated_at) VALUES(?,?,?,?)',
+                ('https://example.invalid/shared/1', 'Synthetic shared style', 'now', 'now'),
+            ).lastrowid
+            image_ids = []
+            for index, image_bytes in enumerate(files):
+                filename = f'synthetic-{index}.png'
+                (app.ARCA_STYLE_IMAGE_DIR / filename).write_bytes(image_bytes)
+                image_ids.append(connection.execute(
+                    'INSERT INTO arca_style_images(item_id,image_url,image_path,content_type,metadata_status,'
+                    'base_prompt,negative_prompt,sampler,noise_schedule,steps,scale,cfg_rescale,model,width,height,seed,created_at) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (item_id, f'https://example.invalid/{index}.png', filename, 'image/png', 'ok',
+                     'artist:alpha, sketch' if index == 0 else 'artist:beta, watercolor', 'lowres',
+                     'k_euler', 'native', 24, 5.5, .1, 'nai-diffusion-5-full', 1, 1, '123', 'now'),
+                ).lastrowid)
+            connection.execute('UPDATE arca_style_images SET quality_toggle=1,uc_preset=3 WHERE id=?', (image_ids[1],))
+        return image_ids[1], files
+
+    def test_shared_confirmed_preview_reads_selected_image_without_saving(self):
+        image_id, files = self._prepare_shared_confirmed_source()
+        with patch.object(app.naim_shared_library, 'enabled', return_value=True), \
+             patch.object(app.naim_shared_library, 'style_for_image_id', side_effect=AssertionError('wrong representative')):
+            response = self.client.get(f'/api/confirmed-styles/source/shared/{image_id}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.assertEqual(response.json['source_id'], image_id)
+        self.assertEqual(response.json['source_origin'], 'arca')
+        self.assertEqual(response.json['artist_prompt'], 'artist:beta')
+        self.assertEqual(response.json['quality_prompt'], 'watercolor')
+        self.assertEqual(response.json['character_prompts'], ['synthetic character'])
+        self.assertEqual(response.json['complexity'], 'high')
+        self.assertEqual(response.json['steps'], 24)
+        self.assertIs(response.json['quality_toggle'], True)
+        self.assertEqual(response.json['uc_preset'], 3)
+        self.assertEqual(self.client.get('/api/confirmed-styles').json, [])
+        self.assertFalse(app.CONFIRMED_STYLE_IMAGE_DIR.exists())
+        self.assertEqual((app.ARCA_STYLE_IMAGE_DIR / 'synthetic-1.png').read_bytes(), files[1])
+
+    def test_shared_confirmed_save_copies_only_selected_image_and_preserves_source(self):
+        image_id, files = self._prepare_shared_confirmed_source()
+        with patch.object(app.naim_shared_library, 'enabled', return_value=True), \
+             patch.object(app.naim_shared_library, 'style_for_image_id', side_effect=AssertionError('wrong representative')):
+            response = self.client.post('/api/confirmed-styles', json={
+                'source_type': 'shared', 'source_id': image_id, 'source_origin': 'arca',
+                'name': 'Reviewed style', 'quality_prompt': 'reviewed watercolor',
+            })
+        self.assertEqual(response.status_code, 201, response.json)
+        saved = response.json
+        self.assertEqual(saved['name'], 'Reviewed style')
+        self.assertEqual(saved['artist_prompt'], 'artist:beta')
+        self.assertEqual(saved['quality_prompt'], 'reviewed watercolor')
+        self.assertEqual(saved['character_prompts'], ['synthetic character'])
+        self.assertEqual(saved['source_id'], image_id)
+        self.assertEqual(saved['source_url'], 'https://example.invalid/shared/1')
+        self.assertEqual(saved['steps'], 24)
+        self.assertEqual(saved['seed'], 123)
+        self.assertIs(saved['quality_toggle'], True)
+        self.assertEqual(saved['uc_preset'], 3)
+        self.assertEqual(len(saved['images']), 1)
+        self.assertEqual((app.CONFIRMED_STYLE_IMAGE_DIR / saved['image_path']).read_bytes(), files[1])
+        self.assertEqual(self.client.delete(f'/api/confirmed-styles/{saved["id"]}').status_code, 200)
+        for index, original in enumerate(files):
+            self.assertEqual((app.ARCA_STYLE_IMAGE_DIR / f'synthetic-{index}.png').read_bytes(), original)
+
+    def test_shared_confirmed_source_errors_do_not_create_records(self):
+        image_id, _ = self._prepare_shared_confirmed_source()
+        for invalid_id in (0, image_id + 100, 4294967296):
+            self.assertEqual(self.client.get(f'/api/confirmed-styles/source/shared/{invalid_id}').status_code, 400)
+        for source_type, origin in (('shared', 'other'), ('generated', 'arca')):
+            self.assertEqual(self.client.post('/api/confirmed-styles', json={
+                'source_type': source_type, 'source_id': image_id, 'source_origin': origin,
+            }).status_code, 400)
+        with patch.object(app, '_confirmed_source', side_effect=OSError('synthetic private detail')):
+            failed = self.client.get(f'/api/confirmed-styles/source/shared/{image_id}')
+        self.assertEqual(failed.status_code, 500)
+        self.assertNotIn('synthetic private detail', failed.json['error'])
+        self.assertEqual(self.client.get('/api/confirmed-styles').json, [])
+
+    def test_legacy_confirmed_source_still_uses_existing_catalog_path(self):
+        with patch.object(app, '_confirmed_source', return_value=(tiny_png(), {'name': 'Legacy shared'})) as source:
+            response = self.client.post('/api/confirmed-styles', json={'source_type': 'shared', 'source_id': 1})
+        self.assertEqual(response.status_code, 201, response.json)
+        source.assert_called_once_with('shared', 1, local_shared=False)
+
     def test_endpoint_selects_from_ratings_table(self):
         response = self.client.post(
             "/api/style-maker/artists",

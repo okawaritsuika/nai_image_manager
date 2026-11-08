@@ -74,7 +74,8 @@ def _image_file(style_id, full):
             raise FileNotFoundError
     except (OSError, LookupError):
         raise SharedLibraryError('공유 그림체 이미지를 찾을 수 없습니다.') from None
-    mime = mimetypes.guess_type(path.name)[0]
+    # Windows/Python MIME tables may omit WebP even when Pillow supports it.
+    mime = 'image/webp' if path.suffix.lower() == '.webp' else mimetypes.guess_type(path.name)[0]
     if mime not in ('image/png', 'image/jpeg', 'image/webp', 'image/gif'):
         raise SharedLibraryError('공유 그림체 이미지를 확인할 수 없습니다.')
     return path, mime
@@ -121,6 +122,65 @@ def indexed_prompt_rows(filters=None):
             **{key: model.get(key, '') for key in ('model_id', 'model_family', 'model_generation', 'model_variant')},
         })
     return rows
+
+
+def stats_refresh_items(model="all"):
+    """Return active shared source URLs that need statistics refreshes."""
+    from .arca_style_collector import ArcaCollectorError, normalize_arca_article_url
+    from .novelai_metadata import classify_model, model_filter_value
+
+    try:
+        selected_model = model_filter_value(model)
+    except ValueError as exc:
+        raise ArcaCollectorError(str(exc)) from exc
+
+    try:
+        styles = list_styles(force=True)
+    except SharedLibraryError as exc:
+        raise ArcaCollectorError(str(exc)) from exc
+
+    rows = {}
+    for style in styles:
+        model_fields = classify_model(style.get("model"))
+        if selected_model == "all":
+            matches = True
+        elif selected_model in {"v5", "v4.5", "unknown"}:
+            matches = model_fields["model_family"] == selected_model
+        else:
+            matches = model_fields["model_id"] == selected_model
+        if not matches:
+            continue
+
+        urls = [style.get("source_url")]
+        urls.extend(source.get("source_url") for source in style.get("sources", [])
+                    if isinstance(source, dict))
+        for raw_url in urls:
+            board_tab = "R18_NAI" if "/R18_NAI/" in str(raw_url or "") else "NAI"
+            try:
+                source_url = normalize_arca_article_url(raw_url)
+            except (ArcaCollectorError, TypeError, ValueError):
+                continue
+            row = rows.setdefault(source_url, {
+                "id": "shared:" + source_url,
+                "source_url": source_url,
+                "board_tab": board_tab,
+                "common_only": True,
+            })
+            if board_tab == "R18_NAI":
+                row["board_tab"] = board_tab
+    return list(rows.values())
+
+
+def update_recommendations(source_url, count, collected_at):
+    """Persist a known recommendation count in the shared catalog."""
+    if count is None:
+        return 0
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("추천수는 0 이상의 정수여야 합니다.")
+    with _lock:
+        updated = _configured_catalog().store.update_recommendations(source_url, count, collected_at)
+        _cache.clear()
+    return updated
 
 
 def source_image_rows():

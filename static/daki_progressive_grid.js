@@ -27,6 +27,8 @@
         wrapper.append(grid, footer);
 
         let records = [];
+        let cards = [];
+        let reset = true;
         let limit = size;
         let frame = null;
         let disposed = false;
@@ -36,13 +38,20 @@
         function render() {
             frame = null;
             if (disposed) return;
-            const visible = records.slice(0, limit);
-            grid.galleryZoomImagesAll = pathOf
-                ? records.map(item => pathOf(item)).filter(Boolean).map(path => ({path}))
-                : [];
-            grid.setItems(visible.map(item => renderItem(item)));
-            count.textContent = `전체 ${records.length.toLocaleString('ko-KR')}개 중 ${visible.length.toLocaleString('ko-KR')}개 표시`;
-            more.disabled = visible.length >= records.length;
+            if (reset) {
+                reset = false;
+                cards = [];
+                grid.galleryZoomImagesAll = pathOf
+                    ? records.map(item => pathOf(item)).filter(Boolean).map(path => ({path}))
+                    : [];
+                grid.setItems([]);
+            }
+            const added = records.slice(cards.length, limit).map(item => renderItem(item));
+            cards.push(...added);
+            if (typeof grid.appendItems === 'function') grid.appendItems(added);
+            else grid.setItems(cards);
+            count.textContent = `전체 ${records.length.toLocaleString('ko-KR')}개 중 ${cards.length.toLocaleString('ko-KR')}개 표시`;
+            more.disabled = cards.length >= records.length;
             sentinel.hidden = more.disabled;
         }
 
@@ -77,6 +86,7 @@
         wrapper.setItems = value => {
             if (disposed) return;
             records = Array.from(value || []);
+            reset = true;
             limit = size;
             autoLoadArmed = true;
             scheduleRender();

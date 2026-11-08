@@ -809,8 +809,8 @@ function renderRouteTagEditor(pathJson, rule, depth = 0) {
                        border:none;
                        color:#fff;
                        outline:none;
-                       font-family:'Malgun Gothic';
-                       font-size:${depth ? '12px' : '13px'};
+                       font-family:var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
+                       font-size:var(--ui-text-body,12px);
                    ">
             <button type="button"
                     class="route-mode-btn route-mode-mini ${promptMode === 'single' ? 'active' : ''}"
@@ -1715,12 +1715,12 @@ function renderFolderRuleRows(rules, parentPath, depth) {
 
         if (rule.type === 'default') {
             html += `<tr style="border-bottom:1px solid #2a2a35; background: rgba(0, 184, 148, 0.05);">
-                <td style="padding:15px 10px; color:#00b894; font-weight:bold; font-size:15px;">📁 기본 분류 (Solo / Duo / Group)</td>
-                <td style="padding:15px 10px; color:#666; font-size:13px;">위 규칙에 매칭되지 않으면 인원 수 기준으로 분리합니다.</td>
-                <td style="padding:15px 10px; font-size:13px; color:#00b894; font-weight:bold;">종결</td>
+                <td style="padding:15px 10px; color:#00b894; font-weight:400; font-size:var(--ui-text-body,12px);">📁 기본 분류 (Solo / Duo / Group)</td>
+                <td style="padding:15px 10px; color:#666; font-size:var(--ui-text-body,12px);">위 규칙에 매칭되지 않으면 인원 수 기준으로 분리합니다.</td>
+                <td style="padding:15px 10px; font-size:var(--ui-text-body,12px); color:#00b894; font-weight:400;">종결</td>
                 <td style="padding:15px 10px; text-align:center;">
                     ${upBtn}${downBtn}
-                    <button disabled style="background:#222; color:#555; border:1px solid #333; padding:6px 12px; border-radius:6px; font-size:12px; font-weight:bold;">기본값</button>
+                    <button disabled style="background:#222; color:#555; border:1px solid #333; padding:6px 12px; border-radius:6px; font-size:var(--ui-text-body,12px); font-weight:600;">기본값</button>
                 </td>
             </tr>`;
             return;
@@ -1736,12 +1736,12 @@ function renderFolderRuleRows(rules, parentPath, depth) {
                     <span style="color:${depth ? '#74b9ff' : '#a29bfe'}; font-weight:bold;">${depth ? '↳' : '📁'}</span>
                     <input value="${escapeRouteHtml(rule.folder)}"
                            onchange='updateRouteRuleField(${pathJson}, "folder", this.value)'
-                           style="width:100%; background:#222230; border:1px solid #3b3b4f; color:#fff; padding:8px; border-radius:6px; font-weight:bold;">
+                           style="width:100%; background:#222230; border:1px solid #3b3b4f; color:#fff; padding:8px; border-radius:6px; font-weight:400;">
                 </div>
             </td>
             <td style="padding:10px;">
                 ${renderRouteTagEditor(pathJson, rule, depth)}
-                ${childCount ? `<div style="margin-top:6px; color:#74b9ff; font-size:11px; font-weight:bold;">하위 규칙 ${childCount}개</div>` : ''}
+                ${childCount ? `<div style="margin-top:6px; color:#74b9ff; font-size:var(--ui-text-body,12px); font-weight:400;">하위 규칙 ${childCount}개</div>` : ''}
             </td>
             <td style="padding:10px;">
                 <select onchange='updateRouteRuleField(${pathJson}, "condition", this.value)'
@@ -1754,15 +1754,15 @@ function renderFolderRuleRows(rules, parentPath, depth) {
                        value="${matchCount}"
                        onchange='updateRouteRuleField(${pathJson}, "match_count", this.value)'
                        ${condition === 'all' ? 'disabled' : ''}
-                       style="width:100%; background:#222230; border:1px solid #3b3b4f; color:#00f2ff; padding:7px; border-radius:6px; text-align:center; font-weight:bold;">
+                       style="width:100%; background:#222230; border:1px solid #3b3b4f; color:#00f2ff; padding:7px; border-radius:6px; text-align:center; font-weight:400;">
             </td>
             <td style="padding:10px; text-align:center;">
                 <div style="display:flex; flex-wrap:wrap; gap:5px; justify-content:center;">
                     ${upBtn}${downBtn}
                     <button onclick='addChildFolderRule(${pathJson})'
-                            style="background:#0984e3; color:#fff; border:none; padding:6px 9px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold;">+하위</button>
+                            style="background:#0984e3; color:#fff; border:none; padding:6px 9px; border-radius:6px; cursor:pointer; font-size:var(--ui-text-body,12px); font-weight:600;">+하위</button>
                     <button onclick='deleteFolderRule(${pathJson})'
-                            style="background:#d63031; color:#fff; border:none; padding:6px 9px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold;">삭제</button>
+                            style="background:#d63031; color:#fff; border:none; padding:6px 9px; border-radius:6px; cursor:pointer; font-size:var(--ui-text-body,12px); font-weight:600;">삭제</button>
                 </div>
             </td>
         </tr>`;
@@ -1991,13 +1991,13 @@ function showFolderRuleNotice(title, message, type = 'success', onClose = null) 
                 gap: 10px;
             ">
                 <span style="font-size:22px;">${icon}</span>
-                <div style="font-size:17px; font-weight:900; color:${color};">${escapeRouteHtml(title)}</div>
+                <div style="font-size:var(--ui-text-title,16px); font-weight:600; color:${color};">${escapeRouteHtml(title)}</div>
             </div>
 
             <div style="
                 padding: 22px;
                 color: #ddd;
-                font-size: 14px;
+                font-size:var(--ui-text-body,12px);
                 line-height: 1.7;
                 white-space: pre-line;
             ">${escapeRouteHtml(message)}</div>
@@ -2015,7 +2015,7 @@ function showFolderRuleNotice(title, message, type = 'success', onClose = null) 
                             border:none;
                             padding:10px 24px;
                             border-radius:999px;
-                            font-weight:900;
+                            font-weight:600;
                             cursor:pointer;
                             box-shadow:0 6px 18px ${color}55;
                         ">
@@ -2885,9 +2885,9 @@ function renderSingleRouteTestResult(data) {
         return `
             <div class="${cls}">${success ? '✅ 조건에 매칭되었습니다' : '❌ 매칭되지 않았습니다'}</div>
             <div style="margin-top:10px;">${escapeHtml(label)}: <b>${escapeHtml(value)}</b></div>
-            ${subSummary ? `<div style="margin-top:4px; color:#aaa; font-size:12px;">${escapeHtml(subSummary)}</div>` : ''}
+            ${subSummary ? `<div style="margin-top:4px; color:#aaa; font-size:var(--ui-text-body,12px);">${escapeHtml(subSummary)}</div>` : ''}
             <div style="margin-top:12px;">${renderRouteTestReasonBlock(result)}</div>
-            ${data.tokens ? `<div style="margin-top:12px; color:#aaa; font-size:12px;">입력 태그: ${escapeHtml(data.tokens.slice(0, 80).join(', '))}</div>` : ''}
+            ${data.tokens ? `<div style="margin-top:12px; color:#aaa; font-size:var(--ui-text-body,12px);">입력 태그: ${escapeHtml(data.tokens.slice(0, 80).join(', '))}</div>` : ''}
         `;
     }
 
@@ -2906,7 +2906,7 @@ function renderSingleRouteTestResult(data) {
         ${targetMode === 'all' ? `<div>사용된 규칙: ${escapeHtml(chain)}</div>` : ''}
         <div style="margin-top:12px;">${renderRouteTestReasonBlock(result)}</div>
         ${data.prompt_text ? `<div style="margin-top:12px;"><button type="button" class="route-test-small-btn" onclick="toggleRouteTestPromptPreview(this)">프롬프트 보기</button><pre class="route-test-prompt-body" style="display:none;">${escapeHtml(data.prompt_text)}</pre></div>` : ''}
-        ${data.tokens ? `<div style="margin-top:12px; color:#aaa; font-size:12px;">입력 태그: ${escapeHtml(data.tokens.slice(0, 80).join(', '))}</div>` : ''}
+        ${data.tokens ? `<div style="margin-top:12px; color:#aaa; font-size:var(--ui-text-body,12px);">입력 태그: ${escapeHtml(data.tokens.slice(0, 80).join(', '))}</div>` : ''}
     `;
 }
 

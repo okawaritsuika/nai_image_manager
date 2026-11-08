@@ -9,11 +9,12 @@ function deferred() {
     return {promise, resolve, reject};
 }
 
-function harness({send, onSaved, snapshot} = {}) {
+function harness({send, onSaved, onMissing, snapshot} = {}) {
     const timers = new Map();
     const calls = [];
     const states = [];
     const saved = [];
+    const missing = [];
     let value = {content: 0};
     let timerId = 0;
     let snapshots = 0;
@@ -29,6 +30,10 @@ function harness({send, onSaved, snapshot} = {}) {
             saved.push(binding);
             if (onSaved) onSaved(binding, save);
         },
+        onMissing: binding => {
+            missing.push(binding);
+            if (onMissing) onMissing(binding, save);
+        },
         setTimer: (callback, delay) => {
             const id = ++timerId;
             timers.set(id, {callback, delay});
@@ -37,7 +42,7 @@ function harness({send, onSaved, snapshot} = {}) {
         clearTimer: id => timers.delete(id)
     });
     return {
-        save, timers, calls, states, saved,
+        save, timers, calls, states, saved, missing,
         snapshots: () => snapshots,
         setValue: next => { value = next; },
         runTimer: async id => {
@@ -335,4 +340,186 @@ test('unlinked canvases do not snapshot or send project writes', async () => {
     assert.equal(h.snapshots(), 0);
     assert.equal(h.calls.length, 0);
     assert.equal(h.save.isUnsaved(), false);
+});
+
+test('a marked missing response releases the binding without reporting a save', async () => {
+    const h = harness({send: async (target, state, revision) => {
+        h.calls.push({binding: target, state, revision});
+        throw Object.assign(new Error('project canvas no longer exists'), {
+            status: 404,
+            code: 'daki_not_found'
+        });
+    }});
+    const sourceBinding = binding();
+    h.save.connect(sourceBinding);
+    sourceBinding.canvasName = 'mutated outside';
+    h.setValue({content: 'local canvas content'});
+
+    assert.equal(await h.save.schedule(true), true);
+    assert.equal(h.save.current(), null);
+    assert.equal(h.save.isUnsaved(), false);
+    assert.deepEqual(h.missing, [binding()]);
+    assert.notStrictEqual(h.missing[0], sourceBinding);
+    assert.equal(h.saved.length, 0);
+    assert.equal(h.calls.length, 1);
+    assert.equal(await h.save.flush(), true);
+    assert.equal(await h.save.disconnect(), true);
+    assert.equal(await h.save.schedule(true), true);
+    assert.equal(h.calls.length, 1);
+});
+
+test('a marked missing response drops queued trailing saves without changing local content', async () => {
+    const request = deferred();
+    const h = harness({send: async (target, state, revision) => {
+        h.calls.push({binding: target, state, revision});
+        return request.promise;
+    }});
+    h.save.connect(binding());
+    h.setValue({content: 'first snapshot'});
+    const firstFlush = h.save.schedule(true);
+    const latestLocalState = {content: 'latest unsent local edit'};
+    h.setValue(latestLocalState);
+    h.save.schedule();
+
+    request.reject(Object.assign(new Error('project canvas no longer exists'), {
+        status: 404,
+        code: 'daki_not_found'
+    }));
+    assert.equal(await firstFlush, true);
+    assert.equal(h.save.current(), null);
+    assert.equal(h.save.isUnsaved(), false);
+    assert.deepEqual(h.calls.map(call => call.state), [{content: 'first snapshot'}]);
+    assert.deepEqual(latestLocalState, {content: 'latest unsent local edit'});
+    assert.equal(h.missing.length, 1);
+    assert.equal(h.saved.length, 0);
+});
+
+test('disconnectMissing clears a pending timer for a missing startup binding', () => {
+    const h = harness();
+    h.save.connect(binding());
+    h.setValue({content: 'keep in canvas'});
+    h.save.schedule();
+    assert.equal(h.timers.size, 1);
+
+    assert.equal(h.save.disconnectMissing(Object.assign(new Error('missing'), {
+        status: 404,
+        code: 'daki_not_found'
+    })), true);
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.save.current(), null);
+    assert.equal(h.save.isUnsaved(), false);
+    assert.deepEqual(h.missing, [binding()]);
+    assert.equal(h.calls.length, 0);
+});
+
+test('disconnectMissing ignores unmarked and non-404 errors without changing state', () => {
+    const h = harness();
+    h.save.connect(binding());
+    h.save.schedule();
+    const current = h.save.current();
+    const errors = [
+        Object.assign(new Error('unmarked not found'), {status: 404}),
+        Object.assign(new Error('wrong not found code'), {status: 404, code: 'not_found'}),
+        Object.assign(new Error('server unavailable'), {status: 503, code: 'daki_not_found'}),
+        Object.assign(new Error('conflict'), {status: 409, code: 'daki_not_found'}),
+        new Error('network failure')
+    ];
+
+    for (const error of errors) assert.equal(h.save.disconnectMissing(error), false);
+    assert.deepEqual(h.save.current(), current);
+    assert.equal(h.timers.size, 1);
+    assert.equal(h.save.isUnsaved(), true);
+    assert.equal(h.missing.length, 0);
+});
+
+test('late responses from a missing old binding cannot affect a new binding', async () => {
+    for (const lateOutcome of ['success', 'failure']) {
+        const oldRequest = deferred();
+        const h = harness({send: async (target, state, revision) => {
+            h.calls.push({binding: target, state, revision});
+            if (target.projectId === 'project-a') return oldRequest.promise;
+            return {revision: revision + 1};
+        }});
+        h.save.connect(binding());
+        h.setValue({content: 'old binding'});
+        const oldFlush = h.save.schedule(true);
+
+        assert.equal(h.save.disconnectMissing(Object.assign(new Error('missing'), {
+            status: 404,
+            code: 'daki_not_found'
+        })), true);
+        h.save.connect(binding('project-b', 'back', 8));
+        h.setValue({content: 'new binding'});
+        assert.equal(await h.save.schedule(true), true);
+
+        if (lateOutcome === 'success') oldRequest.resolve({revision: 2});
+        else oldRequest.reject(Object.assign(new Error('late missing response'), {
+            status: 404,
+            code: 'daki_not_found'
+        }));
+        assert.equal(await oldFlush, false);
+        assert.deepEqual(h.save.current(), binding('project-b', 'back', 9));
+        assert.equal(h.save.isUnsaved(), false);
+        assert.equal(h.saved.length, 1);
+        assert.deepEqual(h.states.at(-1), {state: 'saved', error: undefined});
+        assert.equal(h.missing.length, 1);
+        assert.equal(h.calls.length, 2);
+    }
+});
+
+test('an unmarked 404 preserves the binding and retries the exact request', async () => {
+    const h = harness({send: async (target, state, revision) => {
+        h.calls.push({binding: target, state, revision});
+        if (h.calls.length === 1) {
+            throw Object.assign(new Error('unmarked not found'), {status: 404});
+        }
+        return {revision: revision + 1};
+    }});
+    h.save.connect(binding());
+    h.setValue({content: 'preserve and retry'});
+
+    assert.equal(await h.save.schedule(true), false);
+    assert.deepEqual(h.save.current(), binding());
+    assert.equal(h.save.isUnsaved(), true);
+    assert.equal(h.states.at(-1).state, 'error');
+    assert.equal(h.missing.length, 0);
+    assert.equal(await h.save.retry(), true);
+    assert.deepEqual(h.calls[1], h.calls[0]);
+    assert.deepEqual(h.save.current(), binding('project-a', 'front', 2));
+});
+
+test('an onMissing callback exception cannot break missing-binding cleanup', async () => {
+    const h = harness({
+        onMissing: () => { throw new Error('UI callback failed'); },
+        send: async (target, state, revision) => {
+            h.calls.push({binding: target, state, revision});
+            throw Object.assign(new Error('missing'), {status: 404, code: 'daki_not_found'});
+        }
+    });
+    h.save.connect(binding());
+    h.setValue({content: 'local state'});
+
+    assert.equal(await h.save.schedule(true), true);
+    assert.equal(h.save.current(), null);
+    assert.equal(h.save.isUnsaved(), false);
+    assert.equal(h.saved.length, 0);
+    assert.equal(h.missing.length, 1);
+});
+
+test('an awaited disconnect cannot clear a new binding connected by onMissing', async () => {
+    const h = harness({
+        onMissing: (_missingBinding, save) => save.connect(binding('project-b', 'back', 8)),
+        send: async (target, state, revision) => {
+            h.calls.push({binding: target, state, revision});
+            throw Object.assign(new Error('missing'), {status: 404, code: 'daki_not_found'});
+        }
+    });
+    h.save.connect(binding());
+    h.setValue({content: 'local state'});
+    h.save.schedule();
+
+    assert.equal(await h.save.disconnect(), false);
+    assert.deepEqual(h.save.current(), binding('project-b', 'back', 8));
+    assert.equal(h.save.isUnsaved(), false);
+    assert.equal(h.saved.length, 0);
 });

@@ -423,21 +423,35 @@
 
     function createGrid(className, items = [], imageGrid = true) {
         const grid = element('div', `flex-masonry ${className}`);
+        let previousLayout = null;
+        let placed = [];
+        let columns = [];
         grid.dakiLayout = () => {
             const layout = root.getGalleryGridLayout?.(grid) || {columns: 3, fixed: false};
             const fixed = imageGrid && layout.fixed;
             grid.galleryZoomImages = grid.galleryZoomImagesAll || items.filter(item => !item.hidden && item.dataset?.path)
                 .map(item => ({path: item.dataset.path}));
-            grid.className = `flex-masonry ${className}${fixed ? ' gallery-fixed-size-grid' : ''}`;
-            grid.replaceChildren();
-            if (fixed) grid.append(...items);
-            else {
-                const columns = Array.from({length: layout.columns}, () => element('div', 'flex-masonry-col'));
-                grid.append(...columns);
-                items.filter(item => !item.hidden).forEach((item, index) => columns[index % columns.length].appendChild(item));
+            const next = fixed ? items : items.filter(item => !item.hidden);
+            const key = `${fixed}:${layout.columns}`;
+            // Appending a page or resizing within the same column count must
+            // not detach existing images, focused controls, and measured cards.
+            const appendOnly = previousLayout === key && placed.length <= next.length
+                && placed.every((item, index) => item === next[index]);
+            const start = appendOnly ? placed.length : 0;
+            if (!appendOnly) {
+                grid.className = `flex-masonry ${className}${fixed ? ' gallery-fixed-size-grid' : ''}`;
+                grid.replaceChildren();
+                columns = fixed ? [] : Array.from({length: layout.columns}, () => element('div', 'flex-masonry-col'));
+                if (!fixed) grid.append(...columns);
             }
+            for (let index = start; index < next.length; index++) {
+                (fixed ? grid : columns[index % columns.length]).appendChild(next[index]);
+            }
+            previousLayout = key;
+            placed = next.slice();
         };
         grid.setItems = value => { items = value; grid.dakiLayout(); };
+        grid.appendItems = value => { items = items.concat(value); grid.dakiLayout(); };
         grid.dakiLayout();
         return grid;
     }
@@ -986,7 +1000,22 @@
                 bindCanvasOpen(preview, canvas.name, side);
                 bindCanvasOpen(open, canvas.name, side);
                 const remove = projectDeleteButton({projectId: project.id, itemId: canvas.id, itemName: canvas.name, side, kind: 'canvas'});
-                actions.append(details, open, remove);
+                const rename = root.DakiProjectNames?.createButton({
+                    projectId: project.id,
+                    itemId: canvas.id,
+                    name: canvas.name,
+                    kind: 'canvas',
+                    isCurrent: isCurrentProjectView,
+                    onSaved: async () => {
+                        if (isCurrentProjectView()) {
+                            root.showToast?.('캔버스 이름을 변경했습니다.');
+                            await renderPage();
+                        }
+                    },
+                });
+                actions.append(details, open);
+                if (rename) actions.appendChild(rename);
+                actions.appendChild(remove);
                 row.append(preview, info, actions);
                 entries.push({card: row, name: canvas.name, created_at: canvas.created_at, updated_at: canvas.updated_at});
             }
@@ -1020,7 +1049,8 @@
                     bindImage(card, img, candidate.path, {
                         projectId: project.id,
                         side,
-                        candidateId: candidate.id
+                        candidateId: candidate.id,
+                        displayName: candidate.name || candidate.path.split('/').pop()
                     });
                     imageHost.appendChild(img);
                     const finishLoading = showPreviewLoading(imageHost);
@@ -1039,7 +1069,22 @@
                     side,
                     kind: 'image',
                 });
+                const rename = !candidate.missing && root.DakiProjectNames?.createButton({
+                    projectId: project.id,
+                    itemId: candidate.id,
+                    name: candidate.name || candidate.path.split('/').pop(),
+                    kind: 'image',
+                    isCurrent: () => revision === pageRevision && isProjectView()
+                        && new URLSearchParams(root.location.hash.slice(1)).get('project') === String(project.id),
+                    onSaved: async () => {
+                        if (revision === pageRevision && isProjectView()) {
+                            root.showToast?.('그림 이름을 변경했습니다.');
+                            await renderPage();
+                        }
+                    },
+                });
                 const actions = element('div', 'daki-project-card-actions');
+                if (rename) actions.appendChild(rename);
                 actions.appendChild(remove);
                 const dimensions = Number.isSafeInteger(candidate.width) && candidate.width > 0
                     && Number.isSafeInteger(candidate.height) && candidate.height > 0 && !candidate.missing
@@ -1102,6 +1147,7 @@
     }
 
     async function renderPage() {
+        root.DakiProjectNames?.close?.(true);
         projectReference?.dispose();
         projectReference = null;
         closeCanvasOpenModal(false);
@@ -1172,6 +1218,12 @@
             status.textContent = '';
             const data = await api(id ? `/api/daki/projects/${encodeURIComponent(id)}` : '/api/daki/projects');
             if (revision !== pageRevision || !isActive()) return;
+            if (id) {
+                const normalized = await api(`/api/daki/projects/${encodeURIComponent(id)}/canvas-names/normalize`, 'POST', {});
+                if (revision !== pageRevision || !isActive()) return;
+                if (!normalized.project) throw new Error('프로젝트 캔버스 이름을 확인하지 못했습니다.');
+                data.project = normalized.project;
+            }
             clearProjectPageLoading(container, loadingState);
             status.textContent = '';
             canvasPreviews = root.DakiCanvasPreviews?.create?.() || null;

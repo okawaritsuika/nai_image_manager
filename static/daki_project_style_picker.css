@@ -7,7 +7,7 @@
 .daki-project-style-picker-status {
     min-width: 0;
     margin: 0;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -59,7 +59,7 @@
 .daki-project-style-picker-image-name {
     min-width: 0;
     overflow-wrap: anywhere;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
 }
 .daki-project-style-picker-missing { color: var(--text-muted, #bec4d1); }
@@ -78,12 +78,12 @@
     background: var(--card-bg, var(--card, #252630));
     color: var(--text-main, var(--text, #f2f3f5));
     font: inherit;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
     white-space: normal;
     overflow-wrap: anywhere;
     cursor: pointer;
-}
+ font-weight: 600;}
 .daki-project-style-picker-apply {
     border-color: var(--accent-blue, var(--accent, #4e9cff));
     background: var(--accent-blue, var(--accent, #4e9cff));
@@ -138,14 +138,14 @@
 .daki-project-style-picker-import-heading {
     min-width: 0;
     margin: 0;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
 .daki-project-style-picker-import-label,
 .daki-project-style-picker-import-checkbox {
     min-width: 0;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -161,14 +161,14 @@
     background: var(--card-bg, var(--card, #252630));
     color: var(--text-main, var(--text, #f2f3f5));
     font: inherit;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
 }
 .daki-project-style-picker-import-status {
     min-width: 0;
     margin: 0;
     color: var(--text-muted, #bec4d1);
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -210,7 +210,7 @@
     background: var(--bg-color, var(--bg, #1d1e26));
     color: var(--text-main, var(--text, #f2f3f5));
     font: inherit;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -230,7 +230,7 @@
     grid-template-columns: max-content minmax(0, 1fr);
     min-width: 0;
     gap: 8px;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
 }
 .daki-project-style-picker-generation-label,

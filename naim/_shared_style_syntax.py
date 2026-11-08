@@ -21,6 +21,9 @@ class Term:
     weight: float = 1.0
 
 
+_NUMERIC_OPENER = re.compile(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*::')
+
+
 def key(text):
     return ' '.join(text.replace('_', ' ').casefold().split())
 
@@ -30,41 +33,44 @@ def parse(text):
         raise TypeError('Prompt must be text')
     if '||' in text or '\\' in text:
         raise UnsupportedPrompt('Randomizers, chunks or escaped syntax need an explicit import review')
-    terms=[];buf=[];numeric=1.;brackets=0;quoted=False;paren=0;i=0
+    terms=[];buf=[];numeric=1.;brackets=0;quoted=False;paren=0;i=0;has_content=False
 
     def flush():
+        nonlocal has_content
         value=''.join(buf).strip()
         if value:
             weight=numeric*1.05**brackets
             if not math.isfinite(weight) or abs(weight)>1000:
                 raise UnsupportedPrompt('Extreme emphasis weight')
             terms.append(Term(value,round(weight,9)))
-        buf.clear()
+        buf.clear();has_content=False
 
     while i<len(text):
         ch=text[i]
         if ch=='"':
-            quoted=not quoted;buf.append(ch);i+=1;continue
+            quoted=not quoted;buf.append(ch);has_content=True;i+=1;continue
         if quoted:
             buf.append(ch);i+=1;continue
         # A number at the start of a tag is an opener. A number within a tag
         # (year 2025::) belongs to the tag and must not reopen the scope.
-        match=re.match(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*::',text[i:]) if not ''.join(buf).strip() else None
+        match=_NUMERIC_OPENER.match(text,i) if not has_content else None
         if match:
             if numeric!=1.:
                 raise UnsupportedPrompt('Nested numeric emphasis requires import review')
-            numeric=float(match[0].split('::')[0]);buf.clear();i+=len(match[0]);continue
+            numeric=float(match[0].split('::')[0]);buf.clear();has_content=False;i+=len(match[0]);continue
         if text.startswith('::',i):
             flush();numeric=1.;brackets=0;i+=2;continue
         if ch in '{}[]':
-            if ch in '{[' and ''.join(buf).strip():
+            if ch in '{[' and has_content:
                 raise UnsupportedPrompt('Emphasis inside a tag requires import review')
             flush();brackets+=1 if ch in '{]' else -1;i+=1;continue
         if ch=='(':paren+=1
         elif ch==')':paren=max(0,paren-1)
         if ch in ',\r\n' and paren==0:
             flush();i+=1;continue
-        buf.append(ch);i+=1
+        buf.append(ch)
+        if not ch.isspace():has_content=True
+        i+=1
     if quoted:
         raise UnsupportedPrompt('Unclosed quote')
     flush()

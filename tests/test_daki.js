@@ -319,6 +319,7 @@ function inlineLibraryFixture(path = '/#daki', readyState = 'loading', deferDraf
     const detailOpens = [];
     const detailCloses = [];
     let confirmImpl = () => true;
+    let lastLoadedProject = null;
     const doc = {
         body,
         readyState,
@@ -338,10 +339,17 @@ function inlineLibraryFixture(path = '/#daki', readyState = 'loading', deferDraf
             ? Promise.resolve(response(200, {status: 'success', enabled: true}))
             : url.startsWith('/api/daki/draft-folders?project=') && !deferDraftFolders
                 ? Promise.resolve(response(200, {status: 'success', folders: []}))
+            : url.endsWith('/canvas-names/normalize')
+                ? Promise.resolve(response(200, {status: 'success', project: lastLoadedProject}))
             : new Promise(resolve => requests.push({
                 url,
                 options,
-                reply: (data, status = 200) => resolve(response(status, {status: status >= 200 && status < 300 ? 'success' : 'error', ...data})),
+                reply: (data, status = 200) => {
+                    if (url.startsWith('/api/daki/projects/') && !url.endsWith('/canvas-names/normalize') && data.project) {
+                        lastLoadedProject = data.project;
+                    }
+                    resolve(response(status, {status: status >= 200 && status < 300 ? 'success' : 'error', ...data}));
+                },
             })),
         DakiCanvasPreviews: {
             create() {
@@ -641,6 +649,38 @@ test('Daki grid keeps full zoom navigation metadata when only progressive pages 
     assert.equal(grid.children.length, 80, 'resize lays out only the currently materialized page');
     assert.deepEqual(Array.from(grid.galleryZoomImages.slice(0, 2), item => item.path), ['__daki_shared__/0.png', '__daki_shared__/1.png']);
     wrapper.dispose();
+});
+
+test('Daki grids retain columns and existing cards on append and unchanged layout', () => {
+    const f = inlineLibraryFixture('/#daki');
+    let layout = {columns: 3, fixed: false};
+    f.win.getGalleryGridLayout = () => layout;
+    const cards = Array.from({length: 90}, (_, index) => {
+        const card = f.doc.createElement('article'); card.dataset.path = `synthetic/${index}.png`; return card;
+    });
+    const grid = f.win.Daki.createGrid('daki-style-grid', cards.slice(0, 60));
+    const columns = grid.children.slice();
+    let detached = 0;
+    const replace = grid.replaceChildren.bind(grid);
+    grid.replaceChildren = (...items) => { detached++; replace(...items); };
+    grid.appendItems(cards.slice(60));
+    grid.dakiLayout();
+    assert.equal(detached, 0);
+    assert.deepEqual(grid.children, columns);
+    for (let index = 0; index < 90; index++) assert.equal(columns[index % 3].children[Math.floor(index / 3)], cards[index]);
+    assert.equal(grid.galleryZoomImages.length, 90);
+    layout = {columns: 2, fixed: false}; grid.dakiLayout();
+    assert.equal(detached, 1);
+    assert.equal(grid.children.length, 2);
+    assert.equal(grid.children[1].children[0], cards[1]);
+    grid.setItems([cards[2], cards[0]]);
+    assert.equal(detached, 2);
+    assert.equal(grid.children[0].children[0], cards[2]);
+    layout = {columns: 2, fixed: true}; grid.dakiLayout();
+    const fixedDetached = detached;
+    grid.appendItems([cards[1]]); grid.dakiLayout();
+    assert.equal(detached, fixedDetached);
+    assert.deepEqual(grid.children, [cards[2], cards[0], cards[1]]);
 });
 
 test('project and candidate loading states clear on success, failure, and after a newer page begins loading', async () => {

@@ -7,6 +7,7 @@ function mount(host, options = {}) {
   let resizeObserver = null;
   const dictionaryDrafts = root.DakiDictionaryDrafts?.mount(host);
   const $ = id => host.querySelector(`#${id}`);
+  const dictionaryPictureView = root.DakiDictionaryPictureView?.mount($('pictureOverlay'), $('pictureOverlayImage'));
   function listen(target, type, handler, options) {
     if (!target?.addEventListener) return () => {};
     const guardedHandler = function (...args) {
@@ -134,6 +135,7 @@ function openPictureOverlay() {
   if (!images.detail || !image.complete || !image.naturalWidth || !image.getAttribute('src')) return;
   const overlay = $('pictureOverlay');
   if (overlay.open) { overlay.close(); return; }
+  dictionaryPictureView?.reset();
   $('pictureOverlayError').hidden = true;
   $('pictureOverlayImage').src = image.currentSrc || image.src;
   $('pictureOverlayImage').alt = image.alt;
@@ -1192,7 +1194,6 @@ function openDictionaryDraft(image) {
   dictionaryDrafts?.show({imageId: image.id, tag});
 }
 listen($('importDictionaryDraft'), 'click', () => openDictionaryDraft(images.detail));
-listen($('importDictionaryDraftOverlay'), 'click', () => openDictionaryDraft(images.detail));
 listen($('imageFull'), 'load', () => {
   $('togglePicture').disabled = !images.detail;
   $('importDictionaryDraft').disabled = !dictionaryDrafts || !images.detail;
@@ -1274,6 +1275,7 @@ listen($('pictureOverlay'), 'click', event => {
   if (event.target === $('pictureOverlay')) $('pictureOverlay').close();
 });
 listen($('pictureOverlay'), 'close', () => {
+  if ($('pictureOverlay').open) return;
   $('togglePicture').setAttribute('aria-expanded', 'false');
   $('pictureOverlayImage').removeAttribute('src');
 });
@@ -1299,6 +1301,7 @@ const handle = {
     pauseBackgroundWork();
     dictionaryImagePack?.dispose();
     dictionaryDrafts?.dispose();
+    dictionaryPictureView?.dispose();
     resizeObserver?.disconnect();
     tagHints.hide();
     tagHints.remove();

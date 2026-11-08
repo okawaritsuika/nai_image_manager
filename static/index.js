@@ -440,6 +440,19 @@ function syncGallerySortControls(context = 'folder') {
         if (label) label.hidden = !visibleValues.includes(input.value);
     });
     setGalleryRadioValue('sortMode', imageContext ? galleryImageOrder : galleryFolderSort);
+    syncGalleryCompactSort(context);
+}
+
+function syncGalleryCompactSort(context = 'folder') {
+    const select = document.getElementById('galleryCompactSort');
+    if (!select) return;
+    const imageContext = context === 'image';
+    const visibleValues = imageContext ? ['newest', 'oldest'] : ['name', 'count'];
+    Array.from(select.options).forEach((option) => {
+        option.hidden = !visibleValues.includes(option.value);
+        option.disabled = option.hidden;
+    });
+    select.value = imageContext ? galleryImageOrder : galleryFolderSort;
 }
 
 function onGallerySortChange() {
@@ -1282,7 +1295,7 @@ async function renderGalleryVirtualFolderCards(container, folders, title = '🗂
     }
     const wrapper = document.createElement('div');
     wrapper.className = 'collapsible-wrapper';
-    wrapper.innerHTML = `<div class="section-header" style="border-left-color:#a78bfa"><span style="font-size:20px;font-weight:900;color:#a78bfa">${escapeHtml(title)} (${folders.length})</span><span class="arrow">▼</span></div><div class="section-content"><div class="flex-masonry"></div></div>`;
+    wrapper.innerHTML = `<div class="section-header" style="border-left-color:#a78bfa"><span style="font-size:var(--ui-text-section,14px);font-weight:600;color:#a78bfa">${escapeHtml(title)} (${folders.length})</span><span class="arrow">▼</span></div><div class="section-content"><div class="flex-masonry"></div></div>`;
     container.appendChild(wrapper);
     const grid = wrapper.querySelector('.flex-masonry');
     const cols = Array.from({length: getGalleryEffectiveColumnCount(grid)}, () => {
@@ -2284,6 +2297,7 @@ function renderGalleryTagIcon(tag) {
 
         return `
             <span class="gallery-tag-text-badge"
+                    title="${escapeHtml(tag.value)}"
                     style="--gallery-tag-text-color:${escapeHtml(textColor)}; --gallery-tag-bg-color:${escapeHtml(bgColor)};">
                 ${escapeHtml(tag.value)}
             </span>
@@ -2857,10 +2871,15 @@ function renderGalleryImageTagButton(imagePath, tagId) {
         `;
     }
 
+    const tagButtonClass = `gallery-image-tag-btn has-tag${tag.type === 'text' ? ' text-tag' : ''}`;
+    const tagButtonTitle = tag.type === 'text'
+        ? `태그 변경: ${escapeHtml(tag.value)}`
+        : '태그 변경';
+
     return `
-        <button class="gallery-image-tag-btn has-tag"
+        <button class="${tagButtonClass}"
                 data-gallery-tag-path="${safeDataPath}"
-                title="태그 변경"
+                title="${tagButtonTitle}"
                 onclick="openGalleryImageTagPicker(event, ${safeOnclickPath})">
             ${renderGalleryTagIcon(tag)}
         </button>
@@ -4196,9 +4215,11 @@ function toggleGalleryPromptSearchPanel() {
     galleryPromptSearchOpen = !galleryPromptSearchOpen;
 
     const panel = document.getElementById('galleryPromptSearchPanel');
+    const toggle = document.getElementById('galleryPromptSearchToggle');
     const icon = document.getElementById('galleryPromptSearchToggleIcon');
 
     if (panel) panel.classList.toggle('collapsed', !galleryPromptSearchOpen);
+    if (toggle) toggle.setAttribute('aria-expanded', String(galleryPromptSearchOpen));
     if (icon) icon.textContent = galleryPromptSearchOpen ? '▲' : '▼';
 }
 
@@ -4720,7 +4741,8 @@ function normalizeDakiProjectContext(context) {
     return {
         projectId: context.projectId,
         side: context.side,
-        candidateId: context.candidateId
+        candidateId: context.candidateId,
+        ...(typeof context.displayName === 'string' ? {displayName: context.displayName} : {})
     };
 }
 
@@ -4869,6 +4891,7 @@ async function sendContextImageToCanvas() {
         width: imageContext.width,
         height: imageContext.height,
         name: getImageFileName(imageContext.path || imageContext.imgSrc),
+        displayName: imageContext.projectContext?.displayName || getImageFileName(imageContext.path || imageContext.imgSrc),
         promptInfo: promptInfo || null,
         projectContext: imageContext.projectContext || null,
         importedAt: Date.now()
@@ -6131,17 +6154,19 @@ async function renderView() {
     window.Daki?.mountNavigation(navTabs);
 
     const bcPath = document.getElementById('breadcrumb-path');
-    bcPath.innerHTML = '<span style="cursor:pointer;" onclick="goToRoot()">🏠 HOME</span>';
+    bcPath.innerHTML = '<button type="button" class="gallery-breadcrumb-home" onclick="goToRoot()">HOME</button>';
 
     currentPath.forEach((node, idx) => {
         if (idx === 0) return;
 
         const span = document.createElement('span');
+        span.className = 'gallery-breadcrumb-item';
         let displayName = (idx === 1)
             ? node.name.replace(/^\d+_/, '')
             : getGalleryFolderKoreanDisplayName(node.name);
 
-        span.innerHTML = ` <span style="color:var(--accent)">❯</span> <span style="cursor:pointer; color:${idx === currentPath.length - 1 ? '#fff' : '#888'}">${displayName}</span>`;
+        const isCurrent = idx === currentPath.length - 1;
+        span.innerHTML = `<span class="gallery-breadcrumb-separator" aria-hidden="true">/</span><button type="button" class="gallery-breadcrumb-link${isCurrent ? ' is-current' : ''}"${isCurrent ? ' aria-current="location"' : ''}>${escapeHtml(displayName)}</button>`;
         span.onclick = () => {
             clearGalleryMultiFolderSelection(false);
             const previousTopNode = currentPath[1] || null;
@@ -6262,11 +6287,11 @@ async function renderView() {
     if (isDateOverview && displayFolders.length > 0) {
         renderCollapsibleGrid(cont, "date-groups", "📅 날짜별 그룹", displayFolders, "#00f2ff", defaultState);
     } else if (majorFolders.length > 0) {
-        renderCollapsibleGrid(cont, "major", "👑 메이저 그룹", majorFolders, "#00ff88", defaultState);
+        renderCollapsibleGrid(cont, "major", "메이저 그룹", majorFolders, "#00ff88", defaultState);
     }
 
     if (!isDateOverview && minorFolders.length > 0) {
-        renderCollapsibleGrid(cont, "minor", "🌱 마이너 그룹", minorFolders, "#888", defaultState);
+        renderCollapsibleGrid(cont, "minor", "마이너 그룹", minorFolders, "#888", defaultState);
     }
 
     if (hasImages && (!isSearchFiltering || isFinalFolder)) {
@@ -6294,10 +6319,15 @@ async function renderView() {
 function renderCollapsibleGrid(container, id, title, folders, borderColor, defaultState) {
     const wrapper = document.createElement('div');
     wrapper.className = 'collapsible-wrapper';
+    const groupIcon = id === 'major'
+        ? '<svg class="gallery-group-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>'
+        : id === 'minor'
+            ? '<svg class="gallery-group-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="14" height="14" rx="2"></rect></svg>'
+            : '';
     const hId = `header-${id}`; const cId = `content-${id}`;
     wrapper.innerHTML = `
         <div class="section-header ${defaultState}" id="${hId}" onclick="toggleSection('${hId}', '${cId}')" style="border-left-color:${borderColor}">
-            <span style="font-size:20px; font-weight:900; color:${borderColor}">${title} (${folders.length})</span>
+            <span class="gallery-group-heading" style="font-size:var(--ui-text-section,14px); font-weight:600; color:${borderColor}">${groupIcon}<span>${title} (${folders.length})</span></span>
             <span class="arrow">▼</span>
         </div>
         <div class="section-content ${defaultState}" id="${cId}"><div class="flex-masonry" id="grid-${id}"></div></div>`;
@@ -6540,7 +6570,7 @@ function renderImageGrid(container, title, images, parentNode) {
     let titleHtml = `<span>${title}</span>`;
     if (isTrashMode && !isCombinedView) {
         if (!isGalleryDateGroupNode(parentNode)) {
-            titleHtml += `<button onclick="emptyTrashFolder('${parentNode.name}')" style="background:#f44; color:#fff; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; font-size:13px; box-shadow: 0 0 10px rgba(255,68,68,0.4); transition: 0.2s;">🔥 이 폴더 영구 비우기</button>`;
+            titleHtml += `<button onclick="emptyTrashFolder('${parentNode.name}')" style="background:#f44; color:#fff; border:none; padding:8px 15px; border-radius:5px; font-weight:600; cursor:pointer; font-size:var(--ui-text-body,12px); box-shadow: 0 0 10px rgba(255,68,68,0.4); transition: 0.2s;">🔥 이 폴더 영구 비우기</button>`;
         }
     }
     const titleLabel = document.createElement('div');
@@ -6785,7 +6815,7 @@ function showToast(msg) {
         position: fixed; bottom: 50px; left: 50%; transform: translateX(-50%);
         background: rgba(0,0,0,0.85); color: #39ff14; padding: 12px 25px;
         border-radius: 30px; border: 1px solid #39ff14; z-index: 10000;
-        font-weight: bold; font-size: 14px; box-shadow: 0 0 15px rgba(57,255,20,0.3);
+        font-weight: 400; font-size: var(--ui-text-body,12px); box-shadow: 0 0 15px rgba(57,255,20,0.3);
         pointer-events: none; transition: opacity 0.3s;
     `;
     document.body.appendChild(toast);

@@ -11,7 +11,12 @@ from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageCms
 KINDS = {'color','tone','paint','clone','blur','sharpen','line','texture','liquify'}
 BLEND_MODES = {'normal', 'soft-light', 'color', 'multiply', 'screen'}
 LIQUIFY_MODES = {'push', 'expand', 'shrink', 'clockwise', 'counterclockwise'}
-SRGB = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
+try:
+    SRGB = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
+except ImportError:
+    # The browser Pillow build omits LittleCMS. Profiled sources still require
+    # normal color conversion and are handled by the server fallback.
+    SRGB = None
 
 def number(value, low, high, default=0):
     try: value=float(value)
@@ -195,19 +200,44 @@ def stroke_patch(size,stroke,scale,origin):
     radius=max(.5,number(stroke.get('radius'),1,800,80)*scale)
     hardness=number(stroke.get('hardness'),0,1,.3)
     feather=radius*(1-hardness)*.25;halo=math.ceil(feather*4)+3
-    left=max(-halo,math.floor(min(p[0] for p in points)-radius-halo));top=max(-halo,math.floor(min(p[1] for p in points)-radius-halo))
-    right=min(size[0]+halo,math.ceil(max(p[0] for p in points)+radius+halo));bottom=min(size[1]+halo,math.ceil(max(p[1] for p in points)+radius+halo))
+    min_x=min(p[0] for p in points);min_y=min(p[1] for p in points)
+    max_x=max(p[0] for p in points);max_y=max(p[1] for p in points)
+    left=max(-halo,math.floor(min_x-radius-halo));top=max(-halo,math.floor(min_y-radius-halo))
+    right=min(size[0]+halo,math.ceil(max_x+radius+halo));bottom=min(size[1]+halo,math.ceil(max_y+radius+halo))
     if right<=left or bottom<=top:return None
-    patch=Image.new('L',(right-left,bottom-top));draw=ImageDraw.Draw(patch)
-    rr=max(.5,radius*(.45+.55*hardness))
-    for x,y in dabs(points,radius):draw.ellipse((x-left-rr,y-top-rr,x-left+rr,y-top+rr),fill=255)
-    if hardness<1:patch=patch.filter(ImageFilter.GaussianBlur(feather))
     clipped=(max(0,left),max(0,top),min(size[0],right),min(size[1],bottom))
     if clipped[2]<=clipped[0] or clipped[3]<=clipped[1]:return None
-    return clipped,patch.crop((clipped[0]-left,clipped[1]-top,clipped[2]-left,clipped[3]-top))
+    rr=max(.5,radius*(.45+.55*hardness))
+    # Preserve the public patch box and the original rasterization origin.
+    # Only the inner buffer fed to the feather filter needs to be tight.
+    draw_left=max(left,math.floor(min_x-rr-halo));draw_top=max(top,math.floor(min_y-rr-halo))
+    draw_right=min(right,math.ceil(max_x+rr+halo));draw_bottom=min(bottom,math.ceil(max_y+rr+halo))
+    result=Image.new('L',(clipped[2]-clipped[0],clipped[3]-clipped[1]))
+    if draw_right<=draw_left or draw_bottom<=draw_top:return clipped,result
+    with Image.new('L',(draw_right-draw_left,draw_bottom-draw_top)) as patch:
+        draw=ImageDraw.Draw(patch)
+        dx,dy=draw_left-left,draw_top-top
+        for x,y in dabs(points,radius):
+            draw.ellipse((int(x-left-rr)-dx,int(y-top-rr)-dy,int(x-left+rr)-dx,int(y-top+rr)-dy),fill=255)
+        filtered=patch.filter(ImageFilter.GaussianBlur(feather)) if hardness<1 else patch
+        try:
+            result.paste(filtered,(draw_left-clipped[0],draw_top-clipped[1]))
+        finally:
+            if filtered is not patch:filtered.close()
+    return clipped,result
 
 def mask_image(layer,size,scale,origin,cache=None):
     spec=layer.get('mask',{});strokes=spec.get('strokes',[])
+    shape=spec.get('shape')
+    if shape and not strokes:
+        out=Image.new('L',size,0)
+        if spec.get('base',1):
+            draw=ImageDraw.Draw(out)
+            x0,y0,x1,y1=shape['box']
+            box=[(x0-origin[0])*scale,(y0-origin[1])*scale,
+                 (x1-origin[0])*scale,(y1-origin[1])*scale]
+            (draw.ellipse if shape.get('kind')=='ellipse' else draw.rectangle)(box,fill=255)
+        return out
     out=None;start=0;full_key=None;prefix_key=None;prefix_hit=False
     if cache is not None and strokes:
         def key(records):
@@ -227,9 +257,11 @@ def mask_image(layer,size,scale,origin,cache=None):
         if prefix_key is not None and index==len(strokes)-1 and not prefix_hit:
             cache.store(prefix_key,out.copy())
         stroke=strokes[index]
+        amount=number(stroke.get('opacity',1),0,1,1)
+        if amount==0 or not stroke.get('points'):continue
         result=stroke_patch(size,stroke,scale,origin)
         if result:
-            box,patch=result;amount=number(stroke.get('opacity',1),0,1,1)
+            box,patch=result
             try:
                 if amount<1:
                     attenuated=patch.point(lambda v:round(v*amount));patch.close();patch=attenuated
@@ -278,12 +310,39 @@ def vibrance_adjust(c,amount):
         c[above]=light+(c[above]-light)*(1-np.clip(light,0,1))/np.maximum(high[above]-light,1e-6)
     return np.clip(c,0,1)
 
+_native_normal_blend = None  # Installed only by the browser worker.
+
 def composite(base,changed,mask,opacity=1,mode='normal'):
     if mode=='normal' and opacity==1 and mask.getextrema()==(255,255):
         # Avoid several float RGBA buffers when the whole tile is replaced.
         result=changed.copy()
         with base.getchannel('A') as alpha:result.putalpha(alpha)
         return result
+    if mode=='normal' and opacity==1 and base.mode=='RGBA' and changed.mode=='RGBA' and mask.mode=='L':
+        # Pillow's native masked paste has the same byte rounding as the float32
+        # blend here, and avoids allocating several full-tile float buffers.
+        result=base.copy()
+        result.paste(changed,(0,0),mask)
+        with base.getchannel('A') as alpha:result.putalpha(alpha)
+        return result
+    if mode=='normal' and base.mode=='RGBA' and changed.mode=='RGBA' and mask.mode=='L':
+        if _native_normal_blend is not None:
+            source = np.asarray(base)
+            edit = np.asarray(changed)
+            strength = np.asarray(mask)
+            output = np.empty_like(source)
+            _native_normal_blend(source.ctypes.data, edit.ctypes.data, strength.ctypes.data,
+                                 output.ctypes.data, base.width * base.height, opacity)
+            return Image.fromarray(output)
+        # Work on contiguous color planes and copy alpha directly from the base.
+        base_pixels = np.asarray(base)
+        a = np.ascontiguousarray(np.moveaxis(base_pixels[..., :3], -1, 0), dtype=np.float32) / 255
+        b = np.ascontiguousarray(np.moveaxis(np.asarray(changed)[..., :3], -1, 0), dtype=np.float32) / 255
+        strength = np.asarray(mask, dtype=np.float32) / 255 * opacity
+        a += (b - a) * strength[None, ...]
+        pixels = base_pixels.copy()
+        pixels[..., :3] = np.moveaxis(np.clip(a * 255 + .5, 0, 255).astype('uint8'), 0, -1)
+        return Image.fromarray(pixels)
     a=np.asarray(base,dtype=np.float32)/255;b=np.asarray(changed,dtype=np.float32)/255
     strength=np.asarray(mask,dtype=np.float32)[...,None]/255*opacity
     if mode=='soft-light':b[...,:3]=soft_light(a[...,:3],b[...,:3])
@@ -311,26 +370,57 @@ def perlin(width,height,origin,scale,cell,seed):
         return cosine*(fx-dx)+sine*(fy-dy)
     return (gradient(0,0)*(1-u)+gradient(1,0)*u)*(1-v)+(gradient(0,1)*(1-u)+gradient(1,1)*u)*v
 
+def _tone_tile(tile, params):
+    brightness = number(params.get('brightness'), -40, 40) / 100
+    contrast = number(params.get('contrast'), -70, 70) / 100
+    saturation = number(params.get('saturation'), -100, 100) / 100
+    shadows = number(params.get('shadows'), -40, 40) / 100
+    highlights = number(params.get('highlights'), -40, 40) / 100
+    vibrance = number(params.get('vibrance'), -100, 100, 0)
+    needs_color = saturation or shadows or highlights or vibrance
+    lookup = tile.mode == 'RGBA' and not needs_color
+    if lookup:
+        # Brightness and contrast transform each byte independently.
+        channels = np.arange(256, dtype=np.float32) / 255
+    else:
+        source = np.asarray(tile)
+        channels = np.ascontiguousarray(np.moveaxis(source[..., :3], -1, 0), dtype=np.float32) / 255
+    channels = (channels - .5) * (1 + contrast) + .5 + brightness
+    if needs_color:
+        # The previous RGB-array formula promoted luma math to float64, including on NumPy 1.x.
+        channels = channels.astype(np.float64)
+    if saturation or shadows or highlights:
+        luma = (channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722)[None, ...]
+        channels = luma + (channels - luma) * (1 + saturation)
+        clipped = np.clip(luma, 0, 1)
+        channels += shadows * (1 - clipped)**3 + highlights * clipped**3
+    if vibrance:
+        channels = np.moveaxis(vibrance_adjust(np.moveaxis(channels, 0, -1), vibrance), -1, 0)
+    adjusted = np.clip(channels, 0, 1).astype(np.float32, copy=False)
+    values = np.clip(adjusted * 255 + .5, 0, 255).astype('uint8')
+    if lookup:
+        return tile.point(values.tolist() * 3 + list(range(256)))
+    pixels = source.copy()
+    pixels[..., :3] = np.moveaxis(values, 0, -1)
+    return Image.fromarray(pixels)
+
+_native_gaussian = None
+
+
 def changed_tile(tile,kind,p,origin,scale):
     if kind=='color':return Image.new('RGBA',tile.size,rgb(p.get('color','#ffe0cd'))+(255,))
-    if kind=='blur':return tile.filter(ImageFilter.GaussianBlur(number(p.get('radius'),.1,40,3)*scale))
-    if kind=='sharpen':return tile.filter(ImageFilter.UnsharpMask(number(p.get('radius'),.1,40,5)*scale,int(number(p.get('amount'),0,250,100)),int(number(p.get('threshold'),0,50,0))))
+    if kind in {'blur','sharpen'}:
+        radius=number(p.get('radius'),.1,40,3 if kind=='blur' else 5)*scale
+        percent=-1 if kind=='blur' else int(number(p.get('amount'),0,250,100))
+        threshold=int(number(p.get('threshold'),0,50,0))
+        if _native_gaussian is not None and tile.mode=='RGBA' and 0<radius<=40:
+            changed=_native_gaussian(tile,radius,percent,threshold)
+            if changed is not None:return changed
+        return tile.filter(ImageFilter.GaussianBlur(radius) if percent<0 else
+                           ImageFilter.UnsharpMask(radius,percent,threshold))
+    if kind=='tone':return _tone_tile(tile,p)
     a=np.asarray(tile,dtype=np.float32)/255;c=a[...,:3]
-    if kind=='tone':
-        brightness=number(p.get('brightness'),-40,40)/100;contrast=number(p.get('contrast'),-70,70)/100
-        c=(c-.5)*(1+contrast)+.5+brightness
-        saturation=number(p.get('saturation'),-100,100)/100
-        shadows=number(p.get('shadows'),-40,40)/100;highlights=number(p.get('highlights'),-40,40)/100
-        if saturation or shadows or highlights:
-            l=(c*np.array([.2126,.7152,.0722])).sum(axis=2,keepdims=True)
-            c=l+(c-l)*(1+saturation)
-            c+=shadows*(1-np.clip(l,0,1))**3+highlights*np.clip(l,0,1)**3
-        else:
-            # Keep the previous precision for vibrance without calculating unused luma.
-            c=c.astype(np.float64)
-        vibrance=number(p.get('vibrance'),-100,100,0)
-        if vibrance!=0:c=vibrance_adjust(c,vibrance)
-    elif kind=='line':
+    if kind=='line':
         edge=np.asarray(tile.convert('L').filter(ImageFilter.FIND_EDGES),dtype=np.float32)/255
         c=c*(1-np.clip(edge*number(p.get('strength'),.1,5,1.5),0,1)[...,None])
     elif kind=='texture':
@@ -356,38 +446,95 @@ def _color_table(layer):
             with composite(base,changed,mask,number(layer.get('opacity'),0,1,1),mode) as result:
                 return np.asarray(result)[...,:3].copy()
 
-def apply_adjustment(image,layer,scale,origin,progress=None,prepared_mask=None):
+def tone_prefix_table(layers):
+    """Compose independent byte mappings without storing another full RGBA image."""
+    if not layers:return None
+    for layer in layers:
+        mask=layer.get('mask',{});p=layer.get('params',{})
+        if (layer['type']!='tone' or number(layer.get('opacity'),0,1,1)!=1 or
+                not mask.get('base',1) or mask.get('strokes') or mask.get('shape') or
+                p.get('mode','normal')!='normal' or
+                any(number(p.get(key),-100,100) for key in ('saturation','vibrance','shadows','highlights'))):
+            return None
+    ramp=Image.frombytes('RGBA',(256,1),bytes(value for v in range(256) for value in (v,v,v,255)))
+    try:
+        for layer in layers:
+            transformed=_tone_tile(ramp,layer.get('params',{}))
+            ramp.close()
+            ramp=transformed
+        with ramp.getchannel('R') as red:
+            return list(red.tobytes())*3+list(range(256))
+    finally:
+        ramp.close()
+
+def _adjustment_crop(image,box,source_lut):
+    crop=image.crop(box)
+    if source_lut is None:return crop
+    with crop:return crop.point(source_lut)
+
+def iter_adjustment(image,layer,scale,origin,progress=None,prepared_mask=None,source_image=None,
+                    compact_tiles=False,source_lut=None):
     kind=layer['type'];p=layer.get('params',{});opacity=number(layer.get('opacity'),0,1,1)
     # Read each neighborhood from the pre-layer image; tile edges never become filter edges.
     needs_source=kind in {'blur','sharpen','line'}
-    source=None
+    source=source_image
     color_table=_color_table(layer)
     pad=math.ceil(number(p.get('radius'),0,40,5)*scale*4)+4 if needs_source else 0
-    tile_size=768
+    # The viewport/streaming caller has already padded this bounded crop.
+    # Avoid filtering the same halo repeatedly for tiny remainder tiles.
+    tile_size=max(image.size) if compact_tiles and image.width*image.height<=1_048_576 else 768
     try:
         for y in range(0,image.height,tile_size):
             for x in range(0,image.width,tile_size):
                 box=(x,y,min(image.width,x+tile_size),min(image.height,y+tile_size))
                 with (prepared_mask.crop(box) if prepared_mask is not None else
                       mask_image(layer,(box[2]-x,box[3]-y),scale,(origin[0]+x/scale,origin[1]+y/scale))) as mask:
-                    if not mask.getbbox():continue
+                    if not mask.getbbox():
+                        if source_image is not None:
+                            with _adjustment_crop(source_image,box,source_lut) as base:image.paste(base,box)
+                        yield
+                        continue
                     if color_table is not None:
-                        with image.crop(box) as base:pixels=np.array(base)
+                        with _adjustment_crop(source_image if source_image is not None else image,box,source_lut) as base:
+                            pixels=np.array(base)
                         strength=np.asarray(mask)
                         for channel in range(3):pixels[...,channel]=color_table[strength,pixels[...,channel],channel]
                         with Image.fromarray(pixels) as result:image.paste(result,box)
+                        yield
                         continue
                     if source is None:source=image.copy() if needs_source else image
-                    expanded=(max(0,x-pad),max(0,y-pad),min(image.width,box[2]+pad),min(image.height,box[3]+pad))
-                    start=(origin[0]+expanded[0]/scale,origin[1]+expanded[1]/scale)
-                    inner=(x-expanded[0],y-expanded[1],box[2]-expanded[0],box[3]-expanded[1])
-                    with source.crop(expanded) as tile, changed_tile(tile,kind,p,start,scale) as changed:
-                        with source.crop(box) as base, changed.crop(inner) as correction:
-                            with composite(base,correction,mask,opacity,p.get('mode','normal')) as result:
-                                image.paste(result,box)
+                    if pad==0:
+                        start=(origin[0]+x/scale,origin[1]+y/scale)
+                        with _adjustment_crop(source,box,source_lut) as tile, changed_tile(tile,kind,p,start,scale) as changed:
+                            if kind=='tone' and opacity==1 and p.get('mode','normal')=='normal' and mask.getextrema()==(255,255):
+                                # Tone already preserves each original alpha byte.
+                                image.paste(changed,box)
+                            else:
+                                with composite(tile,changed,mask,opacity,p.get('mode','normal')) as result:
+                                    image.paste(result,box)
+                    else:
+                        expanded=(max(0,x-pad),max(0,y-pad),min(image.width,box[2]+pad),min(image.height,box[3]+pad))
+                        start=(origin[0]+expanded[0]/scale,origin[1]+expanded[1]/scale)
+                        inner=(x-expanded[0],y-expanded[1],box[2]-expanded[0],box[3]-expanded[1])
+                        with _adjustment_crop(source,expanded,source_lut) as tile, changed_tile(tile,kind,p,start,scale) as changed:
+                            with tile.crop(inner) as base, changed.crop(inner) as correction:
+                                if (opacity==1 and p.get('mode','normal')=='normal' and
+                                        mask.getextrema()==(255,255) and base.mode=='RGBA' and correction.mode=='RGBA'):
+                                    # The correction crop is temporary, so restore alpha in-place
+                                    # instead of copying it again through composite().
+                                    with base.getchannel('A') as alpha:correction.putalpha(alpha)
+                                    image.paste(correction,box)
+                                else:
+                                    with composite(base,correction,mask,opacity,p.get('mode','normal')) as result:
+                                        image.paste(result,box)
+                yield
             if progress:progress(min(1,(y+tile_size)/image.height))
     finally:
-        if source is not None and source is not image:source.close()
+        if source is not None and source is not image and source is not source_image:source.close()
+
+def apply_adjustment(image,layer,scale,origin,progress=None,prepared_mask=None,source_image=None):
+    for _ in iter_adjustment(image,layer,scale,origin,progress,prepared_mask,source_image):
+        pass
 
 def sample_bilinear(pixels,x,y):
     x=np.clip(x,0,pixels.shape[1]-1);y=np.clip(y,0,pixels.shape[0]-1)
@@ -396,19 +543,26 @@ def sample_bilinear(pixels,x,y):
     fx=(x-x0)[...,None];fy=(y-y0)[...,None]
     return (pixels[y0,x0]*(1-fx)+pixels[y0,x1]*fx)*(1-fy)+(pixels[y1,x0]*(1-fx)+pixels[y1,x1]*fx)*fy
 
-def apply_liquify(image,layer,scale,origin):
+def apply_liquify(image,layer,scale,origin,*,native_crop=False,skip_initial=False):
+    # A bounded native update still evaluates every sample in document-space
+    # float32 coordinates, including fractional brush centers far from (0, 0).
+    left,top=origin if native_crop else (0,0)
+    right,bottom=left+image.width,top+image.height
     for stroke in layer.get('strokes',[]):
         radius=max(1,number(stroke.get('radius'),1,800,80)*scale)
         strength=number(stroke.get('strength'),.01,1,.35);mode=stroke.get('mode','push')
-        points=[((p[0]-origin[0])*scale,(p[1]-origin[1])*scale) for p in stroke.get('points',[])]
+        points=[tuple(p) if native_crop else ((p[0]-origin[0])*scale,(p[1]-origin[1])*scale)
+                for p in stroke.get('points',[])]
         if not points:continue
         last=points[0]
-        for cx,cy in dabs(points,radius):
+        samples=dabs(points,radius)
+        if skip_initial:next(samples,None)
+        for cx,cy in samples:
             dx=cx-last[0];dy=cy-last[1];last=(cx,cy)
             if mode=='push' and dx==dy==0:continue
-            box=(max(0,int(cx-radius-3)),max(0,int(cy-radius-3)),min(image.width,math.ceil(cx+radius+3)),min(image.height,math.ceil(cy+radius+3)))
+            box=(max(left,int(cx-radius-3)),max(top,int(cy-radius-3)),
+                 min(right,math.ceil(cx+radius+3)),min(bottom,math.ceil(cy+radius+3)))
             if box[2]<=box[0] or box[3]<=box[1]:continue
-            tile=image.crop(box);a=np.asarray(tile,dtype=np.float32)
             yy,xx=np.mgrid[box[1]:box[3],box[0]:box[2]].astype(np.float32)
             rx=xx-cx;ry=yy-cy;f=np.maximum(0,1-(rx*rx+ry*ry)/(radius*radius))**2
             sx=xx.copy();sy=yy.copy()
@@ -419,43 +573,140 @@ def apply_liquify(image,layer,scale,origin):
                 angle=strength*.22*f*(1 if mode=='clockwise' else -1);co=np.cos(angle);si=np.sin(angle)
                 sx=cx+co*rx+si*ry;sy=cy-si*rx+co*ry
             # Include displaced source pixels beyond the affected circle.
-            sb=(max(0,int(sx.min())-2),max(0,int(sy.min())-2),min(image.width,math.ceil(sx.max())+3),min(image.height,math.ceil(sy.max())+3))
-            sampled=sample_bilinear(np.asarray(image.crop(sb),dtype=np.float32),sx-sb[0],sy-sb[1])
-            warped=Image.fromarray(np.clip(sampled+.5,0,255).astype('uint8'))
-            mask=mask_image(layer,tile.size,scale,(origin[0]+box[0]/scale,origin[1]+box[1]/scale))
-            image.paste(composite(tile,warped,mask,number(layer.get('opacity'),0,1,1)),box)
+            sb=(max(left,int(sx.min())-2),max(top,int(sy.min())-2),
+                min(right,math.ceil(sx.max())+3),min(bottom,math.ceil(sy.max())+3))
+            local_box=(box[0]-left,box[1]-top,box[2]-left,box[3]-top)
+            local_source=(sb[0]-left,sb[1]-top,sb[2]-left,sb[3]-top)
+            with image.crop(local_source) as source:
+                sampled=sample_bilinear(np.asarray(source,dtype=np.float32),sx-sb[0],sy-sb[1])
+            with image.crop(local_box) as tile, Image.fromarray(np.clip(sampled+.5,0,255).astype('uint8')) as warped:
+                start=(origin[0]+local_box[0]/scale,origin[1]+local_box[1]/scale)
+                with mask_image(layer,tile.size,scale,start) as mask:
+                    with composite(tile,warped,mask,number(layer.get('opacity'),0,1,1)) as result:
+                        image.paste(result,local_box)
+
+def clone_region(original, size, sourcebox):
+    """Keep Pillow's bicubic RGBA transform within the source brush footprint."""
+    x0, y0, x1, y1 = sourcebox
+    # With an integral unit mapping and a full 3px source margin, bicubic
+    # sampling selects only the corresponding pixel. Pillow still premultiplies
+    # RGBA while resampling, so retain its exact byte rounding through RGBa.
+    if (all(float(value).is_integer() for value in sourcebox) and
+            x1 - x0 == size[0] and y1 - y0 == size[1] and
+            x0 >= 3 and y0 >= 3 and x1 <= original.width - 3 and y1 <= original.height - 3):
+        with original.crop((int(x0),int(y0),int(x1),int(y1))) as source:
+            with source.getchannel('A') as alpha:
+                if alpha.getextrema()==(255,255):return source.copy()
+            with source.convert('RGBa') as premultiplied:
+                return premultiplied.convert('RGBA')
+    left, top = max(0, math.floor(x0) - 3), max(0, math.floor(y0) - 3)
+    right, bottom = min(original.width, math.ceil(x1) + 3), min(original.height, math.ceil(y1) + 3)
+    if right <= left or bottom <= top:
+        return Image.new(original.mode, size)
+    # EXTENT internally uses this affine transform. Preserve its scale and
+    # image-edge clipping while avoiding premultiplication of the entire source.
+    transform = ((x1 - x0) / size[0], 0, x0 - left, 0, (y1 - y0) / size[1], y0 - top)
+    with original.crop((left, top, right, bottom)) as source:
+        return source.transform(size, Image.Transform.AFFINE, transform, Image.Resampling.BICUBIC)
+
+
+def _paint_mask_is_identity(layer):
+    spec=layer.get('mask',{})
+    return bool(spec.get('base',1)) and not spec.get('strokes') and not spec.get('shape')
+
+
+def _paint_mask_is_empty(layer):
+    spec=layer.get('mask',{})
+    if spec.get('base',1):return False
+    return not any(
+        not stroke.get('erase') and stroke.get('points') and
+        number(stroke.get('opacity',1),0,1,1)>0
+        for stroke in spec.get('strokes',[])
+    )
+
+
+def _trim_paint_patch(patch,box,start,scale):
+    """Drop zero-only borders after layer/source alpha has limited a stroke."""
+    support=patch.getbbox()
+    if support is None:
+        patch.close()
+        return None
+    if support==(0,0,patch.width,patch.height):
+        return patch,box,start,support
+    cropped=patch.crop(support)
+    patch.close()
+    return (cropped,
+            (box[0]+support[0],box[1]+support[1],box[0]+support[2],box[1]+support[3]),
+            (start[0]+support[0]/scale,start[1]+support[1]/scale),support)
+
 
 def apply_paint(image,layer,scale,origin,original):
+    layer_opacity=number(layer.get('opacity'),0,1,1)
+    if layer_opacity==0 or _paint_mask_is_empty(layer):return
+    mask_identity=_paint_mask_is_identity(layer)
+    mode=layer.get('params',{}).get('mode','normal')
+    from PIL import ImageChops
     for stroke in layer.get('strokes',[]):
         if stroke.get('brush')=='airbrush':
             flow=number(stroke.get('flow'),0,1,.04)
-            opacity=number(stroke.get('opacity'),0,1,.1)*number(layer.get('opacity'),0,1,1)
+            opacity=number(stroke.get('opacity'),0,1,.1)*layer_opacity
             if flow==0 or opacity==0:continue
             result=airbrush_coverage(image.size,stroke,scale,origin)
             if not result:continue
             box,coverage=result;start=(origin[0]+box[0]/scale,origin[1]+box[1]/scale)
-            mask=mask_image(layer,(box[2]-box[0],box[3]-box[1]),scale,start)
-            coverage*=np.asarray(mask,dtype=np.float32)/255
+            if not mask_identity:
+                with mask_image(layer,(box[2]-box[0],box[3]-box[1]),scale,start) as mask:
+                    coverage*=np.asarray(mask,dtype=np.float32)/255
             patch=Image.fromarray(np.clip(coverage*255+.5,0,255).astype('uint8'),'L')
-            color=Image.new('RGBA',patch.size,rgb(stroke.get('color','#e6baa4'))+(255,))
-            image.paste(composite(image.crop(box),color,patch,opacity,layer.get('params',{}).get('mode','normal')),box)
+            support=patch.getbbox()
+            if support is None:
+                patch.close()
+                continue
+            if support!=(0,0,patch.width,patch.height):
+                cropped=patch.crop(support);patch.close();patch=cropped
+                box=(box[0]+support[0],box[1]+support[1],box[0]+support[2],box[1]+support[3])
+            with patch, Image.new('RGBA',patch.size,rgb(stroke.get('color','#e6baa4'))+(255,)) as color:
+                with image.crop(box) as base, composite(base,color,patch,opacity,mode) as result:
+                    image.paste(result,box)
+            continue
+        opacity=number(stroke.get('opacity'),0,1,.1)*layer_opacity
+        if opacity==0:continue
+        if layer['type']=='clone' and (not stroke.get('source') or not stroke.get('points')):
             continue
         result=stroke_patch(image.size,stroke,scale,origin)
         if not result:continue
         box,patch=result;start=(origin[0]+box[0]/scale,origin[1]+box[1]/scale)
-        from PIL import ImageChops
-        patch=ImageChops.multiply(patch,mask_image(layer,patch.size,scale,start))
+        if not mask_identity:
+            with mask_image(layer,patch.size,scale,start) as mask:
+                masked=ImageChops.multiply(patch,mask)
+            patch.close();patch=masked
+        trimmed=_trim_paint_patch(patch,box,start,scale)
+        if trimmed is None:continue
+        patch,box,start,_support=trimmed
         if layer['type']=='clone':
-            src=stroke.get('source');points=stroke.get('points',[])
-            if not src or not points:continue
+            src=stroke['source'];points=stroke['points']
             delta=(src[0]-points[0][0],src[1]-points[0][1])
             sourcebox=(start[0]+delta[0],start[1]+delta[1],start[0]+delta[0]+patch.width/scale,start[1]+delta[1]+patch.height/scale)
-            # EXTENT samples original pixels; out-of-document clone areas are protected.
-            color=original.transform(patch.size,Image.Transform.EXTENT,sourcebox,Image.Resampling.BICUBIC)
-            patch=ImageChops.multiply(patch,color.getchannel('A'))
+            color=clone_region(original,patch.size,sourcebox)
+            with color.getchannel('A') as alpha:
+                masked=ImageChops.multiply(patch,alpha)
+            patch.close();patch=masked
+            trimmed=_trim_paint_patch(patch,box,start,scale)
+            if trimmed is None:
+                color.close()
+                continue
+            patch,new_box,start,support=trimmed
+            if support!=(0,0,color.width,color.height):
+                cropped=color.crop(support);color.close();color=cropped
+            box=new_box
         else:color=Image.new('RGBA',patch.size,rgb(stroke.get('color','#e6baa4'))+(255,))
-        opacity=number(stroke.get('opacity'),0,1,.1)*number(layer.get('opacity'),0,1,1)
-        image.paste(composite(image.crop(box),color,patch,opacity,layer.get('params',{}).get('mode','normal')),box)
+        try:
+            with patch, color, image.crop(box) as base:
+                with composite(base,color,patch,opacity,mode) as result:
+                    image.paste(result,box)
+        finally:
+            # The context manager above owns both only on successful entry.
+            patch.close();color.close()
 
 def airbrush_coverage(size,stroke,scale,origin):
     """Accumulate soft, flowing dabs in a clipped stroke-sized float32 region."""
@@ -508,16 +759,21 @@ def _has_effect(layer):
             for stroke in mask.get('strokes',[])):
         return False
     if layer['type'] in {'paint','clone','liquify'} and not layer.get('strokes'):return False
+    if layer['type']=='tone':
+        params=layer.get('params',{})
+        keys=('brightness','contrast','saturation','vibrance','shadows','highlights')
+        if params.get('mode','normal')=='normal' and not any(number(params.get(key),-100,100) for key in keys):
+            return False
     return True
 
 
-def _apply_layers(image,layers,scale,origin,original,progress=None,mask_cache=None):
+def iter_layers(image,layers,scale,origin,original,progress=None,mask_cache=None,first_source=None,chunked=True):
     prepared_mask=None;prepared_spec=None
     try:
         for i,layer in enumerate(layers):
             name=layer.get('name',layer['type'])
             if progress:progress(i/len(layers),name)
-            if layer['type']=='liquify':apply_liquify(image,layer,scale,origin)
+            if layer['type']=='liquify':apply_liquify(image,layer,scale,origin,native_crop=scale==1)
             elif layer['type'] in {'paint','clone'}:apply_paint(image,layer,scale,origin,original)
             else:
                 spec=layer.get('mask',{});mask=None
@@ -531,12 +787,52 @@ def _apply_layers(image,layers,scale,origin,original,progress=None,mask_cache=No
                         prepared_mask=mask_image(layer,image.size,scale,origin,cache=mask_cache)
                         prepared_spec=spec
                     mask=prepared_mask
-                apply_adjustment(image,layer,scale,origin,
-                    (lambda value:progress((i+value)/len(layers),name)) if progress else None,
-                    prepared_mask=mask)
+                report=(lambda value:progress((i+value)/len(layers),name)) if progress else None
+                source=first_source if i==0 else None
+                if chunked:
+                    yield from iter_adjustment(image,layer,scale,origin,report,prepared_mask=mask,
+                                               source_image=source,compact_tiles=True)
+                else:
+                    apply_adjustment(image,layer,scale,origin,report,prepared_mask=mask,source_image=source)
             if progress:progress((i+1)/len(layers),name)
+            yield
     finally:
         if prepared_mask is not None:prepared_mask.close()
+
+def _apply_layers(image,layers,scale,origin,original,progress=None,mask_cache=None,first_source=None,compact_tiles=False):
+    for _ in iter_layers(image,layers,scale,origin,original,progress,mask_cache,first_source,chunked=compact_tiles):
+        pass
+
+
+def _render_layer_copy(prepared,layers,scale,origin,mask_cache=None,progress=None):
+    image=prepared.copy()
+    try:
+        _apply_layers(image,layers,scale,origin,None,progress,mask_cache=mask_cache)
+        return image
+    except BaseException:
+        image.close()
+        raise
+
+
+def _render_viewport_result(prepared,layers,scale,origin,crop,region_cache,progress=None):
+    if (region_cache is not None and progress is None and
+            region_cache.can_store_viewport(prepared.size)):
+        rendered=region_cache.render_viewport_layers(
+            prepared,layers,
+            lambda base,pending:_render_layer_copy(
+                base,pending,scale,origin,region_cache.masks,
+            ),
+        )
+        return rendered.crop(crop)
+    rendered=_render_layer_copy(
+        prepared,layers,scale,origin,
+        region_cache.masks if region_cache is not None else None,
+        progress=progress,
+    )
+    try:
+        return rendered.crop(crop)
+    finally:
+        rendered.close()
 
 
 def render_preview(prepared,side,scale,mask_cache=None):
@@ -548,43 +844,56 @@ def render_preview(prepared,side,scale,mask_cache=None):
     layers=[layer for layer in side.get('layers',[]) if _has_effect(layer)]
     if any(layer['type']=='clone' for layer in layers):
         raise ValueError('복제 레이어는 원본 이미지 렌더링이 필요합니다.')
-    image=prepared.copy()
-    try:
-        _apply_layers(image,layers,scale,(0,0),None,mask_cache=mask_cache)
-        return image
-    except BaseException:
-        image.close()
-        raise
+    return _render_layer_copy(prepared,layers,scale,(0,0),mask_cache)
 
 
-def render(path,side,max_edge=None,region=None,progress=None,region_scale=None):
+def render(path,side,max_edge=None,region=None,progress=None,region_scale=None,
+           region_cache=None,source_key=None,prepared_source=None,compact_tiles=False):
     validate_side(side)
+    if prepared_source is not None and (region is None or not isinstance(prepared_source, Image.Image) or
+                                       prepared_source.mode != 'RGBA'):
+        raise ValueError('���� ��ó�� �����ϴ�.')
     if region_scale is not None:
         if (region is None or isinstance(region_scale,bool) or
                 not isinstance(region_scale,(int,float)) or not 0<region_scale<=1 or
                 not math.isfinite(region_scale)):
             raise ValueError('상세 영역 배율이 올바르지 않습니다.')
-    opened=Image.open(path)
-    try:
-        original=normalize_image(opened)
-    finally:
-        opened.close()
+    layers=[layer for layer in side.get('layers',[]) if _has_effect(layer)]
+    needs_original=any(layer['type']=='clone' for layer in layers)
+    halo=context_halo(layers) if region else None
+    use_region_cache=(region_cache is not None and source_key is not None and
+                      region is not None and region_scale is not None and not needs_original)
+    if use_region_cache:
+        cached_region=region_cache.get_viewport(source_key,region,region_scale,halo)
+        if cached_region is not None:
+            prepared,origin,crop=cached_region
+            return _render_viewport_result(
+                prepared,layers,region_scale,origin,crop,region_cache,progress,
+            )
+    owns_original=prepared_source is None
+    if owns_original:
+        opened=Image.open(path)
+        try:
+            original=normalize_image(opened)
+        finally:
+            opened.close()
+    else:
+        original=prepared_source
     image=None
     try:
         scale=1;origin=(0,0)
         if max_edge:scale=min(1,max_edge/max(original.size))
         crop=None
-        layers=[layer for layer in side.get('layers',[]) if _has_effect(layer)]
-        needs_original=any(layer['type']=='clone' for layer in layers)
         if region:
-            halo=context_halo(layers);x,y,w,h=region
+            x,y,w,h=region
             extent=(max(0,x-halo),max(0,y-halo),min(original.width,x+w+halo),min(original.height,y+h+halo))
             origin=extent[:2]
             image=original.crop(extent)
             if region_scale is not None:
                 scale=region_scale
-                with image:
-                    image=image.resize((max(1,round(image.width*scale)),max(1,round(image.height*scale))),Image.Resampling.LANCZOS)
+                if scale!=1:
+                    with image:
+                        image=image.resize((max(1,round(image.width*scale)),max(1,round(image.height*scale))),Image.Resampling.LANCZOS)
                 crop_x=round((x-origin[0])*scale);crop_y=round((y-origin[1])*scale)
                 crop_w=max(1,round(w*scale));crop_h=max(1,round(h*scale))
                 # Rounding the origin and size independently can exceed a very
@@ -594,17 +903,51 @@ def render(path,side,max_edge=None,region=None,progress=None,region_scale=None):
                 crop=(crop_x,crop_y,crop_x+crop_w,crop_y+crop_h)
             else:
                 crop=(x-origin[0],y-origin[1],x+w-origin[0],y+h-origin[1])
+            if not needs_original:
+                if owns_original:
+                    original.close()
+                original=None
+            cacheable_viewport=(use_region_cache and region_cache.can_store_viewport(image.size))
+            if cacheable_viewport:
+                if progress is None:
+                    prepared=image
+                    region_cache.store_viewport(
+                        source_key,region,region_scale,halo,origin, crop,prepared,
+                    )
+                    image=None
+                    return _render_viewport_result(
+                        prepared,layers,region_scale,origin,crop,region_cache,
+                    )
+                region_cache.store_viewport(
+                    source_key,region,region_scale,halo,origin,crop,image.copy(),
+                )
         elif scale<1:image=original.resize((max(1,round(original.width*scale)),max(1,round(original.height*scale))),Image.Resampling.LANCZOS)
-        else:image=original.copy() if needs_original else original
+        else:image=original.copy() if needs_original or not owns_original else original
         if not needs_original:
-            if image is not original:original.close()
+            if owns_original and original is not None and image is not original:original.close()
             original=None
-        _apply_layers(image,layers,scale,origin,original,progress)
+        used_viewport_layers=False
+        if (region and use_region_cache and progress is None and
+                region_cache.can_store_viewport(image.size)):
+            rendered=region_cache.render_viewport_layers(
+                image,layers,
+                lambda base,pending:_render_layer_copy(
+                    base,pending,region_scale,origin,region_cache.masks,
+                ),
+            )
+            result=rendered.crop(crop)
+            image.close()
+            image=result
+            used_viewport_layers=True
+        else:
+            _apply_layers(image,layers,scale,origin,original,progress,
+                          mask_cache=region_cache.masks if use_region_cache else None,compact_tiles=compact_tiles)
         if crop:
-            result=image.crop(crop);image.close();image=result
+            if not used_viewport_layers:
+                result=image.crop(crop);image.close();image=result
         return image
     except BaseException:
         if image is not None:image.close()
         raise
     finally:
-        if original is not None:original.close()
+        if owns_original and original is not None:original.close()

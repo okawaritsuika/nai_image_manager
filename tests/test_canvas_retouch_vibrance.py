@@ -1,5 +1,4 @@
 import unittest
-from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -24,6 +23,21 @@ def reference_vibrance_adjust(c, amount):
 
 
 class VibranceCompatibilityTests(unittest.TestCase):
+    def test_brightness_and_contrast_lookup_preserves_rounding_and_alpha(self):
+        levels = np.arange(256, dtype=np.uint8)
+        pixels = np.stack([levels, np.roll(levels, 63), levels[::-1], np.roll(levels, 127)], axis=-1)[None, ...]
+        with Image.fromarray(pixels) as source:
+            for brightness, contrast in ((0, 0), (18, -17), (-40, 70), (10.5, -.5)):
+                with self.subTest(brightness=brightness, contrast=contrast):
+                    expected = pixels.astype(np.float32) / 255
+                    expected[..., :3] = np.clip(
+                        (expected[..., :3] - .5) * (1 + contrast / 100) + .5 + brightness / 100, 0, 1,
+                    )
+                    expected = np.clip(expected * 255 + .5, 0, 255).astype(np.uint8)
+                    params = {'brightness': brightness, 'contrast': contrast}
+                    with engine.changed_tile(source, 'tone', params, (0, 0), 1) as actual:
+                        np.testing.assert_array_equal(np.asarray(actual), expected)
+
     def test_rgb_direct_formula_matches_reference_for_float_dtypes_and_boundaries(self):
         rng = np.random.default_rng(97)
         random_rgb = rng.uniform(-.5, 1.5, size=(97, 83, 3))
@@ -49,7 +63,7 @@ class VibranceCompatibilityTests(unittest.TestCase):
                            (x * 29 + y * 17) % 256), axis=2).astype(np.uint8)
         source = Image.fromarray(pixels, 'RGBA')
         try:
-            for vibrance in (-100, 68):
+            for vibrance in (-100, 0, 68):
                 params = {
                     'brightness': 18,
                     'contrast': -17,
@@ -59,11 +73,18 @@ class VibranceCompatibilityTests(unittest.TestCase):
                     'vibrance': vibrance,
                 }
                 with self.subTest(vibrance=vibrance):
+                    expected = pixels.astype(np.float32) / 255
+                    colors = (expected[..., :3] - .5) * (1 - .17) + .5 + .18
+                    luma = (colors * np.array([.2126, .7152, .0722])).sum(axis=2, keepdims=True)
+                    colors = luma + (colors - luma) * (1 + .24)
+                    clipped = np.clip(luma, 0, 1)
+                    colors += -.13 * (1 - clipped)**3 + .16 * clipped**3
+                    if vibrance:
+                        colors = reference_vibrance_adjust(colors, vibrance)
+                    expected[..., :3] = np.clip(colors, 0, 1)
+                    expected = np.clip(expected * 255 + .5, 0, 255).astype(np.uint8)
                     with engine.changed_tile(source, 'tone', params, (0, 0), 1) as actual:
-                        with mock.patch.object(engine, 'vibrance_adjust', side_effect=reference_vibrance_adjust):
-                            with engine.changed_tile(source, 'tone', params, (0, 0), 1) as expected:
-                                np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-                        np.testing.assert_array_equal(np.asarray(actual)[..., 3], pixels[..., 3])
+                        np.testing.assert_array_equal(np.asarray(actual), expected)
         finally:
             source.close()
 

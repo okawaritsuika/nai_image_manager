@@ -15,8 +15,8 @@ body.naim-embedded {
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  font-family: "Segoe UI", "Malgun Gothic", sans-serif;
-  font-size: 13px;
+  font-family: var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
+  font-size: var(--ui-text-body, 12px);
 }
 body.naim-embedded > .topbar { display: none; }
 .naim-style-sidebar {
@@ -33,21 +33,21 @@ body.naim-embedded > .topbar { display: none; }
 }
 .naim-style-brand { display: flex; align-items: center; gap: 10px; margin: 0 0 26px; }
 .naim-style-mark { display: grid; place-items: center; flex: 0 0 34px; height: 34px; border: 1px solid #94606b; border-radius: 9px; color: var(--accent-strong); background: #3c2931; font-size: 19px; font-weight: 700; }
-.naim-style-brand h1 { font-size: 17px; line-height: 1.4; }
-.naim-style-brand p { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.naim-style-brand h1 { font-size: var(--ui-text-title, 16px); line-height: var(--ui-leading-heading, 1.4); }
+.naim-style-brand p { color: var(--muted); font-size: var(--ui-text-meta, 12px); margin-top: 3px; }
 .naim-style-sidebar .tabs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; }
-.naim-navigation-heading { color: #8f97a7; font-size: 11px; font-weight: 600; padding: 15px 10px 5px; }
+.naim-navigation-heading { color: #8f97a7; font-size: var(--ui-text-meta, 12px); font-weight: 600; padding: 15px 10px 5px; }
 .naim-navigation-heading:first-child { padding-top: 0; }
 .naim-style-sidebar .tabs > button {
-  width: 100%; min-width: 0; min-height: 38px; padding: 9px 11px;
+  width: 100%; min-width: 0; min-height: 34px; padding: 7px 11px;
   border: 1px solid transparent; border-radius: 7px; background: transparent;
-  color: #c2c7d2; font-size: 13px; font-weight: 500; text-align: left;
-  white-space: normal; overflow-wrap: anywhere; line-height: 1.45;
+  color: #c2c7d2; font-size: var(--ui-text-body, 12px); font-weight: 500; text-align: left;
+  white-space: normal; overflow-wrap: anywhere; line-height: var(--ui-leading-control, 1.4);
 }
 .naim-style-sidebar .tabs > button:hover { color: var(--text); background: #292c34; border-color: var(--line); }
 .naim-style-sidebar .tabs > button.active { color: #ffe0e5; background: #432e38; border-color: #825460; box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
 .naim-style-sidebar .tabs > .naim-settings-entry { margin-top: 19px; border-top: 1px solid var(--line); border-radius: 0; color: var(--muted); }
-.naim-style-note { margin: 26px 10px 0; color: #8f97a7; font-size: 11px; line-height: 1.7; }
+.naim-style-note { margin: 26px 10px 0; color: #8f97a7; font-size: var(--ui-text-meta, 12px); line-height: 1.7; }
 body.naim-embedded > main,
 body.naim-embedded.style-maker-active > main {
   grid-column: 2; grid-row: 2; height: 100%; min-height: 0; min-width: 0;
@@ -103,14 +103,14 @@ body.naim-embedded #generationRemote { overflow-y: auto; }
   #styleMakerGeneration { width: min(310px, calc(100% - 44px)); right: 42px; }
   #styleMakerHistory:not(.history-collapsed) { width: min(280px, calc(100% - 8px)); }
   .workspace-panel-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
-  .workspace-panel-toolbar button { min-height: 44px; padding: 5px; white-space: normal; font-size: 11px; }
+  .workspace-panel-toolbar button { min-height: 44px; padding: 5px; white-space: normal; font-size: var(--ui-text-body, 12px); }
   .style-group-form-grid, .style-group-target-columns, .style-group-review-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 1000px) {
   body.naim-embedded { grid-template-columns: 168px minmax(0, 1fr); }
   .naim-style-sidebar { padding: 16px 10px; }
   .naim-style-brand { gap: 8px; }
-  .naim-style-brand h1 { font-size: 15px; }
+  .naim-style-brand h1 { font-size: var(--ui-text-title, 16px); }
   .naim-style-mark { flex-basis: 28px; height: 28px; font-size: 16px; }
   body.naim-embedded > main, body.naim-embedded.style-maker-active > main { padding: 12px; }
 }
@@ -120,7 +120,7 @@ body.naim-embedded #generationRemote { overflow-y: auto; }
   .naim-style-brand { margin-bottom: 8px; }
   .naim-style-brand p { display: none; }
   .naim-style-sidebar .tabs { display: flex; flex-wrap: wrap; gap: 5px; }
-  .naim-style-sidebar .tabs > button { width: auto; flex: 1 0 auto; min-height: 44px; font-size: 12px; padding: 8px 10px; text-align: center; }
+  .naim-style-sidebar .tabs > button { width: auto; flex: 1 0 auto; min-height: 44px; font-size: var(--ui-text-body, 12px); padding: 8px 10px; text-align: center; }
   .naim-style-sidebar .tabs > .naim-settings-entry { margin: 0; border: 1px solid var(--line); border-radius: 7px; }
   .naim-navigation-heading, .naim-style-note { display: none; }
   body.naim-embedded > main, body.naim-embedded.style-maker-active > main { grid-column: 1; grid-row: 3; padding: 8px; }
@@ -128,6 +128,67 @@ body.naim-embedded #generationRemote { overflow-y: auto; }
   body.naim-embedded #generationRemote { max-width: calc(100vw - 32px); }
 }
 
-body.naim-embedded > .main-header { grid-column:1 / -1; grid-row:1; min-width:0; padding:16px 24px; border-bottom:1px solid var(--line); }
-.naim-embedded .workspace-note { margin-left:auto; color:var(--muted); font-size:12px; }
-@media (max-width:720px) { body.naim-embedded > .main-header { padding:10px 12px; } .naim-embedded .workspace-note { display:none; } }
+body.naim-embedded > .main-header { grid-column:1 / -1; grid-row:1; min-width:0; }
+.naim-embedded .workspace-note { margin-left:auto; color:var(--muted); font-size:var(--ui-text-meta, 12px); }
+@media (max-width:720px) { .naim-embedded .workspace-note { display:none; } }
+
+/* Embedded page headers share one gutter and one compact toolbar treatment. */
+body.naim-embedded .style-group-view,
+body.naim-embedded .worldcup-view,
+body.naim-embedded .comparison-view { padding: 0; }
+body.naim-embedded .naim-view-toolbar {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 12px 20px; min-width: 0; max-width: 100%; margin: 0 0 16px; padding: 0 0 16px;
+  border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent;
+}
+body.naim-embedded .naim-view-intro {
+  display: grid; flex: 1 1 340px; gap: 6px; min-width: 0; overflow-wrap: anywhere;
+}
+body.naim-embedded .naim-view-intro p {
+  margin: 0; color: var(--muted); line-height: var(--ui-leading-body, 1.5); overflow-wrap: anywhere;
+}
+body.naim-embedded .naim-view-actions {
+  display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px; min-width: 0; max-width: 100%;
+}
+body.naim-embedded .nai-artist-test-head-actions.naim-view-actions { flex: 1 1 auto; justify-content: space-between; }
+body.naim-embedded .naim-view-toolbar > button { margin-left: auto; }
+body.naim-embedded .naim-toolbar-actions {
+  display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; margin-left: auto;
+}
+body.naim-embedded .naim-view-toolbar button {
+  flex: 0 0 auto; min-height: 44px; max-width: 100%; padding: 8px 14px;
+  border-radius: 7px; white-space: normal; overflow-wrap: anywhere;
+}
+body.naim-embedded .naim-view-toolbar button.ghost { background: var(--panel); }
+body.naim-embedded #naiArtistTestListModeControls { height: 44px; gap: 2px; padding: 3px; }
+body.naim-embedded #naiArtistTestListModeControls button {
+  min-height: 36px; padding: 6px 12px; border-radius: 5px;
+}
+body.naim-embedded #naiArtistTestListModeControls button[aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  color: var(--accent-strong);
+}
+body.naim-embedded #naiArtistTestListModeControls button[aria-selected="false"] {
+  border-color: transparent; background: transparent; color: var(--muted);
+}
+body.naim-embedded #comparison-tab:has(#comparisonGroups:not(.hidden)) #comparisonPageTitle { display: none; }
+body.naim-embedded #comparisonPageTitle { margin-bottom: 4px; overflow-wrap: anywhere; }
+body.naim-embedded .arca-statistics-summary { margin-top: 0; }
+body.naim-embedded .arca-statistics-head button { min-height: 44px; border-radius: 7px; }
+
+@container naim-content (max-width: 760px) {
+  body.naim-embedded .naim-view-toolbar { flex-direction: row; align-items: center; }
+  body.naim-embedded .naim-view-toolbar > .naim-view-intro,
+  body.naim-embedded .naim-view-toolbar > .naim-view-actions { flex-basis: 100%; width: 100%; }
+  body.naim-embedded #naiArtistTestListView > .nai-artist-test-view-head { flex-direction: row; align-items: center; }
+  body.naim-embedded #naiArtistTestListView > .nai-artist-test-view-head > .naim-view-intro { width: 100%; }
+  body.naim-embedded #naiArtistTestListView > .nai-artist-test-view-head > .naim-view-actions {
+    flex-direction: row; justify-content: space-between; width: 100%;
+  }
+  body.naim-embedded .style-group-head { flex-direction: row; align-items: center; }
+  body.naim-embedded .style-group-head > button { width: auto; align-self: flex-start; }
+  body.naim-embedded .worldcup-head { flex-direction: row; align-items: center; }
+  body.naim-embedded .style-manager-toolbar.naim-view-toolbar { flex-direction: row; align-items: center; }
+}

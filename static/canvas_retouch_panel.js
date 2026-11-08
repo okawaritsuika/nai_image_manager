@@ -446,7 +446,7 @@
         brushRefs.color = {input: brushColor};
         brushDetails.append(brushSummary, brushBody);
 
-        const viewSection = section('미리보기', 'canvas-retouch-view-section');
+        const viewSection = section('화면 보기', 'canvas-retouch-view-section');
         const compareRow = node('div', 'canvas-retouch-toggle-row');
         const compareToggle = node('input', ''); compareToggle.type = 'checkbox'; compareToggle.setAttribute('aria-label', '전후 비교');
         compareToggle.addEventListener('change', () => invoke('compare', compareToggle.checked));
@@ -748,6 +748,13 @@
             const docView = safeView.doc || null;
             const hasDoc = Boolean(docView);
             const busy = Boolean(safeView.busy);
+            const applyLabel = safeView.editingExisting ? '기존 보정 수정' : '보정 결과 적용';
+            caption.textContent = safeView.editingExisting
+                ? '기존 보정 편집 · 기존 레이어 수정'
+                : safeView.resumingDraft ? '초안 이어서 · 새 레이어로 적용' : '현재 전체 합성본 · 새 보정';
+            applyButton.textContent = applyLabel;
+            applyButton.title = applyLabel;
+            applyButton.setAttribute('aria-label', applyLabel);
             const layers = docView && Array.isArray(docView.layers) ? docView.layers : [];
             const selected = layers.find(layer => String(layer.id) === String(safeView.selectedId)) || null;
             const selectedLayerCount = getSelectedLayerIds(safeView, layers, safeView.selectedId).size;
@@ -796,7 +803,7 @@
             }
             const isAirbrush = safeView.tool === 'airbrush';
             const isMaskEraser = safeView.tool === 'maskErase';
-            brushSummary.textContent = isMaskEraser ? '지우개' : '브러시';
+            brushSummary.textContent = `${isMaskEraser ? '지우개' : '브러시'} · ${Number(safeView.brush?.size) || 160} px`;
             brushColorLabel.hidden = isMaskEraser;
             if (flowLabel) {
                 const flowText = isAirbrush ? '분사량' : isMaskEraser ? '지우는 강도' : '불투명도';

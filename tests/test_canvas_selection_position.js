@@ -202,7 +202,7 @@ test('missing, empty, or fully clipped canvas surfaces fall back to the image ce
     assertCenter(clipped.context.getSelectionAreaCreationCenter(), fallback);
 });
 
-test('new selection keeps its size and save/render lifecycle while using the visible center', () => {
+test('new selection uses a 1024px square and keeps the visible center and save/render lifecycle', () => {
     const workspaceRect = makeRect(20, 30, 800, 620);
     const surfaceRect = makeRect(-800, -300, 8192, 4096);
     const {context, calls} = makeContext({
@@ -224,8 +224,8 @@ test('new selection keeps its size and save/render lifecycle while using the vis
     const [selection] = context.canvasLayers;
     assert.equal(selection.type, 'selection');
     assert.equal(selection.id, 17);
-    assert.equal(selection.layerWidth, 2048);
-    assert.equal(selection.layerHeight, 448);
+    assert.equal(selection.layerWidth, 1024);
+    assert.equal(selection.layerHeight, 1024);
     assert.equal(selection.layerWidth % 64, 0);
     assert.equal(selection.layerHeight % 64, 0);
     assert.equal(context.isSelectionRequestSizeAllowed(selection), true);

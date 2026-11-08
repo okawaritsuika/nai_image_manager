@@ -227,6 +227,8 @@ test('dictionary image clicks only select previews and explicit toolbar wiring l
     assert.match(app, /dictionaryDrafts\?\.show\(\{imageId: image\.id, tag\}\)/);
     assert.match(app, /dictionaryDrafts\?\.dispose\(\)/);
     assert.match(standalone, /<button[^>]*id="importDictionaryDraft"[^>]*>[\s\S]*?시안으로 가져오기/);
+    assert.doesNotMatch(standalone, /importDictionaryDraftOverlay|사전 내보내기|\/api\/daki\/dictionary\/export\.csv/);
+    assert.doesNotMatch(app, /importDictionaryDraftOverlay/);
     for (const html of [shell, standalone]) {
         assert.match(html, /<link rel="stylesheet" href="\/static\/daki_dictionary_drafts\.css">/);
         assert.match(html, /<script src="\/static\/daki_dictionary_drafts\.js" defer><\/script>[\s\S]*?<script src="\/static\/daki_dictionary\/app\.js" defer><\/script>/);

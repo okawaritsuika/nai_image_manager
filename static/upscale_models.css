@@ -88,7 +88,7 @@
     flex-wrap: wrap;
     gap: 8px;
     min-width: 0;
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
 }
 
 .upscale-model-heading strong {
@@ -105,6 +105,7 @@
     border-radius: 999px;
     color: var(--text-muted, #a0a0b0);
     background: rgba(0, 0, 0, 0.18);
+    font-size: var(--ui-text-meta, 12px);
     line-height: 1.35;
 }
 
@@ -131,7 +132,7 @@
 .upscale-nai-note {
     min-width: 0;
     margin: 0;
-    font-size: 12px;
+    font-size: var(--ui-text-meta, 12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -189,8 +190,8 @@
     background: rgba(128, 128, 144, 0.16);
     color: var(--text-main, #fff);
     font: inherit;
-    font-size: 12px;
-    font-weight: 800;
+    font-size: var(--ui-text-body, 12px);
+    font-weight: 600;
     line-height: 1.4;
     white-space: normal;
     overflow-wrap: anywhere;
@@ -215,7 +216,7 @@
 .upscale-model-website {
     align-self: flex-start;
     color: var(--accent-blue, #55efc4);
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -231,7 +232,7 @@
 
 .upscale-nai-preview > strong {
     color: var(--text-main, #fff);
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
     line-height: 1.5;
 }
 

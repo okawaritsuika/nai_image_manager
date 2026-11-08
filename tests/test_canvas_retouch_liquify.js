@@ -31,6 +31,55 @@ function hasRGBChange(before, after, left = 0, top = 0, right = before.width, bo
     return false;
 }
 
+test('native liquify edits lower image pixels across tile boundaries without scaling or replay', () => {
+    for (const mode of ['push', 'expand', 'shrink', 'clockwise', 'counterclockwise']) {
+        const image = gradientImage(1300, 120), expected = copyImage(image), originY = 14000;
+        const points = [[1017, 14050], [1028, 14053], [1041, 14062]];
+        const stroke = {mode, radius: 18, strength: .5, points};
+        let reads = 0, writes = 0;
+        const writeRects = [];
+        const engine = Liquify.createNative(stroke, {width: 5000, height: 16000, opacity: .7,
+            read(box) {
+                reads++;
+                assert.ok(box.left >= 0 && box.right <= image.width && box.top >= originY && box.bottom <= originY + image.height);
+                const width = box.right - box.left, height = box.bottom - box.top;
+                assert.ok(width < 100 && height < 100, 'a short append reads one local native patch');
+                const data = new Uint8ClampedArray(width * height * 4);
+                for (let y = 0; y < height; y++) {
+                    const from = ((box.top - originY + y) * image.width + box.left) * 4;
+                    data.set(image.data.subarray(from, from + width * 4), y * width * 4);
+                }
+                return {width, height, data};
+            },
+            write(patch, left, top, dirty) {
+                writes++;
+                const region = dirty || {left: 0, top: 0, right: patch.width, bottom: patch.height};
+                writeRects.push({patchWidth: patch.width, patchHeight: patch.height,
+                    width: region.right - region.left, height: region.bottom - region.top});
+                for (let y = region.top; y < region.bottom; y++) image.data.set(
+                    patch.data.subarray((y * patch.width + region.left) * 4,
+                        (y * patch.width + region.right) * 4),
+                    ((top - originY + y) * image.width + left + region.left) * 4);
+            }});
+        engine.append(points.slice(0, 1)); engine.append(points.slice(0, 2)); engine.append(points);
+        Liquify.create(stroke, expected, 5000, 16000, {native: true, origin: [0, originY], opacity: .7}).append(points);
+        // Local-coordinate arithmetic can round at a half-byte differently; alpha is exact.
+        let maximum = 0;
+        for (let index = 0; index < image.data.length; index++) {
+            maximum = Math.max(maximum, Math.abs(image.data[index] - expected.data[index]));
+            if (index % 4 === 3) assert.equal(image.data[index], expected.data[index]);
+        }
+        assert.ok(maximum <= 1, `${mode} differs by ${maximum}`);
+        assert.ok(reads > 0 && writes > 0);
+        assert.ok(reads <= 3 && writes <= 3,
+            `${mode} batches adjacent dabs into at most one context patch per append`);
+        assert.ok(writeRects.some(region => region.width < region.patchWidth || region.height < region.patchHeight),
+            `${mode} writes only the changed part of each read patch`);
+        const previousReads = reads, previousWrites = writes;
+        engine.append(points); assert.equal(reads, previousReads); assert.equal(writes, previousWrites);
+    }
+});
+
 test('each liquify mode changes the stroke interior and preserves exterior pixels and alpha', () => {
     const modes = ['push', 'expand', 'shrink', 'clockwise', 'counterclockwise'];
     for (const mode of modes) {

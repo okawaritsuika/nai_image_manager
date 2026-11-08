@@ -10,6 +10,8 @@
     let revision = 0;
     let pollTimer;
     let libraryTimer;
+    let statsTimer;
+    let statsJobId;
     let settingsDialog;
     let viewFilters;
     let viewActionsDispose;
@@ -30,7 +32,7 @@
         return result;
     }
     function leave() {
-        revision++; root.clearTimeout(pollTimer); root.clearTimeout(libraryTimer);
+        revision++; root.clearTimeout(pollTimer); root.clearTimeout(libraryTimer); root.clearTimeout(statsTimer);
         viewGrid?.dispose?.(); viewGrid = null;
         viewActionsDispose?.(); viewActionsDispose = null;
         viewFilters?.dispose(); viewFilters = null;
@@ -38,6 +40,72 @@
         root.DakiTestLibrary?.leave(); root.DakiTestPacks?.leave(); root.DakiWorldCup?.leave?.(); root.DakiStyleSync?.leave();
     }
     function current(token) { return token === revision && root.Daki.isActive(); }
+    async function statsRequest(path, method = 'GET', body) {
+        const response = await root.fetch(path, {method, headers: {'Content-Type': 'application/json', 'X-NAIM-Workspace': '1'},
+            ...(body === undefined ? {} : {body: JSON.stringify(body)})});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '추천수를 갱신하지 못했습니다.');
+        return result;
+    }
+    function statsControls(params, container, token, actions) {
+        const controls = node('div', 'daki-stats-controls');
+        const note = node('span', 'daki-test-note', '저장된 공유 그림체 전체의 추천수를 함께 갱신합니다.');
+        note.setAttribute('role', 'status');
+        const start = button('추천수만 갱신', async () => {
+            start.disabled = true;
+            note.textContent = '추천수 갱신 준비 중…';
+            try {
+                await statsRequest('/api/style-workspace/connect', 'POST', {});
+                const job = await statsRequest('/style-workspace/api/arca-styles/refresh-stats', 'POST', {model: 'all'});
+                statsJobId = job.job_id;
+                if (current(token)) await poll();
+            } catch (error) {
+                if (current(token)) { note.textContent = error.message; start.disabled = false; }
+            }
+        });
+        start.title = '이미지를 수집하지 않고 전체 공유 그림체의 추천수만 갱신합니다.';
+        const stop = button('갱신 중지', async () => {
+            stop.disabled = true;
+            try {
+                await statsRequest(`/style-workspace/api/arca-styles/collection-jobs/${statsJobId}/stop`, 'POST', {});
+                if (current(token)) note.textContent = '갱신 중지 요청 중…';
+            } catch (error) {
+                if (current(token)) { note.textContent = error.message; stop.disabled = false; }
+            }
+        });
+        stop.hidden = true;
+        async function poll() {
+            if (!current(token)) return;
+            start.disabled = true; stop.hidden = false;
+            try {
+                const job = await statsRequest(`/style-workspace/api/arca-styles/collection-jobs/${statsJobId}`);
+                if (!current(token)) return;
+                const summary = `추천수 갱신 · ${job.scanned_posts || 0}/${job.total_posts || 0}개 글 · 갱신 ${job.updated || 0}`;
+                if (['completed', 'failed', 'stopped'].includes(job.status)) {
+                    statsJobId = null;
+                    container.replaceChildren();
+                    const reloading = render(params, container), reloadToken = revision;
+                    await reloading;
+                    if (!current(reloadToken)) return;
+                    byId('dakiPageStatus').textContent = `${summary} · ${job.status === 'completed' ? '완료' : job.status === 'stopped' ? '중지' : '실패'}${job.error ? ' · ' + job.error : ''}`;
+                    return;
+                }
+                note.textContent = summary;
+                statsTimer = root.setTimeout(poll, 1000);
+            } catch (error) {
+                if (current(token)) {
+                    note.textContent = `${error.message} · 진행 상태 재확인 중…`;
+                    statsTimer = root.setTimeout(poll, 3000);
+                }
+            }
+        }
+        if (actions) {
+            actions.append(start, stop);
+            controls.appendChild(note);
+        } else controls.append(start, stop, note);
+        if (statsJobId) statsTimer = root.setTimeout(poll, 1000);
+        return controls;
+    }
     function heading(title, subtitle, backHref, backText) {
         byId('dakiTitle').textContent = title;
         byId('dakiSubtitle').textContent = subtitle;
@@ -237,6 +305,7 @@
             if (!['all', 'upper', 'v5', 'artist'].includes(category)) {
                 heading('공유 그림체', '기본 폴더 · 공유 그림체 목록과 테스트', '#daki', '← daki 프로젝트');
                 const toolbar = node('div', 'daki-style-toolbar');
+                const syncActions = node('div', 'daki-shared-sync-actions');
                 const sharedCatalog = {...catalog, styles: root.DakiStyleScope
                     ? catalog.styles.filter(style => style.category !== 'upper')
                     : catalog.styles.filter(style => style.category === 'v5')};
@@ -248,7 +317,7 @@
                     try { await loadBatches(); }
                     catch (error) { if (current(token)) status.textContent = error.message; }
                 }})));
-                toolbar.appendChild(button('공유 그림체 최신화', () => root.DakiStyleSync.open({onComplete: async job => {
+                syncActions.appendChild(button('공유 그림체 최신화', () => root.DakiStyleSync.open({onComplete: async job => {
                     if (!current(token)) return;
                     container.replaceChildren();
                     const reloading = render(params, container), reloadToken = revision;
@@ -275,7 +344,11 @@
                     }
                     if (job.post_limited > 0) status.textContent += ` · 게시물 제한 ${job.post_limited}`;
                 }})));
-                container.appendChild(toolbar);
+                const controls = node('div', 'daki-library-controls daki-shared-root-controls');
+                const stats = statsControls(params, container, token, syncActions);
+                toolbar.appendChild(syncActions);
+                controls.append(toolbar, stats);
+                container.appendChild(controls);
                 const folders = [
                     ['all', '기존 공유 그림체', 'naim', '원본 공유 그림체 · 대표 그림 보기 · 선택 삭제'],
                     ['artist', '그림체 관리 공유 그림체', 'artist', '그림체 관리에서 수집한 공유 그림체 · 대표 그림 보기 · 선택 삭제'],
@@ -348,6 +421,7 @@
             if (imageTools) libraryControls.appendChild(imageTools);
             if (filters) libraryControls.appendChild(filters.element);
             container.appendChild(libraryControls);
+            libraryControls.appendChild(statsControls(params, container, token));
             const createVisible = button('테스트 만들기', () => {
                 const targetStyles = visibleCards().map(item => item.style);
                 return openSettings({...catalog, library: 'shared', styles: targetStyles,

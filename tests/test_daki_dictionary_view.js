@@ -341,6 +341,11 @@ test('Daki route and HTML integration preserve the tag tooltip and load the work
     assert.match(daki, /params\.get\('library'\) === 'dictionary'/);
     assert.match(daki, /DakiDictionary\.render\(params, container\)/);
     const workbenchScript = html.indexOf('<script src="/static/daki_dictionary/app.js" defer></script>');
+    for (const page of [html, workbenchHtml]) {
+        const pictureViewScript = page.indexOf('<script src="/static/daki_dictionary/picture_view.js" defer></script>');
+        const appScript = page.indexOf('<script src="/static/daki_dictionary/app.js" defer></script>');
+        assert.ok(pictureViewScript >= 0 && pictureViewScript < appScript, 'both pages load picture controls before mounting the workbench');
+    }
     const shellController = html.indexOf('<script src="/static/daki_dictionary.js" defer></script>');
     assert.ok(workbenchScript >= 0 && shellController > workbenchScript, 'the inner app.js must load before the parent controller');
     assert.match(workbench, /function installTagHints\(\)/);

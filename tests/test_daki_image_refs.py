@@ -92,7 +92,7 @@ class DakiImageReferenceTests(unittest.TestCase):
             'resolve_daki_image_path', 'resolve_project_image_reference', 'resolve_readable_gallery_image_path', 'serve_image',
             'get_requested_image_preview_max_side', 'build_cached_image_preview',
             'build_image_preview_bytes', 'serve_image_preview', 'get_prompt_info',
-            'reveal_in_explorer', 'read_canvas_image_bytes',
+            'reveal_in_explorer', 'resolve_canvas_image_path', 'read_canvas_image_bytes',
         }
         tree = ast.parse((Path(__file__).resolve().parents[1] / 'app.py').read_text(encoding='utf-8'))
         functions = [item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name in names]

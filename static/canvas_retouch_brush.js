@@ -6,7 +6,158 @@
     'use strict';
 
     const MODES = new Set(['normal', 'soft-light', 'color', 'multiply', 'screen']);
+    const MODE_INDEX = {normal: 0, 'soft-light': 1, color: 2, multiply: 3, screen: 4};
     const SOFT_LIGHT_DENOMINATOR = 1 - Math.exp(-4.5);
+    let wasmBrush, wasmRequested = false, wasmPromise = null;
+    let wasmHeapTop = 0;
+    let wasmBlendScratch = null;
+    const wasmFreeBlocks = [];
+
+    function prepareNative() {
+        if (wasmRequested) return wasmPromise || Promise.resolve(false);
+        if (!globalThis.document || !globalThis.location || !globalThis.WebAssembly ||
+                typeof globalThis.fetch !== 'function') return Promise.resolve(false);
+        wasmRequested = true;
+        wasmPromise = fetch('/static/canvas_editor/brush.wasm?v=5').then(response => {
+            if (!response.ok) throw new Error('Native brush kernel is unavailable.');
+            return response.arrayBuffer();
+        }).then(WebAssembly.instantiate).then(({instance}) => {
+            wasmBrush = instance.exports;
+            wasmHeapTop = Math.ceil(wasmBrush.__heap_base.value / 16) * 16;
+            wasmBlendScratch = null;
+            wasmFreeBlocks.length = 0;
+            return true;
+        }).catch(() => false); // The same blend calculation is available in JavaScript.
+        return wasmPromise;
+    }
+
+    function ensureMemory(memory, end) {
+        const available = memory.buffer.byteLength;
+        if (end > available) memory.grow(Math.ceil((end - available) / 65536));
+    }
+
+    function allocateBytes(byteLength) {
+        if (!wasmBrush || !Number.isFinite(byteLength) || byteLength <= 0) return null;
+        const size = Math.ceil(byteLength / 16) * 16;
+        let index = wasmFreeBlocks.findIndex(block => block.size >= size);
+        let block;
+        if (index >= 0) {
+            block = wasmFreeBlocks[index];
+            wasmFreeBlocks.splice(index, 1);
+            if (block.size > size) {
+                wasmFreeBlocks.push({ptr: block.ptr + size, size: block.size - size});
+                block = {ptr: block.ptr, size};
+            }
+        } else {
+            block = {ptr: wasmHeapTop, size};
+            try {
+                ensureMemory(wasmBrush.memory, block.ptr + block.size);
+            } catch (_) {
+                return null;
+            }
+            wasmHeapTop += size;
+        }
+        return block;
+    }
+
+    function releaseBytes(block) {
+        if (block) wasmFreeBlocks.push(block);
+    }
+
+    function reserveBlendScratch(byteLength) {
+        const size = Math.ceil(byteLength / 16) * 16;
+        if (wasmBlendScratch && wasmBlendScratch.size >= size) return wasmBlendScratch;
+        const block = allocateBytes(size);
+        if (!block) return null;
+        releaseBytes(wasmBlendScratch);
+        wasmBlendScratch = block;
+        return block;
+    }
+
+    function allocateCoverage(coverage) {
+        if (!wasmBrush?.add_dab_region || !wasmBrush?.blend_rgba_region) return null;
+        const block = allocateBytes(coverage.byteLength);
+        if (!block) return null;
+        try {
+            const view = new Float32Array(wasmBrush.memory.buffer, block.ptr, coverage.length);
+            view.set(coverage);
+            return {block, memory: wasmBrush.memory, length: coverage.length};
+        } catch (_) {
+            releaseBytes(block);
+            return null;
+        }
+    }
+
+    function accumulateDabLegacy(coverage, box, stride, cx, cy, radius, hardness, flow) {
+        if (!wasmBrush?.add_dab) return false;
+        const {memory, add_dab, __heap_base} = wasmBrush;
+        const start = __heap_base.value;
+        const width = box.right - box.left, height = box.bottom - box.top;
+        try {
+            ensureMemory(memory, start + width * height * 4);
+            const region = new Float32Array(memory.buffer, start, width * height);
+            for (let y = 0; y < height; y += 1) {
+                const offset = (box.top + y) * stride + box.left;
+                region.set(coverage.subarray(offset, offset + width), y * width);
+            }
+            add_dab(start, width, height, cx - box.left, cy - box.top, radius, hardness, flow);
+            for (let y = 0; y < height; y += 1) {
+                coverage.set(region.subarray(y * width, (y + 1) * width), (box.top + y) * stride + box.left);
+            }
+            return true;
+        } catch (_) {
+            wasmBrush = null;
+            return false;
+        }
+    }
+
+    function blendPatchLegacy(pixels, coverage, box, stride, color, strokeOpacity, layerOpacity, mode) {
+        if (!wasmBrush?.blend_rgba) return false;
+        const {memory, blend_rgba, __heap_base} = wasmBrush;
+        const start = __heap_base.value;
+        const coverageStart = start + pixels.byteLength;
+        const end = coverageStart + pixels.byteLength;
+        try {
+            ensureMemory(memory, end);
+            const rgba = new Uint8Array(memory.buffer, start, pixels.byteLength);
+            const weights = new Float32Array(memory.buffer, coverageStart, pixels.length / 4);
+            rgba.set(pixels);
+            const width = box.right - box.left;
+            for (let y = box.top; y < box.bottom; y += 1) {
+                const offset = y * stride + box.left;
+                weights.set(coverage.subarray(offset, offset + width), (y - box.top) * width);
+            }
+            const rgb = (color[0] << 16) | (color[1] << 8) | color[2];
+            blend_rgba(start, coverageStart, weights.length, rgb, strokeOpacity, layerOpacity,
+                MODE_INDEX[mode] || 0);
+            pixels.set(rgba);
+            return true;
+        } catch (_) {
+            wasmBrush = null;
+            return false;
+        }
+    }
+
+    function blendNativePatch(pixels, native, box, stride, color, strokeOpacity, layerOpacity, mode) {
+        if (!native || !wasmBrush?.blend_rgba_region) return false;
+        const block = reserveBlendScratch(pixels.byteLength);
+        if (!block) return false;
+        try {
+            ensureMemory(native.memory, block.ptr + pixels.byteLength);
+            const rgba = new Uint8Array(native.memory.buffer, block.ptr, pixels.byteLength);
+            rgba.set(pixels);
+            const width = box.right - box.left;
+            const height = box.bottom - box.top;
+            const rgb = (color[0] << 16) | (color[1] << 8) | color[2];
+            wasmBrush.blend_rgba_region(block.ptr, native.block.ptr, width, box.left, box.top, stride,
+                width, height, rgb, strokeOpacity, layerOpacity, MODE_INDEX[mode] || 0);
+            pixels.set(rgba);
+            return true;
+        } catch (_) {
+            wasmBrush = null;
+            return false;
+        }
+    }
 
     function clamp(value, min, max, fallback) {
         const number = Number(value);
@@ -89,7 +240,8 @@
         return result;
     }
 
-    function create(stroke, width, height, documentWidth, documentHeight) {
+    function create(stroke, width, height, documentWidth, documentHeight, options) {
+        prepareNative();
         const previewWidth = Math.round(Number(width));
         const previewHeight = Math.round(Number(height));
         const docWidth = Number(documentWidth);
@@ -102,17 +254,39 @@
             throw new RangeError('Airbrush document dimensions must be positive.');
         }
 
+        const placement = options || {};
+        let originX = 0;
+        let originY = 0;
+        if (Object.prototype.hasOwnProperty.call(placement, 'origin')) {
+            const origin = placement.origin;
+            if (!Array.isArray(origin) || origin.length !== 2 ||
+                    !Number.isFinite(origin[0]) || !Number.isFinite(origin[1])) {
+                throw new RangeError('Airbrush origin must contain two finite coordinates.');
+            }
+            originX = origin[0];
+            originY = origin[1];
+        }
+        const hasExplicitScale = Object.prototype.hasOwnProperty.call(placement, 'scale');
+        const explicitScale = placement.scale;
+        if (hasExplicitScale && (!Number.isFinite(explicitScale) || explicitScale <= 0 || explicitScale > 1)) {
+            throw new RangeError('Airbrush scale must be greater than zero and at most one.');
+        }
+
         const settings = stroke || {};
         const radiusDocument = clamp(settings.radius, 1, 800, 80);
-        const radius = Math.max(.5, radiusDocument * Math.min(previewWidth / docWidth, previewHeight / docHeight));
-        const scale = Math.min(previewWidth / docWidth, previewHeight / docHeight);
+        const scale = hasExplicitScale ? explicitScale : Math.min(previewWidth / docWidth, previewHeight / docHeight);
+        const radius = Math.max(.5, radiusDocument * scale);
         const hardness = clamp(settings.hardness, 0, 1, .3);
         const flow = clamp(settings.flow, 0, 1, .04);
         const strokeOpacity = clamp(settings.opacity, 0, 1, .1);
         const color = parseColor(settings.color);
+        const feather = Math.max(1 - hardness, 1e-6);
+        const falloffEnd = Math.exp(-4.5);
         const spacing = Math.max(1, radiusDocument * .2);
-        const coverage = new Float32Array(previewWidth * previewHeight);
-        let bounds = null;
+        let coverage = new Float32Array(previewWidth * previewHeight);
+        let nativeCoverage = null;
+        let disposed = false;
+        let bounds = null, dirty = null;
         let processedCount = 0;
         let lastPoint = null;
         let remainingDistance = spacing;
@@ -121,36 +295,74 @@
         let maskCanvas = null;
         let maskContext = null;
 
+        function coverageData() {
+            if (nativeCoverage) {
+                coverage = new Float32Array(nativeCoverage.memory.buffer, nativeCoverage.block.ptr, nativeCoverage.length);
+            }
+            return coverage;
+        }
+
+        function promoteCoverage() {
+            if (!nativeCoverage && wasmBrush?.add_dab_region && wasmBrush?.blend_rgba_region) {
+                nativeCoverage = allocateCoverage(coverage);
+                if (nativeCoverage) coverageData();
+            }
+            return coverageData();
+        }
+
+        function include(box, left, top, right, bottom) {
+            if (!box) return {left, top, right, bottom};
+            box.left = Math.min(box.left, left);
+            box.top = Math.min(box.top, top);
+            box.right = Math.max(box.right, right);
+            box.bottom = Math.max(box.bottom, bottom);
+            return box;
+        }
+
         function addDab(documentX, documentY) {
-            if (flow <= 0) return;
-            const centerX = documentX * scale;
-            const centerY = documentY * scale;
+            if (disposed || flow <= 0) return;
+            const centerX = (documentX - originX) * scale;
+            const centerY = (documentY - originY) * scale;
             const left = Math.max(0, Math.floor(centerX - radius - .5));
             const top = Math.max(0, Math.floor(centerY - radius - .5));
             const right = Math.min(previewWidth, Math.ceil(centerX + radius - .5) + 1);
             const bottom = Math.min(previewHeight, Math.ceil(centerY + radius - .5) + 1);
             if (right <= left || bottom <= top) return;
 
-            if (bounds) {
-                bounds.left = Math.min(bounds.left, left);
-                bounds.top = Math.min(bounds.top, top);
-                bounds.right = Math.max(bounds.right, right);
-                bounds.bottom = Math.max(bounds.bottom, bottom);
-            } else {
-                bounds = {left, top, right, bottom};
+            bounds = include(bounds, left, top, right, bottom);
+            dirty = include(dirty, left, top, right, bottom);
+
+            const values = promoteCoverage();
+            if (nativeCoverage && wasmBrush?.add_dab_region) {
+                try {
+                    wasmBrush.add_dab_region(nativeCoverage.block.ptr, previewWidth, left, top, right, bottom,
+                        centerX, centerY, radius, hardness, flow);
+                    return;
+                } catch (_) {
+                    wasmBrush = null;
+                    coverageData();
+                }
+            } else if (!nativeCoverage && accumulateDabLegacy(values,
+                {left, top, right, bottom}, previewWidth, centerX, centerY, radius, hardness, flow)) {
+                return;
             }
 
             const denominator = SOFT_LIGHT_DENOMINATOR;
+            const radiusSquared = radius * radius;
             for (let y = top; y < bottom; y += 1) {
                 const dy = y + .5 - centerY;
-                for (let x = left; x < right; x += 1) {
+                if (Math.abs(dy) > radius + 1) continue;
+                const rowExtent = Math.sqrt(Math.max(0, radiusSquared - dy * dy)) + 1;
+                const rowLeft = Math.max(left, Math.floor(centerX - rowExtent - .5));
+                const rowRight = Math.min(right, Math.ceil(centerX + rowExtent - .5) + 1);
+                for (let x = rowLeft; x < rowRight; x += 1) {
                     const dx = x + .5 - centerX;
-                    const distance = Math.hypot(dx, dy) / radius;
+                    const distance = Math.sqrt(dx * dx + dy * dy) / radius;
                     if (distance >= 1) continue;
-                    const q = Math.max(0, Math.min(1, (distance - hardness) / Math.max(1 - hardness, 1e-6)));
-                    const falloff = Math.max(0, Math.min(1, (Math.exp(-4.5 * q * q) - Math.exp(-4.5)) / denominator));
+                    const q = Math.max(0, Math.min(1, (distance - hardness) / feather));
+                    const falloff = q === 0 ? 1 : Math.max(0, (Math.exp(-4.5 * q * q) - falloffEnd) / denominator);
                     const index = y * previewWidth + x;
-                    coverage[index] += (1 - coverage[index]) * falloff * flow;
+                    values[index] += (1 - values[index]) * falloff * flow;
                 }
             }
         }
@@ -164,7 +376,8 @@
         }
 
         function append(points) {
-            if (!Array.isArray(points) || points.length <= processedCount) return;
+            if (disposed || !Array.isArray(points) || points.length <= processedCount) return;
+            coverageData();
             if (!lastPoint) {
                 const first = pointAt(points, 0);
                 processedCount = 1;
@@ -219,35 +432,63 @@
         }
 
         function paint(context, options) {
-            if (!bounds || strokeOpacity <= 0 || flow <= 0) return;
+            if (disposed || !bounds || strokeOpacity <= 0 || flow <= 0) return;
             const paintOptions = options || {};
             const layerOpacity = clamp(paintOptions.opacity, 0, 1, 1);
             if (layerOpacity <= 0) return;
             const mode = MODES.has(paintOptions.mode) ? paintOptions.mode : 'normal';
             const mask = paintOptions.mask || null;
             const maskData = mask ? getMaskPixels(mask) : null;
-            const {left, top, right, bottom} = bounds;
+            const patch = paintOptions.baseContext ? dirty : bounds;
+            if (!patch) return;
+            dirty = null;
+            const {left, top, right, bottom} = patch;
             const patchWidth = right - left;
             const patchHeight = bottom - top;
-            const imageData = context.getImageData(left, top, patchWidth, patchHeight);
+            const imageData = (paintOptions.baseContext || context).getImageData(left, top, patchWidth, patchHeight);
             const pixels = imageData.data;
+            promoteCoverage();
+            if (!maskData && blendNativePatch(pixels, nativeCoverage, patch, previewWidth,
+                color, strokeOpacity, layerOpacity, mode)) {
+                context.putImageData(imageData, left, top);
+                return {x: left, y: top, width: patchWidth, height: patchHeight};
+            }
+            const values = coverageData();
+            if (!maskData && !nativeCoverage && blendPatchLegacy(pixels, values, patch, previewWidth,
+                color, strokeOpacity, layerOpacity, mode)) {
+                context.putImageData(imageData, left, top);
+                return;
+            }
             for (let y = 0; y < patchHeight; y += 1) {
                 const globalY = top + y;
                 for (let x = 0; x < patchWidth; x += 1) {
                     const globalX = left + x;
                     const globalIndex = globalY * previewWidth + globalX;
                     const maskFactor = maskData ? maskData[(globalIndex * 4)] / 255 : 1;
-                    const coverageByte = Math.floor(coverage[globalIndex] * maskFactor * 255 + .5);
+                    const coverageByte = Math.floor(values[globalIndex] * maskFactor * 255 + .5);
                     const weight = (coverageByte / 255) * strokeOpacity * layerOpacity;
                     if (weight <= 0) continue;
                     blendAt(pixels, (y * patchWidth + x) * 4, color, weight, mode);
                 }
             }
             context.putImageData(imageData, left, top);
+            return {x: left, y: top, width: patchWidth, height: patchHeight};
         }
 
-        return {append, paint};
+        function dispose() {
+            if (disposed) return;
+            disposed = true;
+            if (nativeCoverage) releaseBytes(nativeCoverage.block);
+            nativeCoverage = null;
+            coverage = null;
+            bounds = dirty = null;
+            if (maskCanvas) {maskCanvas.width = 0; maskCanvas.height = 0;}
+            maskCanvas = maskContext = maskPixels = maskIdentity = null;
+        }
+
+        return {append, paint, dispose};
     }
 
-    return {create, blendPixels};
+    prepareNative();
+    return {create, blendPixels, prepareNative};
 });

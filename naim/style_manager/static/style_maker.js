@@ -49,6 +49,7 @@ const styleState = {
   historySelectedId: null,
   historyDirty: true,
   historyRequestToken: 0,
+  historyImageLoader: null,
   generationRemoteCollapsed: false,
   generationRemoteClosed: false,
   generationRemoteDragging: false,
@@ -56,6 +57,9 @@ const styleState = {
   novelAiUsageCountdownTimer: null,
   novelAiUsageRequest: null,
   confirmedModalSource: null,
+  confirmedModalSession: 0,
+  confirmedModalDestination: null,
+  confirmedSaving: false,
   confirmedModalFile: null,
   confirmedModalObjectUrl: "",
   confirmedModalPreviewData: null,
@@ -71,6 +75,9 @@ const styleState = {
   confirmedFolderPending: false,
   confirmedModalExcludedTags: [],
   confirmedModalOriginalQualityPrompt: "",
+  confirmedPromptMode: "base",
+  confirmedPromptBaseline: "",
+  confirmedPromptSplitBaseline: "",
   confirmedModalEditId: null,
   ratingTagRules: [],
   ratingTagRuleDraft: [],
@@ -4433,6 +4440,7 @@ function setGenerationBusy(busy) {
 }
 
 function renderGenerationResult(result, artists = result.artists || []) {
+  clearStyleHistoryImageLoader();
   styleState.displayedStyleResult = normalizeStyleHistoryItem({ ...result, artists });
   if (styleState.combinationSource === "result") renderCurrentStyleCombination();
   const target = styleElement("latestStyleResult");
@@ -4519,7 +4527,17 @@ function styleHistoryArtistPrompt(item) {
     .join(", ");
 }
 
+function clearStyleHistoryImageLoader() {
+  const loader = styleState.historyImageLoader;
+  if (!loader) return;
+  styleState.historyImageLoader = null;
+  loader.onload = null;
+  loader.onerror = null;
+  loader.src = "";
+}
+
 function renderStyleHistorySelection(item) {
+  clearStyleHistoryImageLoader();
   const normalized = item ? normalizeStyleHistoryItem(item) : null;
   styleState.displayedStyleResult = normalized;
   renderArtistPromptPreview(styleHistoryArtistPrompt(normalized));
@@ -4537,9 +4555,24 @@ function renderStyleHistorySelection(item) {
   }
   if (normalized.image_url) {
     const image = document.createElement("img");
-    image.src = normalized.image_url;
+    image.decoding = "async";
+    image.src = normalized.thumbnail_url || normalized.image_url;
     image.alt = `그림체 제작 히스토리 #${normalized.id}`;
     target.append(image);
+    if (normalized.thumbnail_url && normalized.thumbnail_url !== normalized.image_url) {
+      const loader = new Image();
+      styleState.historyImageLoader = loader;
+      loader.decoding = "async";
+      loader.onload = () => {
+        if (styleState.historyImageLoader !== loader) return;
+        if (target.contains(image)) image.src = normalized.image_url;
+        clearStyleHistoryImageLoader();
+      };
+      loader.onerror = () => {
+        if (styleState.historyImageLoader === loader) clearStyleHistoryImageLoader();
+      };
+      loader.src = normalized.image_url;
+    }
   }
   const meta = document.createElement("div");
   meta.className = "latest-result-meta";
@@ -4655,9 +4688,17 @@ function renderStyleHistoryList() {
     select.append(title, info);
     appendNovelAiModelBadge(select, item.generation_settings?.model || item.model);
     select.addEventListener("click", () => {
+      if (Number(styleState.historySelectedId) === Number(item.id)) return;
+      const previous = list.querySelector(".style-history-card.selected");
+      previous?.classList.remove("selected");
+      const previousSelect = previous?.querySelector(".style-history-card-select");
+      previousSelect?.classList.remove("selected");
+      previousSelect?.setAttribute("aria-pressed", "false");
       styleState.historySelectedId = item.id;
+      card.classList.add("selected");
+      select.classList.add("selected");
+      select.setAttribute("aria-pressed", "true");
       renderStyleHistorySelection(item);
-      renderStyleHistoryList();
       renderStyleHistoryDetail(item);
     });
     card.append(select, remove);
@@ -4665,12 +4706,9 @@ function renderStyleHistoryList() {
   });
   const selected = styleState.historyItems.find((item) => Number(item.id) === Number(styleState.historySelectedId))
     || styleState.historyItems[0];
-  if (selected && Number(styleState.historySelectedId) !== Number(selected.id)) {
-    styleState.historySelectedId = selected.id;
-    renderStyleHistorySelection(selected);
-    renderStyleHistoryDetail(selected);
-  }
-  if (selected && Number(styleState.historySelectedId) === Number(selected.id)) renderStyleHistorySelection(selected);
+  styleState.historySelectedId = selected.id;
+  renderStyleHistorySelection(selected);
+  renderStyleHistoryDetail(selected);
   if (scroller) scroller.scrollTop = scrollTop;
 }
 
@@ -4688,9 +4726,6 @@ async function loadStyleHistory({ force = false } = {}) {
       styleState.historySelectedId = styleState.historyItems[0]?.id ?? null;
     }
     renderStyleHistoryList();
-    const selected = styleState.historyItems.find((item) => Number(item.id) === Number(styleState.historySelectedId));
-    renderStyleHistoryDetail(selected);
-    renderStyleHistorySelection(selected);
     if (status) status.textContent = `${styleState.historyItems.length}개 기록`;
   } catch (error) {
     if (token !== styleState.historyRequestToken) return;
@@ -4735,10 +4770,11 @@ async function deleteStyleHistoryItem(item) {
     tone: "danger",
   })) return false;
   try {
-    await apiFetch("/style-workspace/api/style-manager/style-workspace/generated/delete-batch", {
+    await apiFetch("/style-workspace/api/style-manager/generated/delete-batch", {
       method: "POST",
       body: JSON.stringify({ image_ids: [Number(item.id)] }),
     });
+    styleState.managerDirty = true;
     styleState.historySelectedId = null;
     styleState.historyDirty = true;
     await loadStyleHistory({ force: true });
@@ -5022,9 +5058,12 @@ function filterStyleManagerItems(styles, mode, filters = {}) {
     : Number(filters.recommendationMin);
   const filtered = (Array.isArray(styles) ? styles : []).filter((item) => {
     if (query) {
+      const promptFields = mode === "confirmed" && item.base_prompt != null
+        ? [item.base_prompt]
+        : [item.artist_prompt, item.quality_prompt, item.base_prompt, item.fixed_prompt];
       const haystack = [
-        item.name, item.title, item.description, item.artist_prompt, item.quality_prompt, item.base_prompt,
-        item.fixed_prompt, item.negative_prompt, item.model, item.source_url,
+        item.name, item.title, item.description, ...promptFields,
+        item.negative_prompt, item.model, item.source_url,
         item.source_label, item.source_name, item.source_artist_tag,
         ...(Array.isArray(item.artists) ? item.artists : []).map((artist) => artist?.artist),
         ...(Array.isArray(item.character_prompts) ? item.character_prompts : []).map((character) => character?.prompt || character),
@@ -5655,6 +5694,12 @@ function managerCharacterText(item) {
 }
 
 function managerPromptParts(item) {
+  if (item.style_base_prompt != null) {
+    return { primary: item.base_prompt || "", negative: item.negative_prompt || "" };
+  }
+  if (styleState.managerMode === "confirmed") {
+    return { primary: confirmedBasePrompt(item), negative: item.negative_prompt || "" };
+  }
   if (styleState.managerMode === "generated") {
     return {
       primary: combinePromptSections(managerArtistText(item), item.quality_prompt || item.base_prompt, item.fixed_prompt),
@@ -5848,7 +5893,7 @@ function renderStyleManagerDetail(item) {
     appendManagerPromptBlock(inspector, "출처", sourceText, "manager-source-block");
   }
   const prompts = managerPromptParts(item);
-  appendManagerPromptBlock(inspector, "작가 · 퀄리티", prompts.primary || "없음", "manager-primary-prompt");
+  appendManagerPromptBlock(inspector, styleState.managerMode === "confirmed" ? "베이스 프롬프트" : "작가 · 퀄리티", prompts.primary || "없음", "manager-primary-prompt");
   appendManagerPromptBlock(inspector, "캐릭터", managerCharacterText(item));
   appendSharedDependencyBlock(inspector, item);
   const negativeToggle = document.createElement("button");
@@ -5908,6 +5953,56 @@ async function deleteSingleManagerItem(item) {
 function confirmedFormValue(id, value) {
   const element = styleElement(id);
   if (element) element.value = value === null || value === undefined ? "" : String(value);
+}
+
+function confirmedBasePrompt(source) {
+  if (typeof source?.base_prompt === "string") return source.base_prompt;
+  return combinePromptSections(source?.artist_prompt, source?.quality_prompt, source?.fixed_prompt);
+}
+
+function setConfirmedPromptMode(mode) {
+  const next = mode === "split" ? "split" : "base";
+  const base = styleElement("confirmedStyleBasePrompt");
+  const splitValues = () => ["confirmedStyleArtistPrompt", "confirmedStyleQualityPrompt", "confirmedStyleFixedPrompt"]
+    .map((id) => styleElement(id)?.value || "");
+  let movedBase = false;
+  if (next !== styleState.confirmedPromptMode) {
+    if (next === "base") {
+      if (base && JSON.stringify(splitValues()) !== styleState.confirmedPromptSplitBaseline) {
+        base.value = combinePromptSections(...splitValues());
+      }
+      styleState.confirmedPromptBaseline = base?.value || "";
+    } else if (base && base.value !== styleState.confirmedPromptBaseline) {
+      // An edited free-form base cannot be divided without guessing tag roles.
+      confirmedFormValue("confirmedStyleArtistPrompt", "");
+      confirmedFormValue("confirmedStyleQualityPrompt", base.value);
+      confirmedFormValue("confirmedStyleFixedPrompt", "");
+      movedBase = true;
+    }
+  }
+  styleState.confirmedPromptMode = next;
+  styleState.confirmedPromptSplitBaseline = JSON.stringify(splitValues());
+  confirmedFormValue("confirmedStylePromptMode", next);
+  styleElement("confirmedStyleBaseSection")?.classList.toggle("hidden", next !== "base");
+  styleElement("confirmedStyleSplitSection")?.classList.toggle("hidden", next !== "split");
+  const hint = styleElement("confirmedStylePromptHint");
+  if (hint) hint.textContent = movedBase
+    ? "편집한 베이스를 퀄리티 칸에 옮겼습니다. 필요하면 작가·고정 칸으로 나누세요."
+    : next === "base" ? "작가·퀄리티·고정 태그를 순서대로 자유롭게 입력하세요."
+      : "기존 방식으로 작가·퀄리티·고정 프롬프트를 나누어 저장합니다.";
+  hidePromptTagAutocomplete();
+}
+
+function loadConfirmedPromptFields(source, mode = "base") {
+  const hasSplit = Boolean(source.artist_prompt || source.quality_prompt || source.fixed_prompt);
+  confirmedFormValue("confirmedStyleArtistPrompt", source.artist_prompt || "");
+  confirmedFormValue("confirmedStyleQualityPrompt", source.quality_prompt || (!hasSplit ? source.base_prompt || source.prompt || "" : ""));
+  confirmedFormValue("confirmedStyleFixedPrompt", source.fixed_prompt || "");
+  confirmedFormValue("confirmedStyleBasePrompt", confirmedBasePrompt(source));
+  styleState.confirmedPromptBaseline = styleElement("confirmedStyleBasePrompt")?.value || "";
+  // Loading another image must not run the user's mode-conversion action.
+  styleState.confirmedPromptMode = mode;
+  setConfirmedPromptMode(mode);
 }
 
 function setConfirmedParameterValue(id, value) {
@@ -6003,7 +6098,7 @@ function renderConfirmedExcludedTags() {
     button.textContent = tag;
     button.title = "퀄리티 프롬프트로 복구";
     button.addEventListener("click", () => {
-      const quality = styleElement("confirmedStyleQualityPrompt");
+      const quality = styleElement(styleState.confirmedPromptMode === "base" ? "confirmedStyleBasePrompt" : "confirmedStyleQualityPrompt");
       if (quality) quality.value = combinePromptSections(quality.value, tag);
       styleState.confirmedModalExcludedTags.splice(index, 1);
       renderConfirmedExcludedTags();
@@ -6052,7 +6147,7 @@ function groupConfirmedImportItems(items) {
 function attachConfirmedStyleSuspects(groups, confirmedStyles) {
   const stylesBySignature = new Map();
   (Array.isArray(confirmedStyles) ? confirmedStyles : []).forEach((style) => {
-    const signature = confirmedArtistPromptSignature(style?.artist_prompt);
+    const signature = confirmedArtistPromptSignature(style?.base_artist_prompt ?? style?.artist_prompt);
     if (!signature) return;
     if (!stylesBySignature.has(signature)) stylesBySignature.set(signature, []);
     stylesBySignature.get(signature).push(style);
@@ -6071,7 +6166,7 @@ function confirmedPreviewViewerItem(data, imageUrl, image = {}) {
   return {
     ...data,
     image_url: imageUrl || "",
-    base_prompt: combinePromptSections(data?.artist_prompt, data?.quality_prompt || data?.base_prompt),
+    base_prompt: confirmedBasePrompt(data),
     character_prompts: Array.isArray(data?.character_prompts)
       ? data.character_prompts.map((entry) => typeof entry === "string" ? entry : entry?.prompt || "").filter(Boolean)
       : [],
@@ -6169,9 +6264,7 @@ function renderConfirmedDuplicateCandidates(group) {
   const info = styleElement("confirmedStyleDuplicateDetailInfo");
   if (info) {
     info.replaceChildren();
-    appendMetaRow(info, "작가 프롬프트", style.artist_prompt);
-    appendMetaRow(info, "퀄리티 프롬프트", style.quality_prompt);
-    appendMetaRow(info, "고정 프롬프트", style.fixed_prompt);
+    appendMetaRow(info, "베이스 프롬프트", confirmedBasePrompt(style));
     appendMetaRow(info, "캐릭터 프롬프트", (style.character_prompts || []).join("\n"));
     appendMetaRow(info, "네거티브", style.negative_prompt);
     appendMetaRow(info, "이미지 크기", `${selectedImage.width || style.width || "?"}×${selectedImage.height || style.height || "?"}`);
@@ -6208,6 +6301,10 @@ function renderConfirmedImportNavigator() {
   const group = confirmedCurrentImportGroup();
   const items = group?.items || [];
   const item = items[styleState.confirmedImportImageIndex] || null;
+  const imageColumn = styleElement("confirmedStyleImageColumn");
+  imageColumn?.classList.toggle("has-group-navigation", groups.length > 1);
+  imageColumn?.classList.toggle("has-image-navigation", items.length > 1);
+  imageColumn?.classList.toggle("has-imported-images", groups.length > 0);
   const strip = styleElement("confirmedStyleGroupStrip");
   if (strip) {
     strip.replaceChildren();
@@ -6329,7 +6426,9 @@ function confirmedGeneratedSourceValues(item) {
     ...item,
     name: `제작 그림체 #${item.id}`,
     description: "",
-    artist_prompt: managerArtistText(item),
+    artist_prompt: item.artist_prompt || styleHistoryArtistPrompt(item),
+    base_prompt: combinePromptSections(item.leading_prompt, item.artist_prompt || styleHistoryArtistPrompt(item),
+      item.base_prompt || combinePromptSections(item.quality_prompt, item.fixed_prompt)),
     quality_prompt: item.quality_prompt || item.base_prompt || "",
     original_quality_prompt: item.original_quality_prompt || item.quality_prompt || item.base_prompt || "",
     excluded_quality_tags: item.excluded_quality_tags || [],
@@ -6344,6 +6443,8 @@ function confirmedSourceValues(item, sourceMode = styleState.managerMode) {
 }
 
 function openConfirmedStyleModal(item = null, editing = false, sourceMode = styleState.managerMode) {
+  styleState.confirmedModalSession += 1;
+  styleState.confirmedModalDestination = null;
   const source = confirmedSourceValues(item, sourceMode);
   styleState.confirmedModalSource = !editing && item
     ? { source_type: sourceMode === "shared" ? "shared" : "generated", source_id: item.id }
@@ -6362,9 +6463,7 @@ function openConfirmedStyleModal(item = null, editing = false, sourceMode = styl
   styleState.confirmedModalObjectUrl = "";
   confirmedFormValue("confirmedStyleName", source.name || "");
   confirmedFormValue("confirmedStyleDescription", source.description || "");
-  confirmedFormValue("confirmedStyleArtistPrompt", source.artist_prompt || "");
-  confirmedFormValue("confirmedStyleQualityPrompt", source.quality_prompt || source.base_prompt || source.prompt || "");
-  confirmedFormValue("confirmedStyleFixedPrompt", source.fixed_prompt || "");
+  loadConfirmedPromptFields(source, editing && source.base_prompt == null ? "split" : "base");
   confirmedFormValue("confirmedStyleCharacterPrompts", (source.character_prompts || []).map((entry) => typeof entry === "string" ? entry : entry?.prompt || "").filter(Boolean).join("\n"));
   confirmedFormValue("confirmedStyleNegativePrompt", source.negative_prompt || "");
   setConfirmedParameterValue("confirmedStyleSampler", source.sampler || "");
@@ -6395,10 +6494,16 @@ function openConfirmedStyleModal(item = null, editing = false, sourceMode = styl
   renderConfirmedFolderContents([]);
   setConfirmedImportProgress(0, 0);
   styleElement("confirmedStyleModal")?.classList.remove("hidden");
+  styleElement("confirmedStyleModal")?.querySelectorAll(".confirmed-style-editor, .confirmed-style-fields, .confirmed-style-image-scroller")
+    .forEach((element) => { element.scrollTop = 0; });
+  styleElement("confirmedStyleModal")?.querySelectorAll("details")
+    .forEach((element) => { element.open = false; });
   renderConfirmedImportNavigator();
 }
 
 function closeConfirmedStyleModal() {
+  styleState.confirmedModalSession += 1;
+  styleState.confirmedModalDestination = null;
   closeConfirmedDuplicateReview();
   closeConfirmedFolderReview();
   styleElement("confirmedStyleModal")?.classList.add("hidden");
@@ -6414,6 +6519,21 @@ function closeConfirmedStyleModal() {
   setConfirmedImportProgress(0, 0);
   hidePromptTagAutocomplete();
 }
+
+async function openConfirmedStyleFromArca(image, isCurrent = () => true) {
+  const imageId = Number(image?.id);
+  if (!Number.isInteger(imageId) || imageId < 1 || image.image_available === false || !image.image_url) {
+    throw new Error("로컬에 저장된 공유 이미지를 선택해 주세요.");
+  }
+  const source = await apiFetch(`/style-workspace/api/confirmed-styles/source/shared/${imageId}`);
+  if (!isCurrent()) return false;
+  openConfirmedStyleModal({ ...source, id: imageId, image_url: image.image_url }, false, "shared");
+  styleState.confirmedModalSource.source_origin = "arca";
+  styleState.confirmedModalDestination = "confirmed";
+  return true;
+}
+
+if (typeof globalThis !== "undefined") globalThis.openConfirmedStyleFromArca = openConfirmedStyleFromArca;
 
 let comparisonStyles = [];
 let comparisonGroups = [];
@@ -6519,9 +6639,7 @@ function renderComparisonStyleDetail(item) {
   target.append(image);
   appendNovelAiModelBadge(target, item.model);
   comparisonTextRow(target, "이름", item.name || `확정 그림체 #${item.id}`);
-  comparisonTextRow(target, "작가 프롬프트", item.artist_prompt);
-  comparisonTextRow(target, "퀄리티 프롬프트", item.quality_prompt);
-  comparisonTextRow(target, "고정 프롬프트", item.fixed_prompt);
+  comparisonTextRow(target, "베이스 프롬프트", confirmedBasePrompt(item));
   comparisonTextRow(target, "네거티브 프롬프트", item.negative_prompt);
   comparisonTextRow(target, "생성 설정", `${item.sampler || "기본"} / ${item.noise_schedule || "기본"} · ${item.steps ?? "기본"} steps · CFG ${item.scale ?? "기본"} · Rescale ${item.cfg_rescale ?? "기본"} · Variety+ ${item.variety_plus === true ? "켜짐" : item.variety_plus === false ? "꺼짐" : "기본"} · Quality ${item.quality_toggle ? "켜짐" : "꺼짐"} · UC ${normalizeUcPreset(item.uc_preset)}${item.complexity ? ` · Complexity ${item.complexity}` : ""} · ${item.model || "기본 모델"}`);
 }
@@ -6809,9 +6927,14 @@ function renderComparisonResultDetail(group, item) {
   }
   const info = document.createElement("div");
   info.className = "comparison-result-info";
-  comparisonTextRow(info, "작가 프롬프트", settings.artist_prompt || style.artist_prompt);
-  comparisonTextRow(info, "퀄리티 프롬프트", settings.quality_prompt || style.quality_prompt);
-  comparisonTextRow(info, "고정 프롬프트", combinePromptSections(settings.style_fixed_prompt || style.fixed_prompt, settings.comparison_fixed_prompt || group.fixed_prompt));
+  if (settings.style_base_prompt != null || (!item.result && style.base_prompt != null)) {
+    comparisonTextRow(info, "베이스 프롬프트", item.result ? settings.base_prompt : confirmedBasePrompt(style));
+    if (!item.result) comparisonTextRow(info, "비교군 고정 프롬프트", group.fixed_prompt);
+  } else {
+    comparisonTextRow(info, "작가 프롬프트", settings.artist_prompt || style.artist_prompt);
+    comparisonTextRow(info, "퀄리티 프롬프트", settings.quality_prompt || style.quality_prompt);
+    comparisonTextRow(info, "고정 프롬프트", combinePromptSections(settings.style_fixed_prompt || style.fixed_prompt, settings.comparison_fixed_prompt || group.fixed_prompt));
+  }
   comparisonTextRow(info, "캐릭터 프롬프트", (settings.character_prompts || group.character_prompts || []).join("\n"));
   comparisonTextRow(info, "네거티브 프롬프트", settings.negative_prompt || style.negative_prompt);
   const complexity = settings.complexity || style.complexity || "";
@@ -6995,9 +7118,7 @@ async function createComparison() {
 }
 
 function applyExtractedConfirmedMetadata(metadata) {
-  confirmedFormValue("confirmedStyleArtistPrompt", metadata.artist_prompt || "");
-  confirmedFormValue("confirmedStyleQualityPrompt", metadata.quality_prompt || "");
-  confirmedFormValue("confirmedStyleFixedPrompt", metadata.fixed_prompt || "");
+  loadConfirmedPromptFields(metadata, metadata.base_prompt === null ? "split" : "base");
   confirmedFormValue("confirmedStyleCharacterPrompts", (metadata.character_prompts || []).map((entry) => typeof entry === "string" ? entry : entry?.prompt || "").filter(Boolean).join("\n"));
   confirmedFormValue("confirmedStyleNegativePrompt", metadata.negative_prompt || "");
   setConfirmedParameterValue("confirmedStyleSampler", metadata.sampler || "");
@@ -7205,6 +7326,7 @@ function readConfirmedStyleForm() {
   return {
     name: styleElement("confirmedStyleName")?.value || "",
     description: styleElement("confirmedStyleDescription")?.value || "",
+    base_prompt: styleState.confirmedPromptMode === "base" ? styleElement("confirmedStyleBasePrompt")?.value || "" : null,
     artist_prompt: styleElement("confirmedStyleArtistPrompt")?.value || "",
     quality_prompt: styleElement("confirmedStyleQualityPrompt")?.value || "",
     original_quality_prompt: styleState.confirmedModalOriginalQualityPrompt || styleElement("confirmedStyleQualityPrompt")?.value || "",
@@ -7262,8 +7384,18 @@ async function saveConfirmedImportGroups(saveAll) {
 }
 
 async function saveConfirmedStyleFromModal(saveAll = false) {
+  if (styleState.confirmedSaving) return null;
   const status = styleElement("confirmedStyleModalStatus");
   const data = readConfirmedStyleForm();
+  if (styleState.confirmedModalSource?.source_origin === "arca") {
+    if (!styleElement("confirmedStyleQualityToggle")) delete data.quality_toggle;
+    if (!styleElement("confirmedStyleUcPreset")) delete data.uc_preset;
+  }
+  const session = styleState.confirmedModalSession;
+  const destination = styleState.confirmedModalDestination;
+  const saveButtons = [styleElement("saveConfirmedStyle"), styleElement("saveAllConfirmedStyles")];
+  styleState.confirmedSaving = true;
+  saveButtons.forEach((button) => { if (button) button.disabled = true; });
   try {
     let result;
     if (styleState.confirmedModalEditId) {
@@ -7282,17 +7414,28 @@ async function saveConfirmedStyleFromModal(saveAll = false) {
       throw new Error("대표 이미지를 추가해 주세요.");
     }
     styleState.managerDirty = true;
+    if (session !== styleState.confirmedModalSession) return result;
     if (styleState.confirmedImportGroups.length && !saveAll) {
       selectConfirmedImportItem(styleState.confirmedImportGroupIndex, 0, { capture: false });
       if (status) status.textContent = "현재 그림체 묶음을 저장했습니다. 남은 묶음을 계속 확인할 수 있습니다.";
     } else {
       closeConfirmedStyleModal();
-      setStyleManagerMode("generated");
+      if (destination === "confirmed") {
+        styleElement("arcaStyleDialog")?.classList.add("hidden");
+        styleState.managerDirty = false;
+        document.querySelector('.tab[data-tab="style-manager"]')?.click();
+        setStyleManagerMode("confirmed");
+      } else {
+        setStyleManagerMode("generated");
+      }
     }
     return result;
   } catch (error) {
-    if (status) status.textContent = error.message;
+    if (status && session === styleState.confirmedModalSession) status.textContent = error.message;
     return null;
+  } finally {
+    styleState.confirmedSaving = false;
+    saveButtons.forEach((button) => { if (button) button.disabled = false; });
   }
 }
 
@@ -8138,6 +8281,7 @@ if (typeof document !== "undefined") {
   document.querySelectorAll("[data-close-confirmed-style]").forEach((item) => item.addEventListener("click", closeConfirmedStyleModal));
   styleElement("saveConfirmedStyle")?.addEventListener("click", () => saveConfirmedStyleFromModal(false));
   styleElement("saveAllConfirmedStyles")?.addEventListener("click", () => saveConfirmedStyleFromModal(true));
+  styleElement("confirmedStylePromptMode")?.addEventListener("change", (event) => setConfirmedPromptMode(event.target.value));
   styleElement("chooseConfirmedStyleImage")?.addEventListener("click", () => styleElement("confirmedStyleFile")?.click());
   styleElement("chooseConfirmedStyleFolder")?.addEventListener("click", () => styleElement("confirmedStyleFolder")?.click());
   styleElement("confirmedStyleFile")?.addEventListener("change", (event) => {
@@ -8175,7 +8319,7 @@ if (typeof document !== "undefined") {
     confirmedDropZone.classList.remove("drag-over");
     if (eventName === "drop" && !styleState.confirmedModalEditId) useConfirmedStyleFiles(event.dataTransfer?.files);
   }));
-  ["confirmedStyleArtistPrompt", "confirmedStyleQualityPrompt", "confirmedStyleFixedPrompt", "confirmedStyleCharacterPrompts", "confirmedStyleNegativePrompt"]
+  ["confirmedStyleBasePrompt", "confirmedStyleArtistPrompt", "confirmedStyleQualityPrompt", "confirmedStyleFixedPrompt", "confirmedStyleCharacterPrompts", "confirmedStyleNegativePrompt"]
     .forEach((id) => bindPromptTagAutocomplete(styleElement(id)));
   document.addEventListener("paste", (event) => {
     const modal = styleElement("confirmedStyleModal");
@@ -8323,6 +8467,10 @@ if (typeof module !== "undefined" && module.exports) {
     toggleSelectedStyleId,
     managerCombinedPromptText,
     confirmedGeneratedSourceValues,
+    confirmedBasePrompt,
+    setConfirmedPromptMode,
+    loadConfirmedPromptFields,
+    readConfirmedStyleForm,
     setConfirmedParameterValue,
     normalizeConfirmedModelName,
     confirmedArtistPromptSignature,
@@ -8339,6 +8487,10 @@ if (typeof module !== "undefined" && module.exports) {
     validateRatingExcludeTags,
     opusFreeGenerationIssues,
     normalizeStyleHistoryItem,
+    renderStyleHistorySelection,
+    renderStyleHistoryList,
+    loadStyleHistory,
+    deleteStyleHistoryItem,
     styleHistoryArtistPrompt,
     styleHistoryPreviewMeta,
     deleteConfirmationEnabledFromSkip,

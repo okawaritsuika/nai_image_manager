@@ -10,7 +10,7 @@
     border-radius: 14px;
     background: var(--card-bg, var(--card, #252630));
     color: var(--text-main, var(--text, #f2f3f5));
-    font-family: var(--font-family, inherit);
+    font-family: var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
 }
 .daki-project-settings-dialog::backdrop { background: #090a0dcc; }
 .daki-project-settings-dialog[open] { display: flex; flex-direction: column; }
@@ -28,7 +28,7 @@
 .daki-project-settings-header h2 {
     min-width: 0;
     margin: 0;
-    font-size: 20px;
+    font-size: var(--ui-text-title,16px);
     line-height: 1.4;
     overflow-wrap: anywhere;
 }
@@ -62,7 +62,7 @@
 .daki-project-settings-status {
     min-width: 0;
     margin: 0;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.55;
     overflow-wrap: anywhere;
 }
@@ -84,7 +84,7 @@
 .daki-project-settings-section h3 {
     min-width: 0;
     margin: 0 0 10px;
-    font-size: 15px;
+    font-size: var(--ui-text-section,14px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -103,7 +103,7 @@
 }
 .daki-project-settings-field > label {
     min-width: 0;
-    font-size: 13px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -120,7 +120,7 @@
     background: var(--card-bg, var(--card, #252630));
     color: var(--text-main, var(--text, #f2f3f5));
     font: inherit;
-    font-size: 13px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.45;
 }
 .daki-project-settings-field input,
@@ -168,12 +168,12 @@
     background: var(--card-bg, var(--card, #252630));
     color: var(--text-main, var(--text, #f2f3f5));
     font: inherit;
-    font-size: 13px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
     white-space: normal;
     overflow-wrap: anywhere;
     cursor: pointer;
-}
+ font-weight: 600;}
 .daki-project-settings-primary {
     border-color: var(--accent-blue, var(--accent, #4e9cff));
     background: var(--accent-blue, var(--accent, #4e9cff));
@@ -198,7 +198,7 @@
 }
 .daki-project-settings-preview h4 {
     margin: 0 0 6px;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
 }
 .daki-project-settings-preview-text {
@@ -208,7 +208,7 @@
     overflow: auto;
     color: var(--text-main, var(--text, #f2f3f5));
     font: inherit;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -228,7 +228,7 @@
 .daki-project-settings-face legend {
     max-width: 100%;
     padding: 0 5px;
-    font-size: 13px;
+    font-size: var(--ui-text-section,14px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -250,10 +250,10 @@
     background: var(--card-bg, var(--card, #252630));
     color: var(--text-main, var(--text, #f2f3f5));
     font: inherit;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
     cursor: pointer;
-}
+ font-weight: 600;}
 .daki-project-settings-prompt-tab[aria-selected="true"] {
     border-color: var(--accent-blue, var(--accent, #4e9cff));
     background: var(--accent-blue, var(--accent, #4e9cff));
@@ -270,7 +270,7 @@
 }
 .daki-project-settings-characters h4 {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -291,7 +291,7 @@
 .daki-project-settings-character-label {
     flex: 1 1 auto;
     min-width: 0;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
     overflow-wrap: anywhere;
 }
@@ -310,8 +310,8 @@
     border-radius: 7px;
     background: var(--card-bg, var(--card, #252630));
     color: var(--text-main, var(--text, #f2f3f5));
-    font-family: var(--font-family, inherit);
-    font-size: 13px;
+    font-family: var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
+    font-size: var(--ui-text-body,12px);
     line-height: 1.45;
     resize: vertical;
     overflow-wrap: anywhere;
@@ -331,7 +331,7 @@
     align-items: flex-start;
     gap: 8px;
     min-width: 0;
-    font-size: 13px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -352,7 +352,7 @@
 .daki-project-settings-generation label,
 .daki-project-settings-generation small {
     min-width: 0;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }

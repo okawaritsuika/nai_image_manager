@@ -27,7 +27,7 @@
 .daki-project-reference-title {
     min-width: 0;
     margin: 0;
-    font-size: 14px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -52,7 +52,7 @@
     border-radius: 7px;
     background: var(--bg);
     color: #aab1bd;
-    font-size: 10px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.4;
     text-align: center;
 }
@@ -79,7 +79,7 @@
 .daki-project-reference-name {
     min-width: 0;
     margin: 0 0 4px;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -88,7 +88,7 @@
     min-width: 0;
     margin: 0;
     color: #aab1bd;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -112,12 +112,12 @@
     background: var(--bg);
     color: var(--text);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
     white-space: normal;
     overflow-wrap: anywhere;
     cursor: pointer;
-}
+ font-weight: 600;}
 
 .daki-project-reference-button:hover:not(:disabled) {
     border-color: #b299e5;
@@ -155,7 +155,7 @@
     min-width: 0;
     margin: 8px 0 0;
     color: #aab1bd;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -182,7 +182,7 @@
     background: var(--card);
     color: var(--text);
     font: inherit;
-    font-size: 14px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.6;
     box-shadow: 0 20px 80px #0008;
 }
@@ -215,7 +215,7 @@
     min-width: 0;
     flex: 1 1 auto;
     margin: 0;
-    font-size: 16px;
+    font-size: var(--ui-text-title,16px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -224,7 +224,7 @@
     min-height: 32px;
     flex: 0 0 auto;
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
 }
 
@@ -247,7 +247,7 @@
 .daki-project-reference-dialog-error {
     margin: 0;
     color: #f4a3a3;
-    font-size: 13px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -261,7 +261,7 @@
     min-height: 32px;
     padding: 6px 10px;
     border-radius: 7px;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
 }
 
@@ -269,7 +269,7 @@
     min-width: 0;
     margin-right: auto;
     color: var(--accent);
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }

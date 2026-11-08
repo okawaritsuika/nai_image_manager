@@ -22,6 +22,7 @@ import re
 import stat
 import struct
 import tempfile
+import time
 import zlib
 
 from PIL import Image
@@ -277,6 +278,34 @@ def _digest_file(path):
     return digest.digest()
 
 
+_WINDOWS_PUBLISH_RETRY_DELAYS = (0.025, 0.05, 0.1)
+
+
+def _publish_webp(temporary, target):
+    """Atomically publish without replacing a file another process created.
+
+    Windows ``os.rename`` fails if the destination already exists and does not
+    require hard-link support. Other platforms use an exclusive hard link
+    because their rename operation replaces an existing destination.
+    """
+    if os.name != "nt":
+        os.link(temporary, target)
+        return
+
+    for attempt in range(len(_WINDOWS_PUBLISH_RETRY_DELAYS) + 1):
+        try:
+            os.rename(temporary, target)
+            return
+        except OSError as error:
+            winerror = getattr(error, "winerror", None)
+            # Antivirus and indexer handles can briefly deny a rename. Retry
+            # only these Windows access/sharing errors, and keep the same
+            # no-overwrite operation on every attempt.
+            if winerror not in {5, 32, 33} or attempt >= len(_WINDOWS_PUBLISH_RETRY_DELAYS):
+                raise
+            time.sleep(_WINDOWS_PUBLISH_RETRY_DELAYS[attempt])
+
+
 def _sidecar_snapshot(path):
     """Return a stable regular-file identity and digest, or None if absent."""
     try:
@@ -360,7 +389,7 @@ def _copy_one_sidecar(source, target):
                 or temporary.stat().st_size != source_size or _digest_file(temporary) != source_digest):
             raise ValueError("복사 중 이미지 보조 파일이 변경되었습니다.")
         try:
-            os.link(temporary, target)
+            _publish_webp(temporary, target)
         except FileExistsError:
             # Another writer may have published the same bytes after our check.
             target_state = _sidecar_snapshot(target)
@@ -454,7 +483,9 @@ def _has_symlink_component(path):
 
 def resolve_webp_image(source_path):
     """Resolve a missing source to its exact existing WebP replacement."""
+    from naim.storage.image_renames import resolve_renamed_image_path
     source = Path(source_path).absolute()
+    source = resolve_renamed_image_path(source)
     target = webp_target_path(source)
     if target.parent != source.parent or _has_symlink_component(source):
         raise ValueError("심볼릭 링크 또는 폴더 이탈 이미지 경로는 사용할 수 없습니다.")
@@ -466,6 +497,9 @@ def resolve_webp_image(source_path):
         raise ValueError("심볼릭 링크 또는 폴더 이탈 이미지 경로는 사용할 수 없습니다.")
     if target.is_file():
         return target
+    renamed_target = resolve_renamed_image_path(target)
+    if renamed_target.is_file():
+        return renamed_target
     return source
 
 
@@ -575,9 +609,9 @@ def _convert_image_to_webp(source_path, *, png_only, lossless=True, quality=90, 
             if dry_run:
                 result.update(status="estimated", target_bytes=temporary.stat().st_size)
                 return result
-            # A hard link atomically publishes a complete file without replacing
-            # another file. Unsupported filesystems safely keep their source.
-            os.link(temporary, target)
+            # Publish only after verification. The platform-specific operation
+            # is atomic and cannot replace another process's destination.
+            _publish_webp(temporary, target)
             published = True
             _check_cancelled(cancel_event)
             if before_delete is not None:

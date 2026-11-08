@@ -518,6 +518,98 @@ test('an unsaved restored link at the same URL keeps local state and PUTs it fir
     assert.equal(h.snapshots.at(-1).localLink.unsaved, false);
 });
 
+function missingTarget() {
+    return response({status: 'error', code: 'daki_not_found', message: '다키 프로젝트를 찾을 수 없습니다.'},
+        {ok: false, status: 404});
+}
+
+for (const withUrl of [false, true]) {
+    for (const unsaved of [false, true]) {
+        test(`missing restored target keeps current work and clears its link (URL=${withUrl}, unsaved=${unsaved})`, async () => {
+            const state = canvasState('preserved local work', 901, 640, 800);
+            state.layers[0].mask = {points: [[1, 2], [3, 4]]};
+            const before = plain(state);
+            const h = harness({search: withUrl ? projectUrl() + '&pane=front' : '?pane=front', state});
+            h.context.location.hash = '#keep';
+            h.context.CanvasProject.restoreLocalLink(link({unsaved}));
+            h.enqueue(missingTarget());
+
+            await h.context.CanvasProject.initialize();
+            await h.context.CanvasProject.flush();
+
+            assert.equal(h.context.CanvasProject.localLink(), null);
+            assert.equal(h.context.CanvasProject.isUnsaved(), false);
+            assert.equal(h.context.location.search, '?pane=front');
+            assert.equal(h.context.location.hash, '#keep');
+            assert.equal(h.snapshots.at(-1).localLink, null);
+            assert.equal(h.currentState(), state);
+            assert.deepEqual(h.currentState(), before);
+            assert.equal(h.applied.length, 0);
+            assert.equal(h.workspace.inert, false);
+            assert.equal(h.header.inert, false);
+            assert.equal(h.status().hidden, true);
+            assert.match(h.toasts.at(-1), /연결을 해제/);
+            assert.equal(await h.context.CanvasProject.leave(), true);
+            assert.equal(h.requests.length, 1);
+            assert.equal(h.requests[0].method, unsaved ? 'PUT' : 'GET');
+        });
+    }
+}
+
+test('a missing URL target clears the broken URL without replacing the local canvas', async () => {
+    const state = canvasState('work without a project', 100);
+    const h = harness({search: projectUrl() + '&pane=back', state});
+    h.enqueue(missingTarget());
+    await initializeAndAcceptReplacement(h);
+    assert.equal(h.context.location.search, '?pane=back');
+    assert.equal(h.context.CanvasProject.localLink(), null);
+    assert.equal(h.currentState(), state);
+    assert.equal(h.applied.length, 0);
+    assert.equal(h.snapshots.at(-1).localLink, null);
+});
+
+test('deletion during autosave retains the latest edit and allows connection to another project', async () => {
+    const h = harness();
+    await connectExistingCanvas(h);
+    let resolveSave;
+    h.enqueue(() => new Promise(resolve => { resolveSave = resolve; }));
+    h.setState(canvasState('first edit', 201));
+    h.context.CanvasProject.schedule(true);
+    const pending = h.context.CanvasProject.flush();
+    const latest = canvasState('latest edit while saving', 202);
+    h.setState(latest);
+    h.context.CanvasProject.schedule();
+    resolveSave(missingTarget());
+    assert.equal(await pending, true);
+    assert.equal(h.context.CanvasProject.localLink(), null);
+    assert.equal(h.currentState(), latest);
+    assert.equal(h.snapshots.at(-1).localLink, null);
+    assert.equal(h.requests.length, 2);
+    const event = {preventDefault() { throw new Error('unlinked work must not trigger the project unload warning'); }};
+    h.listeners.get('beforeunload')(event);
+    assert.equal(await h.context.CanvasProject.leave(), true);
+
+    h.enqueue(success({project: projectRecord()}));
+    h.enqueue(success({project: projectRecord(), canvas: canvasRecord({state: latest})}));
+    await h.context.CanvasProject.connectImportedImage({projectId: PROJECT_ID, side: 'front'}, {name: 'Synthetic image'});
+    assert.equal(h.context.CanvasProject.localLink().projectId, PROJECT_ID);
+    assert.deepEqual(h.requests.at(-1).body.state, latest);
+});
+
+test('an unclassified 404 write failure keeps the connection for retry', async () => {
+    const h = harness();
+    await connectExistingCanvas(h);
+    const state = canvasState('keep on IO failure', 123);
+    h.setState(state);
+    h.enqueue(response({status: 'error', message: 'temporary file failure'}, {ok: false, status: 404}));
+    h.context.CanvasProject.schedule(true);
+    assert.equal(await h.context.CanvasProject.flush(), false);
+    assert.equal(await h.context.CanvasProject.leave(), false);
+    assert.equal(h.context.CanvasProject.localLink().projectId, OTHER_PROJECT_ID);
+    assert.equal(h.currentState(), state);
+    assert.equal(h.toasts.length, 0);
+});
+
 test('failed save keeps its binding through leave, then retry and successful leave clear it', async () => {
     const h = harness({search: projectUrl(), state: canvasState('old canvas', 1)});
     h.enqueue(initializeResponse({revision: 4}));
@@ -848,46 +940,92 @@ test('creating an imported image canvas posts the current snapshot and connects 
     const context = await h.context.CanvasProject.prepareImageImport({projectId: PROJECT_ID, side: 'back'});
     const importedState = canvasState('new image layer', 901, 840, 1120);
     h.setState(importedState);
+    h.enqueue(success({project: projectRecord()}));
     h.enqueue(success({project: projectRecord(), canvas: canvasRecord({id: RECOVERED_CANVAS_ID,
-        name: 'Imported image', side: 'back', revision: 1, state: importedState})}));
+        name: 'Imported image · 뒷면 편집', side: 'back', revision: 1, state: importedState})}));
 
     await h.context.CanvasProject.connectImportedImage(context, {name: 'Imported image'});
 
-    assert.deepEqual(plain(h.requests), [{url: `/api/daki/projects/${PROJECT_ID}/canvases`, method: 'POST',
-        body: {id: RECOVERED_CANVAS_ID, name: 'Imported image', side: 'back', state: importedState}}]);
+    assert.deepEqual(plain(h.requests), [
+        {url: `/api/daki/projects/${PROJECT_ID}`, method: 'GET'},
+        {url: `/api/daki/projects/${PROJECT_ID}/canvases`, method: 'POST',
+            body: {id: RECOVERED_CANVAS_ID, name: 'Imported image · 뒷면 편집', side: 'back', state: importedState}},
+    ]);
     assert.deepEqual(plain(h.context.CanvasProject.localLink()), {
         projectId: PROJECT_ID, canvasId: RECOVERED_CANVAS_ID, revision: 1,
-        projectName: 'Synthetic Project', name: 'Imported image', side: 'back', unsaved: false
+        projectName: 'Synthetic Project', name: 'Imported image · 뒷면 편집', side: 'back', unsaved: false
     });
     assert.equal(new URLSearchParams(h.context.location.search).get('project'), PROJECT_ID);
     assert.equal(new URLSearchParams(h.context.location.search).get('canvas'), RECOVERED_CANVAS_ID);
 });
 
-test('unnamed imported image canvas uses the next project and side name; supplied names remain capped at 120', async () => {
+test('image canvas names strip the extension and add duplicate numbers for the same side', () => {
+    const h = harness();
+    const suggest = h.context.CanvasProject.suggestImageCanvasName;
+    assert.equal(suggest('그림.png', 'front', []), '그림 · 앞면 편집');
+    assert.equal(suggest('그림.png', 'front', ['그림 · 앞면 편집']), '그림 · 앞면 편집 2');
+    assert.equal(suggest('그림.png', 'front', ['그림 · 앞면 편집', '그림 · 앞면 편집 2']), '그림 · 앞면 편집 3');
+    assert.equal(suggest('C:\\folder\\긴 그림 이름.webp', 'back', []), '긴 그림 이름 · 뒷면 편집');
+    assert.equal(suggest('logo.gif', 'front', []), 'logo.gif · 앞면 편집');
+    assert.equal(suggest('.png', 'front', []), '캔버스 · 앞면 편집');
+});
+
+test('image canvas names stay within 120 UTF-16 units and check all project canvases', async () => {
     const h = harness();
     const targetProject = projectRecord({name: '합성Project'});
     targetProject.canvases = {
-        front: [{name: '합성Project_앞면_캔버스1'}, {name: '합성Project_앞면_캔버스3'}],
-        back: [{name: '합성Project_뒷면_캔버스1'}],
+        front: [{name: '다른 이름'}],
+        back: [{name: '합성Project · 앞면 편집'}, {name: '합성Project · 앞면 편집 2'}],
     };
     h.enqueue(success({project: targetProject}));
     h.enqueue(success({project: projectRecord(), canvas: canvasRecord({id: RECOVERED_CANVAS_ID,
-        name: '합성Project_앞면_캔버스4', side: 'front', revision: 1})}));
-    await h.context.CanvasProject.connectImportedImage({projectId: PROJECT_ID, side: 'front'}, {});
+        name: '합성Project · 앞면 편집 3', side: 'front', revision: 1})}));
+    await h.context.CanvasProject.connectImportedImage({projectId: PROJECT_ID, side: 'front'}, {
+        displayName: '합성Project.png'
+    });
     assert.deepEqual(h.requests.map(request => ({url: request.url, method: request.method})), [
         {url: `/api/daki/projects/${PROJECT_ID}`, method: 'GET'},
         {url: `/api/daki/projects/${PROJECT_ID}/canvases`, method: 'POST'},
     ]);
-    assert.match(h.requests[1].body.name, /^합성Project_앞면_\d{4}-\d{2}-\d{2}_\d{6}$/);
+    assert.equal(h.requests[1].body.name, '합성Project · 앞면 편집 3');
     assert.equal(h.requests[1].body.side, 'front');
 
     const h2 = harness();
+    h2.enqueue(success({project: projectRecord()}));
     h2.enqueue(success({project: projectRecord(), canvas: canvasRecord({id: RECOVERED_CANVAS_ID,
-        name: 'x'.repeat(120), side: 'front', revision: 1})}));
+        name: 'x'.repeat(120 - ' · 앞면 편집'.length), side: 'front', revision: 1})}));
     await h2.context.CanvasProject.connectImportedImage({projectId: PROJECT_ID, side: 'front'}, {
-        name: 'x'.repeat(121)
+        displayName: 'x'.repeat(121) + '.png'
     });
-    assert.equal(h2.requests[0].body.name, 'x'.repeat(120));
+    assert.equal(h2.requests[1].body.name.length, 120);
+    assert.equal(h2.requests[1].body.name.endsWith(' · 앞면 편집'), true);
+});
+
+test('project candidate imports resolve the current candidate name by ID before naming the canvas', async () => {
+    const h = harness();
+    const targetId = 'e'.repeat(32);
+    const sourceId = 'f'.repeat(32);
+    const targetProject = projectRecord({id: targetId});
+    targetProject.canvases = {front: [{name: '그림 · 앞면 편집'}], back: []};
+    h.enqueue(success({project: targetProject}));
+    h.enqueue(success({project: {
+        ...projectRecord({id: sourceId}),
+        candidates: {front: [{id: 'candidate-id', path: 'images/current.png', name: '그림.png'}], back: []},
+    }}));
+    h.enqueue(success({project: projectRecord(), canvas: canvasRecord({id: RECOVERED_CANVAS_ID,
+        name: '그림 · 앞면 편집 2', side: 'front', revision: 1})}));
+
+    await h.context.CanvasProject.connectImportedImage({projectId: targetId, side: 'front'}, {
+        name: 'stale-name.png',
+        projectContext: {projectId: sourceId, side: 'front', candidateId: 'candidate-id', displayName: 'stale-name.png'},
+    });
+
+    assert.deepEqual(h.requests.map(request => ({url: request.url, method: request.method})), [
+        {url: `/api/daki/projects/${targetId}`, method: 'GET'},
+        {url: `/api/daki/projects/${sourceId}`, method: 'GET'},
+        {url: `/api/daki/projects/${targetId}/canvases`, method: 'POST'},
+    ]);
+    assert.equal(h.requests[2].body.name, '그림 · 앞면 편집 2');
 });
 
 test('automatic image-import name lookup fails without posting or changing the canvas', async () => {
@@ -921,7 +1059,7 @@ test('automatic image-import name lookup keeps the state snapshot from the call 
     await pending;
 
     assert.deepEqual(h.requests[1].body.state, before);
-    assert.match(h.requests[1].body.name, /^Synthetic Project_뒷면_\d{4}-\d{2}-\d{2}_\d{6}$/);
+    assert.equal(h.requests[1].body.name, '캔버스 · 뒷면 편집');
 });
 
 test('suggestDownloadName uses the project side timestamp and ignores canvas name and exportCount', async () => {
@@ -996,6 +1134,7 @@ test('failed imported image canvas creation preserves the current canvas state a
     const h = harness();
     const importedState = canvasState('edited but not linked', 902, 800, 1100);
     h.setState(importedState);
+    h.enqueue(success({project: projectRecord()}));
     h.enqueue(response({status: 'error', message: 'canvas create failed'}, {ok: false, status: 503}));
 
     await assert.rejects(h.context.CanvasProject.connectImportedImage({projectId: PROJECT_ID, side: 'back'}, {
@@ -1004,5 +1143,5 @@ test('failed imported image canvas creation preserves the current canvas state a
     assert.equal(h.currentState(), importedState);
     assert.equal(h.context.CanvasProject.localLink(), null);
     assert.equal(h.context.location.search, '');
-    assert.deepEqual(h.requests.map(request => request.method), ['POST']);
+    assert.deepEqual(h.requests.map(request => request.method), ['GET', 'POST']);
 });

@@ -42,15 +42,37 @@ def install(workspace, parent, root):
 
     original_import = workspace.app.view_functions['api_import_arca_browser_session']
 
-    def import_session():
+    def shared_session():
         manager = parent.extensions.get('naim_arca_sync')
         client = manager.client if manager else None
         if client is not None and client.connected:
             result = workspace.connect_arca_cookie_jar(
                 client._cookies, 'NAIM Chrome', user_agent=client._user_agent,
                 validator=lambda _session: client._categories)
-            if result.get('connected'):
-                return workspace.json_response(workspace._safe_arca_browser_status(result))
+            return result
+        return None
+
+    original_status = workspace.app.view_functions['api_arca_browser_session_status']
+
+    def session_status():
+        result = shared_session()
+        if result and result.get('connected'):
+            return workspace.json_response(workspace._safe_arca_browser_status(result))
+        return original_status()
+
+    workspace.app.view_functions['api_arca_browser_session_status'] = session_status
+
+    def import_session():
+        result = shared_session()
+        if result and result.get('connected'):
+            return workspace.json_response(workspace._safe_arca_browser_status(result))
         return original_import()
 
     workspace.app.view_functions['api_import_arca_browser_session'] = import_session
+    original_refresh = workspace.app.view_functions['api_refresh_arca_style_stats']
+
+    def refresh_stats():
+        shared_session()
+        return original_refresh()
+
+    workspace.app.view_functions['api_refresh_arca_style_stats'] = refresh_stats

@@ -964,7 +964,7 @@ test('WebP modal styles keep the body as the scroll owner and adapt quality cont
     assert.match(css, /\.gallery-image-tools-dialog\.is-progress-view\s+\.gallery-image-tools-job\s*\{\s*order:\s*-1;/);
     assert.match(css, /\.gallery-image-tools-job-target\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/s);
     assert.match(css, /\.gallery-image-tools-dialog\.is-progress-view\s+\.gallery-image-tools-progress\s*\{[^}]*height:\s*12px/s);
-    assert.match(css, /\.gallery-image-tools-dialog\.is-progress-view\s+\.gallery-image-tools-progress-text\s*\{[^}]*font-size:\s*18px[^}]*font-weight:\s*700/s);
+    assert.match(css, /\.gallery-image-tools-dialog\.is-progress-view\s+\.gallery-image-tools-progress-text\s*\{[^}]*font-size:\s*var\(--ui-text-title,\s*16px\)[^}]*font-weight:\s*400/s);
     assert.match(css, /\.gallery-image-tools-dialog \.gallery-image-tools-tag-exclusion\s*\{[^}]*padding:\s*16px[^}]*border-radius:\s*12px/s);
     assert.match(css, /\.gallery-image-tools-dialog \.gallery-image-tools-tag-options\s*\{[^}]*flex-wrap:\s*wrap[^}]*max-height:\s*160px[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/s);
     assert.match(css, /\.gallery-image-tools-dialog \.gallery-image-tools-tag-name\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s);

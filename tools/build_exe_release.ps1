@@ -1,6 +1,9 @@
 param(
-    [string]$Python = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe"),
-    [string]$Version = "1.3.4"
+    [string]$Python = (Join-Path $env:USERPROFILE "AppData\Local\Programs\Python\Python310\python.exe"),
+    [string]$Version = "1.3.5",
+    [Parameter(HelpMessage = "A new, non-existing output folder. Defaults to a unique folder under the ignored build directory.")]
+    [string]$OutputRoot,
+    [string]$AdditionalPythonPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,10 +11,25 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Tag = "v$Version-exe"
 $AssetName = "NAI_Image_Manager_${Tag}_windows.zip"
 $UpdaterAssetName = "NAIM_Updater_${Tag}.exe"
-$MainDist = Join-Path $Root "dist_exe"
-$UpdaterDist = Join-Path $Root "dist_updater"
-$WorkDir = Join-Path $Root "build\exe-release"
-$AssetDir = Join-Path $Root "release_assets\$Tag"
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+    $runId = [Guid]::NewGuid().ToString("N")
+    $OutputRoot = Join-Path $Root "build\portable-release-$Tag-$runId"
+}
+$BuildRoot = [IO.Path]::GetFullPath($OutputRoot)
+if ([string]::Equals($BuildRoot.TrimEnd("\"), $Root.TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "OutputRoot cannot be the project root. Choose a new, isolated directory."
+}
+if (Test-Path -LiteralPath $BuildRoot) {
+    throw "OutputRoot already exists; refusing to overwrite any files: $BuildRoot"
+}
+$BuildParent = Split-Path -Parent $BuildRoot
+if (-not (Test-Path -LiteralPath $BuildParent -PathType Container)) {
+    New-Item -ItemType Directory -Path $BuildParent -Force | Out-Null
+}
+$MainDist = Join-Path $BuildRoot "dist_exe"
+$UpdaterDist = Join-Path $BuildRoot "dist_updater"
+$WorkDir = Join-Path $BuildRoot "build"
+$AssetDir = Join-Path $BuildRoot "release_assets\$Tag"
 $PortableDir = Join-Path $MainDist "NAI_Image_Manager"
 $ManagedManifest = Join-Path $PortableDir ".naim-managed-files.json"
 
@@ -28,15 +46,32 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
     throw "Python executable not found: $Python"
 }
 
-foreach ($path in @($MainDist, $UpdaterDist, $WorkDir, $AssetDir)) {
-    if (Test-Path -LiteralPath $path) {
-        Remove-Item -LiteralPath $path -Recurse -Force
+if ([string]::IsNullOrWhiteSpace($AdditionalPythonPath)) {
+    $qaVipsPath = Join-Path $Root ".qa\editor-vips"
+    if (Test-Path -LiteralPath (Join-Path $qaVipsPath "pyvips\__init__.py") -PathType Leaf) {
+        $AdditionalPythonPath = $qaVipsPath
     }
 }
+
+if (-not [string]::IsNullOrWhiteSpace($AdditionalPythonPath)) {
+    if (-not (Test-Path -LiteralPath $AdditionalPythonPath -PathType Container)) {
+        throw "AdditionalPythonPath was not found: $AdditionalPythonPath"
+    }
+    if ([string]::IsNullOrWhiteSpace($env:PYTHONPATH)) {
+        $env:PYTHONPATH = $AdditionalPythonPath
+    } else {
+        $env:PYTHONPATH = "$AdditionalPythonPath;$env:PYTHONPATH"
+    }
+}
+New-Item -ItemType Directory -Path $BuildRoot | Out-Null
+Write-Output "BUILD_ROOT=$BuildRoot"
 New-Item -ItemType Directory -Path $AssetDir -Force | Out-Null
 
 Push-Location $Root
 try {
+    & $Python -B tools/build_canvas_editor_assets.py
+    if ($LASTEXITCODE -ne 0) { throw "Canvas worker asset build failed." }
+
     & $Python -m PyInstaller --noconfirm --clean --distpath $UpdaterDist --workpath (Join-Path $WorkDir "updater") "NAIM_Updater.spec"
     if ($LASTEXITCODE -ne 0) { throw "Updater PyInstaller build failed." }
 
@@ -123,10 +158,10 @@ $Manifest = [ordered]@{
     sha256 = $Hash
     size = $ZipItem.Length
     payload_root = "NAI_Image_Manager"
-    summary = "Embeds style management in NAIM, shares settings and Chrome login internally, and improves shared-style galleries and paging."
+    summary = "Improves canvas editing and retouch performance, gallery and style workflows, and recovers canvases whose linked projects were deleted."
 }
 [IO.File]::WriteAllText(
-    (Join-Path $Root "release_manifest.json"),
+    (Join-Path $AssetDir "release_manifest.json"),
     ($Manifest | ConvertTo-Json -Depth 4),
     [Text.UTF8Encoding]::new($false)
 )

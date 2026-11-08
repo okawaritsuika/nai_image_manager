@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 import re
 import threading
 import unicodedata
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 import uuid
 
 from PIL import Image
@@ -19,6 +19,9 @@ from naim.project_canvas_settings import (
 from naim.detail_prompt_presets import (
     default_common_collection, empty_project_collection, mutate_collection,
     validate_stored_collection,
+)
+from naim.project_names import (
+    MAX_CANVAS_NAME_UTF16_UNITS, readable_canvas_name, validate_windows_name,
 )
 from naim.storage.json_files import json_lock, read_json, write_json
 
@@ -222,8 +225,80 @@ def normalize_relative_path(value, *, allow_empty=False):
     return path.as_posix()
 
 
+def _image_layer_paths(layer):
+    """Return normalized sourcePath and local /image/ paths for one image layer."""
+    paths = []
+    source_path = layer.get('sourcePath')
+    if isinstance(source_path, str):
+        try:
+            paths.append(normalize_relative_path(source_path))
+        except ValueError:
+            pass
+
+    source_url = layer.get('src')
+    if isinstance(source_url, str):
+        try:
+            parsed = urlsplit(source_url)
+        except ValueError:
+            parsed = None
+        if (parsed is not None and not parsed.scheme and not parsed.netloc
+                and parsed.path.startswith('/image/')):
+            try:
+                paths.append(normalize_relative_path(unquote(parsed.path[7:])))
+            except ValueError:
+                pass
+    return paths
+
+
+def _iter_image_layers(layers):
+    pending = list(reversed(layers)) if isinstance(layers, list) else []
+    while pending:
+        layer = pending.pop()
+        if not isinstance(layer, dict):
+            continue
+        if layer.get('type') == 'image':
+            yield layer
+        children = layer.get('children')
+        if isinstance(children, list):
+            pending.extend(reversed(children))
+
+
 def _path_key(path):
     return os.path.normcase(path).replace('\\', '/')
+
+
+def _canvas_source_candidate(project, canvas):
+    """Find the first project candidate used by an image layer in this canvas."""
+    candidate_sets = project.get('candidates')
+    if not isinstance(candidate_sets, dict):
+        return None
+    side = canvas.get('side')
+    candidate_order = [side] if side in SIDES else []
+    candidate_order.extend(other for other in SIDES if other not in candidate_order)
+
+    candidates_by_path = {}
+    for candidate_side in candidate_order:
+        records = candidate_sets.get(candidate_side, [])
+        if not isinstance(records, list):
+            continue
+        for candidate in records:
+            if not isinstance(candidate, dict) or not isinstance(candidate.get('path'), str):
+                continue
+            try:
+                path = normalize_relative_path(candidate['path'])
+            except ValueError:
+                continue
+            candidates_by_path.setdefault(_path_key(path), candidate)
+
+    state = canvas.get('state')
+    if not isinstance(state, dict):
+        return None
+    for layer in _iter_image_layers(state.get('layers')):
+        for path in _image_layer_paths(layer):
+            candidate = candidates_by_path.get(_path_key(path))
+            if candidate is not None:
+                return candidate
+    return None
 
 
 def _image_path_variants(relative, cache, resolve_source=None):
@@ -658,6 +733,72 @@ class DakiProjectsStore:
             project['updated_at'] = now
             write_json(store_path, data, indent=2)
         return deepcopy(prepared)
+
+    def rename_canvas(self, project_id, canvas_id, name, expected_name):
+        """Rename one canvas if its current display name still matches the caller."""
+        if not isinstance(expected_name, str):
+            raise ValueError('기존 캔버스명은 문자열이어야 합니다.')
+        validated_name = validate_windows_name(
+            name, max_units=MAX_CANVAS_NAME_UTF16_UNITS,
+        )
+        store_path = self.path
+        with json_lock(store_path):
+            data = self._load(store_path)
+            project = self._find_project(data, project_id)
+            for canvas in _iter_canvas_records(project):
+                if canvas.get('id') != canvas_id:
+                    continue
+                if canvas.get('name') != expected_name:
+                    raise DakiCanvasConflict(
+                        '다른 탭에서 캔버스명이 변경되었습니다. 최신 내용을 확인해 주세요.'
+                    )
+                if canvas.get('name') == validated_name:
+                    return deepcopy(canvas)
+                now = _now()
+                canvas['name'] = validated_name
+                canvas['updated_at'] = now
+                project['updated_at'] = now
+                write_json(store_path, data, indent=2)
+                return deepcopy(canvas)
+        raise DakiNotFoundError('다키 캔버스를 찾을 수 없습니다.')
+
+    def migrate_canvas_names(self, project_id):
+        """Migrate only legacy canvas names that still equal their source filename."""
+        store_path = self.path
+        with json_lock(store_path):
+            data = self._load(store_path)
+            project = self._find_project(data, project_id)
+            canvases = list(_iter_canvas_records(project))
+            now = None
+            for canvas in canvases:
+                source_candidate = _canvas_source_candidate(project, canvas)
+                if source_candidate is None:
+                    continue
+                source_path = source_candidate.get('path')
+                if not isinstance(source_path, str):
+                    continue
+                source_filename = source_path.replace('\\', '/').rsplit('/', 1)[-1]
+                if canvas.get('name') != source_filename:
+                    continue
+
+                image_name = source_candidate.get('name')
+                if not isinstance(image_name, str) or not image_name.strip():
+                    image_name = source_filename
+                existing_names = [
+                    other.get('name') for other in canvases
+                    if other is not canvas and isinstance(other.get('name'), str)
+                ]
+                canvas['name'] = readable_canvas_name(
+                    image_name, canvas.get('side'), existing_names,
+                )
+                if now is None:
+                    now = _now()
+                canvas['updated_at'] = now
+
+            if now is not None:
+                project['updated_at'] = now
+                write_json(store_path, data, indent=2)
+            return deepcopy(project)
 
     def get_canvas(self, project_id, canvas_id):
         return self.get_canvas_with_project(project_id, canvas_id)[1]

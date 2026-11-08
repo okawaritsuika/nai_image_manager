@@ -484,6 +484,16 @@ class WorldcupStoreTest(unittest.TestCase):
         self.assertEqual(next(row["base_prompt"] for row in cup["participants"] if row["image_source"] == "confirmed"),
                          "1.4::artist:Alpha_One::, {{watercolor}}, blue_hair")
 
+    def test_confirmed_filter_uses_unified_base_instead_of_stale_split_fields(self):
+        style_id = self.add_confirmed(artist="artist:stale", quality="stale_quality", fixed="stale_fixed")
+        base = "watercolor, 1.2::artist:synthetic_a::, blue_hair"
+        with closing(sqlite3.connect(self.db)) as connection, connection:
+            connection.execute("UPDATE confirmed_styles SET base_prompt=? WHERE id=?", (base, style_id))
+        options = {"sources": ["confirmed"], "confirmed_image_root": self.confirmed_images}
+        self.assertEqual(self.preview(include_artists=["synthetic a"], include_tags=["watercolor", "blue hair"], **options), 1)
+        self.assertEqual(self.preview(include_artists=["stale"], **options), 0)
+        self.assertEqual(self.preview(include_tags=["stale quality"], **options), 0)
+
     def test_recommendation_threshold_only_filters_shared_source(self):
         for recommendation in (None, 5, 6):
             self.add_image(recommendation=recommendation)

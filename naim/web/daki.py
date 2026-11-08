@@ -13,6 +13,7 @@ from naim.images.prompt_metadata import load_upscale_badge_info
 from naim.images.project_deletion import (
     ProjectImageReferencesConflict, delete_project_candidate_image,
 )
+from naim.images.project_rename import rename_project_image
 from naim.paths import get_file_creation_time
 from naim.storage.daki_projects import (
     DakiCanvasConflict, DakiNotFoundError, DakiProjectSettingsConflict,
@@ -21,7 +22,7 @@ from naim.storage.daki_projects import (
 
 
 def register_daki_routes(app, store_path_provider, resolve_source, clean_path=None, *,
-                         deletion_references=None, image_deleted=None):
+                         deletion_references=None, image_deleted=None, image_rename_references=None):
     """Register routes and return the store for gallery deletion checks.
 
     Providers are called at request time, allowing portable paths and isolated
@@ -43,7 +44,9 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
         def handler(*args, **kwargs):
             try:
                 return function(*args, **kwargs)
-            except (DakiNotFoundError, FileNotFoundError) as error:
+            except DakiNotFoundError as error:
+                return jsonify({'status': 'error', 'code': 'daki_not_found', 'message': str(error)}), 404
+            except FileNotFoundError as error:
                 return jsonify({'status': 'error', 'message': str(error)}), 404
             except ProjectImageReferencesConflict as error:
                 return jsonify({
@@ -201,6 +204,27 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
             except Exception:
                 result['warning'] = '그림은 삭제했지만 갤러리 색인을 갱신하지 못했습니다. 갤러리를 새로고침해 주세요.'
         return jsonify(result)
+
+    @app.route('/api/daki/projects/<project_id>/candidates/<candidate_id>', methods=['PATCH'], endpoint='daki_rename_candidate')
+    @handle_errors
+    def rename_candidate(project_id, candidate_id):
+        data = body()
+        project = rename_project_image(store, project_id, candidate_id, data.get('name'),
+                                       data.get('expectedName'), image_rename_references)
+        return jsonify({'status': 'success', 'project': public_project(project)})
+
+    @app.route('/api/daki/projects/<project_id>/canvas-names/normalize', methods=['POST'], endpoint='daki_normalize_canvas_names')
+    @handle_errors
+    def normalize_canvas_names(project_id):
+        project = store.migrate_canvas_names(project_id)
+        return jsonify({'status': 'success', 'project': public_project(project)})
+
+    @app.route('/api/daki/projects/<project_id>/canvases/<canvas_id>', methods=['PATCH'], endpoint='daki_rename_canvas')
+    @handle_errors
+    def rename_canvas(project_id, canvas_id):
+        data = body()
+        store.rename_canvas(project_id, canvas_id, data.get('name'), data.get('expectedName'))
+        return jsonify({'status': 'success', 'project': public_project(store.get_project(project_id))})
 
     @app.route('/api/daki/projects/<project_id>/canvases', methods=['POST'], endpoint='daki_create_canvas')
     @handle_errors

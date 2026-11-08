@@ -195,7 +195,7 @@ test('90-degree rotation preserves request dimensions when budgeting included re
     assert.equal(context.isSelectionRequestSizeAllowed({...selection, layerHeight: 1344}), false);
 });
 
-test('new selection on a large canvas is reduced to a requestable 64px-grid size', () => {
+test('a fixed 1024px selection on a large canvas remains requestable with a reference', () => {
     restoreReference(320, true);
     const context = makeCreationContext();
 
@@ -204,10 +204,9 @@ test('new selection on a large canvas is reduced to a requestable 64px-grid size
     assert.equal(context.canvasLayers.length, 1);
     const [selection] = context.canvasLayers;
     assert.equal(selection.type, 'selection');
-    assert.equal(selection.layerWidth % 64, 0);
-    assert.equal(selection.layerHeight % 64, 0);
+    assert.equal(selection.layerWidth, 1024);
+    assert.equal(selection.layerHeight, 1024);
     assert.equal(context.isSelectionRequestSizeAllowed(selection), true);
-    assert.ok(selection.layerWidth < 4096 || selection.layerHeight < 1792);
 });
 
 test('bottom-right resize rejects an over-limit candidate without changing current geometry', () => {

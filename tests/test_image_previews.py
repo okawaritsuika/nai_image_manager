@@ -221,6 +221,56 @@ class ImagePreviewTests(unittest.TestCase):
             for future in futures:
                 self.assertEqual(future.result(timeout=5)[1], 'image/jpeg')
 
+    def test_cold_lists_bound_decoding_and_leave_cache_hits_available(self):
+        cached_path = self.make_image('cached.png')
+        expected = self.cached(cached_path)
+        paths = [self.make_image(f'cold-{index}.png') for index in range(8)]
+        lock = threading.Lock()
+        release = threading.Event()
+        two_entered = threading.Event()
+        third_entered = threading.Event()
+        active = 0
+        peak = 0
+
+        def build(file_path, max_side):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                if active == 2:
+                    two_entered.set()
+                if active > 2:
+                    third_entered.set()
+            try:
+                if not release.wait(5):
+                    raise AssertionError('cold preview release timeout')
+                return app.build_image_preview_bytes(file_path, max_side)
+            finally:
+                with lock:
+                    active -= 1
+
+        with ThreadPoolExecutor(max_workers=9) as executor:
+            futures = [executor.submit(self.cached, path, build) for path in paths]
+            try:
+                self.assertTrue(two_entered.wait(5))
+                self.assertFalse(third_entered.wait(0.1))
+                hit = executor.submit(self.cached, cached_path)
+                self.assertEqual(hit.result(timeout=2), expected)
+            finally:
+                release.set()
+            for future in futures:
+                self.assertEqual(future.result(timeout=5)[1], 'image/jpeg')
+        self.assertEqual(peak, 2)
+        self.assertEqual(self.cache._locks, {})
+
+    def test_builder_failure_releases_capacity_for_later_previews(self):
+        path = self.make_image()
+        for _ in range(3):
+            with self.assertRaises(ValueError):
+                self.cached(path, mock.Mock(side_effect=ValueError('synthetic failure')))
+        self.assertEqual(self.cached(path)[1], 'image/jpeg')
+        self.assertEqual(self.cache._locks, {})
+
     def test_changed_source_during_build_is_not_cached_under_old_identity(self):
         path = self.make_image()
 

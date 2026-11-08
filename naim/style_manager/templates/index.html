@@ -14,11 +14,14 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>그림체 관리 · NAIM</title>
+    <link rel="stylesheet" href="/static/ui_typography.css?v=20261103">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style_worldcup.css') }}">
     {% if naim_embedded %}
     <link rel="stylesheet" href="/static/workspace_header.css">
+    <link rel="stylesheet" href="/static/novelai_account.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='naim_workspace.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='naim_shared_library.css') }}">
     {% endif %}
   </head>
   <body{% if naim_embedded %} class="naim-embedded"{% endif %}>
@@ -249,20 +252,24 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
 
       <section id="nai-artist-test-tab" class="view nai-artist-test-view">
         <div class="nai-artist-test-subviews">
-          <section id="naiArtistTestListView" class="nai-artist-test-subview">
-            <div class="nai-artist-test-view-head">
-              <div class="nai-artist-test-head-copy">
+          <section id="naiArtistTestListView" class="nai-artist-test-subview" aria-label="NAI 작가 테스트 목록">
+            <div class="nai-artist-test-view-head naim-view-toolbar">
+              <div class="nai-artist-test-head-copy naim-view-intro">
+                {% if not naim_embedded %}
                 <span class="nai-artist-test-eyebrow">NAI ARTIST TEST</span>
                 <h2>NAI 작가 테스트</h2>
+                {% endif %}
                 <p>저장된 테스트 묶음에서 작가별 생성 표본과 NAI 직접 평가를 관리합니다.</p>
               </div>
-              <div class="toolbar nai-artist-test-head-actions">
+              <div class="toolbar nai-artist-test-head-actions naim-view-actions">
                 <div id="naiArtistTestListModeControls" class="nai-artist-test-mode-controls" role="tablist" aria-label="보기 방식">
                   <button id="naiArtistTestTestMode" type="button" class="primary" role="tab" aria-selected="true">테스트별 보기</button>
                   <button id="naiArtistTestArtistMode" type="button" class="ghost" role="tab" aria-selected="false">작가별 보기</button>
                 </div>
-                <button id="naiArtistTestRefreshTests" type="button" class="ghost">새로고침</button>
-                <button id="naiArtistTestAdd" class="primary" type="button">테스트 추가</button>
+                <div class="naim-toolbar-actions">
+                  <button id="naiArtistTestRefreshTests" type="button" class="ghost">새로고침</button>
+                  <button id="naiArtistTestAdd" class="primary" type="button">테스트 추가</button>
+                </div>
               </div>
             </div>
             <div id="naiArtistTestListStatus" class="status" aria-live="polite"></div>
@@ -412,9 +419,12 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
          </div>
        </section>
 
-      <section id="style-group-tab" class="view style-group-view">
-        <div class="style-group-head">
-          <div class="style-group-head-copy"><span class="style-group-eyebrow">AUTHOR GROUP</span><h2>그림체 그룹</h2><p>작가를 한 번 판단하면 선택한 평가·NAI 출처의 모든 그림을 한 그룹으로 보관합니다.</p></div>
+      <section id="style-group-tab" class="view style-group-view" aria-label="그림체 그룹 관리">
+        <div class="style-group-head naim-view-toolbar">
+          <div class="style-group-head-copy naim-view-intro">
+            {% if not naim_embedded %}<span class="style-group-eyebrow">AUTHOR GROUP</span><h2>그림체 그룹</h2>{% endif %}
+            <p>작가를 한 번 판단하면 선택한 평가·NAI 출처의 모든 그림을 한 그룹으로 보관합니다.</p>
+          </div>
           <button id="styleGroupNew" class="primary" type="button">새 그룹 만들기</button>
         </div>
         <div id="styleGroupStatus" class="status" role="status"></div>
@@ -760,8 +770,8 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
         </section>
       </section>
 
-      <section id="comparison-tab" class="view comparison-view">
-        <header class="style-manager-toolbar"><div><h2 id="comparisonPageTitle">비교군 관리</h2><p>확정 그림체의 저장 설정으로 같은 조건을 비교합니다.</p></div><div class="style-manager-list-actions"><button id="backToComparisonList" class="ghost hidden" type="button">목록으로</button><button id="addComparison" class="primary" type="button">비교군 추가</button></div></header>
+      <section id="comparison-tab" class="view comparison-view" aria-label="비교군 관리">
+        <header class="style-manager-toolbar naim-view-toolbar"><div class="naim-view-intro"><h2 id="comparisonPageTitle">비교군 관리</h2><p>확정 그림체의 저장 설정으로 같은 조건을 비교합니다.</p></div><div class="style-manager-list-actions naim-view-actions"><button id="backToComparisonList" class="ghost hidden" type="button">목록으로</button><button id="addComparison" class="primary" type="button">비교군 추가</button></div></header>
         <div id="comparisonStatus" class="status"></div>
         <section id="comparisonProgress" class="comparison-progress hidden" aria-live="polite">
           <progress id="comparisonProgressBar" max="1" value="0"></progress>
@@ -904,12 +914,26 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
             <summary>목록 검색과 필터</summary>
             <div class="arca-style-filter-fields">
               <label class="field"><span>목록 검색</span><input id="arcaStyleSearch" type="search" placeholder="제목, 프롬프트, 링크"></label>
-              <label class="field"><span>메타데이터</span><select id="arcaMetadataFilter"><option value="all">전체</option><option value="ok">추출 성공</option><option value="body_only">본문 추출</option><option value="no_metadata">없음</option><option value="error">오류</option></select></label>
               <label class="field"><span>NovelAI 모델</span><select id="arcaModelFilter"><option value="all">전체</option><option value="v5">V5만</option><option value="v4.5">V4.5만</option><option value="nai-diffusion-5-full">V5 Full</option><option value="nai-diffusion-5-full-medium">V5 Full Medium</option><option value="nai-diffusion-5-curated">V5 Curated</option><option value="nai-diffusion-4-5-full">V4.5 Full</option><option value="nai-diffusion-4-5-curated">V4.5 Curated</option><option value="unknown">Unknown</option></select></label>
-              <label class="field"><span>최소 추천수</span><input id="arcaRecommendationMinList" type="number" min="0" step="1" placeholder="전체"></label>
-              <label class="field"><span>정렬</span><select id="arcaStyleSort"><option value="posted_desc" selected>최신순</option><option value="posted_asc">오래된순</option><option value="recommend_desc">추천순</option><option value="views_desc">조회순</option></select></label>
-              <label class="field"><span>페이지당</span><select id="arcaStylePageSize"><option value="20">20개</option><option value="50" selected>50개</option><option value="100">100개</option><option value="200">200개</option></select></label>
-              <label class="field"><span>카드 크기</span><select id="arcaStyleCardSize"><option value="small">소형</option><option value="medium" selected>보통</option><option value="large">대형</option></select></label>
+              <div class="arca-style-filter-secondary">
+                <label class="field"><span>메타데이터</span><select id="arcaMetadataFilter"><option value="all">전체</option><option value="ok">추출 성공</option><option value="body_only">본문 추출</option><option value="no_metadata">없음</option><option value="error">오류</option></select></label>
+                <label class="field"><span>최소 추천수</span><input id="arcaRecommendationMinList" type="number" min="0" step="1" placeholder="전체"></label>
+                <label class="field"><span>정렬</span><select id="arcaStyleSort"><option value="posted_desc" selected>최신순</option><option value="posted_asc">오래된순</option><option value="recommend_desc">추천순</option><option value="views_desc">조회순</option></select></label>
+                <label class="field"><span>페이지당</span><select id="arcaStylePageSize"><option value="20">20개</option><option value="50" selected>50개</option><option value="100">100개</option><option value="200">200개</option></select></label>
+              </div>
+              <div class="field arca-card-size-field">
+                <span id="arcaStyleCardSizeLabel">카드 크기</span>
+                <div class="arca-card-size-controls">
+                  <div id="arcaStyleCardSize" class="arca-card-preset-buttons" role="group" aria-labelledby="arcaStyleCardSizeLabel">
+                    <button type="button" class="arca-card-preset-button" data-card-size="xsmall" aria-pressed="false">초소형</button>
+                    <button type="button" class="arca-card-preset-button" data-card-size="small" aria-pressed="false">소형</button>
+                    <button type="button" class="arca-card-preset-button active" data-card-size="medium" aria-pressed="true">보통</button>
+                    <button type="button" class="arca-card-preset-button" data-card-size="large" aria-pressed="false">대형</button>
+                  </div>
+                  <div id="arcaStyleCardColumns" class="arca-card-column-buttons" role="group" aria-label="한 줄 카드 개수"></div>
+                  <output id="arcaStyleCardScaleValue" aria-live="polite">한 줄 1개</output>
+                </div>
+              </div>
             </div>
           </details>
           <div id="arcaStyleListStatus" class="status"></div>
@@ -923,10 +947,10 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
           </nav>
         </section>
       </section>
-      <section id="arca-style-statistics-tab" class="view arca-statistics-view">
+      <section id="arca-style-statistics-tab" class="view arca-statistics-view" aria-label="공유 그림체 프롬프트 분석">
         <section class="panel arca-statistics-overview">
           <div class="arca-statistics-head">
-            <div><h2>공유 그림체 프롬프트 분석</h2><p id="arcaStyleStatisticsSummary" class="arca-statistics-summary">저장된 이미지 프롬프트를 분석합니다.</p></div>
+            <div>{% if not naim_embedded %}<h2>공유 그림체 프롬프트 분석</h2>{% endif %}<p id="arcaStyleStatisticsSummary" class="arca-statistics-summary">저장된 이미지 프롬프트를 분석합니다.</p></div>
             <button id="refreshArcaStatistics" type="button">통계 새로고침</button>
           </div>
           <input id="arcaStatisticsModelFilter" type="hidden" value="v5">
@@ -1336,6 +1360,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
         <div class="confirmed-style-editor">
           <section id="confirmedStyleImageColumn" class="confirmed-style-image-column">
             <div class="confirmed-style-import-toolbar">
+              <div class="confirmed-style-image-intro"><h3>대표 이미지</h3><p>이 그림체를 확인할 이미지를 가져오세요. 이미지 여러 장을 한 번에 선택할 수 있습니다.</p></div>
               <div id="confirmedStyleImportCounter" class="confirmed-style-import-counter">가져온 이미지 없음</div>
               <div class="confirmed-style-import-actions">
                 <button id="chooseConfirmedStyleImage" type="button">이미지 선택</button>
@@ -1359,7 +1384,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
                   <button id="confirmedStylePrevImage" class="arrow vertical" type="button" aria-label="같은 그림체 이전 이미지">↑</button>
                   <div id="confirmedStyleDropZone" class="confirmed-style-drop-zone">
                     <img id="confirmedStylePreview" class="hidden" alt="확정 그림체 미리보기">
-                    <span id="confirmedStyleDropHint">이미지 여러 장을 드래그하거나 붙여넣으세요.</span>
+                    <span id="confirmedStyleDropHint">이미지를 끌어오거나 붙여넣으세요. 파일 또는 폴더를 선택해도 됩니다.</span>
                   </div>
                   <button id="confirmedStyleNextImage" class="arrow vertical" type="button" aria-label="같은 그림체 다음 이미지">↓</button>
                 </div>
@@ -1374,17 +1399,32 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
               <label class="field"><span>그림체 이름</span><input id="confirmedStyleName" type="text" maxlength="16384"></label>
               <label class="field"><span>설명</span><textarea id="confirmedStyleDescription"></textarea></label>
             </div>
-            <label class="field"><span>작가 프롬프트</span><textarea id="confirmedStyleArtistPrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
-            <label class="field"><span>퀄리티 프롬프트</span><textarea id="confirmedStyleQualityPrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
-            <div id="confirmedStyleExcludedSection" class="excluded-prompt-tags hidden"><span>제외된 퀄리티 태그 · 누르면 복구</span><div id="confirmedStyleExcludedTags" class="excluded-prompt-tag-list"></div></div>
-            <label class="field"><span>고정 프롬프트</span><textarea id="confirmedStyleFixedPrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
-            <label class="field"><span>캐릭터 프롬프트 · 줄마다 1개</span><textarea id="confirmedStyleCharacterPrompts" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
-            <label class="field"><span>네거티브 프롬프트</span><textarea id="confirmedStyleNegativePrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
-            <section class="confirmed-style-settings" aria-labelledby="confirmedStyleSettingsTitle">
-              <div class="confirmed-style-settings-head">
-                <h3 id="confirmedStyleSettingsTitle">생성 설정</h3>
-                <p>이미지에서 읽은 값을 확인하고 수정하세요. 모르는 값은 비워 두어도 됩니다.</p>
+            <section class="confirmed-style-prompt-section" aria-labelledby="confirmedStylePromptTitle">
+              <div class="confirmed-style-prompt-head">
+                <h3 id="confirmedStylePromptTitle">프롬프트</h3>
+                <label class="field confirmed-style-prompt-mode"><span>입력 방식</span><select id="confirmedStylePromptMode"><option value="base" selected>베이스 하나로 입력</option><option value="split">기존 분리 방식</option></select></label>
               </div>
+              <p id="confirmedStylePromptHint" class="help-text">작가·퀄리티·고정 태그를 순서대로 자유롭게 입력하세요.</p>
+              <div id="confirmedStyleBaseSection" class="confirmed-style-base-section">
+                <label class="field"><span>베이스 프롬프트</span><textarea id="confirmedStyleBasePrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
+              </div>
+              <div id="confirmedStyleSplitSection" class="confirmed-style-split-section hidden">
+                <label class="field"><span>작가 프롬프트</span><textarea id="confirmedStyleArtistPrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
+                <label class="field"><span>퀄리티 프롬프트</span><textarea id="confirmedStyleQualityPrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
+                <div id="confirmedStyleExcludedSection" class="excluded-prompt-tags hidden"><span>제외된 퀄리티 태그 · 누르면 복구</span><div id="confirmedStyleExcludedTags" class="excluded-prompt-tag-list"></div></div>
+                <label class="field"><span>고정 프롬프트</span><textarea id="confirmedStyleFixedPrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
+              </div>
+            </section>
+            <label class="field"><span>네거티브 프롬프트</span><textarea id="confirmedStyleNegativePrompt" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
+            <details class="confirmed-style-character-details">
+              <summary>캐릭터 프롬프트 (선택)</summary>
+              <label class="field"><span>캐릭터 프롬프트 · 줄마다 1개</span><textarea id="confirmedStyleCharacterPrompts" autocomplete="off"></textarea><div class="autocomplete prompt-tag-autocomplete hidden"></div></label>
+            </details>
+            <details class="confirmed-style-settings" aria-labelledby="confirmedStyleSettingsTitle">
+              <summary class="confirmed-style-settings-head">
+                <div class="confirmed-style-settings-copy"><h3 id="confirmedStyleSettingsTitle">생성 설정</h3><p>이미지에서 읽은 값을 확인하고 수정하세요. 모르는 값은 비워 두어도 됩니다.</p></div>
+              </summary>
+              <div class="confirmed-style-settings-body">
               <label class="field"><span>모델 <span id="confirmedStyleModelBadge" class="model-badge model-badge-unknown">Unknown</span></span><select id="confirmedStyleModel">
                 <option value="">알 수 없음 / 직접 확인</option>
                 <optgroup label="NovelAI V5">
@@ -1429,14 +1469,15 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
                 <label class="field"><span>Variety+</span><select id="confirmedStyleVariety"><option value="unknown">알 수 없음</option><option value="1">켜짐</option><option value="0">꺼짐</option></select></label>
                 <label id="confirmedStyleComplexityRow" class="field v5-only-control"><span>Complexity</span><select id="confirmedStyleComplexity"><option value="">사용 안 함</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="ultra">Ultra</option></select></label>
               </div>
-            </section>
+              </div>
+            </details>
           </section>
         </div>
         <div id="confirmedStyleModalStatus" class="status"></div>
         <div class="modal-actions">
           <button id="cancelConfirmedStyle" class="ghost" type="button">취소</button>
-          <button id="saveConfirmedStyle" type="button">현재 그림체 저장</button>
-          <button id="saveAllConfirmedStyles" class="primary" type="button">모든 그림체 저장</button>
+          <button id="saveConfirmedStyle" class="primary" type="button">현재 그림체 저장</button>
+          <button id="saveAllConfirmedStyles" type="button">모든 그림체 저장</button>
         </div>
       </section>
     </div>
@@ -1533,7 +1574,9 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
     <script src="{{ url_for('static', filename='style_groups.js') }}"></script>
     <script src="{{ url_for('static', filename='style_worldcup.js') }}"></script>
     {% if naim_embedded %}
+    <script src="{{ url_for('static', filename='naim_shared_library.js') }}"></script>
     <script src="{{ url_for('static', filename='naim_workspace.js') }}"></script>
+    <script src="/static/novelai_account.js"></script>
     {% endif %}
   </body>
 </html>

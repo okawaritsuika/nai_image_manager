@@ -22,8 +22,8 @@
 .saved-canvas-modal-header h3 {
     min-width: 0;
     margin: 0;
-    font-size: 18px;
-    line-height: 1.4;
+    font-size: var(--ui-text-title, 16px);
+    line-height: var(--ui-leading-heading, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -55,14 +55,14 @@
     border-radius: var(--radius-sm);
     background: var(--bg-color);
     color: var(--text-main);
-    font: 13px/20px var(--font-family);
+    font: var(--ui-text-body, 12px)/var(--ui-leading-control, 1.4) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
 }
 
 .saved-canvas-result-count {
     flex: 0 0 auto;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .saved-canvas-retry {
@@ -80,9 +80,9 @@
     border-radius: var(--radius-sm);
     background: rgba(0, 184, 148, 0.12);
     color: var(--text-main);
-    font-size: 12px;
-    font-weight: 700;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    font-weight: 600;
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -108,8 +108,8 @@
     border: 1px dashed var(--border-color);
     border-radius: var(--radius-sm);
     color: var(--text-muted);
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     text-align: center;
     overflow-wrap: anywhere;
 }
@@ -167,8 +167,8 @@
     justify-content: center;
     overflow: hidden;
     padding: 10px;
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     text-align: center;
     overflow-wrap: anywhere;
 }
@@ -193,9 +193,9 @@
 .saved-canvas-name {
     min-width: 0;
     color: var(--text-main);
-    font-size: 14px;
-    font-weight: 800;
-    line-height: 1.5;
+    font-size: var(--ui-text-body, 12px);
+    font-weight: 600;
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
     word-break: break-word;
     white-space: normal;
@@ -205,8 +205,8 @@
     min-width: 0;
     margin: 0;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
     word-break: break-word;
 }
@@ -226,7 +226,7 @@
     flex: 0 0 auto;
     min-height: 32px;
     padding: 6px 9px;
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
     white-space: nowrap;
 }
 
@@ -243,7 +243,7 @@
     border-radius: var(--radius-sm);
     background: var(--card-bg);
     color: var(--text-main);
-    font-family: var(--font-family);
+    font-family: var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
 }
 
 .saved-canvas-preview-dialog::backdrop {
@@ -265,8 +265,8 @@
 .saved-canvas-preview-header h3 {
     min-width: 0;
     margin: 0;
-    font-size: 16px;
-    line-height: 1.4;
+    font-size: var(--ui-text-section, 14px);
+    line-height: var(--ui-leading-heading, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -289,8 +289,8 @@
     overflow: auto;
     padding: 16px;
     color: var(--text-muted);
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     text-align: center;
     overflow-wrap: anywhere;
 }

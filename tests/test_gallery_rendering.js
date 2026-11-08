@@ -29,6 +29,54 @@ function gallery(now = () => 0) {
     return {context, frames, flush};
 }
 
+test('prompt search expands from its toolbar button while its input panel stays in the main view', () => {
+    const {context} = gallery();
+    let collapsed = true;
+    const panel = {classList: {toggle(name, force) {
+        assert.equal(name, 'collapsed');
+        collapsed = force;
+    }}};
+    const toggle = {attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }};
+    const icon = {textContent: '▼'};
+    context.document.getElementById = id => ({
+        galleryPromptSearchPanel: panel,
+        galleryPromptSearchToggle: toggle,
+        galleryPromptSearchToggleIcon: icon
+    }[id] || null);
+
+    context.toggleGalleryPromptSearchPanel();
+    assert.equal(collapsed, false);
+    assert.equal(toggle.attributes['aria-expanded'], 'true');
+    assert.equal(icon.textContent, '▲');
+
+    context.toggleGalleryPromptSearchPanel();
+    assert.equal(collapsed, true);
+    assert.equal(toggle.attributes['aria-expanded'], 'false');
+    assert.equal(icon.textContent, '▼');
+});
+
+test('compact sort preserves separate folder and image orders across navigation', () => {
+    const {context} = gallery();
+    const options = ['name', 'count', 'newest', 'oldest'].map(value => ({value}));
+    const select = {options, value: ''};
+    context.document.getElementById = id => id === 'galleryCompactSort' ? select : null;
+    vm.runInContext("galleryFolderSort = 'count'; galleryImageOrder = 'oldest';", context);
+
+    context.syncGalleryCompactSort('folder');
+    assert.equal(select.value, 'count');
+    assert.deepEqual(options.filter(option => !option.disabled).map(option => option.value), ['name', 'count']);
+
+    context.syncGalleryCompactSort('image');
+    assert.equal(select.value, 'oldest');
+    assert.deepEqual(options.filter(option => !option.disabled).map(option => option.value), ['newest', 'oldest']);
+    assert.ok(options.filter(option => option.disabled).every(option => option.hidden));
+
+    context.syncGalleryCompactSort('folder');
+    assert.equal(select.value, 'count');
+    context.document.getElementById = () => null;
+    assert.doesNotThrow(() => context.syncGalleryCompactSort('image'));
+});
+
 test('small image settings limit columns by the real grid width without changing saved scale', () => {
     const {context} = gallery();
     vm.runInContext('galleryDesignSettings = normalizeGalleryDesignSettings({imageScalePercent: 40});', context);

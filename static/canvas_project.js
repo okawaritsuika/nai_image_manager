@@ -39,6 +39,43 @@
         return projectName.slice(0, Math.max(0, 120 - suffix.length)) + suffix;
     }
 
+    function truncateUtf16(value, maxUnits) {
+        let result = '';
+        for (const character of String(value)) {
+            if (result.length + character.length > maxUnits) break;
+            result += character;
+        }
+        return result;
+    }
+
+    function imageDisplayStem(value) {
+        const basename = String(value || '').replace(/\\/g, '/').split('/').pop() || '';
+        const dot = basename.lastIndexOf('.');
+        const possibleExtension = dot >= 0 ? basename.slice(dot) : '';
+        const extension = ['.png', '.jpg', '.jpeg', '.webp'].includes(possibleExtension.toLowerCase())
+            ? possibleExtension : '';
+        return basename.slice(0, basename.length - extension.length)
+            .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+            .replace(/[. ]+$/, '').trim();
+    }
+
+    function suggestImageCanvasName(imageName, side, existingNames = []) {
+        const stem = imageDisplayStem(imageName) || '캔버스';
+        const suffix = ` · ${sides[side] || sides.front} 편집`;
+        const existing = new Set((Array.isArray(existingNames) ? existingNames : [])
+            .filter(name => typeof name === 'string').map(name => name.toLowerCase()));
+        let duplicate = 1;
+        while (true) {
+            const duplicateSuffix = duplicate === 1 ? '' : ` ${duplicate}`;
+            const maxPrefixUnits = Math.max(0, 120 - suffix.length - duplicateSuffix.length);
+            const prefix = truncateUtf16(stem, maxPrefixUnits).replace(/[. ]+$/, '')
+                || truncateUtf16('캔버스', maxPrefixUnits).replace(/[. ]+$/, '');
+            const name = `${prefix}${suffix}${duplicateSuffix}`;
+            if (!existing.has(name.toLowerCase())) return name;
+            duplicate += 1;
+        }
+    }
+
     function updateSuggestedCanvasName() {
         if (canvasNameEdited) return;
         const project = byId('canvasProjectNew').checked ? {name: byId('canvasProjectName').value}
@@ -69,6 +106,7 @@
         if (!response.ok || result.status !== 'success') {
             const error = new Error(result.message || '프로젝트 캔버스를 저장하지 못했습니다.');
             error.status = response.status;
+            error.code = result.code;
             throw error;
         }
         return result;
@@ -161,8 +199,17 @@
             snapshot,
             send: async (link, state, revision) => (await api(endpoint(link), 'PUT', {state, revision})).canvas,
             status: report,
-            onSaved: saveLocalLink
+            onSaved: saveLocalLink,
+            onMissing: missingLinkRemoved
         });
+    }
+
+    function missingLinkRemoved() {
+        conflictCopyAttempt = null;
+        syncLocation(null);
+        report('idle');
+        saveLocalLink();
+        root.showToast('연결된 프로젝트 또는 캔버스를 찾을 수 없어 연결을 해제했습니다. 현재 작업은 유지되며 일반 캔버스로 계속 편집·저장할 수 있습니다.');
     }
 
     function connect(project, canvas) {
@@ -314,14 +361,26 @@
         if (current) throw new Error('기존 프로젝트 연결을 먼저 종료해 주세요.');
 
         const state = snapshot();
-        let name = payload?.name;
-        if (!name) {
-            const result = await api('/api/daki/projects/' + encodeURIComponent(context.projectId));
-            name = suggestCanvasName(result.project, context.side);
+        const targetResult = await api('/api/daki/projects/' + encodeURIComponent(context.projectId));
+        const sourceContext = payload?.projectContext;
+        let sourceProject = targetResult.project;
+        if (sourceContext && typeof sourceContext.projectId === 'string'
+            && typeof sourceContext.candidateId === 'string'
+            && sourceContext.projectId !== context.projectId) {
+            sourceProject = (await api('/api/daki/projects/' + encodeURIComponent(sourceContext.projectId))).project;
         }
+        let imageName = payload?.displayName || payload?.name || '';
+        if (sourceContext && typeof sourceContext.candidateId === 'string') {
+            const candidate = ['front', 'back'].flatMap(side => sourceProject?.candidates?.[side] || [])
+                .find(item => item?.id === sourceContext.candidateId);
+            if (candidate) imageName = candidate.name || String(candidate.path || '').replace(/\\/g, '/').split('/').pop() || imageName;
+        }
+        const existingNames = ['front', 'back'].flatMap(side =>
+            (targetResult.project?.canvases?.[side] || []).map(item => item?.name));
+        const name = suggestImageCanvasName(imageName, context.side, existingNames);
         const canvas = {
             id: root.crypto.randomUUID().replaceAll('-', ''),
-            name: String(name).slice(0, 120),
+            name,
             side: context.side,
             state
         };
@@ -493,7 +552,8 @@
                 activeCanvasSetupId = null;
                 connect(result.project, result.canvas);
             } catch (error) {
-                root.showToast('프로젝트 캔버스를 열지 못했습니다: ' + error.message);
+                if (error.status === 404 && error.code === 'daki_not_found') missingLinkRemoved();
+                else root.showToast('프로젝트 캔버스를 열지 못했습니다: ' + error.message);
             }
         } else if (restoredLink && !restoredLink.unsaved) {
             // Refresh the revision before edits; a second tab may have saved since this browser closed.
@@ -502,7 +562,7 @@
                 applyCanvasStateSnapshot(result.canvas.state);
                 connect(result.project, result.canvas);
             } catch (error) {
-                report('error', error);
+                if (!autosave.disconnectMissing(error)) report('error', error);
             }
         }
         restoredLink = null;
@@ -663,6 +723,7 @@
     root.CanvasProject = {
         open, leave, initialize, localLink, recoverConflict, chooseExportDestination,
         prepareImageImport, connectImportedImage, suggestCanvasName, suggestDownloadName,
+        suggestImageCanvasName,
         restoreLocalLink(value) { restoredLink = validLink(value) ? {...value} : null; },
         schedule(immediate = false) { if (autosave?.current()) autosave.schedule(immediate); },
         retry() {

@@ -1,0 +1,169 @@
+.daki-project-name-rename {
+    display: inline-flex;
+    min-width: 36px;
+    min-height: 36px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 10px;
+    border: 1px solid #ffffff30;
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--ui-text-body,12px);
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+ font-weight: 600;}
+.daki-project-name-rename:hover { border-color: var(--accent); }
+.daki-project-name-dialog {
+    width: min(520px, calc(100vw - 32px));
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    margin: auto;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid #ffffff24;
+    border-radius: 16px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    box-shadow: 0 20px 80px #0009;
+}
+.daki-project-name-dialog[open] { display: flex; flex-direction: column; }
+.daki-project-name-dialog::backdrop { background: #000b; }
+.daki-project-name-header {
+    display: flex;
+    min-width: 0;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 20px 24px 14px;
+}
+.daki-project-name-title {
+    min-width: 0;
+    margin: 0;
+    font-size: var(--ui-text-title,16px);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+.daki-project-name-close {
+    display: flex;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    flex: 0 0 32px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid #ffffff30;
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+}
+.daki-project-name-body {
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: auto;
+    padding: 0 24px 20px;
+}
+.daki-project-name-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: var(--ui-text-body,12px);
+    line-height: 1.5;
+}
+.daki-project-name-input {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid #ffffff35;
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--ui-text-body,12px);
+    line-height: 1.5;
+}
+.daki-project-name-note,
+.daki-project-name-status {
+    min-width: 0;
+    margin: 8px 0 0;
+    color: #bec4d1;
+    font-size: var(--ui-text-meta,12px);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.daki-project-name-status:empty { display: none; }
+.daki-project-name-status.is-error { color: #ffadb5; }
+.daki-project-name-footer {
+    display: flex;
+    min-width: 0;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 14px 24px 20px;
+    border-top: 1px solid #ffffff20;
+}
+.daki-project-name-footer > button {
+    min-width: 88px;
+    max-width: 100%;
+    min-height: 40px;
+    padding: 8px 14px;
+    border: 1px solid #555;
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: var(--ui-text-body,12px);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+.daki-project-name-footer > .daki-project-name-save {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #191321;
+    font-weight: 600;
+}
+.daki-project-name-footer > button:disabled,
+.daki-project-name-close:disabled { opacity: .5; cursor: wait; }
+.daki-project-name-dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+@container gallery-card (max-width: 280px) {
+    #dakiLibrary .daki-project-items .daki-project-name-rename {
+        width: 28px;
+        height: 28px;
+        min-width: 28px;
+        max-width: 28px;
+        min-height: 28px;
+        flex: 0 0 28px;
+        box-sizing: border-box;
+        padding: 0;
+        font-size: var(--ui-text-body,12px);
+        line-height: 1;
+        white-space: nowrap;
+    }
+    #dakiLibrary .daki-project-items .daki-project-name-rename .daki-card-action-label { display: none; }
+    #dakiLibrary .daki-project-items .daki-project-name-rename::before { content: attr(data-compact-icon); }
+}
+
+@media (max-width: 480px) {
+    .daki-project-name-header { padding-right: 18px; padding-left: 18px; }
+    .daki-project-name-body { padding-right: 18px; padding-left: 18px; }
+    .daki-project-name-footer { padding-right: 18px; padding-left: 18px; }
+}

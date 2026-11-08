@@ -168,6 +168,26 @@ test('panel starts with loading state and forwards add, recipe, and close action
     ]);
 });
 
+test('panel explains whether apply creates a new layer or updates an existing correction', () => {
+    const h = createHarness();
+    h.panel.update(view());
+    const caption = byClass(h.root, 'canvas-retouch-caption');
+    const apply = byLabel(h.root, '보정 결과 적용');
+    assert.equal(caption.textContent, '현재 전체 합성본 · 새 보정');
+    assert.equal(apply.textContent, '보정 결과 적용');
+    assert.equal(apply.title, '보정 결과 적용');
+
+    h.panel.update(view({extra: {editingExisting: true}}));
+    assert.equal(caption.textContent, '기존 보정 편집 · 기존 레이어 수정');
+    assert.equal(apply.textContent, '기존 보정 수정');
+    assert.equal(apply.title, '기존 보정 수정');
+    assert.equal(apply.getAttribute('aria-label'), '기존 보정 수정');
+
+    h.panel.update(view({extra: {resumingDraft: true}}));
+    assert.equal(caption.textContent, '초안 이어서 · 새 레이어로 적용');
+    assert.equal(apply.textContent, '보정 결과 적용');
+});
+
 test('eight-step recipe selection stays local, follows capacity, and forwards ids in recipe order', () => {
     const h = createHarness();
     h.panel.update(view());
@@ -438,7 +458,7 @@ test('eraser controls explain soft edges, hide paint color, and keep layer actio
     assert.equal(restore.getAttribute('aria-pressed'), 'false');
     assert.equal(erase.classList.contains('is-active'), true);
     assert.equal(byLabel(h.root, '부드러운 지우개 (E)').getAttribute('aria-pressed'), 'true');
-    assert.equal(byClass(h.root, 'canvas-retouch-brush').children[0].textContent, '지우개');
+    assert.equal(byClass(h.root, 'canvas-retouch-brush').children[0].textContent, '지우개 · 220 px');
     assert.equal(byLabel(h.root, '지우는 강도').value, '35');
     assert.equal(byLabel(h.root, '경계 선명도').value, '0');
     assert.equal(byLabel(h.root, '브러시 칠할 색').parentNode.hidden, true);

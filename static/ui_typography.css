@@ -1,0 +1,42 @@
+/* Shared text roles for the workspace, its tools, and dialogs. Load first. */
+:root {
+    --ui-font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+    --ui-font-mono: Consolas, 'Malgun Gothic', monospace;
+    --ui-text-meta: 12px;
+    --ui-text-body: 12px;
+    --ui-text-section: 14px;
+    --ui-text-title: 16px;
+    --ui-leading-body: 1.5;
+    --ui-leading-control: 1.4;
+    --ui-leading-heading: 1.4;
+}
+
+body {
+    font-family: var(--ui-font-family);
+    font-size: var(--ui-text-body);
+    font-weight: 400;
+    line-height: var(--ui-leading-body);
+}
+
+button, input, select, textarea {
+    font-family: var(--ui-font-family);
+    font-size: var(--ui-text-body);
+    line-height: var(--ui-leading-control);
+}
+
+button { font-weight: 600; }
+input, select, textarea { font-weight: 400; }
+label { font-size: var(--ui-text-body); }
+small { font-size: var(--ui-text-meta); }
+strong, b { font-weight: 600; }
+
+h1, h2, h3, h4 {
+    font-family: var(--ui-font-family);
+    font-weight: 600;
+    line-height: var(--ui-leading-heading);
+}
+h1, h2 { font-size: var(--ui-text-title); }
+h3 { font-size: var(--ui-text-section); }
+h4 { font-size: var(--ui-text-body); }
+
+code, kbd, samp { font-family: var(--ui-font-mono); }

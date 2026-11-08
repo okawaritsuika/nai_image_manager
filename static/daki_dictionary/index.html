@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#121218">
   <title>태그 사전</title>
+  <link rel="stylesheet" href="/static/ui_typography.css?v=20261103">
   <link rel="stylesheet" href="/static/daki_dictionary/styles.css">
   <link rel="stylesheet" href="/static/daki_dictionary_drafts.css">
   <script src="/static/daki_dictionary_drafts.js" defer></script>
   <script src="/static/daki_dictionary_download.js" defer></script>
+  <script src="/static/daki_dictionary/picture_view.js" defer></script>
   <script src="/static/daki_dictionary/app.js" defer></script>
 </head>
 <body class="daki-dictionary-standalone">
@@ -37,7 +39,6 @@
         <button id="openStatistics" class="button quiet" type="button" aria-expanded="false" aria-controls="statisticsPanel">통계</button>
         <button id="headerImageFolder" class="button quiet" type="button">이미지 폴더</button>
         <button id="dictionaryDownloadImages" class="button quiet" type="button">예시 이미지 다운로드</button>
-        <a class="button quiet export" href="/api/daki/dictionary/export.csv" download>사전 내보내기</a>
       </nav>
     </header>
     <div class="image-pack-status-row" hidden>
@@ -137,7 +138,7 @@
 
     <dialog id="editDialog" class="edit-dialog"><form id="editForm"><div class="dialog-heading"><div><span class="eyebrow">내 사전</span><h2>사전 항목 편집</h2></div><button id="closeEdit" class="icon-button" type="button" aria-label="편집 닫기">×</button></div><p id="editEnglish" class="edit-english"></p><label>한국어 이름<input id="editKo" maxlength="300" required></label><label>설명<textarea id="editDescription" rows="4" maxlength="5000"></textarea></label><label>세부 분류<span class="field-help">한 줄에 하나씩 입력하세요. / 로 단계를 구분할 수 있습니다. 최대 30개입니다.</span><textarea id="editCategories" rows="5" required></textarea></label><p id="editError" class="form-error" role="alert"></p><div class="dialog-actions"><button id="cancelEdit" class="button quiet" type="button">취소</button><button id="saveEdit" class="button primary" type="submit">변경 저장</button></div></form></dialog>
     <dialog id="folderDialog" class="edit-dialog folder-dialog"><form id="folderForm"><div class="dialog-heading"><div><span class="eyebrow">내 이미지 보관함</span><h2>이미지 폴더 연결</h2></div><button id="closeFolder" class="icon-button" type="button" aria-label="폴더 연결 닫기">×</button></div><p class="folder-intro">PNG·WebP 이미지가 담긴 폴더를 선택하세요. 하위 폴더를 살펴보고, 프롬프트가 기록된 그림을 태그에 연결합니다.</p><label>이미지 폴더 경로<div class="folder-input-row"><input id="folderPath" type="text" placeholder="이미지 폴더 경로" required autocomplete="off"><button id="pickImageFolder" class="button quiet" type="button">찾아보기</button></div></label><p class="field-help">그림은 이동하거나 수정하지 않습니다. 새 그림도 연결할 수 있습니다.</p><p id="folderError" class="form-error" role="alert"></p><div class="dialog-actions"><button id="cancelFolder" class="button quiet" type="button">취소</button><button id="saveFolder" class="button primary" type="submit">연결하기</button></div></form></dialog>
-    <dialog id="pictureOverlay" class="picture-overlay" aria-label="그림 크게 보기"><button id="importDictionaryDraftOverlay" class="button quiet picture-overlay-import" type="button" aria-haspopup="dialog">시안으로 가져오기</button><button id="closePictureOverlay" class="button quiet picture-overlay-close" type="button" aria-label="그림 크게 보기 닫기" title="닫기" autofocus><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg></button><img id="pictureOverlayImage" alt="선택한 생성 이미지"><p id="pictureOverlayError" class="picture-overlay-error" role="alert" hidden>그림을 읽지 못했습니다. 닫은 뒤 다시 시도해 주세요.</p></dialog>
+    <dialog id="pictureOverlay" class="picture-overlay" aria-label="그림 크게 보기"><button id="closePictureOverlay" class="button quiet picture-overlay-close" type="button" aria-label="그림 크게 보기 닫기" title="닫기" autofocus><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg></button><img id="pictureOverlayImage" alt="선택한 생성 이미지" draggable="false"><p id="pictureOverlayError" class="picture-overlay-error" role="alert" hidden>그림을 읽지 못했습니다. 닫은 뒤 다시 시도해 주세요.</p></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </section>
 </body>

@@ -24,7 +24,7 @@
     background: var(--btn-secondary);
     color: var(--text-main);
     font: inherit;
-    line-height: 1.35;
+    line-height: var(--ui-leading-body, 1.5);
     cursor: pointer;
 }
 
@@ -135,8 +135,8 @@
     min-width: 0;
     margin: 0;
     color: var(--text-main);
-    font-size: 18px;
-    line-height: 1.4;
+    font-size: var(--ui-text-title, 16px);
+    line-height: var(--ui-leading-heading, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -148,8 +148,8 @@
     flex: 1 1 320px;
     min-width: 0;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -183,8 +183,8 @@
 .canvas-style-link-direct-help {
     min-width: 0;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -273,8 +273,8 @@
 .canvas-style-link-thumbnail-placeholder {
     padding: 8px;
     color: var(--text-muted);
-    font-size: 11px;
-    line-height: 1.4;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     text-align: center;
     overflow-wrap: anywhere;
 }
@@ -290,8 +290,8 @@
     display: -webkit-box;
     min-width: 0;
     color: var(--text-main);
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
     overflow: hidden;
     -webkit-box-orient: vertical;
@@ -301,8 +301,8 @@
 .canvas-style-link-item-meta {
     min-width: 0;
     color: var(--text-muted);
-    font-size: 11px;
-    line-height: 1.4;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -310,8 +310,8 @@
     grid-column: 1 / -1;
     padding: 18px 8px;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     text-align: center;
     overflow-wrap: anywhere;
 }
@@ -341,8 +341,8 @@
 .canvas-style-link-direct-preview-label {
     min-width: 0;
     color: var(--text-main);
-    font-size: 12px;
-    line-height: 1.45;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-control, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -350,8 +350,8 @@
     min-height: 100px;
     max-height: 180px;
     resize: vertical;
-    font-size: 12px;
-    line-height: 1.6;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-control, 1.4);
     overflow: auto;
 }
 
@@ -379,8 +379,8 @@
     border-radius: 6px;
     background: var(--card-bg);
     color: var(--text-main);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     white-space: pre-wrap;
 }
 
@@ -388,10 +388,12 @@
 .canvas-style-link-direct-error {
     min-width: 0;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
+
+.canvas-style-link-direct-empty { font-size: var(--ui-text-body, 12px); }
+.canvas-style-link-direct-error { font-size: var(--ui-text-meta, 12px); }
 
 .canvas-style-link-direct-error {
     color: var(--success);
@@ -455,8 +457,8 @@
     justify-content: center;
     padding: 8px;
     color: var(--text-muted);
-    font-size: 11px;
-    line-height: 1.4;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     text-align: center;
     overflow-wrap: anywhere;
 }
@@ -473,9 +475,9 @@
     min-width: 0;
     margin: 0;
     color: var(--text-main);
-    font-size: 14px;
+    font-size: var(--ui-text-section, 14px);
     font-weight: 600;
-    line-height: 1.5;
+    line-height: var(--ui-leading-heading, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -486,8 +488,8 @@
     border: 1px solid var(--border-color);
     border-radius: 999px;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.35;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -501,7 +503,7 @@
     background: var(--btn-secondary);
     color: var(--text-main);
     font: inherit;
-    line-height: 1.35;
+    line-height: var(--ui-leading-control, 1.4);
     cursor: pointer;
 }
 
@@ -542,8 +544,8 @@
     min-width: 0;
     margin: 0;
     color: var(--text-main);
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: var(--ui-text-section, 14px);
+    line-height: var(--ui-leading-heading, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -553,16 +555,20 @@
 .canvas-style-review-no-match {
     min-width: 0;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
+
+.canvas-style-review-count,
+.canvas-style-review-legend { font-size: var(--ui-text-meta, 12px); }
+.canvas-style-review-empty,
+.canvas-style-review-no-match { font-size: var(--ui-text-body, 12px); }
 
 .canvas-style-review-recipe {
     min-width: 0;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -608,8 +614,8 @@
     background: var(--btn-secondary);
     color: var(--text-main);
     font: inherit;
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     text-align: left;
     white-space: normal;
     overflow-wrap: anywhere;
@@ -659,8 +665,8 @@
 .canvas-style-link-review-error {
     min-width: 0;
     color: var(--success);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -682,8 +688,8 @@
     flex: 1 1 240px;
     min-width: 0;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 

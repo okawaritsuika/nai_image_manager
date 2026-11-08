@@ -211,10 +211,13 @@ class CanvasFrontendStaticTests(unittest.TestCase):
         app = (ROOT / "app.py").read_text(encoding="utf-8")
         render_body = extract_js_function(source, "renderCanvasLayerStack")
         merge_body = extract_js_function(source, "renderMergedCanvasToDataUrl")
+        display_body = extract_js_function(source, "getCanvasLayerDomSrc")
 
         self.assertIn("const CANVAS_DISPLAY_PREVIEW_MAX_SIDE = 4096;", source)
         self.assertIn("function getCanvasLayerDisplaySrc", source)
-        self.assertGreaterEqual(render_body.count("getCanvasLayerDisplaySrc(layer)"), 2)
+        self.assertGreaterEqual(render_body.count("getCanvasLayerDomSrc(layer, displayScale)"), 2)
+        self.assertIn("usesTiledSource", display_body)
+        self.assertIn("getCanvasLayerDisplaySrc(layer, displayScale)", display_body)
         self.assertGreaterEqual(
             source.count("getCanvasDisplayImageSrc(item.src, item.width, item.height)"),
             2,

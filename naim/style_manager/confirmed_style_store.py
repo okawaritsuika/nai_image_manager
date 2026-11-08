@@ -67,6 +67,7 @@ def init_confirmed_style_tables(db_path):
                 quality_prompt TEXT NOT NULL DEFAULT '',
                 original_quality_prompt TEXT NOT NULL DEFAULT '',
                 excluded_quality_tags_json TEXT NOT NULL DEFAULT '[]',
+                base_prompt TEXT,
                 fixed_prompt TEXT NOT NULL DEFAULT '',
                 character_prompts_json TEXT NOT NULL DEFAULT '[]',
                 negative_prompt TEXT NOT NULL DEFAULT '',
@@ -127,6 +128,8 @@ def init_confirmed_style_tables(db_path):
             connection.execute("ALTER TABLE confirmed_styles ADD COLUMN quality_toggle INTEGER NOT NULL DEFAULT 0")
         if "uc_preset" not in columns:
             connection.execute("ALTER TABLE confirmed_styles ADD COLUMN uc_preset INTEGER NOT NULL DEFAULT 0")
+        if "base_prompt" not in columns:
+            connection.execute("ALTER TABLE confirmed_styles ADD COLUMN base_prompt TEXT")
 
 
 def _text(payload, key):
@@ -256,6 +259,11 @@ def normalize_confirmed_style(payload):
         "quality_prompt": normalize_numeric_prompt_closers(_text(payload, "quality_prompt")),
         "original_quality_prompt": normalize_numeric_prompt_closers(_text(payload, "original_quality_prompt")),
         "excluded_quality_tags_json": json.dumps(normalized_excluded, ensure_ascii=False),
+        "base_prompt": (
+            None
+            if payload.get("base_prompt") is None
+            else normalize_numeric_prompt_closers(_text(payload, "base_prompt"))
+        ),
         "fixed_prompt": normalize_numeric_prompt_closers(_text(payload, "fixed_prompt")),
         "character_prompts_json": json.dumps(normalized_characters, ensure_ascii=False),
         "negative_prompt": normalize_numeric_prompt_closers(_text(payload, "negative_prompt")),
@@ -300,6 +308,8 @@ def _decoded(row):
     item = dict(row)
     for key in ("artist_prompt", "quality_prompt", "original_quality_prompt", "fixed_prompt", "negative_prompt"):
         item[key] = normalize_numeric_prompt_closers(item.get(key))
+    if isinstance(item.get("base_prompt"), str):
+        item["base_prompt"] = normalize_numeric_prompt_closers(item["base_prompt"])
     item["model"] = normalize_confirmed_model_name(item.get("model"))
     try:
         item["excluded_quality_tags"] = json.loads(item.pop("excluded_quality_tags_json") or "[]")
@@ -320,6 +330,18 @@ def _decoded(row):
     if item.get("uc_preset") is not None:
         item["uc_preset"] = int(item["uc_preset"])
     return item
+
+
+def confirmed_base_prompt(style):
+    base_prompt = style.get("base_prompt")
+    if base_prompt is not None:
+        return base_prompt
+    parts = []
+    for key in ("artist_prompt", "quality_prompt", "fixed_prompt"):
+        value = style.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    return ", ".join(parts)
 
 
 def list_confirmed_styles(db_path):

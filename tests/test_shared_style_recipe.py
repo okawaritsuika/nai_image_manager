@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import random
 import sqlite3
 import tempfile
 import unittest
@@ -10,10 +11,58 @@ from naim.shared_style_recipe import (
     extract_recipe, load_style_artist_names, original_options, recipe_fingerprint,
     style_duplicate_key,
 )
+from naim._shared_style_syntax import parse
 from naim.generation_settings import V5_FULL_MEDIUM, V5_MEDIUM_FIXED_SETTINGS
 
 
 class SharedStyleRecipeTests(unittest.TestCase):
+    def test_parse_long_unbroken_tag_keeps_text(self):
+        prompt = 'synthetic' * 2200
+
+        terms = parse(prompt)
+
+        self.assertEqual([(term.text, term.weight) for term in terms], [(prompt, 1.0)])
+
+    def test_parse_long_quoted_tag_preserves_delimiters(self):
+        prompt = '"' + ('synthetic, (quoted) tag ' * 600) + '"'
+
+        terms = parse(prompt)
+
+        self.assertEqual([(term.text, term.weight) for term in terms], [(prompt, 1.0)])
+
+    def test_parse_numeric_scopes_start_after_whitespace_and_flush(self):
+        terms = parse(' \n  2::  first :: , \t-0.5:: second ::, final')
+
+        self.assertEqual([(term.text, term.weight) for term in terms],
+                         [('first', 2.0), ('second', -0.5), ('final', 1.0)])
+
+    def test_parse_rejects_midword_emphasis(self):
+        with self.assertRaisesRegex(ValueError, 'Emphasis inside a tag requires import review'):
+            parse('artist:broken{lineart}')
+
+    def test_parse_matches_preoptimization_generated_corpus(self):
+        rng = random.Random(20261103)
+        fragments = [
+            'watercolor', 'lineart', 'blue_hair', 'artist:synthetic', 'year 2025::',
+            '1girl', ' ', '\t', '\n', ',', '(', ')', '{', '}', '[', ']', '::',
+            '0.5::', '-1.25 ::', '2 ::', '"quoted, (tag)"', '"',
+            '||artist|lineart||', chr(92),
+        ]
+        prompts = [
+            ''.join(rng.choice(fragments) for _ in range(rng.randint(1, 20)))
+            for _ in range(1200)
+        ]
+        outcomes = []
+        for prompt in prompts:
+            try:
+                outcomes.append(('ok', [(term.text, term.weight) for term in parse(prompt)]))
+            except Exception as error:
+                outcomes.append(('error', type(error).__name__, str(error)))
+
+        digest = hashlib.sha256(json.dumps(
+            outcomes, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        self.assertEqual(digest, 'fe35233bee37d9352884ce843e051f989832575638c2c730030cfca4f4c1c12d')
+
     def test_preserves_style_order_emphasis_and_repetitions(self):
         recipe = extract_recipe(
             '1girl, {artist:synthetic, lineart}, blue hair, 0.5::flat color, flat color ::, '

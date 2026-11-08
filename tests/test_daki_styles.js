@@ -1639,7 +1639,14 @@ test('shared sync is beside test creation, reloads the root and retains completi
     f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
     f.reply({batches: []}); await render;
     const toolbar = f.content.querySelector('.daki-style-toolbar');
-    assert.deepEqual(toolbar.children.map(child => child.textContent), ['전체 그림체로 테스트 만들기', '공유 테스트 다운로드', '공유 그림체 최신화']);
+    assert.deepEqual(toolbar.querySelectorAll('button').filter(child => !child.hidden).map(child => child.textContent),
+        ['전체 그림체로 테스트 만들기', '공유 테스트 다운로드', '공유 그림체 최신화', '추천수만 갱신']);
+    const syncActions = f.button('공유 그림체 최신화').parentNode;
+    assert.equal(syncActions, f.button('추천수만 갱신').parentNode);
+    assert.equal(syncActions.children.indexOf(f.button('추천수만 갱신')),
+        syncActions.children.indexOf(f.button('공유 그림체 최신화')) + 1);
+    assert.ok(f.content.querySelector('.daki-shared-root-controls'));
+    assert.equal(f.content.querySelector('.daki-stats-controls').querySelectorAll('button').length, 0);
     f.button('공유 그림체 최신화').onclick(); assert.equal(f.syncs.length, 1);
     const reload = f.syncs[0].onComplete({added: 2, skipped: 3});
     assert.equal(f.content.children.length, 0);
@@ -1649,6 +1656,49 @@ test('shared sync is beside test creation, reloads the root and retains completi
     assert.equal(f.doc.getElementById('dakiPageStatus').textContent, '공유 그림체 최신화 · 추가 2 · 건너뜀 3');
     await f.syncs[0].onComplete({added: 99});
     assert.equal(f.pending.length, 0);
+});
+
+test('shared recommendation refresh starts once, shows progress, stops and reloads current votes', async () => {
+    const f = fixture(), rendered = f.render('library=shared');
+    f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
+    f.reply({batches: []}); await rendered;
+    const start = f.button('추천수만 갱신');
+    const starting = start.onclick();
+    assert.equal(start.disabled, true);
+    assert.equal(f.reply({ok: true}).url, '/api/style-workspace/connect');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(f.reply({job_id: 7}), {url: '/style-workspace/api/arca-styles/refresh-stats', method: 'POST', body: {model: 'all'}});
+    await new Promise(resolve => setImmediate(resolve));
+    f.reply({status: 'running', scanned_posts: 1, total_posts: 3, updated: 1}); await starting;
+    assert.ok(f.content.textContent.includes('1/3개 글'));
+    const stopping = f.button('갱신 중지').onclick();
+    assert.equal(f.reply({status: 'stop_requested'}).url, '/style-workspace/api/arca-styles/collection-jobs/7/stop');
+    await stopping;
+    const timer = [...f.timers.entries()].find(([, timer]) => timer.delay === 1000);
+    f.timers.delete(timer[0]); const polling = timer[1].callback();
+    f.reply({status: 'stopped', scanned_posts: 2, total_posts: 3, updated: 2});
+    await new Promise(resolve => setImmediate(resolve));
+    f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
+    f.reply({batches: []}); await polling;
+    assert.match(f.doc.getElementById('dakiPageStatus').textContent, /갱신 2 · 중지/);
+    assert.equal(f.button('추천수만 갱신').disabled, false);
+});
+
+test('recommendation start errors restore retry and late progress cannot change a destination', async () => {
+    const f = fixture(), rendered = f.render('library=shared');
+    f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
+    f.reply({batches: []}); await rendered;
+    const starting = f.button('추천수만 갱신').onclick();
+    f.reply({error: '합성 연결 오류'}, 503); await starting;
+    assert.equal(f.button('추천수만 갱신').disabled, false);
+    assert.ok(f.content.textContent.includes('합성 연결 오류'));
+    const retrying = f.button('추천수만 갱신').onclick();
+    f.reply({ok: true}); await new Promise(resolve => setImmediate(resolve));
+    f.reply({job_id: 8}); await new Promise(resolve => setImmediate(resolve));
+    f.win.DakiStyles.leave(); f.content.textContent = 'destination';
+    f.reply({status: 'completed', updated: 10}); await retrying;
+    assert.equal(f.content.textContent, 'destination');
+    assert.equal(f.timers.size, 0);
 });
 
 test('shared test pack download is manual and refreshes root saved test cards after an install', async () => {

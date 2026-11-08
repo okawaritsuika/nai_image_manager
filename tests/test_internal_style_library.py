@@ -2,7 +2,7 @@ from copy import deepcopy
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from flask import Flask
 from PIL import Image
@@ -68,6 +68,30 @@ class InternalStyleLibraryTests(unittest.TestCase):
         finally:
             response.close()
         self.assertEqual(self.client.get('/api/naim-shared-library/invalid/preview').status_code, 404)
+
+    def test_webp_preview_and_read_do_not_depend_on_system_mime_types(self):
+        for suffix in ('.webp', '.WEBP'):
+            with self.subTest(suffix=suffix):
+                image = self.image.with_name('synthetic' + suffix)
+                Image.new('RGB', (2, 2), 'blue').save(image, format='WEBP')
+                expected = image.read_bytes()
+                self.catalog.preview_path.return_value = image
+
+                with patch.object(library.mimetypes, 'guess_type', return_value=(None, None)):
+                    for query, full in (('', False), ('?full=1', True)):
+                        response = self.client.get(
+                            '/api/naim-shared-library/' + STYLE_ID + '/preview' + query)
+                        try:
+                            self.assertEqual(response.status_code, 200)
+                            self.assertEqual(response.mimetype, 'image/webp')
+                            self.assertEqual(response.data, expected)
+                            self.assertEqual(response.headers['X-Content-Type-Options'], 'nosniff')
+                            self.assertEqual(response.headers['Cache-Control'], 'private, max-age=60')
+                            self.catalog.preview_path.assert_called_with(STYLE_ID, full=full)
+                        finally:
+                            response.close()
+
+                    self.assertEqual(library.read_image(STYLE_ID, full=True), (expected, 'image/webp'))
 
     def test_image_read_is_bounded_and_exact_limit_is_valid(self):
         expected = self.image.read_bytes()

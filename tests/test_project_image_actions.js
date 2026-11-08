@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-const projectContext = {projectId: 'project-one', side: 'front', candidateId: 'candidate-one'};
+const projectContext = {projectId: 'project-one', side: 'front', candidateId: 'candidate-one', displayName: '보여줄 이름.png'};
 
 function response(status, result) {
     return {status, ok: status >= 200 && status < 300, json: async () => result};
@@ -254,6 +254,7 @@ test('canvas transfer captures the project and image before async prompt loading
     assert.deepEqual(payload.projectContext, projectContext);
     assert.equal(payload.path, 'synthetic/project.png');
     assert.equal(payload.name, 'project.png');
+    assert.equal(payload.displayName, '보여줄 이름.png');
     assert.equal(payload.promptInfo.basePrompt, 'synthetic prompt');
 });
 

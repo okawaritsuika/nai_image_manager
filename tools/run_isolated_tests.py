@@ -33,8 +33,11 @@ def copy_source(root, staging):
         source_root = root / folder
         if not source_root.is_dir():
             continue
+        suffixes = {".py", ".js", ".css", ".html"}
+        if folder == "static":
+            suffixes.update({".wasm", ".whl", ".json", ".zip"})
         for source in source_root.rglob("*"):
-            if source.is_file() and (source.suffix in {".py", ".js", ".css", ".html"}
+            if source.is_file() and (source.suffix in suffixes
                                     or source.relative_to(root).as_posix() == 'static/arca_session_bridge/manifest.json'):
                 target = staging / source.relative_to(root)
                 target.parent.mkdir(parents=True, exist_ok=True)

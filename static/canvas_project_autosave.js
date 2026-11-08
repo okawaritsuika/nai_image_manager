@@ -6,6 +6,7 @@
         send,
         status = () => {},
         onSaved = () => {},
+        onMissing = () => {},
         setTimer = setTimeout,
         clearTimer = clearTimeout,
         delay = 600
@@ -64,6 +65,28 @@
             return Number.isSafeInteger(value) && value > 0 && value >= minimum;
         }
 
+        function disconnectMissing(error) {
+            if (!binding || !error || error.status !== 404 || error.code !== 'daki_not_found') {
+                return false;
+            }
+
+            const missingBinding = copyBinding();
+            cancelTimer();
+            binding = null;
+            failure = null;
+            dirty = false;
+            retryRequest = null;
+            running = null;
+            generation++;
+            report('idle');
+            try {
+                onMissing(missingBinding);
+            } catch (_) {
+                // A UI callback must not interrupt missing-binding cleanup.
+            }
+            return true;
+        }
+
         async function drain(saveGeneration) {
             while (binding && generation === saveGeneration && !failure && (dirty || retryRequest)) {
                 let request = retryRequest;
@@ -86,7 +109,10 @@
                 try {
                     metadata = await send(copyBinding(request.binding), request.state, request.revision);
                 } catch (error) {
-                    if (generation === saveGeneration && binding) fail(error, request);
+                    if (generation === saveGeneration && binding) {
+                        if (disconnectMissing(error)) return true;
+                        fail(error, request);
+                    }
                     return false;
                 }
 
@@ -183,7 +209,11 @@
                 report('idle');
                 return true;
             }
+            const disconnectGeneration = generation;
+            const disconnectBinding = binding;
             if (!(await flush())) return false;
+            if (!binding) return true;
+            if (generation !== disconnectGeneration || binding !== disconnectBinding) return false;
             binding = null;
             failure = null;
             dirty = false;
@@ -210,6 +240,7 @@
             flush,
             retry,
             disconnect,
+            disconnectMissing,
             isUnsaved: () => Boolean(dirty || retryRequest || failure || running)
         };
     }

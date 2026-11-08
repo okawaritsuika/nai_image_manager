@@ -9,12 +9,12 @@
 .daki-test-target-panel [hidden], .daki-test-targets > [hidden], .daki-test-target-controls > [hidden] { display: none !important; }
 .daki-test-target-test, .daki-test-target-note { grid-column: 1 / -1; }
 .daki-test-target-tag-field { grid-column: 1 / -1; min-width: 0; }
-.daki-test-target-tag-label { color: #c7c9d0; font-size: 12px; font-weight: 600; }
+.daki-test-target-tag-label { color: #c7c9d0; font-size: var(--ui-text-meta,12px); font-weight: 600; }
 .daki-test-target-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
-.daki-test-dialog .daki-test-target-tags .gallery-tag-filter-chip { height: 36px; min-width: 36px; padding: 0 8px; border-radius: 999px; font-size: 12px; }
+.daki-test-dialog .daki-test-target-tags .gallery-tag-filter-chip { height: 36px; min-width: 36px; padding: 0 8px; border-radius: 999px; font-size: var(--ui-text-meta,12px); }
 .daki-test-dialog .daki-test-target-tags .gallery-tag-filter-chip.active { border-color: #2dd4bf; color: #2dd4bf; }
 .daki-test-targets select { width: 100%; min-width: 0; text-overflow: ellipsis; }
-.daki-test-dialog .daki-test-target-count { margin: 14px 0 0; color: var(--text); font-size: 14px; font-weight: 600; }
+.daki-test-dialog .daki-test-target-count { margin: 14px 0 0; color: var(--text); font-size: var(--ui-text-meta,12px); font-weight: 600; }
 .daki-test-dialog .daki-test-target-status { margin: 6px 0 0; color: var(--thumb); line-height: 1.6; overflow-wrap: anywhere; }
 .daki-test-target-status:empty { display: none; }
 .daki-test-targets .daki-test-target-note { margin: 0; line-height: 1.6; }

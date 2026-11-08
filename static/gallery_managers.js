@@ -24,11 +24,11 @@ async function loadStats() {
         let html = `
             <div style="margin-bottom:20px; display:flex; flex-wrap:wrap; align-items:center; gap:20px; background:#1a1a24; padding:15px; border-radius:10px; border:1px solid #333;">
                 <div style="display:flex; align-items:center; gap:10px;">
-                    <span style="font-size:13px; color:#888;">최소 보유량:</span>
+                    <span style="font-size:var(--ui-text-body,12px); color:#888;">최소 보유량:</span>
                     <input type="number" value="${statsThreshold}" onchange="statsThreshold=parseInt(this.value)||0; loadStats();"
                             style="background:#000; border:1px solid #444; color:#fff; padding:5px 10px; border-radius:5px; width:70px;">
                 </div>
-                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#eee;">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:var(--ui-text-body,12px); color:#eee;">
                     <input type="checkbox" ${includeDaki ? 'checked' : ''} onchange="includeDaki=this.checked; loadStats();"
                             style="accent-color:#39ff14; width:16px; height:16px;">
                     다키마쿠라 데이터 포함
@@ -62,8 +62,8 @@ async function loadStats() {
             html += `
                 <tr>
                     <td style="color:#666;">${i+1}</td>
-                    <td style="font-weight:bold; color:${isDaki ? '#39ff14' : '#eee'}">${s.name}</td>
-                    <td style="font-weight:900;">${s.total}</td>
+                    <td style="font-weight:400; color:${isDaki ? '#39ff14' : '#eee'}">${s.name}</td>
+                    <td style="font-weight:400;">${s.total}</td>
                     <td style="color:#39ff14;">${s.safe}</td>
                     <td style="color:#ff007c;">${s.nsfw}</td>
                     <td>
@@ -71,7 +71,7 @@ async function loadStats() {
                             <div class="bar-fill" style="width:${safePer}%; background:#39ff14; float:left;"></div>
                             <div class="bar-fill" style="width:${nsfwPer}%; background:#ff007c; float:left;"></div>
                         </div>
-                        <span style="font-size:11px; color:#888;">${safePer}%</span>
+                        <span style="font-size:var(--ui-text-body,12px); color:#888;">${safePer}%</span>
                     </td>
                 </tr>`;
         });
@@ -160,12 +160,12 @@ function renderBrandMgrTable(data) {
                     <input type="checkbox" class="brand-vis-check" ${isChecked ? 'checked' : ''}
                             style="width:18px; height:18px; accent-color:#39ff14; cursor:pointer;">
                 </td>
-                <td style="color:#aaa; font-size:13px;">${b.name}</td>
+                <td style="color:#aaa; font-size:var(--ui-text-body,12px);">${b.name}</td>
                 <td>
                     <input type="text" value="${b.name_kr || ''}" class="brand-kr-input" placeholder="비워두면 영어 이름 사용"
                             style="background:#1a1a24; border:1px solid #333; color:#fff; width:95%; padding:8px; border-radius:5px;">
                 </td>
-                <td style="font-weight:bold;">${b.total.toLocaleString()}</td>
+                <td style="font-weight:400;">${b.total.toLocaleString()}</td>
                 <td style="color:#ff007c;">${Math.round((b.nsfw/b.total)*100 || 0)}%</td>
             </tr>`;
     });
@@ -504,7 +504,7 @@ function renderArtStyleTable(data) {
 
     // 🌟 [추가] 서버에서 에러 응답 시 화면 멈춤 현상(무한 로딩) 해결
     if (data && data.status === 'error') {
-        container.innerHTML = `<div style="text-align:center; padding:50px; color:#ff4d4d; font-weight:bold;">오류 발생: ${escapeHtml(data.message)}</div>`;
+        container.innerHTML = `<div style="text-align:center; padding:50px; color:#ff4d4d; font-weight:400;">오류 발생: ${escapeHtml(data.message)}</div>`;
         return;
     }
 
@@ -539,20 +539,20 @@ function renderArtStyleTable(data) {
             <tr class="art-row" data-name="${a.artist_name.toLowerCase()}">
                 <td>
                     <div style="display:flex; align-items:center; justify-content:space-between; gap:5px;">
-                        <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color:#f1c40f; font-weight:bold; font-size:13px;" title="${a.artist_name}">
+                        <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color:#f1c40f; font-weight:600; font-size:var(--ui-text-body,12px);" title="${a.artist_name}">
                             ${a.artist_name}
                         </div>
-                        <button onclick="openArtStyleDetail(${safeArtistName})" style="background:#f1c40f; color:#000; border:none; border-radius:3px; padding:3px 6px; cursor:pointer; font-size:11px; font-weight:bold; flex-shrink:0;">🔍확대</button>
+                        <button onclick="openArtStyleDetail(${safeArtistName})" style="background:#f1c40f; color:#000; border:none; border-radius:3px; padding:3px 6px; cursor:pointer; font-size:var(--ui-text-body,12px); font-weight:600; flex-shrink:0;">🔍확대</button>
                     </div>
                 </td>
                 <td>
                     <input type="text" value="${a.name_kr || ''}" class="art-kr-input" placeholder="커스텀 이름 입력"
                             style="background:#1a1a24; border:1px solid #333; color:#fff; width:90%; padding:8px; border-radius:5px;">
                 </td>
-                <td style="font-weight:bold; color:#fff; text-align:center;">${(a.count || 0).toLocaleString()}</td>
+                <td style="font-weight:400; color:#fff; text-align:center;">${(a.count || 0).toLocaleString()}</td>
                 <td>
                     <div style="display:flex; gap:15px; align-items:center;">
-                        <button onclick="refreshRandomArtist(${safeArtistName}, 'samples_${safeId}')" style="background:#222; border:1px solid #444; color:#fff; padding:6px 12px; font-weight:bold; border-radius:5px; cursor:pointer; flex-shrink:0;">🔄 변경</button>
+                        <button onclick="refreshRandomArtist(${safeArtistName}, 'samples_${safeId}')" style="background:#222; border:1px solid #444; color:#fff; padding:6px 12px; font-weight:600; border-radius:5px; cursor:pointer; flex-shrink:0;">🔄 변경</button>
                         <div id="samples_${safeId}" style="display:flex; gap:8px; overflow:hidden;">${samplesHtml}</div>
                     </div>
                 </td>

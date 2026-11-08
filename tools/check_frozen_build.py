@@ -3,8 +3,9 @@
 This checks bundled imports/assets and portable settings, not AI/native engines
 or a production release payload. No live settings, databases or images are used.
 """
-from contextlib import closing
+from contextlib import closing, nullcontext
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import tempfile
 import time
 import urllib.request
 import uuid
+from zipfile import ZipFile
 
 from run_isolated_tests import copy_source
 
@@ -24,15 +26,34 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5000)
     parser.add_argument('--skip-legacy', action='store_true')
+    parser.add_argument('--pyvips-path', help='Directory containing the pinned pyvips build modules.')
+    parser.add_argument('--skip-browser', action='store_true')
+    parser.add_argument('--keep-temp', action='store_true', help='Keep the unique disposable stage directory for diagnostics.')
+    parser.add_argument('--stage-dir', help='Use a new, explicit staging directory; it must not already exist.')
     options = parser.parse_args()
     port = options.port
+    source_root = Path(__file__).resolve().parents[1]
     # An alternate port changes only the temporary test copy.
     # Never stop an existing program to obtain it.
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', port))
-    with tempfile.TemporaryDirectory(prefix='naim-frozen-test-') as temporary:
+    stage_parent = source_root / 'build'
+    stage_parent.mkdir(exist_ok=True)
+    if options.stage_dir:
+        stage_dir = Path(options.stage_dir).resolve()
+        if stage_dir.exists():
+            raise FileExistsError(f'Refusing to reuse a staging directory: {stage_dir}')
+        stage_dir.mkdir(parents=True)
+        temporary_context = nullcontext(str(stage_dir))
+    elif options.keep_temp:
+        temporary_context = nullcontext(tempfile.mkdtemp(prefix='naim-frozen-test-', dir=stage_parent))
+    else:
+        temporary_context = tempfile.TemporaryDirectory(prefix='naim-frozen-test-', dir=stage_parent)
+    with temporary_context as temporary:
         root = Path(temporary)
-        copy_source(Path(__file__).resolve().parents[1], root)
+        if options.keep_temp:
+            print(f'FROZEN_STAGE_DIR={root}', flush=True)
+        copy_source(source_root, root)
         (root / 'data/prompt_tags').mkdir(parents=True, exist_ok=True)
         if port != 5000:
             server_source = root / 'app.py'
@@ -65,6 +86,79 @@ def main():
         (root / 'static' / f'{nonce}.txt').write_text(nonce)
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
         env.pop('PYTHONPATH', None)
+        pyvips_path = Path(options.pyvips_path).resolve() if options.pyvips_path else source_root / '.qa' / 'editor-vips'
+        if pyvips_path.is_dir():
+            env['PYTHONPATH'] = str(pyvips_path)
+        else:
+            raise RuntimeError(f'Pinned pyvips modules not found: {pyvips_path}')
+
+        # Regenerate the browser engine inside the disposable copy, so the EXE
+        # stages exactly the retouch modules present in this source snapshot.
+        result = subprocess.run(
+            [sys.executable, '-B', 'tools/build_canvas_editor_assets.py'],
+            cwd=root, env=env, capture_output=True, text=True,
+        )
+        if result.returncode:
+            raise RuntimeError('Canvas worker asset build failed:\n' + result.stdout + result.stderr)
+        for relative in (
+            'static/canvas_editor_worker.js',
+            'static/canvas_editor_engine.js',
+            'static/canvas_editor_scene.js',
+            'static/canvas_editor_view.js',
+            'static/canvas_editor/brush.wasm',
+            'static/canvas_editor/filter.wasm',
+        ):
+            stage_hash = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+            source_hash = hashlib.sha256((source_root / relative).read_bytes()).hexdigest()
+            assert stage_hash == source_hash, f'staged canvas asset differs from project source: {relative}'
+
+        # The test-only branch checks native DLL loading from the frozen EXE.
+        # It is injected into the disposable source copy, never the app source.
+        entrypoint = root / 'main_executor.pyw'
+        original_entrypoint = entrypoint.read_text(encoding='utf-8')
+        needle = 'APP_DIR = get_app_dir()\n'
+        assert original_entrypoint.count(needle) == 1
+        vips_smoke_branch = '''APP_DIR = get_app_dir()
+if "--frozen-vips-smoke" in sys.argv:
+    from pathlib import Path
+    import json
+    import traceback
+    try:
+        import pyvips
+        png = pyvips.Image.black(16, 16, bands=4).write_to_buffer(".png")
+        result = {
+            "pyvips": pyvips.__version__,
+            "libvips": [pyvips.version(part) for part in range(3)],
+            "png_bytes": len(png),
+            "png_signature": png[:8].hex(),
+        }
+        Path(APP_DIR, "frozen-vips-smoke.json").write_text(json.dumps(result), encoding="utf-8")
+        sys.exit(0)
+    except Exception:
+        Path(APP_DIR, "frozen-vips-smoke-error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        sys.exit(31)
+'''
+        entrypoint.write_text(original_entrypoint.replace(needle, vips_smoke_branch), encoding='utf-8')
+        # Expose the browser-only accelerator state to this smoke test.
+        # This instrumentation lives only in the disposable staging copy.
+        worker_path = root / 'static/canvas_editor_worker.js'
+        worker_source = worker_path.read_text(encoding='utf-8')
+        source_worker_hash = hashlib.sha256(worker_path.read_bytes()).hexdigest()
+        assert source_worker_hash == hashlib.sha256(
+            (source_root / 'static/canvas_editor_worker.js').read_bytes()
+        ).hexdigest(), 'staged worker source differs from the project source'
+        warm_handler = """if (kind === 'warm') {
+            self.postMessage({id, done: true});
+            return;
+        }"""
+        diagnostic_handler = """if (kind === 'warm') {
+            const nativeBlendLoaded = py.runPython('engine._native_normal_blend is not None');
+            const nativeGaussianLoaded = py.runPython('engine._native_gaussian is not None');
+            self.postMessage({id, done: true, nativeBlendLoaded, nativeGaussianLoaded});
+            return;
+        }"""
+        assert worker_source.count(warm_handler) == 1
+        worker_path.write_text(worker_source.replace(warm_handler, diagnostic_handler), encoding='utf-8')
         for spec in ('NAI_Image_Manager.spec', 'NAIM_Updater.spec'):
             print(f'Building {spec}', flush=True)
             with (root / 'build.log').open('w', encoding='utf-8') as log:
@@ -78,6 +172,93 @@ def main():
         install = root / 'dist/NAI_Image_Manager'
         assert (install / 'naim/upscale_worker.py').is_file()
         assert not (install / 'upscale_models').exists()
+        for relative in (
+            'static/canvas_editor_worker.js',
+            'static/canvas_editor_engine.js',
+            'static/canvas_editor_scene.js',
+            'static/canvas_editor_view.js',
+            'static/canvas_editor/engine.zip',
+            'static/canvas_editor/brush.wasm',
+            'static/canvas_editor/filter.wasm',
+            'static/vendor/pyodide/pyodide.js',
+            'static/vendor/pyodide/pyodide.asm.wasm',
+            'static/vendor/pyodide/numpy-2.2.5-cp313-cp313-pyodide_2025_0_wasm32.whl',
+            'static/vendor/pyodide/pillow-11.3.0-cp313-cp313-pyodide_2025_0_wasm32.whl',
+        ):
+            assert (install / relative).is_file(), f'missing packaged worker asset: {relative}'
+        with ZipFile(root / 'static/canvas_editor/engine.zip') as bundle:
+            assert set(bundle.namelist()) == {'retouch.py', 'retouch_working.py'}
+            for name in ('retouch.py', 'retouch_working.py'):
+                assert bundle.read(name) == (root / 'naim/images' / name).read_bytes(), name
+        canvas_asset_hashes = {}
+        for relative in (
+            'static/canvas_editor_worker.js',
+            'static/canvas_editor_engine.js',
+            'static/canvas_editor_scene.js',
+            'static/canvas_editor_view.js',
+            'static/canvas_editor/engine.zip',
+            'static/canvas_editor/brush.wasm',
+            'static/canvas_editor/filter.wasm',
+        ):
+            source_path = root / relative
+            packaged_path = install / relative
+            source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            packaged_hash = hashlib.sha256(packaged_path.read_bytes()).hexdigest()
+            assert packaged_hash == source_hash, f'packaged canvas asset differs from staged source: {relative}'
+            canvas_asset_hashes[Path(relative).name] = packaged_hash
+        assert canvas_asset_hashes['canvas_editor_worker.js'] != source_worker_hash, (
+            'test worker instrumentation was not included in the frozen smoke build'
+        )
+        print(
+            'CANVAS_ASSET_HASHES_OK: '
+            f"engine.zip={canvas_asset_hashes['engine.zip']}; "
+            f"worker-smoke={canvas_asset_hashes['canvas_editor_worker.js']}; "
+            f"worker-source={source_worker_hash}; "
+            f"engine-js={canvas_asset_hashes['canvas_editor_engine.js']}; "
+            f"scene-js={canvas_asset_hashes['canvas_editor_scene.js']}; "
+            f"view-js={canvas_asset_hashes['canvas_editor_view.js']}; "
+            f"brush.wasm={canvas_asset_hashes['brush.wasm']}; "
+            f"filter.wasm={canvas_asset_hashes['filter.wasm']}",
+            flush=True,
+        )
+
+        app_env = dict(env)
+        app_env.pop('PYTHONPATH', None)
+        vips_exe = install / 'NAI_Image_Manager.exe'
+        smoke = subprocess.run([str(vips_exe), '--frozen-vips-smoke'], cwd=install, env=app_env, timeout=45)
+        smoke_result = install / 'frozen-vips-smoke.json'
+        if smoke.returncode or not smoke_result.is_file():
+            error_path = install / 'frozen-vips-smoke-error.txt'
+            details = error_path.read_text(encoding='utf-8') if error_path.is_file() else f'EXE exit code: {smoke.returncode}'
+            raise RuntimeError('Frozen libvips smoke failed:\n' + details)
+        vips_result = json.loads(smoke_result.read_text(encoding='utf-8'))
+        assert (vips_result['pyvips'], vips_result['libvips']) == ('3.2.0', [8, 18, 7])
+        assert vips_result['png_signature'] == '89504e470d0a1a0a' and vips_result['png_bytes'] > 64
+        print('FROZEN_VIPS_OK: bundled pyvips and libvips encoded a PNG.', flush=True)
+
+        browser = None
+        playwright = None
+        if not options.skip_browser:
+            chrome_candidates = (
+                Path(os.environ.get('PROGRAMFILES', 'C:/Program Files')) / 'Google/Chrome/Application/chrome.exe',
+                Path(os.environ.get('PROGRAMFILES(X86)', 'C:/Program Files (x86)')) / 'Microsoft/Edge/Application/msedge.exe',
+            )
+            chrome_path = next((path for path in chrome_candidates if path.is_file()), None)
+            if chrome_path:
+                try:
+                    from playwright.sync_api import sync_playwright
+                    playwright = sync_playwright().start()
+                    browser = playwright.chromium.launch(
+                        executable_path=str(chrome_path), headless=True,
+                        args=['--enable-gpu', '--use-angle=d3d11'],
+                    )
+                except Exception as error:
+                    if playwright:
+                        playwright.stop()
+                    playwright = None
+                    print(f'CHROMIUM_SKIPPED: {error}', flush=True)
+            else:
+                print('CHROMIUM_SKIPPED: Chrome/Edge executable not found.', flush=True)
         # Exercise real archived installations without running their launcher
         # or contacting the public update service. Only synthetic user data is
         # placed in these temporary copies.
@@ -128,9 +309,9 @@ def main():
             install = legacy
         settings = install / 'lab_config.json'
         settings.write_text('{"legacy_extra": "preserved"}', encoding='utf-8')
-        env['NAIM_SERVER_CONTROL_TOKEN'] = uuid.uuid4().hex
+        app_env['NAIM_SERVER_CONTROL_TOKEN'] = uuid.uuid4().hex
         process = subprocess.Popen(
-            [str(install / 'NAI_Image_Manager.exe'), '--server'], cwd=install, env=env,
+            [str(install / 'NAI_Image_Manager.exe'), '--server'], cwd=install, env=app_env,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
         try:
@@ -147,6 +328,68 @@ def main():
                 if time.monotonic() > deadline:
                     raise RuntimeError('Packaged server readiness timeout')
                 time.sleep(0.2)
+            if browser:
+                page = browser.new_page()
+                page.goto(f'http://127.0.0.1:{port}/canvas', wait_until='domcontentloaded', timeout=30000)
+                worker_result = page.evaluate('''() => new Promise((resolve, reject) => {
+                    const worker = new Worker('/static/canvas_editor_worker.js?v=7');
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 32; canvas.height = 24;
+                    const context = canvas.getContext('2d');
+                    context.fillStyle = 'rgb(24,80,120)'; context.fillRect(0, 0, 32, 24);
+                    const source = canvas.toDataURL('image/png');
+                    const sampleX = 8, sampleY = 8;
+                    let pixelBytes = 0, samplePixel = null;
+                    let nativeBlendLoaded = false, nativeGaussianLoaded = false;
+                    const timer = setTimeout(() => { worker.terminate(); reject(new Error('worker render timed out')); }, 90000);
+                    worker.onerror = event => { clearTimeout(timer); worker.terminate(); reject(new Error(event.message || 'worker error')); };
+                    worker.onmessage = ({data}) => {
+                        if (data.error) { clearTimeout(timer); worker.terminate(); reject(new Error(data.error)); }
+                        if (data.id === 1 && data.done) {
+                            nativeBlendLoaded = data.nativeBlendLoaded === true;
+                            nativeGaussianLoaded = data.nativeGaussianLoaded === true;
+                            worker.postMessage({id: 2, kind: 'update', body: {
+                                source, width: 32, height: 24, baseRevision: 0,
+                                layers: [
+                                    {id: 'smoke-blur', type: 'blur', params: {radius: 1.5},
+                                        opacity: 1, mask: {base: 1, strokes: []}},
+                                    {id: 'smoke-tone', type: 'tone', params: {brightness: 16},
+                                        opacity: 0.37, mask: {base: 0, strokes: [{
+                                            points: [[8, 8]], radius: 5, hardness: 1, opacity: 0.5,
+                                        }]}}
+                                ],
+                            }});
+                        } else if (data.id === 2) {
+                            if (data.region && data.pixels) {
+                                const pixels = new Uint8Array(data.pixels.buffer, data.pixels.byteOffset, data.pixels.byteLength);
+                                pixelBytes += pixels.byteLength;
+                                if (sampleX >= data.region.x && sampleX < data.region.x + data.region.width &&
+                                    sampleY >= data.region.y && sampleY < data.region.y + data.region.height) {
+                                    const offset = ((sampleY - data.region.y) * data.region.width + sampleX - data.region.x) * 4;
+                                    samplePixel = Array.from(pixels.slice(offset, offset + 4));
+                                }
+                            }
+                            if (data.done) {
+                                clearTimeout(timer); worker.terminate();
+                                resolve({revision: data.revision, pixelBytes, samplePixel,
+                                    nativeBlendLoaded, nativeGaussianLoaded});
+                            }
+                        }
+                    };
+                    worker.postMessage({id: 1, kind: 'warm', body: {}});
+                })''')
+                assert worker_result['revision'] == 1 and worker_result['pixelBytes'] > 0
+                assert worker_result['nativeBlendLoaded'], 'worker did not load the packaged normal blend kernel'
+                assert worker_result['nativeGaussianLoaded'], 'worker did not bind filter.wasm gaussian_rgba'
+                assert worker_result['samplePixel'] == [32, 88, 128, 255], worker_result
+                renderer = page.evaluate('''() => {
+                    const gl = document.createElement('canvas').getContext('webgl');
+                    if (!gl) return 'WebGL unavailable';
+                    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+                    return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+                }''')
+                print(f'CHROMIUM_RETOUCH_OK: {chrome_path}; renderer={renderer}; result={worker_result}', flush=True)
+                page.close()
             for url in ('/canvas', '/legacy-generation', '/style-lab', '/daki-workshop',
                         '/static/gallery_catalog.js', '/static/gallery_recycling.js',
                         '/static/gallery_layout.js', '/static/gallery_modern.css',
@@ -194,7 +437,7 @@ def main():
             shutdown = urllib.request.Request(
                 f'http://127.0.0.1:{port}/api/internal/shutdown_jobs',
                 data=json.dumps({'pid': process.pid}).encode(),
-                headers={'Content-Type': 'application/json', 'X-NAIM-Control': env['NAIM_SERVER_CONTROL_TOKEN']},
+                headers={'Content-Type': 'application/json', 'X-NAIM-Control': app_env['NAIM_SERVER_CONTROL_TOKEN']},
             )
             with urllib.request.urlopen(shutdown, timeout=10) as response:
                 assert json.load(response)['stopped'] is True
@@ -205,6 +448,10 @@ def main():
                 print(diagnostic.read_text(encoding='utf-8'), flush=True)
             raise
         finally:
+            if browser:
+                browser.close()
+            if playwright:
+                playwright.stop()
             process.terminate()
             process.wait(timeout=10)
     return 0

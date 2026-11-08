@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -19,7 +20,7 @@ from .shared_library_store import SharedLibraryStore
 
 
 # Bump when source normalization or duplicate-key parsing semantics change.
-SOURCE_SCAN_VERSION = 3
+SOURCE_SCAN_VERSION = 4
 
 
 def _stamp(path):
@@ -54,14 +55,58 @@ class SharedLibraryCatalog:
         self._source_scan_ready = False
         self._source_scan_failed = False
         self._public_records_cache = {}
+        self._artist_file_stamp = None
+        self._artist_state_cache = None
+        self._artist_recommendations_signature = None
         self.warnings = []
 
     def __getattr__(self, name):
         # Keep legacy private helpers used by the existing acquisition pipeline.
         return getattr(self.legacy, name)
 
+    def _artist_state(self):
+        database = self.artist_data / 'artist_rater.sqlite'
+        stamp = (_stamp(database), _stamp(str(database) + '-wal'))
+        if self._artist_state_cache is not None and stamp == self._artist_file_stamp:
+            return self._artist_state_cache
+        if stamp[0] is None:
+            state = (None, [], None)
+        else:
+            connection = sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=15)
+            try:
+                digest = hashlib.sha256(str(database.resolve()).casefold().encode('utf-8'))
+                # Collection jobs and vote updates also change the DB file. Only
+                # source content changes require parsing all original prompts.
+                for row in connection.execute('''SELECT image.*,item.title,item.source_url,item.posted_at
+                    FROM arca_style_images image JOIN arca_style_items item ON item.id=image.item_id
+                    WHERE image.metadata_status='ok' ORDER BY image.id'''):
+                    digest.update(json.dumps(row, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+                columns = {row[1] for row in connection.execute('PRAGMA table_info(arca_style_items)')}
+                collected = 'updated_at' if 'updated_at' in columns else 'NULL'
+                votes = [dict(source_url=row[0], recommendation_count=row[1], recommendation_collected_at=row[2])
+                         for row in connection.execute(f'''SELECT source_url,recommendation_count,{collected}
+                             FROM arca_style_items ORDER BY id''')]
+                vote_digest = hashlib.sha256(json.dumps(votes, sort_keys=True).encode('utf-8')).hexdigest()
+                state = (digest.hexdigest(), votes, vote_digest)
+            finally:
+                connection.close()
+        # Do not cache a read made while the source was still changing.
+        if stamp == (_stamp(database), _stamp(str(database) + '-wal')):
+            self._artist_file_stamp, self._artist_state_cache = stamp, state
+        return state
+
+    def _refresh_recommendations(self):
+        try:
+            _, votes, signature = self._artist_state()
+        except (OSError, ValueError, sqlite3.Error):
+            return
+        if signature != self._artist_recommendations_signature:
+            if self.store.update_recommendations_many(votes):
+                self._public_records_cache.clear()
+            self._artist_recommendations_signature = signature
+
     def _current_signature(self):
-        files = [self.artist_data / 'artist_rater.sqlite', self.artist_data / 'artist_rater.sqlite-wal']
+        files = []
         for provider, names in ((self.legacy._catalog_root, ('default_styles.json', 'source_generation_options.json', 'generation_manifest.json')),
                                 (self.legacy._imported_root, ('catalog.json', 'sync_catalog.json', 'excluded_styles.json', 'source_posts.json'))):
             root = provider()
@@ -71,12 +116,22 @@ class SharedLibraryCatalog:
             files.append(Path(recipe_module.__file__).resolve().parent.parent / 'data/shared_style_artists.json')
             dictionary = Path(get_app_dir()) / 'data/danbooru_tags.sqlite3'
             files.extend((dictionary, Path(str(dictionary) + '-wal')))
+        try:
+            artist_content = self._artist_state()[0]
+        except (OSError, ValueError, sqlite3.Error):
+            artist_content = ('unreadable', _stamp(self.artist_data / 'artist_rater.sqlite'))
         payload = {'version': SOURCE_SCAN_VERSION, 'artist_names': self._artist_names_signature,
+                   'artist_content': artist_content,
                    'sources': [(str(path.resolve()), _stamp(path)) for path in files]}
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
     def _key(self, positive):
         return style_duplicate_key(positive, artist_names=self.artist_names)
+
+    @staticmethod
+    def _model_identity(model):
+        value = model or 'unknown'
+        return shared_style_model(value) or str(value).strip().casefold()
 
     def _legacy_entries(self):
         visible = {record['id'] for record in self.legacy.list_styles()}
@@ -87,13 +142,14 @@ class SharedLibraryCatalog:
             key = self._key(record['positive'])
             if key is None:
                 continue
+            model_identity = self._model_identity(record.get('model'))
             paths = {}
             for full, label in ((True, 'image_path'), (False, 'thumbnail_path')):
                 try:
                     paths[label] = str(self.legacy.preview_path(record['id'], full=full))
                 except FileNotFoundError:
                     paths[label] = ''
-            entries.append({'key': key, 'record': record, 'origin': 'naim', 'source_id': record['id'],
+            entries.append({'key': ('shared', model_identity, key), 'record': record, 'origin': 'naim', 'source_id': record['id'],
                             'aliases': [record['id']], 'excluded': record['id'] not in visible,
                             'source': {'origin': 'naim', 'legacy_id': record['id'], 'source_url': record.get('source_url'),
                                        '_legacy_record': record}, **paths})
@@ -103,28 +159,42 @@ class SharedLibraryCatalog:
         database = self.artist_data / 'artist_rater.sqlite'
         if not database.is_file():
             return []
-        uri = database.resolve().as_uri() + '?mode=ro'
+        database = database.resolve()
+        database_path = str(database)
+        root = (self.artist_data / 'arca_style_images').resolve()
+        root_path = str(root)
+        uri = database.as_uri() + '?mode=ro'
         connection = sqlite3.connect(uri, uri=True, timeout=15)
         connection.row_factory = sqlite3.Row
         try:
-            rows = connection.execute('''SELECT image.*,item.title AS article_title,item.source_url AS article_url,
-                item.posted_at AS article_posted_at,item.recommendation_count AS article_recommendation_count
+            item_columns = {row['name'] for row in connection.execute('PRAGMA table_info(arca_style_items)')}
+            updated_at_column = 'item.updated_at' if 'updated_at' in item_columns else 'NULL'
+            rows = connection.execute(f'''SELECT image.*,item.title AS article_title,item.source_url AS article_url,
+                item.posted_at AS article_posted_at,item.recommendation_count AS article_recommendation_count,
+                {updated_at_column} AS article_updated_at
                 FROM arca_style_images image JOIN arca_style_items item ON item.id=image.item_id
                 WHERE image.metadata_status='ok' ORDER BY image.id''').fetchall()
         finally:
             connection.close()
-        root = (self.artist_data / 'arca_style_images').resolve()
-        source_namespace = hashlib.sha256(str(database.resolve()).casefold().encode('utf-8')).hexdigest()[:16]
+        source_namespace = hashlib.sha256(database_path.casefold().encode('utf-8')).hexdigest()[:16]
         entries = []
         rejected = 0
+        recipes = {}
+        duplicate_keys = {}
         for row in rows:
             image = dict(row)
             try:
                 model = image.get('model_id') or image.get('model') or 'unknown'
                 positive = image.get('base_prompt') or image.get('prompt') or ''
                 negative = image.get('negative_prompt') or ''
-                recipe = extract_recipe(positive, negative, artist_names=self.artist_names)
-                key = self._key(recipe['positive'])
+                prompt_pair = (positive, negative)
+                recipe = recipes.get(prompt_pair)
+                if recipe is None:
+                    recipe = extract_recipe(positive, negative, artist_names=self.artist_names)
+                    recipes[prompt_pair] = recipe
+                if recipe['positive'] not in duplicate_keys:
+                    duplicate_keys[recipe['positive']] = self._key(recipe['positive'])
+                key = duplicate_keys[recipe['positive']]
                 if key is None:
                     continue
                 try:
@@ -149,7 +219,7 @@ class SharedLibraryCatalog:
                 seed = integer(image.get('seed'), 0, 9007199254740991)
                 width, height = integer(image.get('width'), 1, 100000), integer(image.get('height'), 1, 100000)
                 relative = image.get('image_path') or ''
-                path = (root / relative).resolve() if relative else None
+                path = Path(os.path.abspath(root / relative)) if relative else None
                 if path is not None and (path == root or not path.is_relative_to(root)):
                     raise ValueError('unsafe image path')
                 record = {'name': image.get('article_title') or '공유 그림체', 'model': model,
@@ -158,15 +228,15 @@ class SharedLibraryCatalog:
                           'category': 'artist', 'source_library': 'artist', 'model_family': model_family(model),
                           'source_image_id': image['id'], 'source_url': image.get('article_url'),
                           'recommendation_count': image.get('article_recommendation_count'),
-                          'recommendation_collected_at': None, 'sort_date': image.get('article_posted_at')}
+                          'recommendation_collected_at': image.get('article_updated_at'),
+                          'sort_date': image.get('article_posted_at')}
                 raw = {**raw, 'base_prompt': positive, 'negative_prompt': negative}
                 source = {'origin': 'artist', 'image_id': image['id'], 'item_id': image['item_id'],
                           'image_url': image.get('image_url'), 'source_url': image.get('article_url'),
-                          '_source_database': str(database.resolve()), '_image_root': str(root)}
+                          '_source_database': database_path, '_image_root': root_path}
                 identity = source_namespace + '-' + str(image['id'])
-                model_identity = shared_style_model(model) or str(model).strip().casefold()
-                namespaced_key = ('artist', model_identity, key)
-                entries.append({'key': namespaced_key, 'record': record, 'origin': 'artist', 'source_id': identity,
+                model_identity = self._model_identity(model)
+                entries.append({'key': ('shared', model_identity, key), 'record': record, 'origin': 'artist', 'source_id': identity,
                                 'aliases': ['artist-image-' + identity], 'source': source,
                                 'raw_metadata': raw, 'image_path': str(path or ''), 'thumbnail_path': str(path or '')})
             except (ValueError, TypeError, KeyError):
@@ -179,6 +249,7 @@ class SharedLibraryCatalog:
         with self._lock:
             signature = self._current_signature()
             if signature == self._signature and self._source_scan_ready:
+                self._refresh_recommendations()
                 return
             retry_failed_scan = self._source_scan_failed
             self._public_records_cache.clear()
@@ -188,6 +259,7 @@ class SharedLibraryCatalog:
                 self.warnings = list(saved['warnings'])
                 self._signature = signature
                 self._source_scan_ready = True
+                self._refresh_recommendations()
                 return
             self.warnings = []
             if not self._provided_artist_names:
@@ -202,6 +274,7 @@ class SharedLibraryCatalog:
                     complete = False
                     self.warnings.append('공유 원본 자료 일부를 읽지 못했습니다. 저장된 공용 그림체는 유지됩니다.')
             self.store.ingest(entries)
+            self._refresh_recommendations()
             if complete and signature == self._current_signature():
                 self.store.save_scan_state(signature, self.warnings)
                 self._signature = signature
@@ -267,7 +340,8 @@ class SharedLibraryCatalog:
                 if resolved_roots is not None:
                     resolved_roots[root_value] = root
             if value:
-                path = Path(value).resolve()
+                from naim.storage.image_renames import resolve_renamed_image_path
+                path = resolve_renamed_image_path(Path(value)).resolve()
                 if path.is_relative_to(root) and path.is_file():
                     return path
         raise FileNotFoundError('공유 그림체 원본 이미지를 찾을 수 없습니다.')

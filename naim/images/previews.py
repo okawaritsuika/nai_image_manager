@@ -18,6 +18,7 @@ import time
 
 TRANSFORM_VERSION = 1
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
+PREVIEW_BUILD_SLOTS = threading.BoundedSemaphore(2)
 _MAGIC = b"NAIM_PREVIEW_1\0"
 _MIME_CODES = {"image/png": b"P", "image/jpeg": b"J"}
 _MIME_TYPES = {value: key for key, value in _MIME_CODES.items()}
@@ -143,7 +144,10 @@ class PreviewCache:
             except (OSError, ValueError):
                 pass
             # Builder failures are real image errors and keep their old behavior.
-            result = build(file_path, max_side)
+            # Cold lists can request many large originals at once. Keep image
+            # decoding bounded while cache hits remain independent of builders.
+            with PREVIEW_BUILD_SLOTS:
+                result = build(file_path, max_side)
             try:
                 current = os.stat(file_path)
                 if (current.st_mtime_ns, current.st_size) == (mtime_ns, file_size):

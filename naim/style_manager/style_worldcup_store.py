@@ -227,7 +227,7 @@ def _candidate_rows(connection, image_root, filters, confirmed_image_root=None, 
         else:
             rows = connection.execute(
                 "SELECT image.id AS candidate_id,style.id AS group_id,style.name AS title,style.source_url,NULL AS recommendation_count,image.image_path,"
-                "style.artist_prompt,style.quality_prompt,style.fixed_prompt,style.model "
+                "style.base_prompt,style.artist_prompt,style.quality_prompt,style.fixed_prompt,style.model "
                 "FROM confirmed_style_images image JOIN confirmed_styles style ON style.id=image.style_id "
                 "WHERE TRIM(COALESCE(image.image_path,''))<>'' ORDER BY style.id,image.position,image.id"
             )
@@ -251,10 +251,12 @@ def _candidate_rows(connection, image_root, filters, confirmed_image_root=None, 
                     "model_family" if model_filter in {"v5", "v4.5", "unknown"} else "model_id"
                 ]:
                     continue
-                candidate["base_prompt"] = ", ".join(
+                legacy_prompt = ", ".join(
                     value.strip() for key in ("artist_prompt", "quality_prompt", "fixed_prompt")
                     if (value := candidate.pop(key) or "").strip()
                 )
+                if candidate["base_prompt"] is None:
+                    candidate["base_prompt"] = legacy_prompt
             if needs_tags:
                 tags = set()
                 artists = set()

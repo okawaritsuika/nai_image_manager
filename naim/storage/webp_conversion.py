@@ -56,9 +56,10 @@ def resolve_converted_gallery_path(root, rel_path, db_path):
             ).fetchone()
         if row is None or str(row[0]).replace("\\", "/") != expected:
             return None
-        target = _contained_path(root, row[0])
+        from naim.storage.image_renames import resolve_renamed_image_path
+        target = resolve_renamed_image_path(_contained_path(root, row[0]))
         if os.path.isfile(target):
-            return target
+            return str(target)
     except (OSError, ValueError, sqlite3.Error):
         pass
     return None
@@ -184,7 +185,8 @@ def add_webp_gallery_image(db, root, source_path, target_path):
     return undo
 
 
-def migrate_webp_references(db, root, source_path, target_path, tags_path, *, tags_cache=None):
+def migrate_webp_references(db, root, source_path, target_path, tags_path, *, tags_cache=None,
+                            same_format_rename=False):
     """Commit path/hash references and return an idempotent undo callback.
 
     The caller holds IMAGE_FILES_LOCK across migration, source deletion and undo,
@@ -197,7 +199,12 @@ def migrate_webp_references(db, root, source_path, target_path, tags_path, *, ta
     new_rel = os.path.relpath(target_path, root).replace("\\", "/")
     _contained_path(root, old_rel)
     _contained_path(root, new_rel)
-    if (Path(old_rel).suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".gif"}
+    valid_rename = (same_format_rename
+                    and Path(source_path).parent == Path(target_path).parent
+                    and Path(source_path).suffix.lower() == Path(target_path).suffix.lower()
+                    and Path(source_path).suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'})
+    if not valid_rename and (same_format_rename
+            or Path(old_rel).suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".gif"}
             or os.path.normcase(webp_target_path(Path(source_path))) != os.path.normcase(target_path)):
         raise ValueError("이미지 원본의 정확한 WebP 출력만 연결할 수 있습니다.")
     if not os.path.isfile(source_path) or not os.path.isfile(target_path):
@@ -305,11 +312,12 @@ def migrate_webp_references(db, root, source_path, target_path, tags_path, *, ta
                 if existing and existing != previous:
                     raise ValueError("WebP의 기존 수동 분류와 원본 분류가 충돌합니다.")
                 insert("manual_overrides", ("file_hash", "is_nsfw"), (new_hash, previous[0]))
-        previous_alias = connection.execute("SELECT 1 FROM gallery_webp_conversions WHERE old_rel_path = ?", (old_rel,)).fetchone()
-        if previous_alias:
-            change("gallery_webp_conversions", "new_rel_path", None, new_rel, "old_rel_path", old_rel)
-        else:
-            insert("gallery_webp_conversions", ("old_rel_path", "new_rel_path"), (old_rel, new_rel))
+        if not same_format_rename:
+            previous_alias = connection.execute("SELECT 1 FROM gallery_webp_conversions WHERE old_rel_path = ?", (old_rel,)).fetchone()
+            if previous_alias:
+                change("gallery_webp_conversions", "new_rel_path", None, new_rel, "old_rel_path", old_rel)
+            else:
+                insert("gallery_webp_conversions", ("old_rel_path", "new_rel_path"), (old_rel, new_rel))
 
         if tags_path and os.path.isfile(tags_path):
             with json_lock(tags_path):

@@ -39,13 +39,6 @@
   };
   navigation.addEventListener("click", refreshCurrent);
   refreshCurrent();
-  const sharedStyle = document.createElement("link");
-  sharedStyle.rel = "stylesheet";
-  sharedStyle.href = "/style-workspace/static/naim_shared_library.css";
-  document.head.appendChild(sharedStyle);
-  const sharedScript = document.createElement("script");
-  sharedScript.src = "/style-workspace/static/naim_shared_library.js";
-  document.body.appendChild(sharedScript);
   const settingsScript = document.createElement('script');
   settingsScript.src = '/style-workspace/static/naim_shared_settings.js';
   document.body.appendChild(settingsScript);

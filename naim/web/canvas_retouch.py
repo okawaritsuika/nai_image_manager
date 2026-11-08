@@ -6,6 +6,7 @@ import io
 import json
 import math
 import re
+import struct
 import threading
 import uuid
 import warnings
@@ -13,15 +14,68 @@ from collections import OrderedDict
 from copy import deepcopy
 from urllib.parse import unquote, urlsplit
 import zipfile
+import zlib
 
 from flask import Response, jsonify, request
-from naim.images.retouch_preview import PreviewCache
+from PIL import Image
+from naim.images.retouch_preview import (
+    NATIVE_RESULT_MAX_PIXELS, PREVIEW_EDGE, WORKING_EDGE, PreviewCache, project_native_preview,
+)
+from naim.images.retouch_working import WorkingImage
 
 
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
+MAX_RENDER_MANIFEST_BYTES = 16 * 1024 * 1024
 MAX_PIXELS = 160_000_000
 MAX_COMPLETED_JOBS = 32
+APPLY_PREVIEW_WAIT = .1
+APPLY_NATIVE_PREVIEW_WAIT = 5
+WORKING_RENDER_WAIT = 5
 _DATA_URI = re.compile(r'^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/]*={0,2})$', re.IGNORECASE)
+_WORKING_ID = re.compile(r'^[A-Za-z0-9_-]{1,100}$')
+
+
+def _png_print_metadata(png, profile, dpi):
+    """Attach print metadata to verified RGBA PNGs without encoding pixels again."""
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack('!I', len(data)) + body + struct.pack('!I', zlib.crc32(body))
+
+    ppm = int(dpi / .0254 + .5)
+    if png[24:29] != b'\x08\x06\x00\x00\x00':
+        raise ValueError('Expected an 8-bit, non-interlaced RGBA PNG.')
+    width, height = struct.unpack_from('!II', png, 16)
+    stride = width * 4 + 1
+    decoder = zlib.decompressobj()
+    decoded = 0
+    pieces = [memoryview(png)[:33], chunk(b'iCCP', b'ICC Profile\0\0' + zlib.compress(profile)),
+              chunk(b'pHYs', struct.pack('!IIB', ppm, ppm, 1))]
+    offset = 33  # PNG signature and verified IHDR.
+    while offset < len(png):
+        length, kind = struct.unpack_from('!I4s', png, offset)
+        end = offset + length + 12
+        if kind == b'IDAT':
+            compressed = memoryview(png)[offset + 8:end - 4]
+            while compressed:
+                block = decoder.decompress(compressed, 1_048_576)
+                if any(value > 4 for value in block[-decoded % stride::stride]):
+                    raise ValueError('Invalid PNG scanline filter.')
+                decoded += len(block)
+                if decoded > stride * height or decoder.unused_data:
+                    raise ValueError('Unexpected PNG pixel data.')
+                compressed = decoder.unconsumed_tail
+        if kind in {b'IDAT', b'IEND'}:
+            pieces.append(memoryview(png)[offset:end])
+        offset = end
+        if kind == b'IEND':
+            break
+    if not decoder.eof or decoded != stride * height:
+        raise ValueError('Incomplete PNG pixel data.')
+    return b''.join(pieces)
+
+
+class NativePreviewInterrupted(Exception):
+    """Allow an apply job to take priority over a live full-document render."""
 
 
 class CanvasRetouchController:
@@ -32,7 +86,9 @@ class CanvasRetouchController:
         self.jobs_lock = threading.Lock()
         self.apply_lock = threading.Lock()
         self.render_lock = threading.Lock()
+        self.native_preview_running = threading.Event()
         self.preview_cache = PreviewCache()
+        self.working_image = None
 
     def get_job(self, job_id):
         with self.jobs_lock:
@@ -150,7 +206,7 @@ def register_canvas_retouch_routes(app, read_source, save_image):
             raise ValueError('레이어 목록이 올바르지 않습니다.')
         snapshot = {'layers': value}
         engine.validate_side(snapshot)
-        return deepcopy(value)
+        return value
 
     def validate_print(engine, value):
         if value is None:
@@ -181,8 +237,66 @@ def register_canvas_retouch_routes(app, read_source, save_image):
 
     def png_response(image, **save_options):
         stream = io.BytesIO()
-        image.save(stream, format='PNG', **save_options)
+        image.save(stream, format='PNG', compress_level=1, **save_options)
         return Response(stream.getvalue(), mimetype='image/png')
+
+    def validate_working_request(body):
+        working_id = body.get('workingId')
+        if not isinstance(working_id, str) or not _WORKING_ID.fullmatch(working_id):
+            raise ValueError('작업 이미지 ID가 올바르지 않습니다.')
+        base_revision = body.get('baseRevision')
+        if (isinstance(base_revision, bool) or not isinstance(base_revision, int) or
+                base_revision < 0):
+            raise ValueError('작업 이미지 버전이 올바르지 않습니다.')
+        return working_id, base_revision
+
+    def native_working_source(raw, engine, expected_size):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(raw)) as opened:
+                    normalized = engine.normalize_image(opened)
+            if normalized.size != tuple(expected_size):
+                normalized.close()
+                raise ValueError('정규화된 원본 크기가 일치하지 않습니다.')
+            return normalized
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError('원본 이미지를 정규화하지 못했습니다.') from None
+
+    def working_response(image, box, revision, icc_profile, borrowed=False):
+        if image is None:
+            response = Response(status=204)
+        else:
+            try:
+                stream = io.BytesIO()
+                image.save(stream, format='PNG', compress_level=1, icc_profile=icc_profile)
+                response = Response(stream.getvalue(), mimetype='image/png')
+            finally:
+                if not borrowed:
+                    image.close()
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['X-Retouch-Revision'] = str(revision)
+        if box is not None:
+            x, y, right, bottom = box
+            response.headers['X-Retouch-X'] = str(x)
+            response.headers['X-Retouch-Y'] = str(y)
+            response.headers['X-Retouch-Width'] = str(right - x)
+            response.headers['X-Retouch-Height'] = str(bottom - y)
+        return response
+
+    def preview_edge(body, native=False):
+        quick = body.get('quick', False)
+        if not isinstance(quick, bool):
+            raise ValueError('미리보기 설정이 올바르지 않습니다.')
+        if native and 'displayEdge' in body:
+            display_edge = body['displayEdge']
+            if (isinstance(display_edge, bool) or not isinstance(display_edge, int) or
+                    not 1 <= display_edge <= PREVIEW_EDGE):
+                raise ValueError('원본 해상도 표시 크기가 올바르지 않습니다.')
+            return display_edge
+        return WORKING_EDGE if quick else PREVIEW_EDGE
 
     @app.post('/api/canvas/retouch/preview')
     def canvas_retouch_preview():
@@ -192,6 +306,10 @@ def register_canvas_retouch_routes(app, read_source, save_image):
         try:
             body = read_json_body()
             layers = validate_layers(engine, body.get('layers', []))
+            native = body.get('native', False)
+            if not isinstance(native, bool):
+                raise ValueError('원본 해상도 보정 설정이 올바르지 않습니다.')
+            edge = preview_edge(body, native)
         except ValueError as exc:
             return json_error(str(exc), 400)
         if not acquire_sync_render():
@@ -202,6 +320,67 @@ def register_canvas_retouch_routes(app, read_source, save_image):
             except ValueError as exc:
                 return json_error(str(exc), 400)
             key = hashlib.sha256(raw).digest()
+            if native:
+                custom_display_edge = 'displayEdge' in body
+                source_size = controller.preview_cache.source_size(key)
+                if source_size is None:
+                    try:
+                        source_size = inspect_source(raw)
+                    except ValueError as exc:
+                        return json_error(str(exc), 400)
+                controller.preview_cache.remember_viewport_source_size(key, source_size)
+                layers = [layer for layer in layers if engine._has_effect(layer)]
+                scale = min(1, edge / max(source_size))
+                output_size = tuple(max(1, round(length * scale)) for length in source_size)
+
+                if not layers:
+                    if custom_display_edge:
+                        with engine.render(io.BytesIO(raw), {'layers': []}, max_edge=edge) as prepared:
+                            return png_response(prepared, icc_profile=engine.SRGB)
+                    cached = controller.preview_cache.get(key)
+                    if cached is not None:
+                        prepared = cached[0] if edge == PREVIEW_EDGE else controller.preview_cache.working_image()
+                        return png_response(prepared, icc_profile=engine.SRGB)
+                    prepared = engine.render(io.BytesIO(raw), {'layers': []}, max_edge=PREVIEW_EDGE)
+                    try:
+                        if edge == PREVIEW_EDGE:
+                            return png_response(prepared, icc_profile=engine.SRGB)
+                        projection = prepared.resize(output_size, Image.Resampling.LANCZOS)
+                        with projection:
+                            return png_response(projection, icc_profile=engine.SRGB)
+                    finally:
+                        prepared.close()
+
+                cached_native = controller.preview_cache.get_native_preview(key, layers, edge)
+                if cached_native is not None:
+                    return png_response(cached_native, icc_profile=engine.SRGB)
+                full_resolution = controller.preview_cache.take_native_result(key, layers)
+                controller.preview_cache.clear_native_preview()
+                controller.native_preview_running.set()
+
+                def interrupt_for_apply(_progress, _layer_name):
+                    if controller.apply_lock.locked():
+                        raise NativePreviewInterrupted()
+
+                try:
+                    if full_resolution is None:
+                        controller.preview_cache.clear_native_source()
+                        full_resolution = engine.render(
+                            io.BytesIO(raw), {'layers': layers}, progress=interrupt_for_apply,
+                        )
+                    projection = project_native_preview(full_resolution, output_size)
+                    can_reuse = full_resolution.width * full_resolution.height <= NATIVE_RESULT_MAX_PIXELS
+                    controller.preview_cache.store_native_preview(
+                        key, layers, edge, projection, full_resolution if can_reuse else None,
+                    )
+                    if can_reuse:
+                        full_resolution = None
+                    return png_response(projection, icc_profile=engine.SRGB)
+                finally:
+                    if full_resolution is not None:
+                        full_resolution.close()
+                    controller.native_preview_running.clear()
+
             cached = controller.preview_cache.get(key)
             if cached is None:
                 controller.preview_cache.clear()
@@ -209,22 +388,28 @@ def register_canvas_retouch_routes(app, read_source, save_image):
                     source_size = inspect_source(raw)
                 except ValueError as exc:
                     return json_error(str(exc), 400)
-                prepared = engine.render(io.BytesIO(raw), {'layers': []}, max_edge=1600)
+                prepared = engine.render(io.BytesIO(raw), {'layers': []}, max_edge=PREVIEW_EDGE)
                 controller.preview_cache.store(key, prepared, source_size)
                 cached = (prepared, source_size)
             prepared, source_size = cached
-            scale = min(1, 1600 / max(source_size))
-            has_clone = any(layer['type'] == 'clone' and engine._has_effect(layer) for layer in layers)
-            if has_clone:
+            layers = [layer for layer in layers if engine._has_effect(layer)]
+            if any(layer['type'] == 'clone' for layer in layers):
                 # Clone samples document-space source pixels, so keep its existing full-source path.
-                image = engine.render(io.BytesIO(raw), {'layers': layers}, max_edge=1600)
-            else:
-                image = engine.render_preview(
-                    prepared, {'layers': layers}, scale,
-                    mask_cache=controller.preview_cache.masks,
+                with engine.render(io.BytesIO(raw), {'layers': layers}, max_edge=edge) as image:
+                    return png_response(image, icc_profile=engine.SRGB)
+            if edge == WORKING_EDGE:
+                prepared = controller.preview_cache.working_image()
+            scale = min(1, edge / max(source_size))
+
+            def render(base, pending_layers):
+                return engine.render_preview(
+                    base, {'layers': pending_layers}, scale, mask_cache=controller.preview_cache.masks,
                 )
-            with image:
-                return png_response(image, icc_profile=engine.SRGB)
+
+            image = controller.preview_cache.render_layers(prepared, layers, render)
+            return png_response(image, icc_profile=engine.SRGB)
+        except NativePreviewInterrupted:
+            return render_busy_response()
         except Exception:
             return json_error('미리보기 이미지를 만들지 못했습니다.', 500)
         finally:
@@ -252,6 +437,9 @@ def register_canvas_retouch_routes(app, read_source, save_image):
             if (isinstance(scale, bool) or not isinstance(scale, (int, float)) or
                     not 0 < scale <= 1 or not math.isfinite(scale)):
                 raise ValueError('확대 영역 배율이 올바르지 않습니다.')
+            native = body.get('native', False)
+            if not isinstance(native, bool):
+                raise ValueError('원본 해상도 보정 설정이 올바르지 않습니다.')
             if 'original' in body and not isinstance(body['original'], bool):
                 raise ValueError('원본 보기 설정이 올바르지 않습니다.')
 
@@ -270,21 +458,57 @@ def register_canvas_retouch_routes(app, read_source, save_image):
         try:
             try:
                 raw = read_source_bytes(body.get('source'))
-                width, height = inspect_source(raw)
+                key = hashlib.sha256(raw).digest()
+                source_size = controller.preview_cache.source_size(key)
+                if source_size is None:
+                    source_size = inspect_source(raw)
+                width, height = source_size
                 x, y, requested_width, requested_height = coordinates
                 if x >= width or y >= height:
                     raise ValueError('확대 영역이 원본 이미지 밖에 있습니다.')
                 clamped_width = min(requested_width, width - x)
                 clamped_height = min(requested_height, height - y)
-                checked_output_size(clamped_width, clamped_height)
+                output_size = checked_output_size(clamped_width, clamped_height)
+                effective = [layer for layer in layers if engine._has_effect(layer)]
+                if not body.get('original', False):
+                    controller.preview_cache.remember_viewport_source_size(key, source_size)
+                    if native:
+                        if controller.preview_cache.get_native_preview(key, effective) is None:
+                            controller.preview_cache.clear_native_preview()
             except ValueError as exc:
                 return json_error(str(exc), 400)
-            image = engine.render(
-                io.BytesIO(raw),
-                {'layers': [] if body.get('original', False) else layers},
-                region=(x, y, clamped_width, clamped_height),
-                region_scale=scale,
+            native_result = (
+                controller.preview_cache.get_native_result(key, effective)
+                if native and not body.get('original', False) else None
             )
+            prepared_source = None
+            if (native and not body.get('original', False) and native_result is None and
+                    width * height <= NATIVE_RESULT_MAX_PIXELS):
+                prepared_source = controller.preview_cache.get_native_source(key)
+                if prepared_source is None:
+                    with Image.open(io.BytesIO(raw)) as opened:
+                        prepared_source = engine.normalize_image(opened)
+                    prepared_source = controller.preview_cache.store_native_source(key, prepared_source)
+            if native_result is not None:
+                image = native_result.crop((x, y, x + clamped_width, y + clamped_height))
+            else:
+                image = engine.render(
+                    io.BytesIO(raw),
+                    {'layers': [] if body.get('original', False) else layers},
+                    region=(x, y, clamped_width, clamped_height),
+                    region_scale=1 if native else scale,
+                    region_cache=(None if body.get('original', False) else controller.preview_cache),
+                    source_key=key,
+                    prepared_source=prepared_source,
+                )
+            if native and image.size != output_size:
+                try:
+                    resized = project_native_preview(image, output_size)
+                except BaseException:
+                    image.close()
+                    raise
+                image.close()
+                image = resized
             with image:
                 return png_response(image, icc_profile=engine.SRGB)
         except Exception:
@@ -300,6 +524,10 @@ def register_canvas_retouch_routes(app, read_source, save_image):
         try:
             body = read_json_body()
             layers = validate_layers(engine, body.get('layers', []))
+            native = body.get('native', False)
+            if not isinstance(native, bool):
+                raise ValueError('원본 해상도 보정 설정이 올바르지 않습니다.')
+            edge = preview_edge(body, native)
             layer_id = body.get('layerId')
             if not isinstance(layer_id, str) or not layer_id or len(layer_id) > 100:
                 raise ValueError('레이어 ID가 올바르지 않습니다.')
@@ -313,12 +541,14 @@ def register_canvas_retouch_routes(app, read_source, save_image):
         try:
             try:
                 raw = read_source_bytes(body.get('source'))
-                width, height = inspect_source(raw)
+                cached = controller.preview_cache.source_size(hashlib.sha256(raw).digest())
+                width, height = cached or inspect_source(raw)
             except ValueError as exc:
                 return json_error(str(exc), 400)
-            scale = min(1, 1600 / max(width, height))
+            scale = min(1, edge / max(width, height))
             size = (max(1, round(width * scale)), max(1, round(height * scale)))
-            image = engine.mask_image(layer, size, scale, (0, 0))
+            masks = controller.preview_cache.masks if cached else None
+            image = engine.mask_image(layer, size, scale, (0, 0), cache=masks)
             with image:
                 return png_response(image)
         except Exception:
@@ -365,25 +595,131 @@ def register_canvas_retouch_routes(app, read_source, save_image):
         finally:
             controller.render_lock.release()
 
-    @app.post('/api/canvas/retouch/apply')
-    def canvas_retouch_apply():
+    @app.post('/api/canvas/retouch/working')
+    def canvas_retouch_working():
         engine, error = load_engine()
         if error:
             return error
         try:
             body = read_json_body()
             layers = validate_layers(engine, body.get('layers', []))
+            working_id, base_revision = validate_working_request(body)
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+        if controller.apply_lock.locked():
+            return render_busy_response()
+        if not controller.render_lock.acquire(timeout=WORKING_RENDER_WAIT):
+            return render_busy_response()
+
+        controller.native_preview_running.set()
+        try:
+            raw = read_source_bytes(body.get('source'))
+            source_key = hashlib.sha256(raw).digest()
+            source_size = inspect_source(raw)
+            cached = controller.working_image
+            if (cached is None or cached.working_id != working_id or
+                    cached.source_key != source_key):
+                if cached is not None:
+                    controller.working_image = None
+                    cached.close()
+                normalized = native_working_source(raw, engine, source_size)
+                try:
+                    replacement = WorkingImage(working_id, source_key, normalized)
+                except BaseException:
+                    normalized.close()
+                    raise
+                controller.working_image = replacement
+
+            def interrupt_for_apply(_progress, _layer_name):
+                if controller.apply_lock.locked():
+                    raise NativePreviewInterrupted()
+
+            image, box, revision, borrowed = controller.working_image.update(
+                engine, layers, base_revision, progress=interrupt_for_apply,
+            )
+            return working_response(image, box, revision, engine.SRGB, borrowed)
+        except NativePreviewInterrupted:
+            return render_busy_response()
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+        except Exception:
+            return json_error('원본 해상도 작업 이미지를 갱신하지 못했습니다.', 500)
+        finally:
+            controller.native_preview_running.clear()
+            controller.render_lock.release()
+
+    @app.post('/api/canvas/retouch/working/close')
+    def canvas_retouch_working_close():
+        try:
+            body = read_json_body()
+            working_id = body.get('workingId')
+            if not isinstance(working_id, str) or not _WORKING_ID.fullmatch(working_id):
+                raise ValueError('작업 이미지 ID가 올바르지 않습니다.')
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+        if not controller.render_lock.acquire(timeout=WORKING_RENDER_WAIT):
+            return render_busy_response()
+        try:
+            cached = controller.working_image
+            if cached is not None and cached.working_id == working_id:
+                controller.working_image = None
+                cached.close()
+            return Response(status=204)
+        finally:
+            controller.render_lock.release()
+
+    @app.post('/api/canvas/retouch/apply')
+    def canvas_retouch_apply():
+        engine, error = load_engine()
+        if error:
+            return error
+        rendered = None
+        try:
+            if request.mimetype == 'multipart/form-data':
+                if request.content_length is not None and request.content_length > MAX_SOURCE_BYTES + MAX_RENDER_MANIFEST_BYTES + 4096:
+                    raise ValueError('요청 크기가 한도를 넘었습니다.')
+                manifest = request.files.get('document')
+                upload = request.files.get('rendered')
+                if manifest is None or upload is None or upload.mimetype != 'image/png':
+                    raise ValueError('보정 결과 파일이 올바르지 않습니다.')
+                manifest_bytes = manifest.stream.read(MAX_RENDER_MANIFEST_BYTES + 1)
+                if len(manifest_bytes) > MAX_RENDER_MANIFEST_BYTES:
+                    raise ValueError('보정 기록의 크기가 한도를 넘었습니다.')
+                body = json.loads(manifest_bytes)
+                if not isinstance(body, dict):
+                    raise ValueError('보정 기록이 올바르지 않습니다.')
+                rendered = upload.stream.read(MAX_SOURCE_BYTES + 1)
+                if not rendered or len(rendered) > MAX_SOURCE_BYTES:
+                    raise ValueError('보정 결과 파일의 크기가 올바르지 않습니다.')
+            else:
+                body = read_json_body()
+            layers = validate_layers(engine, body.get('layers', []))
             print_spec = validate_print(engine, body.get('print'))
+            working_id = body.get('workingId')
+            if working_id is not None and (
+                    not isinstance(working_id, str) or not _WORKING_ID.fullmatch(working_id)):
+                raise ValueError('작업 이미지 ID가 올바르지 않습니다.')
         except ValueError as exc:
             return json_error(str(exc), 400)
         if not controller.apply_lock.acquire(blocking=False):
             return json_error('이미지 보정 작업이 진행 중입니다.', 409)
-        if not controller.render_lock.acquire(blocking=False):
+        # A preview may still be finishing after the browser has canceled its request.
+        wait = APPLY_NATIVE_PREVIEW_WAIT if controller.native_preview_running.is_set() else APPLY_PREVIEW_WAIT
+        if not controller.render_lock.acquire(timeout=wait):
             controller.apply_lock.release()
             return render_busy_response()
         try:
             raw = read_source_bytes(body.get('source'))
-            width, height = inspect_source(raw)
+            key = hashlib.sha256(raw).digest()
+            width, height = controller.preview_cache.source_size(key) or inspect_source(raw)
+            if rendered is not None:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', Image.DecompressionBombWarning)
+                    with Image.open(io.BytesIO(rendered)) as opened:
+                        if (opened.format != 'PNG' or opened.mode != 'RGBA' or opened.size != (width, height) or
+                                getattr(opened, 'is_animated', False)):
+                            raise ValueError('보정 결과의 형식이나 원본 해상도가 일치하지 않습니다.')
+                        opened.verify()
         except ValueError as exc:
             controller.render_lock.release()
             controller.apply_lock.release()
@@ -402,35 +738,54 @@ def register_canvas_retouch_routes(app, read_source, save_image):
             'progress': 0,
             'message': '이미지를 보정하고 있습니다.',
         }
-        controller.add_job(initial_job)
+        controller.add_job(initial_job.copy())
 
-        def render_worker(source_bytes, layer_snapshot, print_snapshot, source_size):
+        def render_worker(source_bytes, layer_snapshot, print_snapshot, source_size, rendered_bytes):
             image = None
             render_acquired = False
             try:
                 controller.render_lock.acquire()
                 render_acquired = True
-                controller.preview_cache.clear()
-                image = engine.render(
-                    io.BytesIO(source_bytes),
-                    {'layers': layer_snapshot},
-                    progress=lambda value, name: controller.update_job(
-                        job_id, progress=min(.85, max(0, value * .85)), message=f'{name} 보정 중입니다.',
-                    ),
-                )
+                if rendered_bytes is not None:
+                    controller.preview_cache.clear()
+                else:
+                    effective = [layer for layer in layer_snapshot if engine._has_effect(layer)]
+                    if working_id is not None and controller.working_image is not None:
+                        image = controller.working_image.copy_result_if_matches(
+                            working_id, key, engine, layer_snapshot,
+                        )
+                    if image is None:
+                        image = controller.preview_cache.take_native_result(key, effective)
+                    if image is None:
+                        cached_result = controller.preview_cache.full_size_result(key, effective)
+                        if cached_result is not None:
+                            image = cached_result.copy()
+                    controller.preview_cache.clear()
+                    if image is None:
+                        image = engine.render(
+                            io.BytesIO(source_bytes),
+                            {'layers': layer_snapshot},
+                            progress=lambda value, name: controller.update_job(
+                                job_id, progress=min(.85, max(0, value * .85)), message=f'{name} 보정 중입니다.',
+                            ),
+                        )
                 controller.update_job(job_id, progress=0.9, message='원본 크기 PNG를 저장하고 있습니다.')
                 dpi = source_size[0] / (print_snapshot['widthCm'] / 2.54)
-                output = io.BytesIO()
-                image.save(output, format='PNG', icc_profile=engine.SRGB, dpi=(dpi, dpi))
+                if rendered_bytes is not None:
+                    output = _png_print_metadata(rendered_bytes, engine.SRGB, dpi)
+                else:
+                    stream = io.BytesIO()
+                    image.save(stream, format='PNG', compress_level=3, icc_profile=engine.SRGB, dpi=(dpi, dpi))
+                    output = stream.getvalue()
                 public_src, _rel_path = save_image(
-                    output.getvalue(), prefix='canvas_import_retouch', category='retouch', session_id=None,
+                    output, prefix='canvas_import_retouch', category='retouch', session_id=None,
                 )
                 controller.update_job(
                     job_id,
                     status='done',
                     progress=1,
                     message='이미지 보정이 끝났습니다.',
-                    result={'src': public_src, 'width': image.width, 'height': image.height},
+                    result={'src': public_src, 'width': source_size[0], 'height': source_size[1]},
                 )
             except Exception:
                 controller.update_job(
@@ -452,7 +807,7 @@ def register_canvas_retouch_routes(app, read_source, save_image):
         try:
             worker = threading.Thread(
                 target=render_worker,
-                args=(raw, layers, print_spec, (width, height)),
+                args=(raw, layers, print_spec, (width, height), rendered),
                 name='canvas-retouch-render',
                 daemon=True,
             )
@@ -461,7 +816,7 @@ def register_canvas_retouch_routes(app, read_source, save_image):
             controller.update_job(job_id, status='error', progress=0, message='보정 작업을 시작하지 못했습니다.')
             controller.apply_lock.release()
             return json_error('보정 작업을 시작하지 못했습니다.', 500)
-        return jsonify({'status': 'success', 'job': deepcopy(initial_job)}), 202
+        return jsonify({'status': 'success', 'job': initial_job}), 202
 
     @app.post('/api/canvas/retouch/export-pair')
     def canvas_retouch_export_pair():
@@ -475,6 +830,10 @@ def register_canvas_retouch_routes(app, read_source, save_image):
             side = body.get('side')
             if not isinstance(side, str) or side not in {'front', 'back'}:
                 raise ValueError('면은 front 또는 back이어야 합니다.')
+            working_id = body.get('workingId')
+            if working_id is not None and (
+                    not isinstance(working_id, str) or not _WORKING_ID.fullmatch(working_id)):
+                raise ValueError('작업 이미지 ID가 올바르지 않습니다.')
         except ValueError as exc:
             return json_error(str(exc), 400)
         if not acquire_sync_render():
@@ -487,7 +846,12 @@ def register_canvas_retouch_routes(app, read_source, save_image):
             other_raw = read_source_bytes(body.get('otherSource'))
             other_size = inspect_source(other_raw)
             controller.preview_cache.clear()
-            current_image = engine.render(io.BytesIO(current_raw), {'layers': layers})
+            if working_id is not None and controller.working_image is not None:
+                current_image = controller.working_image.copy_result_if_matches(
+                    working_id, hashlib.sha256(current_raw).digest(), engine, layers,
+                )
+            if current_image is None:
+                current_image = engine.render(io.BytesIO(current_raw), {'layers': layers})
             other_image = engine.render(io.BytesIO(other_raw), {'layers': []})
 
             def png_bytes(image, source_size):

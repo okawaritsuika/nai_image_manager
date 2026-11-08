@@ -1366,9 +1366,20 @@ def _stats_refresh_items(db_path, model="all"):
         if model_clause else ""
     )
     with closing(_connect(db_path)) as conn:
-        return [dict(row) for row in conn.execute(
+        items = [dict(row) for row in conn.execute(
             "SELECT id,source_url,board_tab FROM arca_style_items" + where + " ORDER BY id", model_args,
         )]
+    local_urls = set()
+    for item in items:
+        try:
+            local_urls.add(normalize_arca_article_url(item["source_url"]))
+        except ArcaCollectorError:
+            continue
+    from . import naim_shared_library
+    if naim_shared_library.enabled():
+        items.extend(item for item in naim_shared_library.stats_refresh_items(model)
+                     if item["source_url"] not in local_urls)
+    return items
 
 
 def _stats_refresh_searches(db_path, targets):
@@ -1423,47 +1434,64 @@ def refresh_arca_style_stats(db_path, job_id, items=None):
     targets = list(items if items is not None else _stats_refresh_items(
         db_path, _stats_refresh_model(get_collection_job(db_path, job_id)),
     ))
-    update_collection_job(
-        db_path, job_id, status="running", stage="refreshing_stats",
-        total_pages=0, total_posts=len(targets), scanned_posts=0, updated=0,
-    )
-    if not targets:
-        update_collection_job(db_path, job_id, status="completed", stage="completed", skipped_existing=1)
-        return {"updated": 0, "failed_posts": 0, "skipped_existing": True}
     targets_by_url = defaultdict(list)
     for item in targets:
         try:
             targets_by_url[normalize_arca_article_url(item["source_url"])].append(item)
         except ArcaCollectorError:
             continue
-    pending_ids = {item["id"] for item in targets}
-    updated = scanned_pages = 0
+    update_collection_job(
+        db_path, job_id, status="running", stage="refreshing_stats",
+        total_pages=0, total_posts=len(targets_by_url), scanned_posts=0, updated=0,
+    )
+    if not targets_by_url:
+        update_collection_job(db_path, job_id, status="completed", stage="completed", skipped_existing=1)
+        return {"updated": 0, "failed_posts": 0, "skipped_existing": True}
+    pending_ids = {item["id"] for rows in targets_by_url.values() for item in rows}
+    pending_urls = set(targets_by_url)
+    updated_urls = set()
+    scanned_pages = 0
     started = time.monotonic()
 
     def save_statistics(entries):
-        nonlocal updated
-        now = datetime.now().isoformat(timespec="seconds")
-        with closing(_connect(db_path)) as conn, conn:
-            for entry in entries:
-                recommendations, views = entry["recommendation_count"], entry["view_count"]
-                if recommendations is None and views is None:
-                    continue
-                for item in targets_by_url.get(entry["source_url"], ()):
-                    if item["id"] not in pending_ids:
-                        continue
-                    changed = conn.execute(
-                        "UPDATE arca_style_items SET recommendation_count=COALESCE(?,recommendation_count),"
-                        "view_count=COALESCE(?,view_count),updated_at=? WHERE id=? AND source_url=?",
-                        (recommendations, views, now, item["id"], item["source_url"]),
-                    ).rowcount
-                    updated += int(bool(changed))
-                    pending_ids.remove(item["id"])
+        now = datetime.now().isoformat(timespec="microseconds")
+        from . import naim_shared_library
+        for entry in entries:
+            try:
+                source_url = normalize_arca_article_url(entry.get("source_url"))
+            except ArcaCollectorError:
+                continue
+            if source_url not in pending_urls:
+                continue
+            recommendations, views = entry["recommendation_count"], entry["view_count"]
+            if recommendations is None and views is None:
+                continue
+            local_changed = False
+            local_rows = [item for item in targets_by_url[source_url] if not item.get("common_only")]
+            if local_rows:
+                with closing(_connect(db_path)) as conn, conn:
+                    for item in local_rows:
+                        changed = conn.execute(
+                            "UPDATE arca_style_items SET recommendation_count=COALESCE(?,recommendation_count),"
+                            "view_count=COALESCE(?,view_count),updated_at=? WHERE id=? AND source_url=?",
+                            (recommendations, views, now, item["id"], item["source_url"]),
+                        ).rowcount
+                        local_changed = local_changed or bool(changed)
+            shared_changed = False
+            if recommendations is not None and naim_shared_library.enabled():
+                shared_changed = bool(naim_shared_library.update_recommendations(
+                    source_url, recommendations, now,
+                ))
+            if local_changed or shared_changed:
+                updated_urls.add(source_url)
+                pending_urls.discard(source_url)
+                pending_ids.difference_update(item["id"] for item in targets_by_url[source_url])
 
     def record_progress(stage):
-        processed = len(targets) - len(pending_ids)
+        processed = len(targets_by_url) - len(pending_urls)
         update_collection_job(
             db_path, job_id, stage=stage, scanned_pages=scanned_pages,
-            scanned_posts=processed, updated=updated,
+            scanned_posts=processed, updated=len(updated_urls),
             average_post_seconds=(time.monotonic() - started) / processed if processed else None,
         )
 
@@ -1548,17 +1576,19 @@ def refresh_arca_style_stats(db_path, job_id, items=None):
                 if html is not None:
                     save_statistics([{"source_url": source_url, **extract_article_statistics(html)}])
                 pending_ids.difference_update(remaining_ids)
+                pending_urls.discard(source_url)
                 record_progress("refreshing_stats_posts")
         finally:
             list_session.close()
-    failed = len(targets) - updated
+    updated = len(updated_urls)
+    failed = len(targets_by_url) - updated
     error = (
         f"검색 목록과 개별 게시글에서 {failed}개 게시글의 조회수·추천수를 확인하지 못했습니다. 기존 값은 유지했습니다."
         if failed else ""
     )
     update_collection_job(
         db_path, job_id, status="completed", stage="completed",
-        scanned_pages=scanned_pages, scanned_posts=len(targets), updated=updated, error=error,
+        scanned_pages=scanned_pages, scanned_posts=len(targets_by_url), updated=updated, error=error,
     )
     return {"updated": updated, "failed_posts": failed, "skipped_existing": False}
 
@@ -1576,11 +1606,40 @@ def _run_stats_refresh_job(db_path, job_id, items):
         _remove_collection_control(job_id)
 
 
+def _active_stats_refresh_job(db_path, model):
+    active_statuses = ("queued", "running", "pause_requested", "paused", "stop_requested")
+    placeholders = ",".join("?" for _ in active_statuses)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            f"SELECT id,request_json FROM arca_collection_jobs WHERE job_type='stats_refresh' "
+            f"AND status IN ({placeholders}) ORDER BY id DESC",
+            active_statuses,
+        ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["request_json"])
+            active_model = model_filter_value(payload.get("model", "all")) if isinstance(payload, dict) else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if active_model == model:
+            return row["id"]
+    return None
+
+
 def start_stats_refresh_job(db_path, model="all"):
-    job_id, items = create_stats_refresh_job(db_path, model=model)
-    _register_collection_control(job_id)
-    Thread(target=_run_stats_refresh_job, args=(db_path, job_id, items), daemon=True).start()
-    return job_id
+    try:
+        model = model_filter_value(model)
+    except ValueError as exc:
+        raise ArcaCollectorError(str(exc)) from exc
+    init_arca_style_tables(db_path)
+    with _COLLECTION_CONTROL_LOCK:
+        active_job_id = _active_stats_refresh_job(db_path, model)
+        if active_job_id is not None:
+            return active_job_id
+        job_id, items = create_stats_refresh_job(db_path, model=model)
+        _register_collection_control(job_id)
+        Thread(target=_run_stats_refresh_job, args=(db_path, job_id, items), daemon=True).start()
+        return job_id
 
 
 def get_image_restore_estimate(db_path, image_dir):

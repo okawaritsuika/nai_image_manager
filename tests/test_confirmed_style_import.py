@@ -175,6 +175,17 @@ class ConfirmedStyleImportTests(unittest.TestCase):
         self.assertEqual(saved_preview.data, self.source_image)
         saved_preview.close()
 
+    def test_unified_base_is_copied_without_restoring_stale_split_tags(self):
+        base = "quality_a, 1.2::artist:synthetic_a::, fixed_a, quality_b"
+        self.record.update(base_prompt=base, artist_prompt="artist:stale", quality_prompt="stale_quality", fixed_prompt="stale_fixed")
+        listed = self.client.get("/api/daki/confirmed-styles")
+        self.assertEqual(listed.get_json()["styles"][0]["positive"], base)
+        imported = self.import_style()
+        self.assertEqual(imported.status_code, 201, imported.get_json())
+        style = imported.get_json()["style"]
+        self.assertEqual(style["positive"], base)
+        self.assertEqual(self.store.preview_path(style["id"]).read_bytes(), self.source_image)
+
     def test_import_validation_missing_records_and_source_origin_failures(self):
         self.assertEqual(self.import_style(style_id="42").status_code, 400)
         self.assertEqual(self.client.post(

@@ -35,11 +35,11 @@ class FakeElement {
         this.clientTop = 0;
         this.clientWidth = 640;
         this.clientHeight = 480;
-        this.contextOperations = {drawImage: [], getImageData: [], putImageData: []};
+        this.contextOperations = {drawImage: [], getImageData: [], putImageData: [], stroke: []};
         const operations = this.contextOperations;
         this.context2d = {
             clearRect() {}, drawImage(...args) {operations.drawImage.push(args);}, save() {}, beginPath() {}, rect() {}, clip() {}, restore() {},
-            moveTo() {}, lineTo() {}, stroke() {}, fill() {}, ellipse() {}, strokeRect() {}, setLineDash() {},
+            moveTo() {}, lineTo() {}, stroke() {operations.stroke.push(this.strokeStyle);}, fill() {}, ellipse() {}, strokeRect() {}, setLineDash() {},
             getImageData(x = 0, y = 0, width = 1, height = 1) {
                 const imageWidth = Math.max(1, Math.floor(Number(width) || 1));
                 const imageHeight = Math.max(1, Math.floor(Number(height) || 1));
@@ -215,10 +215,14 @@ function createHarness({layers = [], activeLayerId = null, fetchHandler = null, 
     const stage = document.createElement('div'); stage.id = 'canvasStage';
     const opposite = document.createElement('img'); opposite.id = 'canvasOppositePreviewImage'; opposite.src = '';
     const oppositeWrap = document.createElement('div'); oppositeWrap.id = 'canvasOppositePreview'; oppositeWrap.hidden = true;
-    document.body.append(host, surface, stage, opposite, oppositeWrap);
+    const draftControls = document.createElement('div'); draftControls.id = 'canvasRetouchDraftControls'; draftControls.hidden = true;
+    const draftSelect = document.createElement('select'); draftSelect.id = 'canvasRetouchDraftSelect';
+    const resumeButton = document.createElement('button'); resumeButton.id = 'canvasRetouchResumeBtn';
+    draftControls.append(draftSelect, resumeButton); document.toolbar.append(draftControls);
+    document.body.append(document.toolbar, host, surface, stage, opposite, oppositeWrap);
 
     const counters = {
-        mergedCalls: [], savedSources: [], canvasSaves: 0, layerRenders: 0, surfaceRenders: 0,
+        mergedCalls: [], savedSources: [], canvasSaves: 0, layerRenders: 0, surfaceRenders: 0, surfaceRenderOptions: [],
         eraserCalls: [], fetchCalls: [], externalCalls: [], bitmaps: [], panels: [], toasts: [],
         liquifyCreates: [], liquifyAppends: []
     };
@@ -250,7 +254,7 @@ function createHarness({layers = [], activeLayerId = null, fetchHandler = null, 
         findCanvasLayer(id) { return {layer: sandbox.canvasLayers.find(layer => layer.id === id) || null}; },
         saveCanvasState() { counters.canvasSaves += 1; },
         renderLayerList() { counters.layerRenders += 1; },
-        renderCanvasLayersOnSurface() { counters.surfaceRenders += 1; },
+        renderCanvasLayersOnSurface(options) { counters.surfaceRenders += 1; counters.surfaceRenderOptions.push(options); },
         renderMergedCanvasToDataUrl(...args) {
             counters.mergedCalls.push(args);
             return renderHandler ? renderHandler(...args) : Promise.resolve('data:image/png;base64,bWVyZ2Vk');
@@ -299,8 +303,9 @@ function createHarness({layers = [], activeLayerId = null, fetchHandler = null, 
         },
         cancelAnimationFrame(id) {frames.delete(id);},
         ResizeObserver: class { observe() {} disconnect() {} },
-        createImageBitmap: async blob => {
-            const bitmap = {id: ++bitmapId, width: 1200, height: 800, blob, closeCount: 0, close() {this.closeCount += 1;}};
+        createImageBitmap: async (blob, ...crop) => {
+            const bitmap = {id: ++bitmapId, width: crop[2] ?? blob.width ?? 1200, height: crop[3] ?? blob.height ?? 800, blob, crop,
+                closeCount: 0, close() {this.closeCount += 1;}};
             counters.bitmaps.push(bitmap);
             return bitmap;
         },
@@ -385,6 +390,232 @@ function sendStrokePoint(overlay, type, pointerId, clientX, clientY) {
     overlay.dispatch(type, {button: 0, pointerId, clientX, clientY});
 }
 
+function nativeHarness({workingHandler, applyHandler, holdTimerDelays} = {}) {
+    let revision = 0;
+    const surfaceCalls = [];
+    const h = createHarness({holdTimerDelays, fetchHandler: async (url, options) => {
+        if (url.endsWith('/working') && workingHandler) return workingHandler(JSON.parse(options.body), options);
+        if (url.endsWith('/working')) return {ok: true, status: 204,
+            headers: {get: name => name === 'X-Retouch-Revision' ? String(++revision) : null}};
+        if (url.endsWith('/apply') && applyHandler) return applyHandler(JSON.parse(options.body));
+        if (url.endsWith('/working/close')) return {ok: true, status: 204};
+        throw new Error('Native editing must not request a projected preview: ' + url);
+    }});
+    h.setDimensions(5000, 16000);
+    h.sandbox.loadImageElementForClip = async () => ({naturalWidth: 5000, naturalHeight: 16000});
+    h.sandbox.CanvasRetouchSurface = {create(options) {
+        surfaceCalls.push(['create', options]);
+        return Object.fromEntries(['replacePatch', 'replacePatches', 'showViewport', 'acknowledge', 'appendStroke', 'endStroke', 'clearOptimistic',
+            'setComparison', 'destroy', 'beginStroke'].map(name => [name, (...args) => {
+                surfaceCalls.push([name, ...structuredClone(args)]); return name === 'beginStroke';
+            }]));
+    }};
+    return {...h, surfaceCalls};
+}
+
+test('continuous native filter input renders each viewport and confirms only the last value', async () => {
+    const h = nativeHarness({holdTimerDelays: [140]});
+    const previewed = [], confirmed = [];
+    const querySelector = h.document.querySelector.bind(h.document);
+    h.document.querySelector = selector => selector === '.canvas-workspace'
+        ? {getBoundingClientRect: () => ({left: 0, top: 0, right: 800, bottom: 600})} : querySelector(selector);
+    h.sandbox.CanvasEditorEngine = {create: () => ({
+        async preview(body) {
+            previewed.push(body.layers.at(-1).params.brightness);
+            return {patches: [{marker: previewed.at(-1)}]};
+        },
+        async update(body) {
+            confirmed.push(body.layers.at(-1)?.params.brightness);
+            return {revision: confirmed.length, patches: []};
+        },
+        destroy() {},
+    })};
+    await h.controller.open(); await h.settle();
+    h.stage.children[0].getBoundingClientRect = () => ({left: 0, top: 0, width: 5000, height: 16000});
+    const panel = h.counters.panels.at(-1);
+    panel.actions.add('tone'); await h.settle();
+    const before = confirmed.length;
+
+    panel.actions.change({params: {brightness: 8}}); await h.settle();
+    h.advanceTime(80);
+    panel.actions.change({params: {brightness: 15}}); await h.settle();
+    assert.deepEqual(previewed, [8, 15]);
+    assert.equal(confirmed.length, before);
+    assert.deepEqual(h.surfaceCalls.filter(call => call[0] === 'showViewport').map(call => call[1][0].marker), [8, 15]);
+
+    h.advanceTime(140); h.runTimers(140); await h.settle();
+    assert.deepEqual(confirmed.slice(before), [15]);
+    assert.deepEqual(h.counters.fetchCalls, []);
+    h.controller.close(false);
+});
+
+test('native working image keeps full resolution and zoom never requests new corrected pixels', async () => {
+    const h = nativeHarness();
+    await h.controller.open(); await h.settle();
+    assert.equal(h.surfaceCalls[0]?.[0], 'create');
+    assert.equal(h.surfaceCalls[0][1].width, 5000);
+    assert.equal(h.surfaceCalls[0][1].height, 16000);
+    const requests = h.counters.fetchCalls.length;
+    h.surface.clientWidth *= 4; h.surface.clientHeight *= 4;
+    h.controller.sync(); h.controller.sync(); await h.settle();
+    assert.equal(h.counters.fetchCalls.length, requests);
+    assert.equal(h.counters.fetchCalls.filter(call => call.url.endsWith('/working')).length, 1);
+    assert.equal(h.counters.panels.at(-1).latest.error, false);
+});
+
+test('native airbrush paints during drag without requests and sends one committed stroke', async () => {
+    const h = nativeHarness();
+    await h.controller.open(); await h.settle();
+    const panel = h.counters.panels.at(-1);
+    panel.actions.setTool('airbrush'); await h.settle();
+    const requests = h.counters.fetchCalls.length;
+    const overlay = h.stage.children[0];
+    sendStrokePoint(overlay, 'pointerdown', 1, 120, 150);
+    sendStrokePoint(overlay, 'pointermove', 1, 150, 180);
+    assert.equal(overlay.focused, true, 'painting returns keyboard shortcuts from the brush inputs to the image');
+    h.runFrames(); await h.settle();
+    assert.ok(h.surfaceCalls.some(call => call[0] === 'beginStroke'));
+    assert.ok(h.surfaceCalls.some(call => call[0] === 'appendStroke'));
+    assert.equal(h.counters.fetchCalls.length, requests);
+    sendStrokePoint(overlay, 'pointerup', 1, 155, 185);
+    await h.settle();
+    assert.equal(h.counters.fetchCalls.length, requests + 1);
+    const sent = h.counters.fetchCalls.at(-1).body;
+    assert.equal(sent.layers.at(-1).strokes.length, 1);
+    assert.equal(sent.layers.at(-1).strokes[0].radius, 80);
+    assert.ok(sent.workingId);
+    assert.ok(sent.baseRevision > 0);
+    assert.ok(h.surfaceCalls.some(call => call[0] === 'endStroke' && call[1] === true));
+    h.controller.close(); await h.settle();
+    assert.ok(h.surfaceCalls.some(call => call[0] === 'destroy'));
+    assert.equal(h.counters.fetchCalls.at(-1).url, '/api/canvas/retouch/working/close');
+});
+
+test('zoom-only retouch geometry is refreshed once on close without changing ordinary close', async () => {
+    const ordinary = createHarness();
+    await ordinary.controller.open();
+    await ordinary.settle();
+    ordinary.controller.close();
+    assert.equal(ordinary.counters.surfaceRenders, 0);
+
+    const zoomed = createHarness();
+    await zoomed.controller.open();
+    await zoomed.settle();
+    zoomed.controller.sync({baseZoomSkipped: true});
+    assert.equal(zoomed.counters.surfaceRenders, 0);
+    zoomed.controller.close();
+    await zoomed.settle();
+    assert.equal(zoomed.counters.surfaceRenders, 1);
+    assert.equal(zoomed.counters.surfaceRenderOptions[0]?.zoomOnly, true);
+});
+
+test('native airbrush adds one stationary dwell point before release and cancels its timer', async () => {
+    const h = nativeHarness();
+    await h.controller.open(); await h.settle();
+    const panel = h.counters.panels.at(-1);
+    panel.actions.setTool('airbrush'); await h.settle();
+    const layer = h.controller.snapshot().document.layers.at(-1);
+    assert.equal(layer.params.mode, 'normal', 'a new airbrush layer uses its paint default');
+    const overlay = h.stage.children[0], requests = h.counters.fetchCalls.length;
+    sendStrokePoint(overlay, 'pointerdown', 1, 120, 150);
+    h.advanceTime(100); h.runTimers(100); await h.settle();
+    const append = h.surfaceCalls.filter(call => call[0] === 'appendStroke').at(-1);
+    assert.ok(append, 'the held airbrush updates native working pixels');
+    assert.deepEqual(append[1].slice(0, 1), append[1].slice(1, 2), 'a stationary dwell appends the held point');
+    assert.equal(h.counters.fetchCalls.length, requests, 'dwell stays local until release');
+    assert.equal(h.pendingTimers(100), 1, 'a new pulse is scheduled while held');
+    overlay.dispatch('pointercancel', {pointerId: 1});
+    assert.equal(h.pendingTimers(100), 0, 'cancellation stops the next dwell pulse');
+    assert.ok(h.surfaceCalls.some(call => call[0] === 'endStroke' && call[1] === false));
+    assert.equal(h.controller.snapshot().document.layers.at(-1).strokes.length, 0);
+    h.controller.close(); await h.settle();
+});
+
+test('airbrush keeps existing paint blend modes and uses normal only for a new paint layer', async () => {
+    const color = RetouchState.createLayer('paint', () => 'color-paint'); color.params.mode = 'color';
+    const multiply = RetouchState.createLayer('paint', () => 'multiply-paint'); multiply.params.mode = 'multiply';
+    const h = createHarness();
+    await h.controller.open(); await h.settle();
+    const panel = h.counters.panels.at(-1);
+    panel.actions.setTool('airbrush'); await h.settle();
+    assert.equal(h.controller.snapshot().document.layers.at(-1).params.mode, 'normal');
+    h.controller.close();
+
+    h.controller.restore({document: makeDocument({layers: [color, multiply]}), targetLayerId: null});
+    await h.controller.open(); await h.settle();
+    h.counters.panels.at(-1).actions.setTool('airbrush'); await h.settle();
+    assert.deepEqual(h.controller.snapshot().document.layers.map(item => item.params.mode), ['color', 'multiply']);
+    h.controller.close();
+});
+
+test('native apply waits for the latest committed pixels before reusing the working image', async () => {
+    const delayed = deferred(); let lastWork, saves = 0, revision = 0;
+    const reply = () => ({ok: true, status: 204,
+        headers: {get: name => name === 'X-Retouch-Revision' ? String(++revision) : null}});
+    const h = nativeHarness({workingHandler(body, options) {
+        if (!body.layers.at(-1)?.strokes.length) return reply();
+        lastWork = {body, signal: options.signal}; return delayed.promise;
+    }, applyHandler(body) {
+        saves++; assert.deepEqual(body.layers, lastWork.body.layers);
+        assert.equal(body.workingId, lastWork.body.workingId);
+        return {ok: true, json: async () => ({job: {id: 'native-save', status: 'done',
+            result: {src: '/canvas-imports/native-result.png', width: 5000, height: 16000}}})};
+    }});
+    await h.controller.open(); await h.settle();
+    const panel = h.counters.panels.at(-1);
+    panel.actions.setTool('airbrush'); await h.settle();
+    const overlay = h.stage.children[0];
+    sendStrokePoint(overlay, 'pointerdown', 1, 120, 150);
+    sendStrokePoint(overlay, 'pointerup', 1, 140, 150);
+    await h.waitFor(() => Boolean(lastWork));
+    panel.actions.apply(); await h.settle();
+    assert.equal(saves, 0); assert.equal(lastWork.signal.aborted, false);
+    delayed.resolve(reply()); await h.settle();
+    assert.equal(saves, 1);
+    assert.equal(h.controller.isOpen(), false);
+    assert.equal(h.sandbox.canvasLayers[0].imageWidth, 5000);
+    assert.equal(h.sandbox.canvasLayers[0].imageHeight, 16000);
+});
+
+test('native response arriving after close is discarded without reviving a surface', async () => {
+    const pending = deferred();
+    const h = nativeHarness({workingHandler: () => pending.promise});
+    const opened = h.controller.open();
+    await h.waitFor(() => h.counters.fetchCalls.some(call => call.url.endsWith('/working')));
+    h.controller.close();
+    pending.resolve({ok: true, status: 200, headers: {get: name => ({
+        'X-Retouch-Revision': '1', 'X-Retouch-X': '0', 'X-Retouch-Y': '15000',
+        'X-Retouch-Width': '120', 'X-Retouch-Height': '180'
+    })[name]}, blob: async () => ({width: 120, height: 180})});
+    await opened; await h.settle();
+    assert.equal(h.controller.isOpen(), false);
+    assert.equal(h.surfaceCalls.filter(call => call[0] === 'replacePatch').length, 0);
+    assert.equal(h.counters.bitmaps.at(-1).closeCount, 1);
+});
+
+test('native undo drains an older patch and uses its revision for the correction instead of restarting', async () => {
+    const pending = deferred(); let inFlight, sentStroke = false;
+    const h = nativeHarness({workingHandler(body, options) {
+        if (body.layers.at(-1)?.strokes.length && !sentStroke) {
+            sentStroke = true; inFlight = options.signal; return pending.promise;
+        }
+        return {ok: true, status: 204, headers: {get: name => name === 'X-Retouch-Revision' ? '0' : null}};
+    }});
+    await h.controller.open(); await h.settle();
+    const panel = h.counters.panels.at(-1);
+    panel.actions.setTool('airbrush'); await h.settle();
+    const overlay = h.stage.children[0];
+    sendStrokePoint(overlay, 'pointerdown', 1, 120, 150);
+    sendStrokePoint(overlay, 'pointerup', 1, 140, 150);
+    await h.waitFor(() => Boolean(inFlight));
+    panel.actions.undo(); assert.equal(inFlight.aborted, false);
+    pending.resolve({ok: true, status: 204, headers: {get: name => name === 'X-Retouch-Revision' ? '1' : null}});
+    await h.settle();
+    const undoRequest = h.counters.fetchCalls.at(-1).body;
+    assert.equal(undoRequest.baseRevision, 1);
+    assert.equal(undoRequest.layers.at(-1).strokes.length, 0);
+});
+
 test('open snapshots the whole merged canvas once and stores its local source', async () => {
     const originalLayers = [
         {id: 1, type: 'image', name: 'base', src: '/canvas-imports/base.png', x: 0, y: 0, layerWidth: 1200, layerHeight: 800},
@@ -396,7 +627,7 @@ test('open snapshots the whole merged canvas once and stores its local source', 
     await h.settle();
 
     assert.equal(h.counters.mergedCalls.length, 1);
-    assert.deepEqual(h.counters.mergedCalls[0], []);
+    assert.equal(typeof h.counters.mergedCalls[0][0].onComposite, 'function');
     assert.equal(h.counters.savedSources.length, 1);
     assert.equal(h.counters.savedSources[0].data, 'data:image/png;base64,bWVyZ2Vk');
     assert.equal(h.counters.savedSources[0].options.category, 'retouch');
@@ -575,7 +806,7 @@ test('multi-layer preset capacity is checked before any mutation and local stren
 });
 
 test('recipe selection adds ordered stages as one undo step and keeps the eight-stage default', async () => {
-    const h = createHarness({holdTimerDelays: [60]});
+    const h = createHarness({holdTimerDelays: [0]});
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1);
     const beforeEmpty = h.controller.snapshot();
@@ -602,7 +833,7 @@ test('recipe selection adds ordered stages as one undo step and keeps the eight-
 
 test('recipe capacity allows one stage at 39 and rejects two without mutation', async () => {
     const layers = Array.from({length: 39}, (_, index) => RetouchState.createLayer('tone', () => `existing-${index}`));
-    const h = createHarness({holdTimerDelays: [60]});
+    const h = createHarness({holdTimerDelays: [0]});
     h.controller.restore({document: makeDocument({layers}), targetLayerId: null});
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1);
@@ -624,7 +855,7 @@ test('Shift selects and toggles individual layers without changing saved documen
     const pendingApply = deferred();
     let applyStarted = false;
     const layers = makeThreeCorrectionLayers();
-    const h = createHarness({holdTimerDelays: [60], fetchHandler: async (url, options) => {
+    const h = createHarness({holdTimerDelays: [0], fetchHandler: async (url, options) => {
         if (url.endsWith('/apply')) {applyStarted = true; return pendingApply.promise;}
         return url.endsWith('/preview') || url.endsWith('/mask')
             ? {ok: true, blob: async () => ({url})}
@@ -667,33 +898,143 @@ test('Shift selects and toggles individual layers without changing saved documen
     await h.waitFor(() => !h.controller.isOpen(), 'held apply did not finish');
 });
 
-test('preview scheduling keeps the first 60ms timer and sends the latest edit', async () => {
-    const h = createHarness({holdTimerDelays: [60]});
+test('preview sends the latest edit without a fixed wait', async () => {
+    const h = createHarness({holdTimerDelays: [0]});
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1);
     panel.actions.add('tone');
-    const firstTimer = h.timerIds(60);
+    const firstTimer = h.timerIds(0);
     assert.equal(firstTimer.length, 1);
 
     for (const brightness of [3, 7, 13]) panel.actions.change({params: {brightness}});
-    assert.deepEqual(h.timerIds(60), firstTimer, 'later input does not restart the first preview timer');
-    assert.equal(h.pendingTimers(60), 1);
+    assert.deepEqual(h.timerIds(0), firstTimer, 'later input does not restart the first preview timer');
+    assert.equal(h.pendingTimers(0), 1);
     const previousRequests = h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).length;
-    h.runTimers(60);
+    h.runTimers(0);
     await h.waitFor(() => h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).length > previousRequests);
     await h.settle();
 
     const editedRequests = h.counters.fetchCalls.filter(call => call.url.endsWith('/preview') && call.body.layers.length);
     assert.equal(editedRequests.length, 1);
+    assert.equal(editedRequests[0].body.native, true);
+    assert.equal(editedRequests[0].body.quick, undefined);
     assert.equal(editedRequests[0].body.layers[0].params.brightness, 13);
     assert.equal(h.controller.snapshot().document.layers[0].params.brightness, 13);
     h.controller.close();
 });
 
+test('edits keep one display size and present the latest native render without a second pass', async () => {
+    const h = createHarness({fetchHandler: async (_url, options) => {
+        const {layers, native, quick} = JSON.parse(options.body);
+        assert.equal(native, true);
+        assert.equal(quick, undefined);
+        return {ok: true, blob: async () => ({brightness: layers[0]?.params.brightness})};
+    }});
+    await h.controller.open(); await h.settle();
+    const panel = h.counters.panels.at(-1), image = h.stage.children[0].children[0];
+    const original = h.counters.bitmaps[0];
+    assert.equal(h.counters.fetchCalls.length, 1, 'an untouched document borrows the original bitmap');
+    panel.actions.add('tone');
+    await h.waitFor(() => image.contextOperations.drawImage.at(-1)[0].blob.brightness === 0);
+    assert.equal(image.width, 1200);
+    assert.equal(image.height, 800);
+    assert.equal(original.closeCount, 0);
+    panel.actions.compare(true);
+    assert.deepEqual(image.contextOperations.drawImage.at(-1), [original, 0, 0, 1200, 800]);
+    panel.actions.compare(false);
+
+    panel.actions.change({params: {brightness: 15}});
+    await h.waitFor(() => image.contextOperations.drawImage.at(-1)[0].blob.brightness === 15);
+    await h.settle();
+    assert.equal(image.width, 1200);
+    assert.equal(h.counters.fetchCalls.length, 3, 'one request per update and no follow-up resolution switch');
+    h.controller.close();
+    assert.ok(h.counters.bitmaps.every(bitmap => bitmap.closeCount === 1));
+});
+
+test('the brush footprint follows the pointer without redrawing the picture and marks an active stroke', async () => {
+    const h = createHarness({holdTimerDelays: [0]});
+    await h.controller.open(); await h.settle();
+    const panel = h.counters.panels.at(-1);
+    const overlay = h.stage.children[0], image = overlay.children[0], ink = overlay.children[1];
+    const cursor = overlay.children.find(child => child.className === 'canvas-retouch-brush-cursor');
+    panel.actions.add('tone');
+    panel.actions.setTool('maskErase');
+    panel.actions.maskShow(true);
+    h.runTimers(0); await h.settle();
+    const maskReads = () => h.document.createdElements.reduce((count, element) => count + element.contextOperations.getImageData.length, 0);
+    const beforeStrokeReads = maskReads();
+    assert.equal(beforeStrokeReads, 1);
+
+    const beforeHover = image.contextOperations.drawImage.length;
+    sendStrokePoint(overlay, 'pointermove', 9, 180, 130);
+    assert.equal(cursor.hidden, false);
+    assert.equal(cursor.getAttribute('data-mode'), 'erase');
+    assert.equal(cursor.getAttribute('data-active'), 'false');
+    assert.equal(image.contextOperations.drawImage.length, beforeHover);
+
+    const maskDraws = ink.contextOperations.drawImage.length;
+    const trailDraws = ink.contextOperations.stroke.length;
+    sendStrokePoint(overlay, 'pointerdown', 9, 180, 130);
+    assert.equal(cursor.getAttribute('data-active'), 'true');
+    assert.equal(ink.contextOperations.drawImage.length, maskDraws, 'holding the brush hides the mask tint');
+    const beforeDrag = image.contextOperations.drawImage.length;
+    sendStrokePoint(overlay, 'pointermove', 9, 240, 200);
+    assert.equal(ink.contextOperations.stroke.length, trailDraws, 'the brush does not cover the result with a colored trail');
+    assert.equal(image.contextOperations.drawImage.length, beforeDrag, 'the native request owns picture updates');
+    assert.equal(maskReads(), beforeStrokeReads, 'unchanged mask tint is reused during the stroke');
+    sendStrokePoint(overlay, 'pointerup', 9, 240, 200);
+    assert.equal(cursor.getAttribute('data-active'), 'false');
+    assert.ok(ink.contextOperations.drawImage.length > maskDraws, 'releasing restores the requested mask display');
+    assert.equal(h.controller.snapshot().document.layers[0].mask.strokes.length, 1);
+    overlay.dispatch('pointerleave');
+    assert.equal(cursor.hidden, true);
+    h.controller.close();
+});
+
+test('a visible native source enables brush size and strokes before the first edited crop returns', async () => {
+    const crop = deferred();
+    const h = createHarness();
+    h.setDimensions(5000, 16000);
+    const lookup = h.document.querySelector.bind(h.document);
+    h.document.querySelector = selector => selector === '.canvas-workspace' ? h.surface : lookup(selector);
+    h.sandbox.loadImageElementForClip = async () => ({naturalWidth: 5000, naturalHeight: 16000});
+    let viewportOptions;
+    h.sandbox.CanvasRetouchViewport = {
+        BASE_PREVIEW_EDGE: 1600,
+        create(options) {
+            viewportOptions = options;
+            return {renderEdit: () => crop.promise, schedule() {}, setComparison() {}, cancelPending() {}, destroy() {}};
+        },
+    };
+    const layer = RetouchState.createLayer('paint', () => 'pending-paint');
+    h.controller.restore({document: makeDocument({width: 5000, height: 16000, layers: [layer]})});
+    await h.controller.open();
+    await viewportOptions.loadNativeUnderlay();
+    const panel = h.counters.panels.at(-1);
+    const overlay = h.stage.children[0];
+    const cursor = overlay.children.find(child => child.className === 'canvas-retouch-brush-cursor');
+    panel.actions.setTool('airbrush');
+    panel.actions.brush('size', 120);
+
+    sendStrokePoint(overlay, 'pointermove', 1, 180, 130);
+    assert.equal(cursor.hidden, false);
+    assert.equal(cursor.style.width, '2.4%');
+    sendStrokePoint(overlay, 'pointerdown', 1, 180, 130);
+    sendStrokePoint(overlay, 'pointermove', 1, 230, 170);
+    sendStrokePoint(overlay, 'pointerup', 1, 230, 170);
+    const [stroke] = h.controller.snapshot().document.layers[0].strokes;
+    assert.equal(stroke.brush, 'airbrush');
+    assert.equal(stroke.radius, 60);
+    assert.equal(h.counters.fetchCalls.length, 0);
+    h.controller.close();
+    crop.resolve(false);
+});
+
 test('an in-flight preview displays its intermediate result then sends one latest queued snapshot', async () => {
     const held = deferred();
     let heldSignal = null;
-    const h = createHarness({holdTimerDelays: [60], fetchHandler: async (url, options) => {
+    const h = createHarness({holdTimerDelays: [0], fetchHandler: async (url, options) => {
         if (url.endsWith('/preview')) {
             const body = JSON.parse(options.body);
             if (body.layers.length && !heldSignal) {heldSignal = options.signal; return held.promise;}
@@ -704,21 +1045,21 @@ test('an in-flight preview displays its intermediate result then sends one lates
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1);
     panel.actions.add('tone');
-    h.runTimers(60);
+    h.runTimers(0);
     await h.waitFor(() => heldSignal, 'the edited preview was not held in flight');
     const imageCanvas = h.stage.children[0].children[0];
     const drawsBeforeCompletion = imageCanvas.contextOperations.drawImage.length;
 
     for (const brightness of [2, 6, 11]) panel.actions.change({params: {brightness}});
-    assert.equal(h.pendingTimers(60), 0, 'queued edits do not start concurrent preview work');
+    assert.equal(h.pendingTimers(0), 0, 'queued edits do not start concurrent preview work');
     assert.equal(h.counters.fetchCalls.filter(call => call.url.endsWith('/preview') && call.body.layers.length).length, 1);
     assert.equal(h.controller.snapshot().document.layers[0].params.brightness, 11);
 
     held.resolve({ok: true, blob: async () => ({url: 'intermediate-preview'})});
-    await h.waitFor(() => h.pendingTimers(60) === 1, 'latest edit was not scheduled after the in-flight response');
+    await h.waitFor(() => h.pendingTimers(0) === 1, 'latest edit was not scheduled after the in-flight response');
     assert.ok(imageCanvas.contextOperations.drawImage.length > drawsBeforeCompletion,
         'the completed intermediate bitmap is drawn while the queued edit waits');
-    h.runTimers(60);
+    h.runTimers(0);
     await h.waitFor(() => h.counters.fetchCalls.some(call => call.url.endsWith('/preview')
         && call.body.layers[0]?.params.brightness === 11), 'the queued request did not capture the latest edit');
     await h.settle();
@@ -845,7 +1186,7 @@ test('soft mask eraser changes only the selected layer and keeps separate brush 
 test('mask eraser previews and commits one independent stroke to every selected layer', async () => {
     const layers = makeThreeCorrectionLayers();
     layers[1].visible = false;
-    const h = createHarness({holdTimerDelays: [60]});
+    const h = createHarness({holdTimerDelays: [0]});
     h.controller.restore({document: makeDocument({layers}), targetLayerId: null});
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1), overlay = h.stage.children[0];
@@ -862,7 +1203,7 @@ test('mask eraser previews and commits one independent stroke to every selected 
     sendStrokePoint(overlay, 'pointermove', 141, 160, 120);
     panel.actions.select('color-c', {shiftKey: true});
     assert.deepEqual(selectedIdsFor(panel), ['tone-a', 'tone-b'], 'selection is fixed during a stroke');
-    h.runTimers(60);
+    h.runTimers(0);
     await h.waitFor(() => h.counters.fetchCalls.some(call => call.url.endsWith('/preview')
         && call.body.layers.find(layer => layer.id === 'tone-a')?.mask.strokes.length === 1),
     'preview did not apply the temporary stroke to the first selected layer');
@@ -909,7 +1250,7 @@ test('mask eraser previews and commits one independent stroke to every selected 
 
 test('mask eraser point budget counts every target and permits the exact single-target limit', async () => {
     const layers = makeThreeCorrectionLayers();
-    const h = createHarness({holdTimerDelays: [60]});
+    const h = createHarness({holdTimerDelays: [0]});
     h.controller.restore({document: makeDocument({layers}), targetLayerId: null});
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1), overlay = h.stage.children[0];
@@ -929,7 +1270,7 @@ test('mask eraser point budget counts every target and permits the exact single-
     assert.equal(seedPointCount(), 99999);
 
     sendStrokePoint(overlay, 'pointerdown', 181, 100, 100);
-    h.runTimers(60);
+    h.runTimers(0);
     await h.waitFor(() => h.counters.fetchCalls.some(call => call.url.endsWith('/preview')
         && call.body.layers.find(layer => layer.id === 'color-c')?.strokes.reduce((total, stroke) => total + stroke.points.length, 0) === 99999),
     'over-limit multi-target preview was not sent');
@@ -950,7 +1291,7 @@ test('mask eraser point budget counts every target and permits the exact single-
 
     panel.actions.select('tone-a');
     sendStrokePoint(overlay, 'pointerdown', 182, 100, 100);
-    h.runTimers(60);
+    h.runTimers(0);
     await h.waitFor(() => h.counters.fetchCalls.some(call => call.url.endsWith('/preview')
         && call.body.layers.find(layer => layer.id === 'tone-a')?.mask.strokes.length === 1),
     'an exact-limit single-target preview was omitted');
@@ -970,7 +1311,7 @@ test('mask eraser point budget counts every target and permits the exact single-
 
 test('paint, mask add, and settings edits continue to target only the active layer', async () => {
     const layers = makeThreeCorrectionLayers();
-    const h = createHarness({holdTimerDelays: [60]});
+    const h = createHarness({holdTimerDelays: [0]});
     h.controller.restore({document: makeDocument({layers}), targetLayerId: null});
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1), overlay = h.stage.children[0];
@@ -999,7 +1340,7 @@ test('paint, mask add, and settings edits continue to target only the active lay
 
 test('deleting and undoing selected layers keeps a valid selection and new layers select alone', async () => {
     const layers = makeThreeCorrectionLayers();
-    const h = createHarness({holdTimerDelays: [60]});
+    const h = createHarness({holdTimerDelays: [0]});
     h.controller.restore({document: makeDocument({layers}), targetLayerId: null});
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1);
@@ -1031,7 +1372,7 @@ test('cancel, lost capture, and close never commit a multi-layer eraser stroke',
     for (const outcome of ['pointercancel', 'lostpointercapture', 'close']) {
         const held = deferred();
         let heldSignal = null;
-        const h = createHarness({holdTimerDelays: [60], fetchHandler: async (url, options) => {
+        const h = createHarness({holdTimerDelays: [0], fetchHandler: async (url, options) => {
             if (url.endsWith('/preview')) {
                 const body = JSON.parse(options.body);
                 const first = body.layers.find(layer => layer.id === 'tone-a');
@@ -1052,7 +1393,7 @@ test('cancel, lost capture, and close never commit a multi-layer eraser stroke',
         panel.actions.setTool('maskErase');
         sendStrokePoint(overlay, 'pointerdown', 172, 120, 120);
         sendStrokePoint(overlay, 'pointermove', 172, 160, 120);
-        h.runTimers(60);
+        h.runTimers(0);
         await h.waitFor(() => heldSignal, 'multi-layer preview was not held for ' + outcome);
         const savesBefore = h.counters.canvasSaves;
         const previewCount = h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).length;
@@ -1075,8 +1416,8 @@ test('cancel, lost capture, and close never commit a multi-layer eraser stroke',
             continue;
         }
 
-        await h.waitFor(() => h.pendingTimers(60) === 1, 'cancelled stroke did not queue a committed-document refresh');
-        h.runTimers(60);
+        await h.waitFor(() => h.pendingTimers(0) === 1, 'cancelled stroke did not queue a committed-document refresh');
+        h.runTimers(0);
         await h.waitFor(() => h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).length > previewCount);
         const refreshed = h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).at(-1).body;
         assert.equal(refreshed.layers.find(layer => layer.id === 'tone-a').mask.strokes.length, 0);
@@ -1089,7 +1430,7 @@ test('cancel, lost capture, and close never commit a multi-layer eraser stroke',
 
 test('mask eraser preview includes the live stroke while the saved document waits for pointerup', async () => {
     const layer = RetouchState.createLayer('tone', () => 'mask-preview-tone');
-    const h = createHarness({holdTimerDelays: [60]});
+    const h = createHarness({holdTimerDelays: [0]});
     h.controller.restore({document: makeDocument({layers: [layer]}), targetLayerId: null});
     await h.controller.open(); await h.settle();
     const panel = h.counters.panels.at(-1), overlay = h.stage.children[0];
@@ -1097,12 +1438,12 @@ test('mask eraser preview includes the live stroke while the saved document wait
     const savesBefore = h.counters.canvasSaves;
     sendStrokePoint(overlay, 'pointerdown', 55, 120, 120);
     sendStrokePoint(overlay, 'pointermove', 55, 160, 120);
-    assert.equal(h.pendingTimers(60), 1);
+    assert.equal(h.pendingTimers(0), 1);
     assert.equal(h.controller.snapshot().document.layers[0].mask.strokes.length, 0);
     assert.equal(h.counters.canvasSaves, savesBefore);
     assert.equal(panel.latest.canUndo, false);
 
-    h.runTimers(60);
+    h.runTimers(0);
     await h.waitFor(() => h.counters.fetchCalls.some(call => call.url.endsWith('/preview')
         && call.body.layers[0]?.mask.strokes.length === 1), 'live mask stroke was omitted from preview payload');
     const preview = h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')
@@ -1130,7 +1471,7 @@ test('cancel and lost capture discard active mask previews and refresh the commi
     for (const cancelEvent of ['pointercancel', 'lostpointercapture']) {
         const held = deferred();
         let heldSignal = null;
-        const h = createHarness({holdTimerDelays: [60], fetchHandler: async (url, options) => {
+        const h = createHarness({holdTimerDelays: [0], fetchHandler: async (url, options) => {
             if (url.endsWith('/preview')) {
                 const body = JSON.parse(options.body);
                 if (body.layers.some(item => item.mask.strokes.length) && !heldSignal) {
@@ -1147,7 +1488,7 @@ test('cancel and lost capture discard active mask previews and refresh the commi
         const overlay = h.stage.children[0];
         sendStrokePoint(overlay, 'pointerdown', 73, 120, 120);
         sendStrokePoint(overlay, 'pointermove', 73, 160, 120);
-        h.runTimers(60);
+        h.runTimers(0);
         await h.waitFor(() => heldSignal, 'active mask preview was not held');
         const committedBefore = h.controller.snapshot();
         const savesBefore = h.counters.canvasSaves;
@@ -1157,15 +1498,15 @@ test('cancel and lost capture discard active mask previews and refresh the commi
         assert.equal(heldSignal.aborted, true, cancelEvent + ' must invalidate the active preview request');
         assert.deepEqual(h.controller.snapshot(), committedBefore, 'an abandoned stroke is not saved');
         assert.equal(h.counters.canvasSaves, savesBefore);
-        if (cancelEvent === 'pointercancel') assert.equal(h.pendingTimers(60), 0, 'refresh waits for the active request to settle');
+        if (cancelEvent === 'pointercancel') assert.equal(h.pendingTimers(0), 0, 'refresh waits for the active request to settle');
 
         held.resolve({ok: true, blob: async () => ({url: 'stale-mask-' + cancelEvent})});
         await h.waitFor(() => h.counters.bitmaps.some(bitmap => bitmap.blob.url === 'stale-mask-' + cancelEvent
             && bitmap.closeCount > 0), 'late mask bitmap was not discarded');
-        await h.waitFor(() => h.pendingTimers(60) === 1, 'committed document refresh was not queued');
+        await h.waitFor(() => h.pendingTimers(0) === 1, 'committed document refresh was not queued');
         assert.deepEqual(h.controller.snapshot(), committedBefore);
         assert.equal(h.counters.canvasSaves, savesBefore);
-        h.runTimers(60);
+        h.runTimers(0);
         await h.waitFor(() => h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).length > previewsBeforeRefresh);
         const refreshed = h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).at(-1);
         assert.equal(refreshed.body.layers[0].mask.strokes.length, 0);
@@ -1585,6 +1926,86 @@ test('closing keeps an isolated draft snapshot, while restore(null) resets it fo
     assert.equal(h.controller.snapshot().document.notes, '');
 });
 
+test('the merged canvas opens directly while the retouch renderer is busy', async () => {
+    let rendererBusy = true;
+    const h = createHarness({
+        renderHandler({onComposite}) {
+            onComposite({width: 5000, height: 16000});
+            return Promise.resolve('data:image/png;base64,bWVyZ2Vk');
+        },
+        fetchHandler: async url => rendererBusy
+            ? {ok: false, status: 409, json: async () => ({message: 'renderer busy'})}
+            : {ok: true, blob: async () => ({url})},
+    });
+    h.setDimensions(5000, 16000);
+    h.surface.dataset = {fitScale: '0.04'};
+    h.sandbox.CanvasRetouchViewport = {BASE_PREVIEW_EDGE: 1600};
+    await h.controller.open();
+    await h.settle();
+
+    const panel = h.counters.panels.at(-1);
+    assert.equal(h.counters.savedSources.length, 1);
+    assert.equal(h.counters.fetchCalls.length, 0);
+    assert.equal(panel.latest.edited, panel.latest.original);
+    assert.match(panel.latest.message, /자동 저장/);
+    assert.equal(h.counters.bitmaps[0].blob.width, 200);
+    assert.equal(h.counters.bitmaps[0].blob.height, 640);
+
+    rendererBusy = false;
+    panel.actions.add('tone');
+    await h.settle();
+    const preview = h.counters.fetchCalls.find(call => call.url.endsWith('/preview'));
+    assert.equal(preview.body.native, true);
+    assert.equal(preview.body.layers[0].type, 'tone');
+    assert.equal(preview.body.displayEdge, 640);
+});
+
+test('zooming an unchanged composite reads a native crop without the retouch renderer', async () => {
+    const h = createHarness();
+    h.setDimensions(5000, 16000);
+    const lookup = h.document.querySelector.bind(h.document);
+    h.document.querySelector = selector => selector === '.canvas-workspace' ? h.surface : lookup(selector);
+    let loads = 0;
+    const source = {width: 5000, height: 16000};
+    h.sandbox.loadImageElementForClip = async () => {loads++; return source;};
+    let viewport;
+    h.sandbox.CanvasRetouchViewport = {
+        BASE_PREVIEW_EDGE: 1600,
+        create(options) {
+            viewport = options;
+            return {schedule() {}, setComparison() {}};
+        },
+    };
+    await h.controller.open();
+    const body = {source: h.controller.snapshot().document.source, layers: [],
+        region: {x: 2300, y: 7200, width: 300, height: 400}, scale: 1};
+    const [underlay, tile] = await Promise.all([
+        viewport.loadNativeUnderlay(),
+        viewport.request(body, new AbortController().signal),
+    ]);
+    assert.equal(underlay, source);
+    assert.equal(tile.blob, source);
+    assert.deepEqual(tile.crop, [2300, 7200, 300, 400]);
+    assert.equal(loads, 1);
+    assert.equal(h.counters.fetchCalls.length, 0);
+});
+
+test('native fitted preview requests the screen pixel density and keeps source dimensions', async () => {
+    const h = createHarness();
+    h.setDimensions(5000, 16000);
+    h.surface.dataset = {fitScale: '0.040625'};
+    h.sandbox.devicePixelRatio = 1.25;
+    h.sandbox.CanvasRetouchViewport = {BASE_PREVIEW_EDGE: 1600};
+    await h.controller.open();
+    await h.settle();
+
+    const preview = h.counters.fetchCalls.find(call => call.url.endsWith('/preview'));
+    assert.equal(preview.body.native, true);
+    assert.equal(preview.body.displayEdge, 813);
+    const {width, height} = h.controller.snapshot().document;
+    assert.deepEqual([width, height], [5000, 16000]);
+});
+
 test('apply adds a top image layer with retouch metadata and preserves the original canvas layers', async () => {
     const originalLayers = [
         {id: 10, type: 'image', src: '/canvas-imports/base.png', x: 0, y: 0, layerWidth: 1200, layerHeight: 800},
@@ -1617,7 +2038,168 @@ test('apply adds a top image layer with retouch metadata and preserves the origi
     assert.deepEqual(applyCall.body, {source: expected.source, layers: expected.layers, print: expected.print});
 });
 
-test('re-editing a full-size result reuses its source and updates the same result layer id', async () => {
+test('a new session after apply starts from the current composite including a newer inpaint', async () => {
+    const h = createHarness();
+    await h.controller.open();
+    await h.settle();
+    const panel = h.counters.panels.at(-1);
+    panel.actions.add('tone');
+    await h.settle();
+    panel.actions.apply();
+    await h.waitFor(() => !h.controller.isOpen(), 'initial result was not applied');
+    const applied = h.sandbox.canvasLayers[0];
+    const inpaint = {id: 42, type: 'clip', visible: true, renderOnCanvas: true, src: '/canvas-imports/inpaint.png'};
+    h.sandbox.canvasLayers.unshift(inpaint);
+    h.sandbox.renderMergedCanvasToDataUrl = async () => {
+        assert.deepEqual(h.sandbox.canvasLayers, [inpaint, applied]);
+        return 'data:image/png;base64,aW5wYWludGVk';
+    };
+    h.sandbox.saveClipDataUrlToServer = async data => {
+        assert.equal(data, 'data:image/png;base64,aW5wYWludGVk');
+        return '/canvas-imports/latest-composite.png';
+    };
+
+    await h.controller.open();
+    await h.settle();
+    const snapshot = h.controller.snapshot();
+    assert.equal(snapshot.targetLayerId, null);
+    assert.equal(snapshot.document.source, '/canvas-imports/latest-composite.png');
+    assert.equal(snapshot.document.layers.length, 0);
+    assert.equal(applied.retouch.layers[0].type, 'tone');
+    assert.equal(h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).at(-1).body.layers.length, 0);
+});
+
+test('the main entry starts from the latest composite and keeps prior edits available to resume', async () => {
+    const prior = RetouchState.normalize(makeDocument({source: '/api/canvas/imports/original-base.png',
+        layers: [RetouchState.createLayer('tone', () => 'old-tone')], notes: 'keep these edits', checks: [2]}));
+    const oldResult = {id: 77, type: 'image', name: 'older correction', src: '/api/canvas/retouch/results/old.png',
+        visible: true, x: 0, y: 0, layerWidth: 1200, layerHeight: 800, imageWidth: 1200, imageHeight: 800, retouch: prior};
+    const inpaint = {id: 42, type: 'clip', visible: true, renderOnCanvas: true, src: '/canvas-imports/latest-inpaint.png'};
+    const beforeExisting = structuredClone([oldResult, inpaint]);
+    const h = createHarness({layers: [oldResult, inpaint], activeLayerId: 77});
+    h.controller.restore({document: prior, targetLayerId: 77});
+
+    await h.controller.open({newSession: true}); await h.settle();
+    let snapshot = h.controller.snapshot();
+    assert.equal(h.counters.mergedCalls.length, 1, 'a fresh entry merges the current canvas once');
+    assert.equal(h.counters.savedSources.length, 1);
+    assert.equal(snapshot.targetLayerId, null);
+    assert.equal(snapshot.document.source, '/api/canvas/imports/retouch-snapshot.png');
+    assert.deepEqual(snapshot.document.layers, []);
+    assert.deepEqual(JSON.parse(JSON.stringify(snapshot.savedDrafts)), [{document: prior, targetLayerId: 77}]);
+    const controls = h.document.getElementById('canvasRetouchDraftControls');
+    const select = h.document.getElementById('canvasRetouchDraftSelect');
+    assert.equal(controls.hidden, false);
+    assert.equal(select.children.length, 2);
+    assert.match(select.children[0].textContent, /새 보정/);
+    assert.match(select.children[1].textContent, /기존 레이어 편집/);
+    assert.equal(select.title, select.children[0].textContent);
+    select.value = '1'; select.dispatch('change');
+    assert.equal(select.title, select.children[1].textContent, 'the native select title follows the chosen long option');
+    const detachedSnapshot = h.controller.snapshot();
+    detachedSnapshot.savedDrafts[0].document.notes = 'outside mutation';
+    assert.equal(h.controller.snapshot().savedDrafts[0].document.notes, 'keep these edits');
+
+    h.counters.panels.at(-1).actions.apply();
+    await h.waitFor(() => h.counters.layerRenders === 1, 'fresh correction was not applied'); await h.settle();
+    assert.equal(h.sandbox.canvasLayers[0].id, 100);
+    assert.notEqual(h.sandbox.canvasLayers[0].id, 77);
+    assert.deepEqual(h.sandbox.canvasLayers.slice(1), beforeExisting, 'the prior result and newest inpaint remain intact');
+    snapshot = h.controller.snapshot();
+    assert.equal(Object.hasOwn(snapshot, 'document'), false);
+    assert.deepEqual(JSON.parse(JSON.stringify(snapshot.savedDrafts)), [{document: prior, targetLayerId: 77}], 'apply removes only the active fresh draft');
+
+    h.controller.restore(snapshot);
+    await h.controller.resume(0); await h.settle();
+    assert.equal(h.counters.mergedCalls.length, 1, 'resuming a saved edit reuses its original source');
+    assert.equal(h.controller.snapshot().document.source, prior.source);
+    assert.equal(h.controller.snapshot().targetLayerId, 77);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.controller.snapshot().savedDrafts ?? [])), []);
+    h.controller.close();
+});
+
+test('resume selects the requested draft and leaves the other pending drafts in order', async () => {
+    const active = {document: RetouchState.normalize(makeDocument({source: '/draft/current.png', notes: 'current'})), targetLayerId: null};
+    const first = {document: RetouchState.normalize(makeDocument({source: '/draft/first.png', notes: 'first'})), targetLayerId: 11};
+    const second = {document: RetouchState.normalize(makeDocument({source: '/draft/second.png', notes: 'second'})), targetLayerId: 22};
+    const h = createHarness();
+    h.controller.restore({...active, savedDrafts: [first, null, {document: {invalid: true}}, second]});
+
+    await h.controller.resume(2); await h.settle();
+    assert.equal(h.controller.snapshot().document.source, second.document.source);
+    assert.equal(h.controller.snapshot().targetLayerId, 22);
+    assert.equal(h.counters.panels.at(-1).latest.resumingDraft, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.controller.snapshot().savedDrafts)), [active, first]);
+    h.controller.close();
+
+    await h.controller.resume(1); await h.settle();
+    assert.equal(h.controller.snapshot().document.source, active.document.source);
+    assert.equal(h.controller.snapshot().targetLayerId, null);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.controller.snapshot().savedDrafts)), [second, first]);
+    h.controller.close();
+});
+
+test('new sessions drop an unchanged empty draft but archive notes, checks, and print settings', async () => {
+    const empty = {document: RetouchState.normalize(makeDocument({source: '/draft/empty.png'})), targetLayerId: null};
+    const h = createHarness();
+    h.controller.restore(empty);
+    await h.controller.open({newSession: true}); await h.settle();
+    assert.deepEqual(JSON.parse(JSON.stringify(h.controller.snapshot().savedDrafts ?? [])), [], 'an untouched fresh record does not accumulate');
+    h.controller.close();
+
+    const worked = {document: RetouchState.normalize(makeDocument({source: '/draft/worked.png', notes: 'keep', checks: [1, 5],
+        print: {widthCm: 61, heightCm: 160, safeMm: 7}})), targetLayerId: null};
+    h.controller.restore(worked);
+    await h.controller.open({newSession: true}); await h.settle();
+    assert.deepEqual(JSON.parse(JSON.stringify(h.controller.snapshot().savedDrafts)), [worked]);
+    h.controller.close();
+});
+
+test('failed fresh snapshot rendering or upload keeps the active draft and canvas unchanged', async () => {
+    const originalLayers = [{id: 20, type: 'image', src: '/canvas-imports/original.png', x: 0, y: 0,
+        layerWidth: 1200, layerHeight: 800}];
+    const prior = {document: RetouchState.normalize(makeDocument({source: '/draft/prior.png', notes: 'keep me'})), targetLayerId: null};
+    for (const failure of ['render', 'upload']) {
+        const before = structuredClone(originalLayers);
+        const h = createHarness({layers: structuredClone(originalLayers),
+            renderHandler: failure === 'render' ? async () => {throw new Error('merge failed');} : null,
+            saveHandler: failure === 'upload' ? async () => {throw new Error('upload failed');} : null});
+        h.controller.restore(prior);
+        await h.controller.open({newSession: true}); await h.settle();
+        assert.deepEqual(JSON.parse(JSON.stringify(h.controller.snapshot())), prior, `${failure} failure keeps the original draft`);
+        assert.deepEqual(h.sandbox.canvasLayers, before, `${failure} failure does not touch canvas layers`);
+        assert.equal(h.counters.panels.at(-1).latest.doc, null, 'the old record is not exposed as the failed fresh session');
+        assert.equal(h.counters.panels.at(-1).latest.entryPending, true);
+        assert.equal(h.controller.isOpen(), true);
+        h.controller.close(false);
+    }
+});
+
+test('late fresh snapshot completion cannot archive over a restored canvas draft', async () => {
+    const pending = deferred();
+    const prior = {document: RetouchState.normalize(makeDocument({source: '/draft/prior.png', notes: 'prior'})), targetLayerId: 77};
+    const h = createHarness({renderHandler: () => pending.promise});
+    h.controller.restore(prior);
+    const opening = h.controller.open({newSession: true});
+    await h.waitFor(() => h.counters.mergedCalls.length === 1, 'fresh entry did not request a merged snapshot');
+    const restored = {document: RetouchState.normalize(makeDocument({source: '/draft/other-canvas.png', notes: 'other canvas'})), targetLayerId: null};
+    h.controller.restore(restored);
+    pending.resolve('data:image/png;base64,b2xk');
+    await opening; await h.settle();
+    assert.equal(h.counters.savedSources.length, 0);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.controller.snapshot())), restored);
+    assert.equal(h.controller.isOpen(), false);
+});
+
+test('main correction button starts a fresh session and archived drafts have explicit resume controls', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'canvas.html'), 'utf8');
+    assert.match(html, /id="canvasRetouchBtn"[^>]*onclick="CanvasRetouch\.open\(\{newSession:true\}\)"/);
+    assert.match(html, /id="canvasRetouchDraftControls"/);
+    assert.match(html, /id="canvasRetouchDraftSelect"/);
+    assert.match(html, /id="canvasRetouchResumeBtn"[^>]*onclick="CanvasRetouch\.resume\(\)"/);
+});
+
+test('explicitly re-editing a full-size result reuses its source and updates the same result layer id', async () => {
     const retouch = RetouchState.normalize(makeDocument({
         source: '/api/canvas/imports/original-base.png',
         layers: [RetouchState.createLayer('tone', () => 'tone-1')],
@@ -1626,8 +2208,8 @@ test('re-editing a full-size result reuses its source and updates the same resul
     const resultLayer = {id: 77, type: 'image', name: 'full correction', src: '/api/canvas/retouch/results/old.png',
         visible: true, x: 0, y: 0, layerWidth: 1200, layerHeight: 800, imageWidth: 1200, imageHeight: 800, retouch};
     const underlying = {id: 78, type: 'image', src: '/canvas-imports/under.png', x: 0, y: 0, layerWidth: 1200, layerHeight: 800};
-    const h = createHarness({layers: [resultLayer, underlying], activeLayerId: 77});
-    await h.controller.open();
+    const h = createHarness({layers: [resultLayer, underlying], activeLayerId: 78});
+    await h.controller.open({editLayerId: 77});
     await h.settle();
     const panel = h.counters.panels.at(-1);
     assert.equal(h.controller.snapshot().targetLayerId, 77);
@@ -1716,7 +2298,7 @@ test('apply, inspect, and close cancel a real in-flight preview and discard its 
     for (const action of ['apply', 'inspect', 'close']) {
         const held = deferred();
         let heldSignal = null;
-        const h = createHarness({holdTimerDelays: [60], fetchHandler: async (url, options) => {
+        const h = createHarness({holdTimerDelays: [0], fetchHandler: async (url, options) => {
             if (url.endsWith('/preview')) {
                 const body = JSON.parse(options.body);
                 if (body.layers.length && !heldSignal) {heldSignal = options.signal; return held.promise;}
@@ -1731,7 +2313,7 @@ test('apply, inspect, and close cancel a real in-flight preview and discard its 
         await h.controller.open(); await h.settle();
         const panel = h.counters.panels.at(-1);
         panel.actions.add('tone');
-        h.runTimers(60);
+        h.runTimers(0);
         await h.waitFor(() => heldSignal, 'edited preview was not held in flight for ' + action);
 
         if (action === 'apply') {
@@ -1745,7 +2327,7 @@ test('apply, inspect, and close cancel a real in-flight preview and discard its 
         } else h.controller.close();
 
         assert.equal(heldSignal.aborted, true, action + ' must abort the pending preview');
-        assert.equal(h.pendingTimers(60), 0);
+        assert.equal(h.pendingTimers(0), 0);
         const previewCount = h.counters.fetchCalls.filter(call => call.url.endsWith('/preview')).length;
         held.resolve({ok: true, blob: async () => ({url: 'late-preview-' + action})});
         await h.waitFor(() => h.counters.bitmaps.some(bitmap => bitmap.blob.url === 'late-preview-' + action
@@ -1842,7 +2424,7 @@ test('apply retries one renderer-lock 409 after 300ms and reuses the captured bo
     panel.actions.apply();
     await h.waitFor(() => h.pendingTimers(300) === 1, '409 did not schedule a bounded retry delay');
     assert.equal(applyCount, 1);
-    assert.equal(h.pendingTimers(60), 0, 'apply clears scheduled preview refreshes');
+    assert.equal(h.pendingTimers(0), 0, 'apply clears scheduled preview refreshes');
     assert.equal(h.runTimers(300), 1);
     await h.waitFor(() => h.counters.layerRenders === 1, '202 retry result was not applied');
     await h.settle();
@@ -1877,9 +2459,37 @@ test('apply does not retry non-409 HTTP failures or unknown network errors', asy
     }
 });
 
-test('apply stops after twenty 409 retries', async () => {
+test('preview keeps waiting through a long conflict and renders the latest edit', async () => {
+    const retryDelays = [300, 600, 1200, 2400, 3000];
+    let blocked = true;
+    const h = createHarness({holdTimerDelays: retryDelays, fetchHandler: async url => {
+        if (blocked && url.endsWith('/preview')) return {ok: false, status: 409, json: async () => ({message: 'renderer busy'})};
+        return {ok: true, blob: async () => ({url})};
+    }});
+    await h.controller.open();
+    const panel = h.counters.panels.at(-1);
+    for (let retry = 0; retry < 9; retry++) {
+        const delay = retryDelays[Math.min(retry, retryDelays.length - 1)];
+        await h.waitFor(() => h.pendingTimers(delay) === 1, 'preview stopped retrying');
+        assert.equal(panel.latest.error, false);
+        h.runTimers(delay);
+    }
+    await h.waitFor(() => h.pendingTimers(3000) === 1, 'preview exhausted its retries too early');
+    panel.actions.add('tone');
+    blocked = false;
+    h.runTimers(3000);
+    await h.settle();
+
+    const previews = h.counters.fetchCalls.filter(call => call.url.endsWith('/preview'));
+    assert.equal(previews.at(-2).body.layers[0].type, 'tone');
+    assert.equal(panel.latest.error, false);
+    assert.match(panel.latest.message, /자동 저장/);
+});
+
+test('apply backs off and stops after twenty 409 retries', async () => {
     let applyCount = 0;
-    const h = createHarness({holdTimerDelays: [300], fetchHandler: async url => {
+    const retryDelays = [300, 600, 1200, 2400, 3000];
+    const h = createHarness({holdTimerDelays: retryDelays, fetchHandler: async url => {
         if (url.endsWith('/apply')) {
             applyCount += 1;
             return {ok: false, status: 409, json: async () => ({message: 'renderer busy'})};
@@ -1891,14 +2501,15 @@ test('apply stops after twenty 409 retries', async () => {
     const panel = h.counters.panels.at(-1);
     panel.actions.apply();
     for (let retry = 0; retry < 20; retry += 1) {
-        await h.waitFor(() => h.pendingTimers(300) === 1, 'retry ' + (retry + 1) + ' was not scheduled');
-        assert.equal(h.runTimers(300), 1);
+        const delay = retryDelays[Math.min(retry, retryDelays.length - 1)];
+        await h.waitFor(() => h.pendingTimers(delay) === 1, 'retry ' + (retry + 1) + ' was not scheduled');
+        assert.equal(h.runTimers(delay), 1);
         await h.waitFor(() => applyCount === retry + 2 || panel.latest?.busy === false, 'retry ' + (retry + 1) + ' did not complete');
     }
     await h.waitFor(() => panel.latest?.busy === false && panel.latest?.error === true, 'exhausted conflict retries did not report completion');
 
     assert.equal(applyCount, 21);
-    assert.equal(h.pendingTimers(300), 0);
+    assert.ok(retryDelays.every(delay => h.pendingTimers(delay) === 0));
     assert.equal(h.controller.isOpen(), true);
 });
 
@@ -1943,7 +2554,7 @@ test('detail pixel requests retry 409, keep their payload, and cancel stale prev
     overlay.dispatch('pointerdown', {button: 0, pointerId: 1, clientX: 120, clientY: 80,
         preventDefault() {}, stopPropagation() {}});
     await h.waitFor(() => h.pendingTimers(300) === 1, 'detail request did not schedule retry after 409');
-    assert.equal(h.pendingTimers(60), 0, 'pixel inspection clears scheduled preview refreshes');
+    assert.equal(h.pendingTimers(0), 0, 'pixel inspection clears scheduled preview refreshes');
     assert.equal(h.runTimers(300), 1);
     await h.waitFor(() => detailCount === 3, 'both detail images did not finish');
     await h.settle();
@@ -1978,7 +2589,7 @@ test('pair export cancels previews and retries export-pair 409 using one capture
     const panel = h.counters.panels.at(-1);
     panel.actions.downloadPair();
     await h.waitFor(() => h.pendingTimers(300) === 1, 'pair export did not schedule retry after 409');
-    assert.equal(h.pendingTimers(60), 0, 'pair export clears scheduled preview refreshes');
+    assert.equal(h.pendingTimers(0), 0, 'pair export clears scheduled preview refreshes');
     assert.equal(h.runTimers(300), 1);
     await h.waitFor(() => panel.latest?.busy === false && String(panel.latest?.message).includes('양면 ZIP'), 'pair export completion was not reflected in the panel');
 

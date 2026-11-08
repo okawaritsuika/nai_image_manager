@@ -24,9 +24,10 @@
     function create(stroke, imageData, documentWidth, documentHeight, options = {}) {
         const width = imageData && imageData.width;
         const height = imageData && imageData.height;
+        const native = options.native === true, edge = native ? 4096 : 1600;
         if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 ||
-                width > 1600 || height > 1600) {
-            throw new RangeError('Liquify preview dimensions must be integers between 1 and 1600 pixels.');
+                width > edge || height > edge) {
+            throw new RangeError('Liquify preview dimensions must be integers between 1 and ' + edge + ' pixels.');
         }
         const data = imageData.data;
         if (!(data instanceof Uint8ClampedArray) || data.length !== width * height * 4) {
@@ -40,7 +41,10 @@
         }
 
         const settings = stroke || {};
-        const scale = Math.min(1, 1600 / Math.max(docWidth, docHeight));
+        const scale = native ? 1 : Math.min(1, 1600 / Math.max(docWidth, docHeight));
+        const origin = native ? options.origin || [0, 0] : [0, 0];
+        if (!Array.isArray(origin) || origin.length !== 2 || !origin.every(Number.isFinite))
+            throw new RangeError('Liquify origin must contain two finite native coordinates.');
         const radius = Math.max(1, clamp(settings.radius, 1, 800, 80) * scale);
         const strength = clamp(settings.strength, .01, 1, .35);
         const mode = MODES.has(settings.mode) ? settings.mode : 'push';
@@ -55,7 +59,8 @@
         let hasLastPoint = false;
         let lastX = 0;
         let lastY = 0;
-        let scratch = new Uint8Array(0);
+        const scratchStore = paintOptions.scratchStore || null;
+        let scratch = scratchStore?.buffer instanceof Uint8Array ? scratchStore.buffer : new Uint8Array(0);
 
         function processDab(cx, cy, dx, dy, bounds) {
             if (opacity <= 0 || (mode === 'push' && dx === 0 && dy === 0)) return;
@@ -72,6 +77,7 @@
             const byteCount = pixelCount * 4;
             if (scratch.length < byteCount) {
                 scratch = new Uint8Array(Math.max(byteCount, scratch.length * 2, 64));
+                if (scratchStore) scratchStore.buffer = scratch;
             }
 
             const radiusSquared = radius * radius;
@@ -170,7 +176,7 @@
             if (!Array.isArray(point) || point.length < 2) return null;
             const x = point[0];
             const y = point[1];
-            return Number.isFinite(x) && Number.isFinite(y) ? {x: x * scale, y: y * scale} : null;
+            return Number.isFinite(x) && Number.isFinite(y) ? {x: (x - origin[0]) * scale, y: (y - origin[1]) * scale} : null;
         }
 
         function append(points) {
@@ -220,8 +226,97 @@
             return {left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom};
         }
 
+        function dab(x, y, dx, dy) {
+            const bounds = {hasChanges: false, left: 0, top: 0, right: 0, bottom: 0};
+            processDab((x - origin[0]) * scale, (y - origin[1]) * scale, dx * scale, dy * scale, bounds);
+            return bounds.hasChanges ? bounds : null;
+        }
+        return {append, dab};
+    }
+
+    function createNative(stroke, {width, height, opacity = 1, read, write}) {
+        if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 ||
+                typeof read !== 'function' || typeof write !== 'function')
+            throw new RangeError('Native liquify requires image dimensions and pixel readers.');
+        const radius = clamp(stroke.radius, 1, 800, 80), strength = clamp(stroke.strength, .01, 1, .35);
+        const mode = MODES.has(stroke.mode) ? stroke.mode : 'push';
+        const scratchStore = {buffer: new Uint8Array(0)};
+        const maxBatchPixels = 4_194_304;
+        let processed = 0, last = null;
+        let batch = [], batchBox = null;
+
+        function dabBox(point, previous) {
+            const dx = previous ? point[0] - previous[0] : 0, dy = previous ? point[1] - previous[1] : 0;
+            if (mode === 'push' && dx === 0 && dy === 0) return null;
+            // Cover the dab and the largest displaced source sample, including its bilinear neighbor.
+            const displacement = mode === 'push'
+                ? Math.max(Math.abs(dx), Math.abs(dy)) * strength
+                : radius * (mode === 'clockwise' || mode === 'counterclockwise' ? .22 : .14) * strength;
+            const pad = Math.ceil(radius + displacement + 2);
+            const box = {left: Math.max(0, Math.floor(point[0] - pad)), top: Math.max(0, Math.floor(point[1] - pad)),
+                right: Math.min(width, Math.ceil(point[0] + pad)), bottom: Math.min(height, Math.ceil(point[1] + pad))};
+            if (box.right <= box.left || box.bottom <= box.top) return null;
+            return {box, dx, dy, x: point[0], y: point[1]};
+        }
+
+        function merge(left, right) {
+            if (!left) return {...right};
+            return {left: Math.min(left.left, right.left), top: Math.min(left.top, right.top),
+                right: Math.max(left.right, right.right), bottom: Math.max(left.bottom, right.bottom)};
+        }
+
+        function flush() {
+            if (!batch.length || !batchBox) return;
+            const box = batchBox;
+            const dabs = batch;
+            batch = [];
+            batchBox = null;
+            const pixels = read(box);
+            const engine = create(stroke, pixels, width, height,
+                {native: true, origin: [box.left, box.top], opacity, scratchStore});
+            let dirty = null;
+            for (const item of dabs) {
+                const changed = engine.dab(item.x, item.y, item.dx, item.dy);
+                if (changed) dirty = merge(dirty, changed);
+            }
+            if (dirty) write(pixels, box.left, box.top, dirty);
+        }
+
+        function queueDab(point, previous) {
+            const item = dabBox(point, previous);
+            if (!item) return;
+            const candidate = merge(batchBox, item.box);
+            const batchWidth = candidate.right - candidate.left;
+            const batchHeight = candidate.bottom - candidate.top;
+            if (batch.length && (batchWidth > 4096 || batchHeight > 4096 ||
+                    batchWidth * batchHeight > maxBatchPixels)) {
+                flush();
+            }
+            batch.push(item);
+            batchBox = merge(batchBox, item.box);
+        }
+
+        function append(points) {
+            if (!Array.isArray(points)) return;
+            for (; processed < points.length; processed++) {
+                const current = points[processed];
+                if (!Array.isArray(current) || current.length < 2 || !current.every(Number.isFinite)) continue;
+                if (!last) queueDab(current, null);
+                else {
+                    const dx = current[0] - last[0], dy = current[1] - last[1];
+                    const steps = Math.max(1, Math.min(1000, Math.ceil(Math.hypot(dx, dy) / Math.max(1, radius * .22))));
+                    let previous = last;
+                    for (let step = 1; step <= steps; step++) {
+                        const next = [last[0] + dx * step / steps, last[1] + dy * step / steps];
+                        queueDab(next, previous); previous = next;
+                    }
+                }
+                last = current.slice();
+            }
+            flush();
+        }
         return {append};
     }
 
-    return {create};
+    return {create, createNative};
 });

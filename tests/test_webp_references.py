@@ -33,6 +33,30 @@ class WebpReferencesTests(unittest.TestCase):
     def migrate(self, **options):
         return migrate_webp_references(self.db, self.root, self.source, self.target, self.tags, **options)
 
+    def test_same_format_rename_moves_index_tags_and_can_undo(self):
+        self.populate()
+        before, tags_before = self.snapshot(), self.tags.read_bytes()
+        target = self.source.with_name('renamed.png')
+        target.write_bytes(self.source.read_bytes())
+        undo = migrate_webp_references(self.db, self.root, self.source, target, self.tags,
+                                       same_format_rename=True)
+        self.assertEqual(self.db.conn.execute('SELECT rel_path, file_name FROM gallery_images').fetchone(),
+                         ('synthetic/renamed.png', 'renamed.png'))
+        self.assertEqual(json.loads(self.tags.read_text())['image_tags'], {'synthetic/renamed.png': 'star'})
+        undo()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.tags.read_bytes(), tags_before)
+
+    def test_converted_png_alias_survives_later_webp_filename_rename(self):
+        from naim.storage.image_renames import MANIFEST_NAME
+        self.migrate()
+        renamed = self.target.with_name('renamed.webp')
+        self.target.rename(renamed)
+        (self.target.parent / MANIFEST_NAME).write_text(json.dumps({self.target.name: renamed.name}))
+        self.source.unlink()
+        self.assertEqual(resolve_converted_gallery_path(
+            self.root, self.old, self.root / 'history.sqlite'), str(renamed))
+
     def test_addition_registration_and_undo_preserve_source_and_tags(self):
         from PIL import Image
         Image.new('RGB', (16, 24)).save(self.source, 'PNG')

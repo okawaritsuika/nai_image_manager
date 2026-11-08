@@ -88,13 +88,13 @@ function addGalleryInpaintCharPromptEditor(initialValue = '') {
 
     const title = document.createElement('div');
     title.className = 'gallery-inpaint-char-prompt-title';
-    title.style.cssText = 'font-size:12px; font-weight:900; color:#00f2ff;';
+    title.style.cssText = 'font-size:var(--ui-text-body,12px); font-weight:600; color:#00f2ff;';
     title.innerText = `Character Prompt ${index}`;
 
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'gallery-inpaint-tool-btn danger';
-    deleteBtn.style.cssText = 'padding:4px 8px; font-size:12px;';
+    deleteBtn.style.cssText = 'padding:4px 8px; font-size:var(--ui-text-body,12px);';
     deleteBtn.innerText = '삭제';
     deleteBtn.onclick = (event) => {
         event.preventDefault();

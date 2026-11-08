@@ -13,7 +13,8 @@ import uuid
 from contextlib import closing
 from datetime import date, datetime, time as datetime_time, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
+from naim.images.previews import PREVIEW_BUILD_SLOTS
 
 import requests
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory
@@ -74,6 +75,7 @@ from .arca_image_archive import (
     start_google_archive_job,
     start_local_upload,
 )
+from .image_clipboard import prepare_clipboard_png
 
 from .novelai import (
     MODEL,
@@ -110,6 +112,7 @@ from .style_store import (
 )
 from .confirmed_style_store import (
     MAX_IMAGE_BYTES as MAX_CONFIRMED_IMAGE_BYTES,
+    confirmed_base_prompt,
     create_confirmed_style,
     create_confirmed_style_group,
     delete_confirmed_style,
@@ -4115,10 +4118,12 @@ def _add_arca_urls(item):
             return
         image_path = image.get("image_path") or ""
         image["image_url"] = f"/style-workspace/arca-style-images/{image_path}" if image_path else ""
+        image["thumbnail_url"] = f"/style-workspace/style-manager-thumbnails/shared/{quote(image_path, safe='/')}" if image_path else ""
         image["image_available"] = bool(image_path)
 
     representative = item.get("representative_image_path") or ""
     item["representative_image_url"] = f"/style-workspace/arca-style-images/{representative}" if representative else ""
+    item["representative_thumbnail_url"] = f"/style-workspace/style-manager-thumbnails/shared/{quote(representative, safe='/')}" if representative else ""
     item["representative_image_available"] = bool(representative)
     for image in item.get("images", []):
         add_image_url(image)
@@ -4132,6 +4137,8 @@ def _add_arca_urls(item):
 
 
 def _add_confirmed_url(item):
+    if item and item.get("base_prompt") is not None:
+        item["base_artist_prompt"] = split_artist_quality_prompt(item["base_prompt"])[0]
     if item and item.get("image_path"):
         item["image_url"] = f'/style-workspace/confirmed-style-images/{item["image_path"]}'
         item["thumbnail_url"] = f'/style-workspace/style-manager-thumbnails/confirmed/{item["image_path"]}'
@@ -4185,6 +4192,7 @@ def _comparison_history_item(result):
     item["quality_prompt"] = value("quality_prompt", "") or ""
     item["original_quality_prompt"] = value("original_quality_prompt", item["quality_prompt"]) or ""
     item["base_prompt"] = value("base_prompt", item["quality_prompt"]) or ""
+    item["style_base_prompt"] = settings.get("style_base_prompt")
     item["fixed_prompt"] = (
         settings.get("comparison_fixed_prompt")
         or settings.get("fixed_prompt")
@@ -4234,6 +4242,7 @@ def _confirmed_metadata_from_bytes(image_bytes, content_type=""):
     character_prompts = [str(prompt).strip() for prompt in character_prompts if str(prompt or "").strip()]
     return {
         "metadata_status": metadata.get("metadata_status") or "no_metadata",
+        "base_prompt": metadata.get("base_prompt") or "",
         "artist_prompt": artist_prompt,
         "quality_prompt": quality_prompt,
         "original_quality_prompt": quality_prompt,
@@ -4266,14 +4275,15 @@ def _safe_source_image(root, relative_path):
     return target.read_bytes()
 
 
-def _confirmed_source(source_type, source_id):
-    if source_type == "shared" and naim_shared_library.enabled():
+def _confirmed_source(source_type, source_id, *, local_shared=False):
+    if source_type == "shared" and not local_shared and naim_shared_library.enabled():
         style = naim_shared_library.style_for_image_id(source_id, include_excluded=True)
         if style is not None:
             image_bytes, content_type = naim_shared_library.read_image(style["id"], full=True, max_bytes=MAX_CONFIRMED_IMAGE_BYTES)
             payload = _confirmed_metadata_from_bytes(image_bytes, content_type)
             artist_prompt, quality_prompt = split_artist_quality_prompt(style.get("positive") or "")
             payload.update(name=style.get("name") or "공유 그림체", artist_prompt=artist_prompt,
+                           base_prompt=style.get("positive") or "",
                            quality_prompt=quality_prompt, original_quality_prompt=quality_prompt,
                            negative_prompt=style.get("negative") or "", source_type="shared",
                            source_id=source_id, source_url=style.get("source_url") or "")
@@ -4298,6 +4308,10 @@ def _confirmed_source(source_type, source_id):
             payload = {
                 "name": f"제작 그림체 #{source_id}",
                 "description": "",
+                "base_prompt": ", ".join(part for part in (
+                    item.get("leading_prompt"), item.get("artist_prompt"),
+                    item.get("base_prompt") or ", ".join(value for value in (quality, item.get("fixed_prompt")) if value),
+                ) if part),
                 "artist_prompt": item.get("artist_prompt") or "",
                 "quality_prompt": quality,
                 "original_quality_prompt": item.get("original_quality_prompt") or quality,
@@ -4348,6 +4362,7 @@ def _confirmed_source(source_type, source_id):
             payload = {
                 "name": item.get("title") or f"공유 그림체 #{source_id}",
                 "description": "",
+                "base_prompt": prompt,
                 "artist_prompt": artist_prompt,
                 "quality_prompt": quality_prompt,
                 "original_quality_prompt": quality_prompt,
@@ -4462,6 +4477,19 @@ def api_style_manager_shared():
     return json_response(result)
 
 
+@app.route("/api/arca-styles/images/<int:image_id>/clipboard", methods=["GET"])
+def api_arca_image_clipboard(image_id):
+    if not 1 <= image_id <= 4294967295:
+        return json_response({"error": "올바른 공유 이미지 번호를 선택해 주세요."}, 400)
+    try:
+        image_bytes, _ = _confirmed_source("shared", image_id, local_shared=True)
+        response = app.response_class(prepare_clipboard_png(image_bytes), mimetype="image/png")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except (ValueError, OSError) as exc:
+        return json_response({"error": str(exc)}, 400)
+
+
 @app.route("/api/confirmed-styles/extract", methods=["POST"])
 def api_extract_confirmed_style():
     uploaded = request.files.get("image")
@@ -4473,6 +4501,21 @@ def api_extract_confirmed_style():
     except ValueError as exc:
         return json_response({"error": str(exc)}, 400)
     return json_response(result)
+
+
+@app.route("/api/confirmed-styles/source/shared/<int:source_id>", methods=["GET"])
+def api_confirmed_shared_source(source_id):
+    try:
+        if not 1 <= source_id <= 4294967295:
+            raise ValueError("가져올 공유 이미지를 확인해 주세요.")
+        _, payload = _confirmed_source("shared", source_id, local_shared=True)
+        response = json_response({**payload, "source_origin": "arca"})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except ValueError as exc:
+        return json_response({"error": str(exc)}, 400)
+    except (OSError, sqlite3.Error):
+        return json_response({"error": "공유 그림체 정보를 불러오지 못했습니다."}, 500)
 
 
 @app.route("/api/confirmed-styles", methods=["GET", "POST"])
@@ -4498,10 +4541,16 @@ def api_confirmed_styles():
             source_id = supplied.get("source_id")
             if source_type not in {"generated", "shared"} or type(source_id) is not int:
                 raise ValueError("확정할 원본 그림체를 확인해 주세요.")
-            image_bytes, defaults = _confirmed_source(source_type, source_id)
+            source_origin = supplied.get("source_origin")
+            if source_origin is not None and (source_origin != "arca" or source_type != "shared"):
+                raise ValueError("확정할 공유 이미지의 출처를 확인해 주세요.")
+            image_bytes, defaults = _confirmed_source(source_type, source_id, local_shared=source_origin == "arca")
             payload = {**defaults, **supplied, "source_type": source_type, "source_id": source_id}
             if not str(supplied.get("model") or "").strip():
                 payload["model"] = defaults.get("model") or ""
+        # Source previews include the intact base; older writers still submit
+        # only split fields and must retain their original generation behavior.
+        payload["base_prompt"] = supplied.get("base_prompt")
         created = create_confirmed_style(DB_PATH, CONFIRMED_STYLE_IMAGE_DIR, image_bytes, payload)
         return json_response(_add_confirmed_url(created), 201)
     except (ValueError, json.JSONDecodeError) as exc:
@@ -4561,6 +4610,7 @@ def api_import_confirmed_styles_batch():
                 payload = {
                     **extracted,
                     **supplied,
+                    "base_prompt": supplied.get("base_prompt"),
                     "source_type": "manual",
                     "source_id": None,
                 }
@@ -4612,7 +4662,11 @@ def _comparison_model(value, fallback):
 def _comparison_generation_data(group, style):
     defaults = group.get("defaults") or {}
     def value(key, fallback): return style.get(key) if style.get(key) not in (None, "") else defaults.get(key, fallback)
-    base_prompt = ", ".join(part for part in [style.get("quality_prompt"), style.get("fixed_prompt"), group.get("fixed_prompt")] if part)
+    unified = style.get("base_prompt") is not None
+    base_prompt = ", ".join(part for part in (
+        [confirmed_base_prompt(style), group.get("fixed_prompt")] if unified
+        else [style.get("quality_prompt"), style.get("fixed_prompt"), group.get("fixed_prompt")]
+    ) if part)
     model = _comparison_model(style.get("model"), _comparison_model(defaults.get("model"), MODEL))
     complexity = (
         style["complexity"]
@@ -4620,7 +4674,7 @@ def _comparison_generation_data(group, style):
         else defaults.get("complexity", "")
     )
     return {
-        "base_prompt": base_prompt, "quality_prompt": style.get("quality_prompt") or "",
+        "base_prompt": base_prompt, "quality_prompt": "" if unified else style.get("quality_prompt") or "",
         "original_quality_prompt": style.get("original_quality_prompt") or style.get("quality_prompt") or "",
         "fixed_prompt": group.get("fixed_prompt") or "", "excluded_quality_tags": [],
         "negative_prompt": style.get("negative_prompt") or "", "character_prompts": group.get("character_prompts") or [],
@@ -4650,7 +4704,8 @@ def _generate_comparison_style(group, style_id):
     if not key:
         raise ValueError("NovelAI App Key가 설정되어 있지 않습니다.")
     data, model = _comparison_generation_data(group, style)
-    data = normalize_generation_data(data, artist_prompt=style.get("artist_prompt") or "")
+    artist_prompt = "" if style.get("base_prompt") is not None else style.get("artist_prompt") or ""
+    data = normalize_generation_data(data, artist_prompt=artist_prompt)
     common_seed = group.get("seed")
     if group["seed_mode"] == "none":
         data["seed"] = style.get("seed") or random.SystemRandom().randint(1, 4294967295)
@@ -4660,7 +4715,7 @@ def _generate_comparison_style(group, style_id):
         data["seed"] = random.SystemRandom().randint(1, 4294967295)
     try:
         png, actual_seed = generate_novelai_png(
-            key, data, style.get("artist_prompt") or "", model=model
+            key, data, artist_prompt, model=model
         )
     except NovelAIError as exc:
         style_name = style.get("name") or f"확정 그림체 #{style_id}"
@@ -4675,9 +4730,10 @@ def _generate_comparison_style(group, style_id):
         **data,
         "seed": actual_seed,
         "model": model,
-        "artist_prompt": style.get("artist_prompt") or "",
-        "quality_prompt": style.get("quality_prompt") or "",
-        "style_fixed_prompt": style.get("fixed_prompt") or "",
+        "artist_prompt": artist_prompt,
+        "style_base_prompt": style.get("base_prompt"),
+        "quality_prompt": data["quality_prompt"],
+        "style_fixed_prompt": "" if style.get("base_prompt") is not None else style.get("fixed_prompt") or "",
         "comparison_fixed_prompt": group.get("fixed_prompt") or "",
         "style_name": style.get("name") or f"확정 그림체 #{style_id}",
     }
@@ -5200,8 +5256,7 @@ def confirmed_style_image(filename):
 
 @app.route("/style-manager-thumbnails/<source>/<path:filename>")
 def style_manager_thumbnail(source, filename):
-    if source == "shared" and naim_shared_library.enabled() and re.fullmatch(r"__naim_shared__/common-[a-f0-9]{24}", filename):
-        return redirect(f"/style-workspace/api/naim-shared-library/{filename.split('/')[-1]}/preview")
+    shared_preview = source == "shared" and naim_shared_library.enabled() and re.fullmatch(r"__naim_shared__/common-[a-f0-9]{24}", filename)
     roots = {
         "generated": GENERATED_DIR,
         "confirmed": CONFIRMED_STYLE_IMAGE_DIR,
@@ -5213,14 +5268,22 @@ def style_manager_thumbnail(source, filename):
     path = Path(normalized)
     if root is None or path.is_absolute() or ".." in path.parts or normalized != filename:
         return json_response({"error": "Invalid style manager thumbnail path."}, 400)
-    resolved_root = root.resolve()
-    target = (resolved_root / path).resolve()
-    if resolved_root not in target.parents or not target.is_file():
-        return json_response({"error": "Style manager image not found."}, 404)
+    if shared_preview:
+        try:
+            target, _ = naim_shared_library._image_file(filename.split('/')[-1], False)
+        except naim_shared_library.SharedLibraryError:
+            return json_response({"error": "Style manager image not found."}, 404)
+        resolved_root = target.parent
+        path = Path(target.name)
+    else:
+        resolved_root = root.resolve()
+        target = (resolved_root / path).resolve()
+        if resolved_root not in target.parents or not target.is_file():
+            return json_response({"error": "Style manager image not found."}, 404)
 
     stat = target.stat()
     cache_key = hashlib.sha256(
-        f"{source}\0{path.as_posix()}\0{stat.st_mtime_ns}\0{stat.st_size}".encode("utf-8")
+        f"{source}\0{target}\0{stat.st_mtime_ns}\0{stat.st_size}".encode("utf-8")
     ).hexdigest()
     cache_root = DATA_DIR / "style_manager_thumbnails"
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -5228,20 +5291,22 @@ def style_manager_thumbnail(source, filename):
     if not cached.is_file():
         temporary = cache_root / f"{cache_key}.{os.getpid()}.{random.getrandbits(64):016x}.tmp"
         try:
-            with Image.open(target) as opened:
-                image = ImageOps.exif_transpose(opened)
-                image.thumbnail((384, 384), Image.Resampling.LANCZOS)
-                if image.mode not in {"RGB", "RGBA"}:
-                    image = image.convert("RGBA" if "transparency" in image.info else "RGB")
-                image.save(temporary, format="WEBP", quality=82, method=2)
-            try:
-                temporary.replace(cached)
-            except FileExistsError:
-                temporary.unlink(missing_ok=True)
+            with PREVIEW_BUILD_SLOTS:
+                if not cached.is_file():
+                    with Image.open(target) as opened:
+                        opened.thumbnail((384, 384), Image.Resampling.LANCZOS, reducing_gap=3.0)
+                        image = ImageOps.exif_transpose(opened)
+                        if image.mode not in {"RGB", "RGBA"}:
+                            image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+                        image.save(temporary, format="WEBP", quality=82, method=2)
+                    try:
+                        temporary.replace(cached)
+                    except FileExistsError:
+                        temporary.unlink(missing_ok=True)
         except (OSError, ValueError, Image.DecompressionBombError):
             temporary.unlink(missing_ok=True)
             return send_from_directory(resolved_root, path.as_posix())
-    response = send_from_directory(cache_root, cached.name, max_age=31536000)
+    response = send_from_directory(cache_root, cached.name, max_age=60 if shared_preview else 31536000)
     response.mimetype = "image/webp"
     return response
 

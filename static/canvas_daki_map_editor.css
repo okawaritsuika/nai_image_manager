@@ -46,8 +46,8 @@
     min-width: 0;
     margin: 0;
     color: var(--text-main);
-    font-size: 18px;
-    line-height: 1.4;
+    font-size: var(--ui-text-title, 16px);
+    line-height: var(--ui-leading-heading, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -71,7 +71,7 @@
     flex: 0 0 auto;
     min-height: 36px;
     padding: 6px 10px;
-    line-height: 1.35;
+    line-height: var(--ui-leading-control, 1.4);
     overflow-wrap: anywhere;
     cursor: pointer;
 }
@@ -134,7 +134,7 @@
 .canvas-daki-map-zoom-select {
     min-height: 32px;
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
 }
 
 .canvas-daki-map-dialog .canvas-daki-map-zoom-toolbar button {
@@ -269,7 +269,7 @@
     gap: 8px;
     min-width: 0;
     color: var(--text-main);
-    line-height: 1.4;
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-daki-map-field {
@@ -309,7 +309,7 @@
 }
 
 .canvas-daki-map-number-field > span {
-    line-height: 1.4;
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: normal;
     word-break: keep-all;
 }
@@ -333,14 +333,14 @@
 .canvas-daki-map-note {
     margin: 12px 0;
     color: var(--text-muted);
-    font-size: 13px;
-    line-height: 1.55;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
 .canvas-daki-map-note {
     margin-top: 6px;
-    font-size: 12px;
+    font-size: var(--ui-text-meta, 12px);
 }
 
 .canvas-daki-map-reset {
@@ -387,7 +387,7 @@
 }
 
 .canvas-daki-map-inline .canvas-daki-map-header h2 {
-    font-size: 18px;
+    font-size: var(--ui-text-title, 16px);
 }
 
 .canvas-daki-map-inline-body {
@@ -426,7 +426,7 @@
     flex: 0 0 auto;
     min-height: 34px;
     padding: 5px 9px;
-    line-height: 1.35;
+    line-height: var(--ui-leading-control, 1.4);
     overflow-wrap: anywhere;
     cursor: pointer;
 }
@@ -458,12 +458,12 @@
     min-width: 32px;
     min-height: 32px;
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
 }
 
 .canvas-daki-map-inline .canvas-daki-map-field select {
     min-height: 34px;
-    font-size: 13px;
+    font-size: var(--ui-text-body, 12px);
 }
 
 .canvas-daki-map-inline .canvas-daki-map-actions {
@@ -491,8 +491,8 @@
     gap: 4px;
     min-width: 0;
     color: var(--text-main);
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-daki-map-custom-field input,
@@ -514,9 +514,17 @@
 .canvas-daki-map-empty {
     margin: 0;
     color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.45;
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
+}
+
+.canvas-daki-map-custom-help,
+.canvas-daki-map-custom-error {
+    font-size: var(--ui-text-meta, 12px);
+}
+
+.canvas-daki-map-empty {
+    font-size: var(--ui-text-body, 12px);
 }
 
 .canvas-daki-map-custom-error:not(:empty) {
@@ -526,7 +534,7 @@
 .canvas-daki-map-add-custom {
     width: 100%;
     margin: -4px 0 10px;
-    font-size: 12px !important;
+    font-size: var(--ui-text-body, 12px) !important;
 }
 
 .canvas-daki-map-inline-overlay {

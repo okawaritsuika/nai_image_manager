@@ -351,8 +351,7 @@ function showToast(message) {
         padding: 12px 25px;
         border-radius: 30px;
         z-index: 99999;
-        font-weight: bold;
-        font-size: 13px;
+        font: 400 var(--ui-text-body, 12px)/var(--ui-leading-body, 1.5) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
         box-shadow: 0 4px 15px rgba(0,0,0,0.3);
         opacity: 1;
         transition: opacity 0.35s ease, transform 0.35s ease;
@@ -397,9 +396,10 @@ let activeClipAutoMaskPickClipId = null;
 let activeCanvasSetupId = null;
 let lastCanvasSurfaceHoverEvent = null;
 let canvasImportCleanupTimer = null;
+let pendingCanvasWheelZoomFrame = null;
+let pendingCanvasWheelZoom = null;
 
 const CANVAS_ZOOM_MIN = 0.15;
-const CANVAS_ZOOM_MAX = 8;
 const CLIP_PREVIEW_ZOOM_MIN = 0.25;
 const CLIP_PREVIEW_ZOOM_MAX = 8;
 const WHEEL_ZOOM_STEP = 1.12;
@@ -616,6 +616,7 @@ async function clearCurrentCanvasCompletely() {
 
     try {
         localStorage.removeItem(window.CanvasWorkspaceBridge?.stateKey || CANVAS_STATE_KEY);
+        localStorage.removeItem(CANVAS_STATE_KEY + ':view');
     } catch (error) {
         console.warn('Canvas state clear failed:', error);
     }
@@ -623,6 +624,7 @@ async function clearCurrentCanvasCompletely() {
     const emptyState = el('canvasEmptyState');
     const stage = el('canvasStage');
     const surface = el('canvasSurface');
+    window.CanvasEditorScene?.destroy();
 
     if (emptyState) emptyState.style.display = '';
     if (stage) stage.style.display = 'none';
@@ -758,7 +760,7 @@ async function createCanvasFromDialog() {
     closeCanvasDialog();
 }
 
-function renderCanvas(width, height) {
+function renderCanvas(width, height, options = {}) {
     const emptyState = el('canvasEmptyState');
     const stage = el('canvasStage');
     const surface = el('canvasSurface');
@@ -795,7 +797,9 @@ function renderCanvas(width, height) {
     bindCanvasWheelZoom();
     bindCanvasWorkspacePanDrag();
     bindCanvasSelectionHoverCursor();
-    renderCanvasLayersOnSurface();
+    const zoomOnly = Boolean(options.zoomOnly) &&
+        (typeof canvasLayerEraserEnabled === 'undefined' || !canvasLayerEraserEnabled);
+    renderCanvasLayersOnSurface({zoomOnly});
 }
 
 function updateCanvasReadout(width, height, scale) {
@@ -950,13 +954,7 @@ function addSelectionArea() {
         return;
     }
 
-    let width = snapToSelectionStep(Math.max(128, Math.round(currentCanvasWidth * 0.5)));
-    let height = snapToSelectionStep(Math.max(128, Math.round(currentCanvasHeight * 0.22)));
-    while (!isSelectionRequestSizeAllowed({layerWidth: width, layerHeight: height})) {
-        width = Math.max(SELECTION_MIN_SIZE, width - SELECTION_SIZE_STEP);
-        height = Math.max(SELECTION_MIN_SIZE, height - SELECTION_SIZE_STEP);
-    }
-
+    const size = 1024;
     const center = getSelectionAreaCreationCenter();
     const selection = {
         id: layerIdSeq++,
@@ -965,10 +963,10 @@ function addSelectionArea() {
         type: 'selection',
         expanded: true,
         hasInpaintResult: false,
-        x: Math.round(center.x - width / 2),
-        y: Math.round(center.y - height / 2),
-        layerWidth: width,
-        layerHeight: height,
+        x: Math.round(center.x - size / 2),
+        y: Math.round(center.y - size / 2),
+        layerWidth: size,
+        layerHeight: size,
         children: []
     };
 
@@ -1010,6 +1008,10 @@ function selectionHasInpaintResult(layer) {
 
 function selectionRequiresLayerMoveMode(layer) {
     return Boolean(layer && layer.type === 'selection' && selectionHasInpaintResult(layer));
+}
+
+function canEditSelectionBeforeClip(selection) {
+    return !selectionRequiresLayerMoveMode(selection) && countSelectionClipChildren(selection) === 0;
 }
 
 function canMoveActiveSelection(selection = null) {
@@ -1059,6 +1061,16 @@ function updateSelectionHoverCursor(event = lastCanvasSurfaceHoverEvent) {
         activePinnedReferencePanelDrag ||
         activePinnedReferenceUiDrag
     ) {
+        return;
+    }
+
+    const explicitEditMode = Boolean(
+        isLayerMoveMode || isImageResizeMode || isCanvasResizeMode ||
+        (typeof canvasLayerEraserEnabled !== 'undefined' && canvasLayerEraserEnabled)
+    );
+    if (!explicitEditMode && !event?.target?.closest?.('.selection-direct-edit') &&
+        !(typeof CanvasRetouch !== 'undefined' && CanvasRetouch.isOpen())) {
+        surface.style.cursor = activeCanvasPanDrag ? 'grabbing' : 'grab';
         return;
     }
 
@@ -1392,7 +1404,7 @@ function renderLayerTree(layers, container, depth) {
                     ? `<div class="layer-thumb layer-folder-thumb">📁</div>`
                     : isSelection
                         ? `<div class="layer-thumb layer-selection-thumb"></div>`
-                        : `<div class="layer-thumb">${layer.src ? `<img src="${escapeHtml(getCanvasLayerDisplaySrc(layer))}" alt="">` : ''}</div>`
+                        : `<div class="layer-thumb">${layer.src ? `<img src="${escapeHtml(getCanvasDisplayImageSrc(layer.src, layer.imageWidth || layer.layerWidth, layer.imageHeight || layer.layerHeight))}" alt="">` : ''}</div>`
             }
 
             <div class="layer-info">
@@ -1588,16 +1600,32 @@ function getCanvasDisplayImageSrc(src, width, height) {
     }
 }
 
-function getCanvasLayerDisplaySrc(layer) {
-    if (!layer) return '';
-    return getCanvasDisplayImageSrc(
-        layer.src,
-        layer.imageWidth || layer.layerWidth,
-        layer.imageHeight || layer.layerHeight
-    );
+function getCanvasLayerDisplaySrc(layer, displayScale = 0) {
+    return layer?.src || '';
+}
+
+function getCanvasLayerDomSrc(layer, displayScale) {
+    if (window.CanvasEditorScene?.usesTiledSource?.(layer)) {
+        return window.CanvasEditorScene.showsSourceThumbnail(layer)
+            ? getCanvasDisplayImageSrc(layer.src, layer.imageWidth, layer.imageHeight) : '';
+    }
+    return getCanvasLayerDisplaySrc(layer, displayScale);
 }
 
 let canvasAutosave = null;
+let canvasViewSaveTimer = null;
+function saveCanvasView() {
+    clearTimeout(canvasViewSaveTimer);
+    canvasViewSaveTimer = null;
+    if (!currentCanvasWidth || !currentCanvasHeight) return true;
+    try {
+        localStorage.setItem(CANVAS_STATE_KEY + ':view', JSON.stringify({
+            savedAt: Date.now(), width: currentCanvasWidth, height: currentCanvasHeight, canvasZoom, clipPreviewZoom
+        }));
+        return true;
+    } catch (_) {return false;}
+}
+
 function getCanvasAutosave() {
     if (!canvasAutosave) canvasAutosave = createCanvasAutosave({
         snapshot: () => ({...buildCanvasStateSnapshot({preserveMasks: Boolean(window.CanvasProject?.localLink() || window.CanvasWorkspaceBridge?.isPane)}),
@@ -1622,11 +1650,18 @@ function setCanvasAutosaveStatus(state) {
     window.CanvasWorkspaceBridge?.report();
 }
 function saveCanvasState(options = {}) {
+    if (options.viewOnly) {
+        if (options.immediate) return saveCanvasView();
+        if (canvasViewSaveTimer === null) canvasViewSaveTimer = setTimeout(saveCanvasView, 200);
+        return true;
+    }
+
     const edited = typeof recordCanvasEditHistory === 'function' ? recordCanvasEditHistory() : true;
     if (edited) window.CanvasProject?.schedule(Boolean(options.immediate));
     return getCanvasAutosave().schedule(Boolean(options.immediate));
 }
 window.addEventListener('beforeunload', event => {
+    if (canvasViewSaveTimer !== null) saveCanvasView();
     if (canvasAutosave && !canvasAutosave.flush()) {
         event.preventDefault();
         event.returnValue = '';
@@ -1914,6 +1949,14 @@ function restoreCanvasState() {
             return;
         }
 
+        try {
+            const view = JSON.parse(localStorage.getItem(CANVAS_STATE_KEY + ':view'));
+            if (view?.width === state.width && view.height === state.height && view.savedAt >= state.savedAt) {
+                if (Number.isFinite(view.canvasZoom)) state.canvasZoom = view.canvasZoom;
+                if (Number.isFinite(view.clipPreviewZoom)) state.clipPreviewZoom = view.clipPreviewZoom;
+            }
+        } catch (_) { /* The document remains usable if its view record is unavailable. */ }
+
         applyCanvasStateSnapshot(state);
         window.CanvasProject?.restoreLocalLink(state.projectLink);
 
@@ -1963,7 +2006,7 @@ function showPendingCanvasImportModal(payload) {
                 <button class="icon-btn danger" onclick="cancelPendingCanvasImport()">×</button>
             </div>
 
-            <div style="font-size:13px; line-height:1.6; color:var(--text-muted); margin-bottom:14px;">
+            <div style="font-size:var(--ui-text-body, 12px); line-height:1.6; color:var(--text-muted); margin-bottom:14px;">
                 가져올 이미지:
                 <strong style="color:var(--text-main);">${escapeHtml(payload.name || '이미지')}</strong>
             </div>
@@ -2648,7 +2691,7 @@ async function importImageLayer(payload) {
     saveCanvasState();
 }
 
-function renderCanvasLayersOnSurface() {
+function renderCanvasLayersOnSurface(options = {}) {
     const surface = el('canvasSurface');
     if (!surface) return;
 
@@ -2657,11 +2700,19 @@ function renderCanvasLayersOnSurface() {
         canvasHotGeometryFrame = null;
     }
     pendingCanvasHotLayerIds.clear();
-    surface.innerHTML = '';
 
     const displayScale = getCanvasDisplayScale();
+    if (options.zoomOnly && renderCanvasLayersOnSurfaceZoomOnly(surface, displayScale)) return;
 
+    surface.innerHTML = '';
+
+    if (window.CanvasSourceTilesAvailable && window.CanvasEditorScene?.configureSources) {
+        window.CanvasEditorScene.configureSources(collectDrawableImageLayersForClip(canvasLayers),
+            currentCanvasWidth, currentCanvasHeight, Boolean(window.CanvasRetouch?.isOpen() ||
+                (typeof canvasLayerEraserEnabled !== 'undefined' && canvasLayerEraserEnabled)));
+    }
     renderCanvasLayerStack(canvasLayers, surface, displayScale);
+    syncCanvasEditorScene(surface);
     renderMultiLayerTransformOverlay(surface, displayScale);
     renderClampedImageResizeHandles(surface, displayScale);
     renderClipOutputPanel();
@@ -2677,6 +2728,65 @@ function renderCanvasLayersOnSurface() {
     if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.render();
 }
 
+function syncCanvasEditorScene(surface) {
+    if (!window.CanvasEditorScene || typeof collectDrawableImageLayersForClip !== 'function') return;
+    window.CanvasEditorScene.refresh({surface, workspace: surface.closest('.canvas-workspace'),
+        width: currentCanvasWidth, height: currentCanvasHeight,
+        layers: collectDrawableImageLayersForClip(canvasLayers),
+        paused: Boolean(window.CanvasRetouch?.isOpen() ||
+            (typeof canvasLayerEraserEnabled !== 'undefined' && canvasLayerEraserEnabled))});
+}
+
+function renderCanvasLayersOnSurfaceZoomOnly(surface, displayScale) {
+    if (typeof CanvasRetouch !== 'undefined' && CanvasRetouch.isOpen()) {
+        CanvasRetouch.sync({baseZoomSkipped: true});
+        return true;
+    }
+    if (typeof canvasLayerEraserEnabled !== 'undefined' && canvasLayerEraserEnabled) return false;
+    window.CanvasEditorScene?.schedule();
+
+    const nodes = [...surface.querySelectorAll('.canvas-render-layer[data-layer-id]')];
+    const layersById = new Map();
+    forEachCanvasLayerDeep(canvasLayers, (layer) => {
+        if (layer?.id != null) layersById.set(Number(layer.id), layer);
+    });
+
+    // Wheel zoom changes geometry only; the last full render owns which layers exist.
+    if (nodes.some((node) => !layersById.has(Number(node.dataset.layerId)))) return false;
+
+    nodes.forEach((node) => {
+        const layer = layersById.get(Number(node.dataset.layerId));
+        if (!layer || !layer.visible) return;
+        updateCanvasLayerNodeGeometry(layer, displayScale, node);
+
+        if (layer.type === 'image' || layer.type === 'clip') {
+            updateCanvasLayerNodeImageForZoom(layer, node, displayScale);
+        }
+    });
+
+    updateCanvasHotMultiLayerOverlay(surface, displayScale);
+    updateCanvasHotResizeControls(surface, displayScale);
+    surface.querySelectorAll('.canvas-resize-handle').forEach((node) => node.remove());
+    renderCanvasResizeHandles(surface, displayScale);
+    surface.querySelectorAll('.canvas-resize-spacing-label').forEach((node) => node.remove());
+    renderCanvasResizeSpacingGuides(surface, displayScale);
+
+    const clipPanel = el('canvasStage')?.querySelector('.canvas-clip-output-panel');
+    const clipTarget = clipPanel ? getClipOutputTarget() : null;
+    if (clipPanel && clipTarget) {
+        positionClipOutputPanel(clipPanel, clipTarget.selection, clipTarget.clip);
+    }
+
+    if (typeof updateActiveImageResizeGuideOverlay === 'function') updateActiveImageResizeGuideOverlay();
+    if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.syncEditor?.();
+    if (typeof CanvasOppositeReference !== 'undefined') CanvasOppositeReference.render();
+    if (typeof CanvasRetouch !== 'undefined') CanvasRetouch.sync();
+    if (typeof CanvasGrid !== 'undefined') CanvasGrid.render();
+    if (typeof CanvasKeyboardMove !== 'undefined') CanvasKeyboardMove.syncControls();
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.render();
+    return true;
+}
+
 function setCanvasLayerNodePosition(node, x, y, displayScale) {
     if (!node) return;
 
@@ -2685,10 +2795,10 @@ function setCanvasLayerNodePosition(node, x, y, displayScale) {
     node.style.transform = `translate3d(${x * displayScale}px, ${y * displayScale}px, 0)`;
 }
 
-function updateCanvasLayerNodeGeometry(layer, displayScale = getCanvasDisplayScale()) {
+function updateCanvasLayerNodeGeometry(layer, displayScale = getCanvasDisplayScale(), existingNode = null) {
     if (!layer || layer.visible === false) return false;
 
-    const node = document.querySelector(`.canvas-render-layer[data-layer-id="${Number(layer.id)}"]`);
+    const node = existingNode || document.querySelector(`.canvas-render-layer[data-layer-id="${Number(layer.id)}"]`);
     if (!node) return false;
 
     if (layer.type === 'selection') {
@@ -2706,11 +2816,26 @@ function updateCanvasLayerNodeGeometry(layer, displayScale = getCanvasDisplaySca
     node.style.width = `${width * displayScale}px`;
     node.style.height = `${height * displayScale}px`;
     if (layer.type === 'selection') {
+        const {isAnlas, referenceMissing} = getCanvasSizeWarning(width, height, true);
+        node.classList.toggle('selection-anlas-warning', isAnlas && !referenceMissing);
         node.style.transform += ` rotate(${CanvasSelectionRotation.angle(layer.rotation)}deg)`;
         node.style.setProperty('--selection-rotate-size', `${Math.max(12, Math.min(36, Math.min(width, height) * displayScale - 24))}px`);
     }
     if (layer.type === 'clip') node.style.transform += ` rotate(${CanvasSelectionRotation.angle(layer.rotation)}deg)`;
     return true;
+}
+
+function updateCanvasLayerNodeImageForZoom(layer, node, displayScale) {
+    const image = node?.querySelector('img');
+    if (!image || !layer?.src) return;
+
+    const currentSrc = image.getAttribute('src') || '';
+    const nativeSrc = String(layer.src);
+    if (currentSrc === nativeSrc) return;
+
+    const desiredSrc = typeof getCanvasLayerDomSrc === 'function'
+        ? getCanvasLayerDomSrc(layer, displayScale) : getCanvasLayerDisplaySrc(layer, displayScale);
+    if (currentSrc !== desiredSrc) image.setAttribute('src', desiredSrc);
 }
 
 function updateCanvasHotMultiLayerOverlay(surface, displayScale) {
@@ -2806,6 +2931,7 @@ function flushCanvasHotLayerGeometry(ids) {
         const layer = findCanvasLayer(id)?.layer;
         updateCanvasLayerNodeGeometry(layer, displayScale);
     });
+    syncCanvasEditorScene(surface);
 
     updateCanvasHotMultiLayerOverlay(surface, displayScale);
     updateCanvasHotResizeControls(surface, displayScale);
@@ -3140,7 +3266,7 @@ function renderPinnedReferencePanel() {
             <div class="canvas-pinned-reference-image-wrap"
                  data-layer-id="${layer.id}"
                  style="width:${width}px; height:${height}px;">
-                <img src="${escapeHtml(getCanvasLayerDisplaySrc(layer))}" draggable="false" alt="pinned reference">
+                <img src="${escapeHtml(getCanvasDisplayImageSrc(layer.src, layer.imageWidth || layer.layerWidth, layer.imageHeight || layer.layerHeight))}" draggable="false" alt="pinned reference">
             </div>
         </div>
 
@@ -3471,10 +3597,13 @@ function appendImageResizeHandles(layerEl, layerId) {
     });
 }
 
-function startSelectionMoveFromCanvasEvent(event, layer) {
+function startSelectionMoveFromCanvasEvent(event, layer, resizeHandle = null) {
     if (!layer || layer.type !== 'selection' || event.button !== 0) return;
+    const selectionOnly = !isLayerMoveMode && !isImageResizeMode && !isCanvasResizeMode;
+    if (selectionOnly && (!canEditSelectionBeforeClip(layer) ||
+        (typeof canvasLayerEraserEnabled !== 'undefined' && canvasLayerEraserEnabled))) return;
 
-    if (event.shiftKey) {
+    if (event.shiftKey && !resizeHandle) {
         selectCanvasLayer(layer.id, event);
         return;
     }
@@ -3482,7 +3611,7 @@ function startSelectionMoveFromCanvasEvent(event, layer) {
     event.preventDefault();
     event.stopPropagation();
 
-    if (!isLayerMultiSelected(layer.id)) {
+    if (selectionOnly || !isLayerMultiSelected(layer.id)) {
         selectedLayerIds.clear();
         selectedLayerIds.add(Number(layer.id));
     }
@@ -3501,12 +3630,19 @@ function startSelectionMoveFromCanvasEvent(event, layer) {
         return;
     }
 
+    if (selectionOnly || resizeHandle) syncCanvasSurfaceSelectionState();
+
+    if (resizeHandle) {
+        startSelectionResizeDrag(event, layer.id, resizeHandle);
+        return;
+    }
+
     if (isLayerMoveMode && getSelectedTransformLayers().length >= 2) {
         startMultiLayerMoveDrag(event);
         return;
     }
 
-    startSelectionMoveDrag(event, layer.id);
+    startSelectionMoveDrag(event, layer.id, selectionOnly);
 }
 
 function renderCanvasLayerStack(layers, surface, displayScale, parentSelection = null) {
@@ -3532,10 +3668,12 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
                 return;
             }
 
+            const directEdit = canEditSelectionBeforeClip(layer);
             const selectionEl = document.createElement('div');
             selectionEl.className = [
                 'canvas-render-layer',
                 'selection-area-layer',
+                directEdit ? 'selection-direct-edit' : '',
                 layer.id === activeLayerId ? 'active-selection' : '',
                 isLayerMultiSelected(layer.id) ? 'multi-selected' : '',
                 canMoveActiveSelection(layer) ? 'selection-can-move' : 'selection-locked-move'
@@ -3543,11 +3681,7 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
 
             selectionEl.dataset.layerId = String(layer.id);
 
-            setCanvasLayerNodePosition(selectionEl, layer.x, layer.y, displayScale);
-            selectionEl.style.width = `${layer.layerWidth * displayScale}px`;
-            selectionEl.style.height = `${layer.layerHeight * displayScale}px`;
-            selectionEl.style.transform += ` rotate(${CanvasSelectionRotation.angle(layer.rotation)}deg)`;
-            selectionEl.style.setProperty('--selection-rotate-size', `${Math.max(12, Math.min(36, Math.min(layer.layerWidth, layer.layerHeight) * displayScale - 24))}px`);
+            updateCanvasLayerNodeGeometry(layer, displayScale, selectionEl);
 
             selectionEl.oncontextmenu = (event) => {
                 openCanvasSelectionContextMenu(event, layer.id);
@@ -3562,17 +3696,16 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
                 <div class="selection-resize-handle br" data-handle="br" title="크기 조절"></div>
             `;
 
-            const moveZone = selectionEl.querySelector('.selection-move-zone');
+            const moveTarget = directEdit ? selectionEl : selectionEl.querySelector('.selection-move-zone');
             const rotateHandle = selectionEl.querySelector('.selection-rotate-handle');
             if (rotateHandle) rotateHandle.onmousedown = (event) => startSelectionRotateDrag(event, layer.id);
-            if (moveZone) {
-                moveZone.onmousedown = (event) => {
-                    startSelectionMoveFromCanvasEvent(event, layer);
-                };
-            }
+            if (moveTarget) moveTarget.onmousedown = (event) => startSelectionMoveFromCanvasEvent(event, layer);
 
             selectionEl.querySelectorAll('.selection-resize-handle').forEach((handle) => {
-                handle.onmousedown = (event) => startSelectionResizeDrag(event, layer.id, handle.dataset.handle);
+                handle.onmousedown = (event) => {
+                    if (directEdit) startSelectionMoveFromCanvasEvent(event, layer, handle.dataset.handle);
+                    else startSelectionResizeDrag(event, layer.id, handle.dataset.handle);
+                };
             });
 
             surface.appendChild(selectionEl);
@@ -3616,7 +3749,8 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
             };
 
             const img = document.createElement('img');
-            img.src = getCanvasLayerDisplaySrc(layer);
+            const domSrc = getCanvasLayerDomSrc(layer, displayScale);
+            if (domSrc) img.src = domSrc;
             img.alt = layer.name || 'inpaint result';
             img.draggable = false;
 
@@ -3661,6 +3795,7 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
             layerEl.style.height = `${layer.layerHeight * displayScale}px`;
 
             layerEl.onmousedown = (event) => {
+                if (!isLayerMoveMode && !isImageResizeMode && !isCanvasResizeMode) return;
                 if (event.shiftKey) {
                     selectCanvasLayer(layer.id, event);
                     return;
@@ -3680,7 +3815,8 @@ function renderCanvasLayerStack(layers, surface, displayScale, parentSelection =
             };
 
             const img = document.createElement('img');
-            img.src = getCanvasLayerDisplaySrc(layer);
+            const domSrc = getCanvasLayerDomSrc(layer, displayScale);
+            if (domSrc) img.src = domSrc;
             img.alt = layer.name || 'canvas layer';
             img.draggable = false;
 
@@ -3739,6 +3875,9 @@ function openCanvasImageLayerContextMenu(event, layerId) {
         pinBtn.innerText = layer.pinnedReference ? '고정 해제' : '고정';
     }
 
+    const retouchBtn = el('canvasEditAppliedRetouchBtn');
+    if (retouchBtn) retouchBtn.hidden = !window.CanvasRetouch?.canEditAppliedLayer(layer);
+
     menu.style.display = 'block';
 
     const margin = 12;
@@ -3755,6 +3894,11 @@ function openCanvasImageLayerContextMenu(event, layerId) {
 function closeCanvasImageLayerContextMenu() {
     const menu = el('canvasImageLayerContextMenu');
     if (menu) menu.style.display = 'none';
+}
+
+function openContextImageLayerRetouch() {
+    closeCanvasImageLayerContextMenu();
+    window.CanvasRetouch?.open({editLayerId: contextImageLayerId});
 }
 
 async function fitCanvasSizeToContextImageLayer() {
@@ -5471,7 +5615,7 @@ function getCanvasPointerPositionForDrag(event, drag) {
     return getCanvasPointerPosition(event);
 }
 
-function startSelectionMoveDrag(event, layerId) {
+function startSelectionMoveDrag(event, layerId, selectionOnly = false) {
     const found = findCanvasLayer(layerId);
     const layer = found?.layer;
 
@@ -5517,7 +5661,7 @@ function startSelectionMoveDrag(event, layerId) {
         startY: layer.y,
         startWidth: layer.layerWidth,
         startHeight: layer.layerHeight,
-        childStarts: buildSelectionChildMoveStarts([layer]),
+        childStarts: selectionOnly ? [] : buildSelectionChildMoveStarts([layer]),
         stuckX: null,
         stuckY: null
     };
@@ -5932,25 +6076,30 @@ function getSelectionSizeTooltip() {
     return tooltip;
 }
 
-function updateSelectionSizeTooltip(clientX, clientY, width, height, isSelection = false) {
-    const tooltip = getSelectionSizeTooltip();
+function getCanvasSizeWarning(width, height, isSelection) {
     let requestSize = {width, height, reference: null};
     let referenceMissing = false;
 
-    if (isSelection) {
-        width = snapToSelectionStep(width);
-        height = snapToSelectionStep(height);
-        requestSize = {width, height, reference: null};
-        if (typeof CanvasInpaintReference !== 'undefined') {
-            try {
-                requestSize = CanvasInpaintReference.request(width, height);
-            } catch (_) {
-                referenceMissing = true;
-            }
+    if (isSelection && typeof CanvasInpaintReference !== 'undefined') {
+        try {
+            requestSize = CanvasInpaintReference.request(width, height);
+        } catch (_) {
+            referenceMissing = true;
         }
     }
 
     const isAnlas = requestSize.width * requestSize.height > NAI_FREE_AREA_LIMIT;
+    return {requestSize, referenceMissing, isAnlas};
+}
+
+function updateSelectionSizeTooltip(clientX, clientY, width, height, isSelection = false) {
+    const tooltip = getSelectionSizeTooltip();
+    if (isSelection) {
+        width = snapToSelectionStep(width);
+        height = snapToSelectionStep(height);
+    }
+
+    const {requestSize, referenceMissing, isAnlas} = getCanvasSizeWarning(width, height, isSelection);
     const rangeLabel = isAnlas ? 'Anlas 가능' : '무료 크기 범위';
     let text = `${width} × ${height}px${isAnlas ? ' · Anlas 가능' : ''}`;
     if (isSelection) {
@@ -6137,10 +6286,8 @@ function preserveCanvasResizeDisplayScale(width, height) {
     if (!drag) return;
 
     const fitScale = getCanvasFitScale(width, height);
-    canvasZoom = Math.min(
-        CANVAS_ZOOM_MAX,
-        Math.max(CANVAS_ZOOM_MIN, (drag.displayScale || fitScale) / Math.max(fitScale, 0.01))
-    );
+    const nextZoom = (drag.displayScale || fitScale) / Math.max(fitScale, 0.01);
+    if (Number.isFinite(nextZoom) && nextZoom > 0) canvasZoom = Math.max(CANVAS_ZOOM_MIN, nextZoom);
 }
 
 function applyCanvasResizeLayerOffsets(leftOffset, topOffset) {
@@ -9119,7 +9266,7 @@ function ensureClipPromptGroupManagerControls() {
                 <option value="ALL">전체 태그</option>
             </select>
         </div>
-        <div id="clipPromptGroupManagerSummary" style="font-size:12px; color:var(--text-muted);"></div>
+        <div id="clipPromptGroupManagerSummary" style="font-size:var(--ui-text-meta, 12px); color:var(--text-muted);"></div>
     `;
 
     list.parentNode.insertBefore(controls, list);
@@ -9204,7 +9351,7 @@ function renderClipPromptGroupTagChips(container, tags) {
 
     if (!tags || !tags.length) {
         const empty = document.createElement('span');
-        empty.style.cssText = 'font-size:11px; color:var(--text-muted);';
+        empty.style.cssText = 'font-size:var(--ui-text-meta, 12px); color:var(--text-muted);';
         empty.innerText = '태그 없음';
         container.appendChild(empty);
         return;
@@ -9218,8 +9365,7 @@ function renderClipPromptGroupTagChips(container, tags) {
             border:none;
             border-radius:999px;
             padding:3px 8px;
-            font-size:11px;
-            font-weight:800;
+            font:600 var(--ui-text-body, 12px)/var(--ui-leading-control, 1.4) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
             background:rgba(255,255,255,0.09);
             color:var(--text-color);
             cursor:pointer;
@@ -9476,7 +9622,7 @@ function renderClipPromptTokens(fieldKey) {
 
     if (!tokens.length) {
         const empty = document.createElement('span');
-        empty.style.cssText = 'color: var(--text-muted); font-size: 12px;';
+        empty.style.cssText = 'color: var(--text-muted); font-size: var(--ui-text-meta, 12px);';
         empty.innerText = '프롬프트를 입력하면 버튼으로 표시됩니다.';
         surface.appendChild(empty);
         return;
@@ -10241,7 +10387,7 @@ function renderClipPromptGroupList() {
 
     if (!filtered.length) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'color: var(--text-muted); font-size: 13px; padding:14px;';
+        empty.style.cssText = 'color: var(--text-muted); font-size: var(--ui-text-body, 12px); padding:14px;';
         empty.innerText = clipPromptGroups.length ? '검색/태그 조건에 맞는 그룹이 없습니다.' : '저장된 그룹이 없습니다.';
         list.appendChild(empty);
         return;
@@ -10269,7 +10415,7 @@ function renderClipPromptGroupList() {
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.innerText = group.collapsed ? '펼치기' : '접기';
-        toggle.style.cssText = 'width:58px; padding:6px 0; font-size:12px;';
+        toggle.style.cssText = 'width:58px; padding:6px 0; font-size:var(--ui-text-body, 12px);';
         toggle.onclick = () => toggleClipPromptGroupCollapsed(index);
 
         const nameInput = document.createElement('input');
@@ -10283,7 +10429,7 @@ function renderClipPromptGroupList() {
             border:1px solid var(--border-color);
             background:rgba(255,255,255,0.04);
             color:var(--text-color);
-            font-weight:900;
+            font:400 var(--ui-text-body, 12px)/var(--ui-leading-control, 1.4) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
         `;
 
         top.appendChild(toggle);
@@ -10300,7 +10446,7 @@ function renderClipPromptGroupList() {
             border:1px solid var(--border-color);
             background:rgba(255,255,255,0.04);
             color:var(--text-color);
-            font-size:12px;
+            font-size:var(--ui-text-body, 12px);
         `;
 
         const chips = document.createElement('div');
@@ -10309,7 +10455,7 @@ function renderClipPromptGroupList() {
 
         const preview = document.createElement('div');
         preview.style.cssText = `
-            font-size:12px;
+            font-size:var(--ui-text-meta, 12px);
             color:var(--text-muted);
             overflow:hidden;
             text-overflow:ellipsis;
@@ -10333,7 +10479,7 @@ function renderClipPromptGroupList() {
             border:1px solid var(--border-color);
             background:rgba(255,255,255,0.04);
             color:var(--text-color);
-            font-size:12px;
+            font-size:var(--ui-text-body, 12px);
             line-height:1.45;
         `;
 
@@ -10358,7 +10504,7 @@ function renderClipPromptGroupList() {
             width:44px;
             height:32px;
             padding:0;
-            font-size:12px;
+            font-size:var(--ui-text-body, 12px);
             border-radius:8px;
         `;
         saveBtn.onclick = async () => {
@@ -10394,7 +10540,7 @@ function renderClipPromptGroupList() {
             width:44px;
             height:32px;
             padding:0;
-            font-size:12px;
+            font-size:var(--ui-text-body, 12px);
             border-radius:8px;
         `;
         del.onclick = () => deleteClipPromptGroup(index);
@@ -11710,7 +11856,7 @@ function bindCanvasWorkspacePanDrag() {
 
     workspace.dataset.panDragBound = '1';
 
-    workspace.addEventListener('pointerdown', startCanvasWorkspacePanDrag);
+    workspace.addEventListener('pointerdown', startCanvasWorkspacePanDrag, {capture: true});
     workspace.addEventListener('pointermove', handleCanvasWorkspacePanDragMove);
     workspace.addEventListener('pointerup', stopCanvasWorkspacePanDrag);
     workspace.addEventListener('pointercancel', stopCanvasWorkspacePanDrag);
@@ -11721,6 +11867,8 @@ function applyCanvasWorkspacePanOffset() {
     if (!stage) return;
 
     stage.style.transform = `translate(${Math.round(canvasPanOffsetX)}px, ${Math.round(canvasPanOffsetY)}px)`;
+    window.CanvasEditorScene?.schedule();
+    window.CanvasRetouch?.scheduleView?.();
 }
 
 function isCanvasWorkspacePanTarget(event) {
@@ -11729,18 +11877,28 @@ function isCanvasWorkspacePanTarget(event) {
 
     if (target.closest?.(
         '.canvas-clip-output-panel, ' +
-        '.canvas-render-layer.image-layer, ' +
-        '.selection-area-layer, ' +
+        '#canvasDakiFocus, .canvas-multi-references, ' +
+        '.canvas-retouch-compare-handle, ' +
+        '.selection-direct-edit, ' +
         '.selection-resize-handle, ' +
+        '.selection-rotate-handle, ' +
         '.image-resize-handle, ' +
         '.image-resize-clamped-handle, ' +
         '.multi-layer-transform-box, ' +
         '.canvas-resize-handle, ' +
         '.canvas-pinned-reference-panel, ' +
-        '.canvas-pinned-reference-image-wrap'
+        '.canvas-pinned-reference-image-wrap, ' +
+        'input, textarea, select, button, [contenteditable="true"]'
     )) {
         return false;
     }
+    if (target.closest?.('.canvas-retouch-surface-overlay') && !window.CanvasRetouch?.canPan?.()) return false;
+
+    const explicitEditMode = Boolean(
+        isLayerMoveMode || isImageResizeMode || isCanvasResizeMode ||
+        (typeof canvasLayerEraserEnabled !== 'undefined' && canvasLayerEraserEnabled)
+    );
+    if (explicitEditMode && target.closest?.('.canvas-render-layer.image-layer, .selection-area-layer')) return false;
 
     return Boolean(target.closest?.('.canvas-workspace'));
 }
@@ -11794,6 +11952,32 @@ function stopCanvasWorkspacePanDrag(event) {
     activeCanvasPanDrag = null;
 }
 
+function flushPendingCanvasWheelZoom(pending) {
+    if (pendingCanvasWheelZoom !== pending) return;
+    pendingCanvasWheelZoomFrame = null;
+    pendingCanvasWheelZoom = null;
+
+    if (
+        canvasLayers !== pending.canvasLayers ||
+        currentCanvasWidth !== pending.canvasWidth ||
+        currentCanvasHeight !== pending.canvasHeight ||
+        canvasZoom !== pending.targetZoom ||
+        el('canvasSurface') !== pending.surface ||
+        document.querySelector('.canvas-workspace') !== pending.workspace
+    ) return;
+
+    renderCanvas(pending.canvasWidth, pending.canvasHeight, {zoomOnly: true});
+
+    const newScale = getCanvasDisplayScale();
+    const newRect = pending.surface.getBoundingClientRect();
+    // Keep the canvas point under the latest wheel position fixed after layout updates.
+    pending.workspace.scrollLeft += newRect.left + pending.canvasX * newScale - pending.clientX;
+    pending.workspace.scrollTop += newRect.top + pending.canvasY * newScale - pending.clientY;
+    window.CanvasEditorScene?.present?.();
+    window.CanvasRetouch?.presentView?.();
+    saveCanvasState({viewOnly: true});
+}
+
 function handleCanvasWheelZoom(event) {
     if (!currentCanvasWidth || !currentCanvasHeight) return;
     // Keep embedded editors and controls in charge of their own scrolling.
@@ -11819,29 +12003,48 @@ function handleCanvasWheelZoom(event) {
     event.stopPropagation();
 
     const oldScale = getCanvasDisplayScale();
+    if (!Number.isFinite(oldScale) || oldScale <= 0) return;
     const oldRect = surface.getBoundingClientRect();
 
     const canvasX = (event.clientX - oldRect.left) / oldScale;
     const canvasY = (event.clientY - oldRect.top) / oldScale;
+    const previousZoom = canvasZoom;
+    const pending = pendingCanvasWheelZoom;
+    if (pending && (
+        pending.canvasLayers !== canvasLayers ||
+        pending.canvasWidth !== currentCanvasWidth ||
+        pending.canvasHeight !== currentCanvasHeight ||
+        pending.targetZoom !== previousZoom
+    )) {
+        if (pendingCanvasWheelZoomFrame !== null) cancelAnimationFrame(pendingCanvasWheelZoomFrame);
+        pendingCanvasWheelZoomFrame = null;
+        pendingCanvasWheelZoom = null;
+    }
 
-    canvasZoom = clampZoom(
-        canvasZoom * getWheelZoomFactor(event),
-        CANVAS_ZOOM_MIN,
-        CANVAS_ZOOM_MAX
-    );
+    const nextZoom = previousZoom * getWheelZoomFactor(event);
+    if (!Number.isFinite(previousZoom) || previousZoom <= 0 || !Number.isFinite(nextZoom) || nextZoom <= 0) return;
+    canvasZoom = Math.max(CANVAS_ZOOM_MIN, nextZoom);
 
-    renderCanvas(currentCanvasWidth, currentCanvasHeight);
+    if (pendingCanvasWheelZoom) {
+        Object.assign(pendingCanvasWheelZoom, {
+            targetZoom: canvasZoom,
+            canvasX, canvasY,
+            clientX: event.clientX, clientY: event.clientY
+        });
+        return;
+    }
 
-    requestAnimationFrame(() => {
-        const newScale = getCanvasDisplayScale();
-        const newRect = surface.getBoundingClientRect();
-
-        // 마우스 아래에 있던 캔버스 좌표가 계속 마우스 아래에 오도록 스크롤 보정
-        workspace.scrollLeft += newRect.left + canvasX * newScale - event.clientX;
-        workspace.scrollTop += newRect.top + canvasY * newScale - event.clientY;
-    });
-
-    saveCanvasState();
+    const nextPending = {
+        canvasLayers,
+        canvasWidth: currentCanvasWidth,
+        canvasHeight: currentCanvasHeight,
+        targetZoom: canvasZoom,
+        canvasX, canvasY,
+        clientX: event.clientX, clientY: event.clientY,
+        workspace, surface
+    };
+    pendingCanvasWheelZoom = nextPending;
+    pendingCanvasWheelZoomFrame = requestAnimationFrame(() => flushPendingCanvasWheelZoom(nextPending));
 }
 
 function applyClipPreviewZoom(wrap, img, clip) {
@@ -12535,8 +12738,7 @@ function renderTagTranslationPartPicker() {
             color: ${part.active ? 'var(--success)' : 'var(--text-muted)'};
             border-radius: 999px;
             padding: 5px 9px;
-            font-size: 11px;
-            font-weight: 800;
+            font: 600 var(--ui-text-body, 12px)/var(--ui-leading-control, 1.4) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
             cursor: pointer;
         `;
 
@@ -12639,13 +12841,13 @@ function addClipCharPromptEditor(initialValue = '') {
 
     const title = document.createElement('div');
     title.className = 'clip-char-prompt-title';
-    title.style.cssText = 'font-size:12px; font-weight:800;';
+    title.style.cssText = 'font:600 var(--ui-text-body, 12px)/var(--ui-leading-body, 1.5) var(--ui-font-family, \'Segoe UI\', \'Malgun Gothic\', sans-serif);';
     title.innerText = `Character Prompt ${index}`;
 
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'danger';
-    deleteBtn.style.cssText = 'padding:4px 8px; font-size:12px;';
+    deleteBtn.style.cssText = 'padding:4px 8px; font-size:var(--ui-text-body, 12px);';
     deleteBtn.innerText = '삭제';
     deleteBtn.onclick = (event) => {
         event.preventDefault();

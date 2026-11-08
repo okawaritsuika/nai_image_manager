@@ -114,6 +114,8 @@ class DakiPersonalStyles:
                 raise ValueError('복사한 대표 이미지 폴더를 확인해 주세요.')
             root = image_root.resolve()
             path = root / name
+            from naim.storage.image_renames import resolve_renamed_image_path
+            path = resolve_renamed_image_path(path)
             if path.is_symlink() or not path.resolve().is_relative_to(root) or not path.is_file():
                 raise FileNotFoundError('복사한 대표 이미지를 찾을 수 없습니다.')
             return path, reference

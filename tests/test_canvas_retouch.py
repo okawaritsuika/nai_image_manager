@@ -118,6 +118,50 @@ class RetouchEngineTests(unittest.TestCase):
         self.assertEqual(mask.getpixel((50, 60)), 255)
         mask.close()
 
+    def test_shape_only_mask_matches_gate_pixels_exactly(self):
+        from PIL import ImageDraw
+
+        size = (137, 91)
+        cases = [
+            (True, {'kind': 'rect', 'box': [-13.25, 8.5, 74.75, 63.125]}),
+            (True, {'kind': 'ellipse', 'box': [31.125, -17.5, 152.5, 72.25]}),
+            (False, {'kind': 'ellipse', 'box': [14, 18, 82, 70]}),
+        ]
+        for base, shape in cases:
+            layer = make_layer('tone', mask={'base': base, 'strokes': [], 'shape': shape})
+            actual = engine.mask_image(layer, size, 1, (0, 0))
+            expected = Image.new('L', size, 0)
+            if base:
+                draw = ImageDraw.Draw(expected)
+                (draw.ellipse if shape['kind'] == 'ellipse' else draw.rectangle)(shape['box'], fill=255)
+            try:
+                np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+            finally:
+                actual.close()
+                expected.close()
+
+    def test_paint_empty_mask_shortcut_keeps_add_strokes(self):
+        paint_stroke = {
+            'points': [[64, 96]], 'radius': 12, 'hardness': .4,
+            'opacity': 1, 'color': '#ff0000',
+        }
+        add_mask = make_layer('paint', strokes=[paint_stroke], mask={'base': 0, 'strokes': [{
+            'points': [[64, 96]], 'radius': 12, 'hardness': .4, 'opacity': 1,
+        }]})
+        added = self.source.copy()
+        engine.apply_paint(added, add_mask, 1, (0, 0), self.source)
+        self.assertEqual(added.getpixel((64, 96))[:3], (255, 0, 0))
+        self.assertEqual(added.getpixel((10, 10)), self.source.getpixel((10, 10)))
+        added.close()
+
+        erase_only = make_layer('paint', strokes=[paint_stroke], mask={'base': 0, 'strokes': [{
+            'points': [[64, 96]], 'radius': 12, 'hardness': .4, 'opacity': 1, 'erase': True,
+        }]})
+        unchanged = self.source.copy()
+        engine.apply_paint(unchanged, erase_only, 1, (0, 0), self.source)
+        np.testing.assert_array_equal(np.asarray(unchanged), np.asarray(self.source))
+        unchanged.close()
+
     def test_empty_mask_and_freeze_have_no_effect(self):
         layer = make_layer('sharpen', mask={'base': 0, 'strokes': []}, params={'radius': 5, 'amount': 150})
         result = self.render([layer])
@@ -255,6 +299,88 @@ class RetouchEngineTests(unittest.TestCase):
         np.testing.assert_array_equal(output[..., 3], original[..., 3])
         self.assertEqual(self.raw, source_bytes)
         result.close()
+
+    def test_bounded_clone_sampling_matches_full_source_bicubic(self):
+        rng = np.random.default_rng(191)
+        pixels = rng.integers(0, 256, (123, 171, 4), dtype=np.uint8)
+        pixels[:, :14, 3] = 0
+        pixels[:, 14:21, 3] = np.arange(7, dtype=np.uint8)[None, :] * 37
+        with Image.fromarray(pixels) as original:
+            for size, box in [((26, 19), (102.25, 83.75, 128.25, 102.75)),
+                              ((16, 21), (-4.5, 31.125, 11.5, 52.125)),
+                              ((27, 20), (159.4, 112.25, 186.4, 132.25)),
+                              ((18, 11), (37.9, 16.9, 95.6, 51.25)),
+                              ((15, 12), (230, 210, 245, 222)),
+                              ((18, 14), (10, 10, 28, 24)),
+                              ((18, 14), (0, 0, 18, 14)),
+                              ((20, 15), (151, 108, 171, 123))]:
+                with self.subTest(box=box), original.transform(
+                    size, Image.Transform.EXTENT, box, Image.Resampling.BICUBIC,
+                ) as reference, engine.clone_region(original, size, box) as actual:
+                    np.testing.assert_array_equal(np.asarray(actual), np.asarray(reference))
+        opaque_pixels = rng.integers(0, 256, (123, 171, 4), dtype=np.uint8)
+        opaque_pixels[:, :, 3] = 255
+        with Image.fromarray(opaque_pixels, 'RGBA') as opaque:
+            size, box = (18, 14), (10, 10, 28, 24)
+            with opaque.transform(size, Image.Transform.EXTENT, box, Image.Resampling.BICUBIC) as reference, \
+                    engine.clone_region(opaque, size, box) as actual:
+                np.testing.assert_array_equal(np.asarray(actual), np.asarray(reference))
+
+    def test_clone_apply_patch_crop_matches_uncropped_bicubic_reference(self):
+        from PIL import ImageChops
+
+        rng = np.random.default_rng(20261108)
+        pixels = rng.integers(0, 256, (128, 176, 4), dtype=np.uint8)
+        pixels[:, 16:24, 3] = 0
+        pixels[:, 24:32, 3] = np.arange(8, dtype=np.uint8)[None, :] * 31
+
+        def reference_region(original, size, box):
+            x0, y0, x1, y1 = box
+            left, top = max(0, int(np.floor(x0)) - 3), max(0, int(np.floor(y0)) - 3)
+            right, bottom = min(original.width, int(np.ceil(x1)) + 3), min(original.height, int(np.ceil(y1)) + 3)
+            if right <= left or bottom <= top:
+                return Image.new(original.mode, size)
+            transform = ((x1 - x0) / size[0], 0, x0 - left,
+                         0, (y1 - y0) / size[1], y0 - top)
+            with original.crop((left, top, right, bottom)) as source:
+                return source.transform(size, Image.Transform.AFFINE, transform, Image.Resampling.BICUBIC)
+
+        with Image.fromarray(pixels, 'RGBA') as original:
+            cases = [
+                {'points': [[112, 72]], 'source': [32, 24], 'radius': 22,
+                 'hardness': 1, 'opacity': .8},
+                {'points': [[112.25, 72.75]], 'source': [31.5, 25.125], 'radius': 18,
+                 'hardness': .35, 'opacity': .7},
+            ]
+            for stroke in cases:
+                with self.subTest(stroke=stroke):
+                    layer = make_layer('clone', strokes=[stroke])
+                    actual = original.copy()
+                    expected = original.copy()
+                    patch = color = None
+                    try:
+                        engine.apply_paint(actual, layer, 1, (0, 0), original)
+                        box, patch = engine.stroke_patch(original.size, stroke, 1, (0, 0))
+                        start = (box[0], box[1])
+                        delta = (stroke['source'][0] - stroke['points'][0][0],
+                                 stroke['source'][1] - stroke['points'][0][1])
+                        sourcebox = (start[0] + delta[0], start[1] + delta[1],
+                                     start[0] + delta[0] + patch.width,
+                                     start[1] + delta[1] + patch.height)
+                        color = reference_region(original, patch.size, sourcebox)
+                        with color.getchannel('A') as alpha:
+                            masked = ImageChops.multiply(patch, alpha)
+                        patch.close()
+                        patch = masked
+                        with expected.crop(box) as base, engine.composite(
+                                base, color, patch, stroke['opacity']) as result:
+                            expected.paste(result, box)
+                        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+                    finally:
+                        actual.close()
+                        expected.close()
+                        if patch is not None: patch.close()
+                        if color is not None: color.close()
 
     def test_adjustment_progress_is_monotone_bounded_and_finishes_at_one(self):
         pixels = np.empty((1600, 128, 4), dtype=np.uint8)

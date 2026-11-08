@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const {test} = require('node:test');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const Brush = require('../static/canvas_retouch_brush.js');
 
 class PixelContext {
@@ -73,6 +75,44 @@ function paint(stroke, width = 48, height = 48, documentWidth = width, documentH
     brush.append(stroke.points);
     brush.paint(context, options);
     return context;
+}
+
+function referenceSingleDab(stroke, width, height, pixels, layerOpacity = 1) {
+    const coverage = new Float32Array(width * height);
+    const radius = stroke.radius;
+    const [centerX, centerY] = stroke.points[0];
+    const left = Math.max(0, Math.floor(centerX - radius - .5));
+    const top = Math.max(0, Math.floor(centerY - radius - .5));
+    const right = Math.min(width, Math.ceil(centerX + radius - .5) + 1);
+    const bottom = Math.min(height, Math.ceil(centerY + radius - .5) + 1);
+    const feather = Math.max(1 - stroke.hardness, 1e-6);
+    const end = Math.exp(-4.5);
+    const colorValue = parseInt(stroke.color.slice(1), 16);
+    const color = [colorValue >> 16, (colorValue >> 8) & 255, colorValue & 255];
+    for (let y = top; y < bottom; y += 1) {
+        const dy = y + .5 - centerY;
+        for (let x = left; x < right; x += 1) {
+            const dx = x + .5 - centerX;
+            const distance = Math.sqrt(dx * dx + dy * dy) / radius;
+            if (distance >= 1) continue;
+            const q = Math.max(0, Math.min(1, (distance - stroke.hardness) / feather));
+            const falloff = q === 0 ? 1 : Math.max(0, (Math.exp(-4.5 * q * q) - end) / (1 - end));
+            const index = y * width + x;
+            coverage[index] += (1 - coverage[index]) * falloff * stroke.flow;
+        }
+    }
+    const output = new Uint8ClampedArray(pixels);
+    for (let index = 0; index < coverage.length; index += 1) {
+        const coverageByte = Math.floor(coverage[index] * 255 + .5);
+        const weight = coverageByte / 255 * stroke.opacity * layerOpacity;
+        if (weight <= 0) continue;
+        const offset = index * 4;
+        for (let channel = 0; channel < 3; channel += 1) {
+            output[offset + channel] = Math.floor(pixels[offset + channel] +
+                (color[channel] - pixels[offset + channel]) * weight + .5);
+        }
+    }
+    return output;
 }
 
 function channel(context, x, y, index = 0) {
@@ -220,4 +260,167 @@ test('scaled preview keeps the airbrush center stronger than its feather', () =>
     assert.ok(center > middle);
     assert.ok(middle > 0);
     assert.equal(outside, 0);
+});
+
+test('native tile origin and scale preserve the whole-image airbrush result across a tile edge', () => {
+    const width = 1036;
+    const height = 24;
+    const base = opaquePixels(width, height, [62, 103, 147]);
+    for (let pixel = 0; pixel < base.length; pixel += 4) base[pixel + 3] = (pixel / 4) % 251;
+    const stroke = makeStroke({points: [[1015, 11], [1029, 13]], radius: 11, flow: .23, opacity: .71});
+
+    const whole = new PixelContext(width, height, base);
+    const wholeBrush = Brush.create(stroke, width, height, width, height);
+    wholeBrush.append(stroke.points);
+    wholeBrush.paint(whole, {mode: 'multiply', opacity: .63});
+
+    const tiled = new Uint8ClampedArray(base);
+    for (const x of [0, 1024]) {
+        const tileWidth = Math.min(1024, width - x);
+        const tilePixels = new Uint8ClampedArray(tileWidth * height * 4);
+        for (let y = 0; y < height; y += 1) {
+            const start = (y * width + x) * 4;
+            tilePixels.set(base.subarray(start, start + tileWidth * 4), y * tileWidth * 4);
+        }
+        const context = new PixelContext(tileWidth, height, tilePixels);
+        const brush = Brush.create(stroke, tileWidth, height, tileWidth, height,
+            {origin: [x, 0], scale: 1});
+        brush.append(stroke.points);
+        brush.paint(context, {mode: 'multiply', opacity: .63});
+        for (let y = 0; y < height; y += 1) {
+            const destination = (y * width + x) * 4;
+            tiled.set(context.data.subarray(y * tileWidth * 4, (y + 1) * tileWidth * 4), destination);
+        }
+    }
+    assert.deepEqual(tiled, whole.data);
+});
+
+test('large 120 and 800 pixel dabs preserve the full-square reference raster', () => {
+    const width = 1024, height = 1024;
+    const base = opaquePixels(width, height, [47, 113, 198]);
+    for (const radius of [120, 800]) {
+        const stroke = makeStroke({points: [[512, 512]], radius, hardness: .37, flow: .43,
+            opacity: .61, color: '#fa4030'});
+        const output = paint(stroke, width, height, width, height, {mode: 'normal', opacity: .72}, base);
+        assert.deepEqual(output.data, referenceSingleDab(stroke, width, height, base, .72),
+            `radius ${radius} must retain the existing pixel result`);
+    }
+});
+
+test('native tile placement validates explicit origin and scale', () => {
+    const stroke = makeStroke();
+    assert.throws(() => Brush.create(stroke, 16, 16, 16, 16, {origin: [1]}), /origin/);
+    assert.throws(() => Brush.create(stroke, 16, 16, 16, 16, {origin: [0, Infinity]}), /origin/);
+    assert.throws(() => Brush.create(stroke, 16, 16, 16, 16, {origin: ['1', 0]}), /origin/);
+    assert.throws(() => Brush.create(stroke, 16, 16, 16, 16, {scale: 0}), /scale/);
+    assert.throws(() => Brush.create(stroke, 16, 16, 16, 16, {scale: 1.01}), /scale/);
+    assert.throws(() => Brush.create(stroke, 16, 16, 16, 16, {scale: '1'}), /scale/);
+});
+
+test('native airbrush keeps coverage in one reusable Wasm buffer and matches the JS preview', async t => {
+    let wasmBytes;
+    try {
+        wasmBytes = await fs.readFile(path.join(__dirname, '../static/canvas_editor/brush.wasm'));
+    } catch (error) {
+        if (error.code === 'ENOENT') {t.skip('build the canvas brush Wasm asset to exercise the native kernel'); return;}
+        throw error;
+    }
+    const original = {
+        document: globalThis.document,
+        location: globalThis.location,
+        fetch: globalThis.fetch,
+        WebAssembly: globalThis.WebAssembly
+    };
+    const nativeWebAssembly = globalThis.WebAssembly;
+    const dabCalls = [], blendCalls = [];
+    const expectedExports = ['add_dab_region', 'blend_rgba_region'];
+    const module = new nativeWebAssembly.Module(wasmBytes);
+    const exports = new Set(nativeWebAssembly.Module.exports(module).map(item => item.name));
+    assert.ok(expectedExports.every(name => exports.has(name)), 'the compiled Wasm exports the direct-region kernels');
+
+    const stroke = makeStroke({points: [[24, 32], [38, 32]], radius: 10, hardness: .25,
+        flow: .17, opacity: .62, color: '#d84868'});
+    const expected = paint(stroke, 64, 64, 64, 64, {opacity: .73}).data;
+    const blendModes = ['normal', 'soft-light', 'color', 'multiply', 'screen'].map(mode => {
+        const modeStroke = makeStroke({points: [[24, 32], [38, 32]], radius: 10, hardness: .25,
+            flow: .17, opacity: .62, color: '#d84868'});
+        const baseline = paint(modeStroke, 64, 64, 64, 64, {mode, opacity: .73},
+            opaquePixels(64, 64, [21, 95, 178])).data;
+        return {mode, stroke: modeStroke, baseline};
+    });
+    globalThis.document = {};
+    globalThis.location = {};
+    globalThis.fetch = async url => {
+        assert.match(url, /brush\.wasm\?v=5$/);
+        return {ok: true, arrayBuffer: async () => wasmBytes.buffer.slice(wasmBytes.byteOffset,
+            wasmBytes.byteOffset + wasmBytes.byteLength)};
+    };
+    globalThis.WebAssembly = Object.assign(Object.create(nativeWebAssembly), {
+        instantiate: async bytes => {
+            const result = await nativeWebAssembly.instantiate(bytes);
+            const nativeExports = result.instance.exports;
+            const instrumentedExports = {
+                memory: nativeExports.memory,
+                __heap_base: nativeExports.__heap_base,
+                add_dab: nativeExports.add_dab,
+                blend_rgba: nativeExports.blend_rgba,
+                add_dab_region(...args) {
+                    dabCalls.push({pointer: args[0], left: args[2], top: args[3], right: args[4], bottom: args[5]});
+                    return nativeExports.add_dab_region(...args);
+                },
+                blend_rgba_region(...args) {
+                    blendCalls.push({coveragePointer: args[1], left: args[3], top: args[4], width: args[6], height: args[7]});
+                    return nativeExports.blend_rgba_region(...args);
+                }
+            };
+            return {instance: {exports: instrumentedExports}};
+        }
+    });
+    try {
+        assert.equal(await Brush.prepareNative(), true);
+
+        const context = new PixelContext(64, 64, opaquePixels(64, 64));
+        const first = Brush.create(stroke, 64, 64, 64, 64);
+        first.append(stroke.points);
+        first.paint(context, {opacity: .73});
+        assert.deepEqual(context.data, expected);
+        assert.ok(dabCalls.length > 2);
+        assert.equal(new Set(dabCalls.map(call => call.pointer)).size, 1,
+            'every dab updates the persistent full-surface coverage buffer');
+        assert.equal(blendCalls.length, 1);
+        const coveragePointer = dabCalls[0].pointer;
+        first.dispose();
+
+        const second = Brush.create(stroke, 64, 64, 64, 64);
+        second.append(stroke.points.slice(0, 1));
+        assert.equal(dabCalls.at(-1).pointer, coveragePointer, 'disposed coverage storage returns to the pool');
+        second.dispose();
+
+        for (const {mode, stroke: modeStroke, baseline} of blendModes) {
+            const modeContext = new PixelContext(64, 64, opaquePixels(64, 64, [21, 95, 178]));
+            const modeBrush = Brush.create(modeStroke, 64, 64, 64, 64);
+            modeBrush.append(modeStroke.points);
+            modeBrush.paint(modeContext, {mode, opacity: .73});
+            assert.deepEqual(modeContext.data, baseline, `${mode} retains the JS blend result`);
+            modeBrush.dispose();
+        }
+
+        const largeBase = opaquePixels(1024, 1024, [47, 113, 198]);
+        for (const radius of [120, 800]) {
+            const largeStroke = makeStroke({points: [[512, 512]], radius, hardness: .37, flow: .43,
+                opacity: .61, color: '#fa4030'});
+            const largeExpected = referenceSingleDab(largeStroke, 1024, 1024, largeBase, .72);
+            const largeContext = new PixelContext(1024, 1024, largeBase);
+            const largeBrush = Brush.create(largeStroke, 1024, 1024, 1024, 1024);
+            largeBrush.append(largeStroke.points);
+            largeBrush.paint(largeContext, {mode: 'normal', opacity: .72});
+            assert.deepEqual(largeContext.data, largeExpected, `radius ${radius} retains the reference raster`);
+            largeBrush.dispose();
+        }
+    } finally {
+        for (const key of ['document', 'location', 'fetch', 'WebAssembly']) {
+            if (original[key] === undefined) delete globalThis[key];
+            else globalThis[key] = original[key];
+        }
+    }
 });

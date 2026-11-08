@@ -130,6 +130,137 @@ class DakiProjectCanvasTests(unittest.TestCase):
         self.assertEqual(self.store.get_canvas(project['id'], second['id']), second)
         self.assertEqual(list(self.store.canvas_states()), [first['state'], second['state'], back['state']])
 
+    def test_canvas_rename_validates_name_checks_expected_value_and_preserves_state_revision(self):
+        project = self.store.create_project('Rename canvas')
+        canvas = self.store.create_canvas(
+            project['id'], self.canvas('d' * 32, 'Old name', 'front'),
+        )
+        stored = json.loads(self.path.read_text(encoding='utf-8'))
+        stored_project = stored['projects'][0]
+        stored_project['updated_at'] = 'project before rename'
+        stored_canvas = stored_project['canvases']['front'][0]
+        stored_canvas['updated_at'] = 'canvas before rename'
+        stored_canvas['extension'] = {'keep': True}
+        self.path.write_text(json.dumps(stored), encoding='utf-8')
+        original_state = stored_canvas['state']
+        original_revision = stored_canvas['revision']
+        original_created_at = stored_canvas['created_at']
+
+        renamed = self.store.rename_canvas(
+            project['id'], canvas['id'], '  New name  ', 'Old name',
+        )
+
+        self.assertEqual(renamed['name'], 'New name')
+        self.assertEqual(renamed['state'], original_state)
+        self.assertEqual(renamed['revision'], original_revision)
+        self.assertEqual(renamed['created_at'], original_created_at)
+        self.assertNotEqual(renamed['updated_at'], 'canvas before rename')
+        self.assertEqual(renamed['extension'], {'keep': True})
+        saved = json.loads(self.path.read_text(encoding='utf-8'))
+        self.assertNotEqual(saved['projects'][0]['updated_at'], 'project before rename')
+
+        before_conflict = self.path.read_bytes()
+        with self.assertRaises(DakiCanvasConflict):
+            self.store.rename_canvas(project['id'], canvas['id'], 'Later name', 'Old name')
+        self.assertEqual(self.path.read_bytes(), before_conflict)
+        with self.assertRaises(ValueError):
+            self.store.rename_canvas(project['id'], canvas['id'], 'CON', 'New name')
+        self.assertEqual(self.path.read_bytes(), before_conflict)
+
+        with mock.patch('naim.storage.daki_projects.write_json', side_effect=OSError('private path')):
+            with self.assertRaises(OSError):
+                self.store.rename_canvas(
+                    project['id'], canvas['id'], 'Changed name', 'New name',
+                )
+        self.assertEqual(self.path.read_bytes(), before_conflict)
+        self.assertEqual(self.store.get_canvas(project['id'], canvas['id'])['name'], 'New name')
+
+    def test_canvas_name_migration_uses_source_image_and_preserves_manual_names(self):
+        image = self.gallery / 'folder' / 'literal%2Fname.png'
+        image.parent.mkdir()
+        Image.new('RGB', (3, 4)).save(image)
+        project = self.store.create_project('Name migration')
+        project = self.store.add_candidate(
+            project['id'], 'folder/literal%2Fname.png', 'front', name='Display portrait.png',
+        )
+        first_state = self.state('must remain')
+        first_state['layers'] = [{
+            'type': 'folder',
+            'children': [{
+                'type': 'image', 'sourcePath': 'folder/literal%2Fname.png',
+            }],
+        }]
+        second_state = self.state('also remains')
+        second_state['layers'] = [{
+            'type': 'folder',
+            'children': [{
+                'type': 'image', 'src': '/image/folder/literal%252Fname.png?preview=1',
+            }],
+        }]
+        manual_state = self.state('manual remains')
+        manual_state['layers'] = [{
+            'type': 'image', 'sourcePath': 'folder/literal%2Fname.png',
+        }]
+        first = self.store.create_canvas(
+            project['id'], self.canvas('e' * 32, 'literal%2Fname.png', 'front', first_state),
+        )
+        second = self.store.create_canvas(
+            project['id'], self.canvas('f' * 32, 'literal%2Fname.png', 'front', second_state),
+        )
+        manual = self.store.create_canvas(
+            project['id'], self.canvas('0' * 32, 'My manual draft', 'front', manual_state),
+        )
+
+        stored = json.loads(self.path.read_text(encoding='utf-8'))
+        stored_project = stored['projects'][0]
+        stored_project['extension'] = {'project': 'preserve'}
+        stored_canvases = stored_project['canvases']['front']
+        stored_canvases[0]['revision'] = 8
+        stored_canvases[0]['extension'] = {'canvas': 'preserve'}
+        stored_canvases[1]['revision'] = 11
+        stored_canvases[2]['revision'] = 14
+        before_states = [item['state'] for item in stored_canvases]
+        self.path.write_text(json.dumps(stored), encoding='utf-8')
+
+        migrated = self.store.migrate_canvas_names(project['id'])
+
+        migrated_canvases = migrated['canvases']['front']
+        self.assertEqual(
+            [item['name'] for item in migrated_canvases],
+            [
+                'Display portrait · 앞면 편집',
+                'Display portrait · 앞면 편집 2',
+                'My manual draft',
+            ],
+        )
+        self.assertEqual([item['revision'] for item in migrated_canvases], [8, 11, 14])
+        self.assertEqual([item['state'] for item in migrated_canvases], before_states)
+        self.assertEqual(migrated_canvases[0]['extension'], {'canvas': 'preserve'})
+        self.assertEqual(migrated['extension'], {'project': 'preserve'})
+
+        migrated_bytes = self.path.read_bytes()
+        self.store.migrate_canvas_names(project['id'])
+        self.assertEqual(self.path.read_bytes(), migrated_bytes)
+
+    def test_canvas_name_migration_write_failure_keeps_legacy_name(self):
+        image = self.gallery / 'source.png'
+        Image.new('RGB', (3, 4)).save(image)
+        project = self.store.create_project('Migration failure')
+        self.store.add_candidate(project['id'], 'source.png', 'front', name='Readable name.png')
+        state = self.state()
+        state['layers'] = [{'type': 'image', 'sourcePath': 'source.png'}]
+        canvas = self.store.create_canvas(
+            project['id'], self.canvas('1' * 32, 'source.png', 'front', state),
+        )
+        before = self.path.read_bytes()
+
+        with mock.patch('naim.storage.daki_projects.write_json', side_effect=OSError('private path')):
+            with self.assertRaises(OSError):
+                self.store.migrate_canvas_names(project['id'])
+
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.store.get_canvas(project['id'], canvas['id'])['name'], 'source.png')
+
     def test_canvas_update_revision_retry_and_existing_project_fields_are_preserved(self):
         image = self.gallery / 'candidate.png'
         Image.new('RGB', (3, 4)).save(image)
@@ -184,6 +315,35 @@ class DakiProjectCanvasTests(unittest.TestCase):
         changed = {**restored, 'layers': []}
         conflict = self.client.put(url, json={'state': changed, 'revision': 1})
         self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_deleted_canvas_and_project_return_explicit_missing_target_code(self):
+        project = self.store.create_project('Missing target recovery')
+        canvas = self.store.create_canvas(project['id'], self.canvas('a' * 32, 'Front', 'front'))
+        url = f"/api/daki/projects/{project['id']}/canvases/{canvas['id']}"
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.store.remove_canvas(project['id'], canvas['id'])
+        for target in ('canvas', 'project'):
+            if target == 'project':
+                with self.store.staged_project_removal(project['id']):
+                    pass
+            for method in ('GET', 'PUT'):
+                with self.subTest(target=target, method=method):
+                    response = self.client.open(url, method=method, **(
+                        {'json': {'state': self.state(), 'revision': 1}} if method == 'PUT' else {}
+                    ))
+                    self.assertEqual(response.status_code, 404)
+                    self.assertEqual(response.json['code'], 'daki_not_found')
+
+    def test_missing_storage_file_during_write_is_not_reported_as_deleted_target(self):
+        project = self.store.create_project('Storage failure')
+        canvas = self.store.create_canvas(project['id'], self.canvas('a' * 32, 'Front', 'front'))
+        url = f"/api/daki/projects/{project['id']}/canvases/{canvas['id']}"
+        before = self.path.read_bytes()
+        with mock.patch('naim.storage.daki_projects.write_json', side_effect=FileNotFoundError('temporary storage failure')):
+            response = self.client.put(url, json={'state': self.state('edited'), 'revision': 1})
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn('code', response.json)
         self.assertEqual(self.path.read_bytes(), before)
 
     def test_unknown_canvas_routes_and_invalid_json_inputs(self):

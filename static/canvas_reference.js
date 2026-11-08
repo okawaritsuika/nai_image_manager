@@ -1280,12 +1280,12 @@ function addReferenceGenCharPromptEditor(initialValue = '') {
 
     item.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
-            <div style="font-size:12px; font-weight:900; color:var(--accent-blue);">
+            <div style="font:600 var(--ui-text-body, 12px)/var(--ui-leading-body, 1.5) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif); color:var(--accent-blue);">
                 Character Prompt ${index}
             </div>
             <button type="button"
                     class="secondary"
-                    style="padding:4px 8px; font-size:12px;">
+                    style="padding:4px 8px; font-size:var(--ui-text-body, 12px);">
                 삭제
             </button>
         </div>
@@ -1612,12 +1612,11 @@ function toggleReferenceGenDetailChoice(mode = 'face', anchor = null) {
             border-radius: 6px;
             background: transparent;
             color: var(--text-main, #f5f5f7);
-            font-size: 13px;
-            font-weight: 800;
+            font: 600 var(--ui-text-body, 12px)/var(--ui-leading-control, 1.4) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
             cursor: pointer;
             text-align: left;
         `;
-        button.innerHTML = `<span>${option.label}</span><span style="font-size:11px; color:var(--text-muted, #a7a7b5); font-weight:700;">${option.hint}</span>`;
+        button.innerHTML = `<span>${option.label}</span><span style="font:400 var(--ui-text-meta, 12px)/var(--ui-leading-body, 1.5) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif); color:var(--text-muted, #a7a7b5);">${option.hint}</span>`;
         button.onmouseenter = () => {
             button.style.background = 'rgba(255, 255, 255, 0.10)';
         };

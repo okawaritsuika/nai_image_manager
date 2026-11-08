@@ -19,8 +19,8 @@
     min-height: 0;
     gap: 8px;
     color: var(--text-main);
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-retouch-panel,
@@ -59,15 +59,15 @@
 .canvas-retouch-title {
     margin: 0;
     color: var(--text-main);
-    font-size: 18px;
-    line-height: 1.25;
+    font-size: var(--ui-text-title, 16px);
+    line-height: var(--ui-leading-heading, 1.4);
 }
 
 .canvas-retouch-caption {
     margin: 3px 0 0;
     color: var(--text-muted);
-    font-size: 11px;
-    line-height: 1.35;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
     overflow-wrap: anywhere;
 }
 
@@ -103,8 +103,18 @@
 .canvas-retouch-hint,
 .canvas-retouch-other-note {
     color: var(--text-muted);
-    font-size: 11px;
-    line-height: 1.45;
+}
+
+.canvas-retouch-loading,
+.canvas-retouch-hint,
+.canvas-retouch-other-note {
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
+}
+
+.canvas-retouch-empty {
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-retouch-message {
@@ -134,13 +144,17 @@
 .canvas-retouch-subtitle {
     margin: 0 0 7px;
     color: var(--text-main);
-    font-size: 12px;
-    line-height: 1.35;
+}
+
+.canvas-retouch-section-title {
+    font-size: var(--ui-text-section, 14px);
+    line-height: var(--ui-leading-heading, 1.4);
 }
 
 .canvas-retouch-subtitle {
     margin-bottom: 6px;
-    font-size: 11px;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-retouch-panel button,
@@ -165,7 +179,7 @@
 .canvas-retouch-panel button {
     flex: 0 0 auto;
     padding: 5px 8px;
-    line-height: 1.3;
+    line-height: var(--ui-leading-control, 1.4);
     overflow-wrap: anywhere;
     cursor: pointer;
 }
@@ -203,7 +217,7 @@
     border-color: var(--accent-blue);
     background: var(--accent-blue);
     color: #fff;
-    font-weight: 700;
+    font-weight: 600;
 }
 
 .canvas-retouch-panel .canvas-retouch-danger {
@@ -226,7 +240,7 @@
     flex: 1 1 auto;
     min-width: 0;
     padding: 5px 7px;
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
     text-overflow: ellipsis;
 }
 
@@ -258,8 +272,8 @@
     min-width: 0;
     min-height: 32px;
     padding: 4px 3px;
-    font-size: 11px;
-    line-height: 1.25 !important;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5) !important;
     overflow-wrap: anywhere;
 }
 
@@ -289,15 +303,15 @@
 
 .canvas-retouch-preset-name {
     color: var(--text-main);
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
     font-weight: 600;
-    line-height: 1.35;
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-retouch-preset-meta {
     color: var(--text-muted);
-    font-size: 10px;
-    line-height: 1.3;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-retouch-preset-add {
@@ -334,8 +348,8 @@
 }
 
 .canvas-retouch-selection-hint {
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: var(--ui-text-meta, 12px);
+    line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-retouch-layer-row button {
@@ -369,12 +383,12 @@
 
 .canvas-retouch-layer-name {
     color: var(--text-main);
-    font-size: 12px;
+    font-size: var(--ui-text-body, 12px);
 }
 
 .canvas-retouch-layer-meta {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: var(--ui-text-meta, 12px);
 }
 
 .canvas-retouch-layer-actions {
@@ -405,7 +419,7 @@
 .canvas-retouch-range-heading {
     min-width: 0;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: var(--ui-text-body, 12px);
     overflow-wrap: anywhere;
 }
 
@@ -476,7 +490,7 @@
 
 .canvas-retouch-mask .canvas-retouch-button-row > button {
     padding-inline: 5px;
-    font-size: 11px;
+    font-size: var(--ui-text-body, 12px);
 }
 
 .canvas-retouch-panel button.is-active,
@@ -496,7 +510,7 @@
     min-width: 0;
     padding: 5px 4px;
     overflow: hidden;
-    font-size: 10px;
+    font-size: var(--ui-text-body, 12px);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -507,8 +521,8 @@
 
 .canvas-retouch-details > summary {
     color: var(--text-main);
-    font-size: 12px;
-    font-weight: 700;
+    font-size: var(--ui-text-body, 12px);
+    font-weight: 600;
     cursor: pointer;
     overflow-wrap: anywhere;
 }
@@ -536,7 +550,7 @@
     display: block;
     min-width: 0;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: var(--ui-text-meta, 12px);
     overflow-wrap: anywhere;
 }
 
@@ -567,8 +581,8 @@
     min-width: 0;
     padding: 4px 0;
     color: var(--text-main);
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-control, 1.4);
     overflow-wrap: anywhere;
     cursor: pointer;
 }
@@ -600,8 +614,8 @@
     gap: 6px;
     min-width: 0;
     color: var(--text-main);
-    font-size: 11px;
-    line-height: 1.35;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-control, 1.4);
     overflow-wrap: anywhere;
 }
 
@@ -678,7 +692,28 @@ body.canvas-retouch-editing #canvasSurface .canvas-render-layer {
 }
 
 .canvas-retouch-surface-overlay > .canvas-retouch-brush-overlay {
+    z-index: 1;
     pointer-events: none;
+}
+
+.canvas-retouch-brush-cursor {
+    position: absolute;
+    z-index: 1;
+    pointer-events: none;
+    box-sizing: border-box;
+    border: 1px solid #fff;
+    border-radius: 50%;
+    background-color: transparent;
+    box-shadow: 0 0 0 1px #161a22, inset 0 0 0 1px #161a22;
+    transform: translate(-50%, -50%);
+}
+
+.canvas-retouch-brush-cursor[data-active="true"] {
+    border-color: #9cf1ff;
+}
+
+.canvas-retouch-brush-cursor[data-mode="erase"][data-active="true"] {
+    border-color: #ff9da8;
 }
 
 .canvas-retouch-surface-overlay .canvas-retouch-compare-badge {
@@ -690,7 +725,7 @@ body.canvas-retouch-editing #canvasSurface .canvas-render-layer {
     border-radius: var(--radius-sm);
     background: rgba(17, 20, 25, 0.78);
     color: #fff;
-    font-size: 11px;
+    font-size: var(--ui-text-meta, 12px);
     line-height: 1;
     pointer-events: none;
     user-select: none;
@@ -771,7 +806,7 @@ dialog.canvas-retouch-detail h3 {
     min-width: 0;
     margin: 0;
     color: var(--text-main);
-    font-size: 16px;
+    font-size: var(--ui-text-title, 16px);
     overflow-wrap: anywhere;
 }
 
@@ -803,10 +838,11 @@ dialog.canvas-retouch-detail > button {
 .canvas-retouch-detail-images figcaption {
     margin-bottom: 6px;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: var(--ui-text-meta, 12px);
 }
 
-.canvas-retouch-detail-images img {
+.canvas-retouch-detail-images img,
+.canvas-retouch-detail-images canvas {
     display: block;
     width: auto;
     max-width: none;
@@ -833,4 +869,39 @@ dialog.canvas-retouch-detail > button {
     body.canvas-retouch-editing .canvas-toolbar {
         display: none;
     }
+}
+#canvasRetouchDraftControls .canvas-retouch-draft-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+#canvasRetouchDraftControls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    min-width: 0;
+    width: 100%;
+}
+
+#canvasRetouchDraftControls[hidden] {
+    display: none !important;
+}
+
+#canvasRetouchDraftControls select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 32px;
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
+}
+
+#canvasRetouchDraftControls button.canvas-tool-btn {
+    min-height: 32px;
+    flex-shrink: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }

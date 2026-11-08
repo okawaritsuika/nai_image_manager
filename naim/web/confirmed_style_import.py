@@ -40,7 +40,7 @@ def _recipe(source):
         options['cfg'] = source['scale']
     return {
         'name': source.get('name') or '가져온 확정 그림체',
-        'positive': source.get('artist_prompt') or '',
+        'positive': source['base_prompt'] if source.get('base_prompt') is not None else source.get('artist_prompt') or '',
         'negative': source.get('negative_prompt') or '',
         'model': source.get('model') or 'nai-diffusion-5-full',
         'options': options,

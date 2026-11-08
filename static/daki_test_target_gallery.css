@@ -18,15 +18,15 @@
 .daki-test-target-gallery-body { min-width: 0; min-height: 0; flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; padding: 18px 24px; }
 .daki-test-target-gallery-filters { display: grid; min-width: 0; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; align-items: end; gap: 8px 12px; }
 .daki-test-target-gallery-filters label { min-width: 0; margin: 0; overflow-wrap: anywhere; }
-.daki-test-target-gallery-filters input, .daki-test-target-gallery-filters textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; margin-top: 6px; padding: 8px 10px; border: 1px solid #ffffff30; border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; line-height: 1.5; }
+.daki-test-target-gallery-filters input, .daki-test-target-gallery-filters textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; margin-top: 6px; padding: 8px 10px; border: 1px solid #ffffff30; border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: var(--ui-text-meta,12px); line-height: 1.5; }
 .daki-test-target-gallery-filters textarea { resize: vertical; }
 .daki-test-target-gallery-filters > button { min-height: 38px; flex: 0 0 auto; }
 .daki-test-target-gallery-help { grid-column: 1 / -1; margin: 0; color: var(--thumb); line-height: 1.6; overflow-wrap: anywhere; }
 .daki-test-target-gallery-tools { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #ffffff1a; }
 .daki-test-target-gallery-counts { min-width: 180px; flex: 1 1 220px; margin: 0; color: var(--text); font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 .daki-test-target-gallery-sort { box-sizing: border-box; width: auto !important; height: 40px; min-width: 0; max-width: 100%; flex: 0 1 180px; margin: 0 !important; padding: 8px 10px !important; }
-.daki-test-target-gallery-dialog .daki-test-target-gallery-minimum-label { display: flex; box-sizing: border-box; min-width: 0; height: 40px; flex: 0 0 auto; align-items: center; gap: 10px; margin: 0; padding: 0 10px; border: 1px solid #555; border-radius: 8px; background: var(--bg); color: #c7c9d0; font-size: 13px; line-height: 1.4; white-space: nowrap; }
-.daki-test-target-gallery-minimum { box-sizing: border-box; width: 72px; min-width: 0; height: 100%; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; line-height: 1.5; }
+.daki-test-target-gallery-dialog .daki-test-target-gallery-minimum-label { display: flex; box-sizing: border-box; min-width: 0; height: 40px; flex: 0 0 auto; align-items: center; gap: 10px; margin: 0; padding: 0 10px; border: 1px solid #555; border-radius: 8px; background: var(--bg); color: #c7c9d0; font-size: var(--ui-text-meta,12px); line-height: 1.4; white-space: nowrap; }
+.daki-test-target-gallery-minimum { box-sizing: border-box; width: 72px; min-width: 0; height: 100%; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--ui-text-meta,12px); line-height: 1.5; }
 .daki-test-target-gallery-minimum-label:focus-within { border-color: var(--thumb); }
 .daki-test-target-gallery-minimum:focus-visible { outline: none; }
 .daki-test-target-gallery-recommendation-status { min-width: 0; margin: 10px 0 0; color: var(--thumb); line-height: 1.5; overflow-wrap: anywhere; }
@@ -47,7 +47,7 @@
 .daki-test-target-gallery-missing { padding: 12px; overflow-wrap: anywhere; }
 .daki-test-target-gallery-dialog .daki-test-target-gallery-choice { display: flex; min-width: 0; align-items: flex-start; margin: 0 !important; padding: 10px; color: var(--text) !important; }
 .daki-test-target-gallery-choice span { min-width: 0; flex: 1 1 auto; line-height: 1.5; overflow-wrap: anywhere; }
-.daki-test-target-gallery-recommendations { min-width: 0; padding: 0 10px 10px; color: var(--thumb); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.daki-test-target-gallery-recommendations { min-width: 0; padding: 0 10px 10px; color: var(--thumb); font-size: var(--ui-text-meta,12px); line-height: 1.4; overflow-wrap: anywhere; }
 .daki-test-target-gallery-footer { display: flex; min-width: 0; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin: 0; padding: 14px 24px; border-top: 1px solid #ffffff1a; background: var(--card); }
 .daki-test-target-gallery-footer > button { flex: 0 1 auto; }
 .daki-test-target-gallery button:disabled { cursor: not-allowed; }

@@ -20,7 +20,7 @@
 .daki-project-details-header h2 {
     min-width: 0;
     margin: 0;
-    font-size: 20px;
+    font-size: var(--ui-text-title,16px);
     line-height: 1.4;
 }
 .daki-project-details-dialog .daki-project-details-close {
@@ -59,7 +59,7 @@
     padding: 3px 8px;
     border: 1px solid var(--accent);
     color: var(--accent);
-    font-size: 11px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.4;
     overflow-wrap: anywhere;
 }
@@ -67,7 +67,7 @@
     min-width: 0;
     max-width: 100%;
     overflow-wrap: anywhere;
-    font-size: 15px;
+    font-size: var(--ui-text-meta,12px);
     font-weight: 600;
     line-height: 1.6;
 }
@@ -87,14 +87,14 @@
 .daki-project-details-cell dt {
     margin: 0;
     color: #bec4d1;
-    font-size: 11px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
 }
 .daki-project-details-cell dd {
     min-width: 0;
     margin: 3px 0 0;
     color: var(--text);
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     font-weight: 600;
     line-height: 1.5;
     overflow-wrap: anywhere;
@@ -110,7 +110,7 @@
 .daki-project-details-layers { min-width: 0; }
 .daki-project-details-workspace h3 {
     margin: 0 0 8px;
-    font-size: 15px;
+    font-size: var(--ui-text-section,14px);
     line-height: 1.5;
 }
 .daki-project-details-preview {
@@ -133,7 +133,7 @@
     background-position: 0 0, 0 8px, 8px -8px, -8px 0;
     background-size: 16px 16px;
     color: #bec4d1;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
     text-align: center;
@@ -149,7 +149,7 @@
 .daki-project-details-preview-help {
     margin: 8px 0;
     color: #bec4d1;
-    font-size: 11px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -157,7 +157,7 @@
     min-height: 32px;
     max-width: 100%;
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.4;
     white-space: normal;
     overflow-wrap: anywhere;
@@ -167,7 +167,7 @@
     min-width: 0;
     margin: 0 0 8px;
     color: #bec4d1;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.6;
     overflow-wrap: anywhere;
 }
@@ -208,7 +208,7 @@
     border-radius: 6px;
     background: var(--bg);
     color: #9ca2b0;
-    font-size: 10px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.4;
     overflow-wrap: anywhere;
     text-align: center;
@@ -230,7 +230,7 @@
 .daki-project-details-layer-name {
     min-width: 0;
     max-width: 100%;
-    font-size: 13px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -241,7 +241,7 @@
     flex-wrap: wrap;
     gap: 2px 7px;
     color: #bec4d1;
-    font-size: 11px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -258,7 +258,7 @@
     gap: 4px;
     margin: 0;
     color: #bec4d1;
-    font-size: 11px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.4;
     white-space: nowrap;
     cursor: pointer;
@@ -294,7 +294,7 @@
     max-width: 100%;
     min-height: 40px;
     padding: 8px 14px;
-    font-size: 13px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.4;
     white-space: normal;
     overflow-wrap: anywhere;

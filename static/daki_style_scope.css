@@ -12,7 +12,7 @@
     gap: 4px;
     min-width: 0;
     max-width: 100%;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
 }
 .daki-test-dialog .daki-test-targets .daki-style-scope > label {
@@ -22,7 +22,7 @@
     flex: 0 1 180px;
     min-width: 0;
     max-width: 100%;
-    font-size: 12px;
+    font-size: var(--ui-text-meta,12px);
     line-height: 1.4;
 }
 .daki-style-scope select {
@@ -70,7 +70,7 @@
     box-sizing: border-box;
     margin: 0;
     padding: 0 10px;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
 }
 #dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-style-scope {
@@ -92,7 +92,7 @@
     max-width: 100%;
     margin: 0;
     color: #a0a0b0;
-    font-size: 11px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
     white-space: nowrap;
 }
@@ -103,7 +103,7 @@
     box-sizing: border-box;
     margin: 0;
     padding: 0 8px;
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     line-height: 1.4;
 }
 #dakiLibrary .daki-shared-controls .daki-shared-toolbar .daki-style-scope select[name="daki_scope_source"] {
@@ -131,7 +131,7 @@
     border-radius: 7px;
     background: var(--bg);
     color: var(--text);
-    font-size: 12px;
+    font-size: var(--ui-text-body,12px);
     font-weight: 600;
     line-height: 1.4;
     white-space: nowrap;
@@ -142,7 +142,7 @@
     border-color: var(--accent);
     background: var(--accent);
     color: var(--bg);
-    font-weight: 700;
+    font-weight: 600;
 }
 #dakiLibrary .daki-shared-controls .daki-shared-toolbar > .daki-shared-more-button {
     display: none;

@@ -39,7 +39,7 @@
         return null;
     }
 
-    function viewportRegion(documentWidth, documentHeight, imageRect, workspaceRect, dpr = 1) {
+    function viewportRegion(documentWidth, documentHeight, imageRect, workspaceRect, dpr = 1, baseScale) {
         if (!Number.isInteger(documentWidth) || !Number.isInteger(documentHeight)
             || documentWidth <= 0 || documentHeight <= 0 || !finite(dpr) || dpr <= 0) return null;
         const image = bounds(imageRect), workspace = bounds(workspaceRect);
@@ -66,9 +66,11 @@
         const width = farX - x, height = farY - y;
         if (width <= 0 || height <= 0) return null;
 
-        const desiredScale = Math.min(1, Math.min(2, dpr) * image.width / documentWidth);
-        const baseScale = Math.min(1, BASE_PREVIEW_EDGE / Math.max(documentWidth, documentHeight));
-        if (!finite(desiredScale) || desiredScale <= baseScale * 1.05) return null;
+        const desiredScale = Math.min(1, dpr * image.width / documentWidth);
+        const previewScale = finite(baseScale) && baseScale > 0 && baseScale <= 1
+            ? baseScale
+            : Math.min(1, BASE_PREVIEW_EDGE / Math.max(documentWidth, documentHeight));
+        if (!finite(desiredScale) || desiredScale <= previewScale * 1.05) return null;
 
         const cappedScale = Math.min(desiredScale, MAX_EDGE / width, MAX_EDGE / height,
             Math.sqrt(MAX_PIXELS / (width * height)));
@@ -112,9 +114,8 @@
         const host = options.host;
         const workspace = options.workspace;
         const underlayImage = host.children && host.children[0] ? host.children[0] : null;
-        const originalUnderlayClipPath = underlayImage?.style
-            ? underlayImage.style.clipPath
-            : undefined;
+        const originalUnderlayClipPath = underlayImage?.style?.clipPath || '';
+        const originalUnderlayVisibility = underlayImage?.style?.visibility;
         const document = host.ownerDocument || (root && root.document);
         if (!document || typeof document.createElement !== 'function') {
             throw new TypeError('CanvasRetouchViewport requires a document.');
@@ -157,7 +158,12 @@
         let activeRequest = null;
         let editedBitmap = null;
         let originalBitmap = null;
-        let renderedKey = null;
+        let presented = null;
+        let detailActive = false;
+        let nativeUnderlayState = 'idle';
+        let nativeUnderlayImage = null;
+        let nativeUnderlayMounted = false;
+        let nativeSampleCanvas = null;
         let compare = false;
         let split = 50;
         let resizeObserver = null;
@@ -179,7 +185,7 @@
             closeBitmap(originalBitmap);
             editedBitmap = null;
             originalBitmap = null;
-            renderedKey = null;
+            presented = null;
         }
 
         function cancelRequest() {
@@ -188,36 +194,130 @@
             state?.controller.abort();
         }
 
+        function cancelPending() {
+            clearScheduledTimer();
+            cancelRequest();
+        }
+
         function hideTile() {
             canvas.style.display = 'none';
             canvas.width = 1;
             canvas.height = 1;
-            restoreUnderlayClipPath();
+            restoreUnderlay();
         }
 
-        function restoreUnderlayClipPath() {
-            if (originalUnderlayClipPath !== undefined && underlayImage?.style) {
-                underlayImage.style.clipPath = originalUnderlayClipPath;
-            }
+        function restoreUnderlay() {
+            if (underlayImage?.style) underlayImage.style.clipPath = originalUnderlayClipPath;
+            if (nativeUnderlayMounted && nativeUnderlayImage?.style) nativeUnderlayImage.style.clipPath = '';
         }
 
-        function clipUnderlayToTile(region) {
-            if (!underlayImage?.style) return;
+        function clipUnderlaysToTile(region) {
             const left = percent(region.x, documentWidth);
             const top = percent(region.y, documentHeight);
             const right = percent(region.x + region.width, documentWidth);
             const bottom = percent(region.y + region.height, documentHeight);
-            underlayImage.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${left} ${top}, ${left} ${bottom}, ${right} ${bottom}, ${right} ${top}, ${left} ${top})`;
+            // Keep the rest visible and prevent double compositing beneath transparent tile pixels.
+            const clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${left} ${top}, ${left} ${bottom}, ${right} ${bottom}, ${right} ${top}, ${left} ${top})`;
+            if (underlayImage?.style) underlayImage.style.clipPath = clipPath;
+            if (nativeUnderlayMounted && nativeUnderlayImage?.style) {
+                nativeUnderlayImage.style.clipPath = clipPath;
+            }
+        }
+
+        function mountNativeUnderlay() {
+            if (nativeUnderlayMounted || !nativeUnderlayImage) return nativeUnderlayMounted;
+            const image = nativeUnderlayImage;
+            const style = image.style;
+            if (!style) return false;
+            try {
+                image.setAttribute?.('aria-hidden', 'true');
+                image.alt = '';
+                image.draggable = false;
+                Object.assign(style, {
+                    position: 'absolute',
+                    inset: '0',
+                    width: '100%',
+                    height: '100%',
+                    pointerEvents: 'none',
+                    display: 'none'
+                });
+                if (typeof host.insertBefore === 'function') host.insertBefore(image, canvas);
+                else host.appendChild(image);
+                nativeUnderlayMounted = true;
+                return true;
+            } catch (_) {
+                nativeUnderlayState = 'failed';
+                return false;
+            }
+        }
+
+        function showNativeUnderlay() {
+            if (destroyed || !detailActive || nativeUnderlayState !== 'ready'
+                || !mountNativeUnderlay()) return;
+            if (canvas.style.display === 'block' && presented) {
+                clipUnderlaysToTile(presented.geometry.region);
+            } else {
+                restoreUnderlay();
+            }
+            if (nativeUnderlayImage.style.display !== 'block') nativeUnderlayImage.style.display = 'block';
+            if (underlayImage?.style && underlayImage.style.visibility !== 'hidden') {
+                underlayImage.style.visibility = 'hidden';
+            }
+        }
+
+        function hideNativeUnderlay() {
+            if (nativeUnderlayMounted && nativeUnderlayImage?.style) {
+                if (nativeUnderlayImage.style.display !== 'none') nativeUnderlayImage.style.display = 'none';
+                nativeUnderlayImage.style.clipPath = '';
+            }
+            if (underlayImage?.style && underlayImage.style.visibility !== originalUnderlayVisibility) {
+                underlayImage.style.visibility = originalUnderlayVisibility;
+            }
+        }
+
+        function ensureNativeUnderlay() {
+            if (nativeUnderlayState !== 'idle' || typeof options.loadNativeUnderlay !== 'function') return;
+            nativeUnderlayState = 'loading';
+            let result;
+            try { result = options.loadNativeUnderlay(); } catch (_) {
+                nativeUnderlayState = 'failed';
+                return;
+            }
+            Promise.resolve(result).then(image => {
+                if (destroyed) return;
+                if (!image || image.naturalWidth !== documentWidth
+                    || image.naturalHeight !== documentHeight) {
+                    nativeUnderlayState = 'failed';
+                    return;
+                }
+                nativeUnderlayImage = image;
+                nativeUnderlayState = 'ready';
+                if (detailActive) showNativeUnderlay();
+            }).catch(() => {
+                if (!destroyed) nativeUnderlayState = 'failed';
+            });
+        }
+
+        function setDetailActive(value) {
+            const nextActive = Boolean(value);
+            if (detailActive === nextActive) return;
+            detailActive = nextActive;
+            if (nextActive) {
+                ensureNativeUnderlay();
+                showNativeUnderlay();
+            } else {
+                hideNativeUnderlay();
+            }
         }
 
         function invalidate() {
             if (destroyed) return;
             revision += 1;
-            clearScheduledTimer();
+            cancelPending();
             desired = null;
-            cancelRequest();
             releaseBitmaps();
             hideTile();
+            options.onDetailStatus?.('idle');
         }
 
         function clippedWorkspaceRect() {
@@ -246,8 +346,12 @@
             const workspaceRect = clippedWorkspaceRect();
             const view = root && root.window && root.window !== root ? root.window : root;
             const dpr = view && Number(view.devicePixelRatio);
+            let baseScale;
+            if (typeof options.getBaseScale === 'function') {
+                try { baseScale = options.getBaseScale(); } catch (_) { baseScale = undefined; }
+            }
             return viewportRegion(documentWidth, documentHeight, imageRect, workspaceRect,
-                finite(dpr) && dpr > 0 ? dpr : 1);
+                finite(dpr) && dpr > 0 ? dpr : 1, baseScale);
         }
 
         function geometryKey(value) {
@@ -265,19 +369,21 @@
                 && (!state || activeRequest === state) && (!state || !state.controller.signal.aborted);
         }
 
-        function currentAndRequestable(target, state) {
-            return current(target, state) && canRequest();
+        function presentedMatches(target) {
+            return Boolean(presented && presented.key === target.key);
         }
 
-        function schedule() {
-            if (destroyed) return;
-            const nextGeometry = geometry();
-            if (!nextGeometry) {
-                if (desired || activeRequest || editedBitmap || originalBitmap || renderedKey) invalidate();
-                return;
-            }
+        function hasOriginalFor(target) {
+            return presentedMatches(target) && Boolean(originalBitmap);
+        }
+
+        function targetFor(nextGeometry) {
             const nextGeometryKey = geometryKey(nextGeometry);
-            if (desired && desired.geometryKey !== nextGeometryKey) invalidate();
+            if (desired && desired.geometryKey !== nextGeometryKey) {
+                revision += 1;
+                cancelPending();
+                desired = null;
+            }
             if (!desired) {
                 desired = {
                     geometry: nextGeometry,
@@ -285,23 +391,51 @@
                     revision,
                     key: `${revision}:${nextGeometryKey}`
                 };
-            } else {
-                desired.geometry = nextGeometry;
             }
-            if (activeRequest && activeRequest.key === desired.key) return;
-            if (renderedKey === desired.key && (!compare || originalBitmap)) {
+            return desired;
+        }
+
+        function schedule(immediate = false) {
+            if (destroyed) return;
+            const nextGeometry = geometry();
+            if (!nextGeometry) {
+                setDetailActive(false);
+                if (desired) {
+                    if (options.onLeaveDetail?.()) cancelPending();
+                    else invalidate();
+                }
+                return;
+            }
+            setDetailActive(true);
+            const target = targetFor(nextGeometry);
+            if (activeRequest && activeRequest.key === target.key) {
+                if (compare && !hasOriginalFor(target)) activeRequest.wantOriginal = true;
+                return;
+            }
+            if (presentedMatches(target) && (!compare || originalBitmap)) {
                 drawTile();
                 return;
             }
             clearScheduledTimer();
-            const target = desired;
             timer = timeout(() => {
                 timer = null;
                 void loadTile(target);
-            }, DEBOUNCE_MS);
+            }, immediate === true ? 0 : DEBOUNCE_MS);
         }
 
-        function waitForRetry(signal, canContinue) {
+        function renderEdit(payload, signal) {
+            if (destroyed || signal?.aborted) return false;
+            const nextGeometry = geometry();
+            if (!nextGeometry) return false;
+            setDetailActive(true);
+            // Editing is already serialized by the controller. Keep the last
+            // tile visible and replace it only after the next crop has decoded.
+            const target = targetFor(nextGeometry);
+            cancelPending();
+            return loadTile(target, {payload, signal});
+        }
+
+        function waitForRetry(signal, canContinue, delay) {
             if (signal.aborted || !canContinue()) return Promise.reject(abortError());
             return new Promise((resolve, reject) => {
                 let waitTimer = null;
@@ -316,7 +450,7 @@
                     cleanup();
                     if (signal.aborted || !canContinue()) reject(abortError());
                     else resolve();
-                }, RETRY_DELAY_MS);
+                }, delay);
             });
         }
 
@@ -327,9 +461,13 @@
                 try {
                     return await options.request(body, signal);
                 } catch (error) {
-                    if (!error || error.status !== 409 || retries >= MAX_CONFLICT_RETRIES) throw error;
+                    if (error?.status !== 409) throw error;
+                    const delay = options.getConflictRetryDelay
+                        ? options.getConflictRetryDelay(retries)
+                        : retries < MAX_CONFLICT_RETRIES ? RETRY_DELAY_MS : null;
+                    if (!finite(delay)) throw error;
                     retries += 1;
-                    await waitForRetry(signal, canContinue);
+                    await waitForRetry(signal, canContinue, delay);
                 }
             }
         }
@@ -348,72 +486,98 @@
                 region: {...target.geometry.region},
                 scale: target.geometry.scale
             };
+            if (payload.native) body.native = true;
             if (original) body.original = true;
             return body;
         }
 
-        async function loadTile(target) {
-            if (!current(target, null) || !canRequest()) return;
+        async function loadTile(target, edit = null) {
+            if (!current(target, null) || (!edit && !canRequest())) return false;
             const controller = new AbortControllerCtor();
-            const state = {key: target.key, controller};
+            const state = {
+                key: target.key,
+                controller,
+                wantOriginal: compare && !hasOriginalFor(target)
+            };
             activeRequest = state;
-            const canContinue = () => currentAndRequestable(target, state);
+            const onAbort = () => controller.abort();
+            edit?.signal?.addEventListener('abort', onAbort, {once: true});
+            const canContinue = () => current(target, state) && (edit !== null || canRequest());
+            let nextEdited = null, nextOriginal = null;
             try {
-                const payload = clonePayload(options.getPayload());
-                if (!editedBitmap) {
-                    const bitmap = await requestWithRetry(bodyFor(payload, target), controller.signal, canContinue);
+                if (!edit) options.onDetailStatus?.('loading');
+                const payload = edit ? edit.payload : clonePayload(options.getPayload());
+                const load = async original => {
+                    const body = bodyFor(payload, target, original);
+                    const bitmap = edit ? await options.request(body, controller.signal)
+                        : await requestWithRetry(body, controller.signal, canContinue);
                     if (!validBitmap(bitmap)) {
                         closeBitmap(bitmap);
                         throw new TypeError('Viewport request did not return a valid bitmap.');
                     }
-                    if (!canContinue()) {
-                        closeBitmap(bitmap);
-                        return;
-                    }
-                    editedBitmap = bitmap;
+                    return bitmap;
+                };
+                const targetWasPresented = presentedMatches(target);
+                if (edit || !targetWasPresented || !editedBitmap) nextEdited = await load(false);
+                if (!canContinue()) return false;
+                if ((compare || state.wantOriginal)
+                    && (!targetWasPresented || !originalBitmap)) {
+                    nextOriginal = await load(true);
                 }
-                if (compare && !originalBitmap) {
-                    const bitmap = await requestWithRetry(bodyFor(payload, target, true), controller.signal, canContinue);
-                    if (!validBitmap(bitmap)) {
-                        closeBitmap(bitmap);
-                        throw new TypeError('Viewport request did not return a valid original bitmap.');
-                    }
-                    if (!canContinue()) {
-                        closeBitmap(bitmap);
-                        return;
-                    }
-                    originalBitmap = bitmap;
-                }
-                if (!current(target, state)) return;
-                if (!compare || originalBitmap) {
-                    renderedKey = target.key;
-                    drawTile();
+                if (!canContinue()) return false;
+
+                if (!targetWasPresented) {
+                    if (compare && !nextOriginal) return false;
+                    closeBitmap(editedBitmap);
+                    closeBitmap(originalBitmap);
+                    editedBitmap = nextEdited;
+                    originalBitmap = nextOriginal;
+                    nextEdited = null;
+                    nextOriginal = null;
+                    presented = target;
                 } else {
-                    hideTile();
-                }
-            } catch (error) {
-                if (!destroyed && error?.name !== 'AbortError' && current(target, state)) {
-                    if (editedBitmap && !compare) {
-                        renderedKey = target.key;
-                        drawTile();
-                    } else {
-                        hideTile();
+                    if (nextEdited) {
+                        closeBitmap(editedBitmap);
+                        editedBitmap = nextEdited;
+                        nextEdited = null;
+                    }
+                    if (nextOriginal) {
+                        closeBitmap(originalBitmap);
+                        originalBitmap = nextOriginal;
+                        nextOriginal = null;
                     }
                 }
+                drawTile();
+                if (!edit) options.onDetailStatus?.('ready');
+                return true;
+            } catch (error) {
+                if (current(target, state)) {
+                    if (edit) throw error;
+                    if (error?.name !== 'AbortError') {
+                        drawTile();
+                        options.onDetailStatus?.('error');
+                    }
+                }
+                return false;
             } finally {
+                edit?.signal?.removeEventListener('abort', onAbort);
+                closeBitmap(nextEdited);
+                closeBitmap(nextOriginal);
                 if (activeRequest === state) activeRequest = null;
             }
         }
 
         function drawTile() {
-            if (destroyed || !desired || !editedBitmap || (compare && !originalBitmap)) {
+            if (destroyed || !presented || !editedBitmap || (compare && !originalBitmap)) {
                 if (!destroyed) hideTile();
                 return;
             }
-            const {region, scale} = desired.geometry;
+            const {region} = presented.geometry;
             const width = editedBitmap.width, height = editedBitmap.height;
-            canvas.width = width;
-            canvas.height = height;
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
             canvas.style.left = percent(region.x, documentWidth);
             canvas.style.top = percent(region.y, documentHeight);
             canvas.style.width = percent(region.width, documentWidth);
@@ -431,18 +595,64 @@
                 const compareDocumentX = documentWidth * split / 100;
                 const splitX = (compareDocumentX - region.x) / region.width * width;
                 if (splitX >= width) {
+                    context.clearRect(0, 0, width, height);
                     context.drawImage(originalBitmap, 0, 0, width, height);
                 } else if (splitX > 0) {
                     context.save();
                     context.beginPath();
                     context.rect(0, 0, splitX, height);
                     context.clip();
+                    context.clearRect(0, 0, width, height);
                     context.drawImage(originalBitmap, 0, 0, width, height);
                     context.restore();
                 }
             }
-            clipUnderlayToTile(region);
+            clipUnderlaysToTile(region);
             canvas.style.display = 'block';
+        }
+
+        function pointVisibleInWorkspace(x, y) {
+            if (!finite(x) || !finite(y) || x < 0 || y < 0 || x >= documentWidth || y >= documentHeight) return false;
+            if (typeof host.getBoundingClientRect !== 'function') return false;
+            const image = bounds(host.getBoundingClientRect());
+            const workspaceRect = clippedWorkspaceRect();
+            if (!image || !workspaceRect) return false;
+            const screenX = image.left + x * image.width / documentWidth;
+            const screenY = image.top + y * image.height / documentHeight;
+            return screenX >= workspaceRect.left && screenX < workspaceRect.left + workspaceRect.width
+                && screenY >= workspaceRect.top && screenY < workspaceRect.top + workspaceRect.height;
+        }
+
+        function sampleNativeAt(x, y) {
+            if (!detailActive || !nativeUnderlayMounted || !nativeUnderlayImage
+                || nativeUnderlayImage.style?.display !== 'block' || !pointVisibleInWorkspace(x, y)) return null;
+            if (!nativeSampleCanvas) {
+                nativeSampleCanvas = document.createElement('canvas');
+                nativeSampleCanvas.width = 1;
+                nativeSampleCanvas.height = 1;
+            }
+            const context = nativeSampleCanvas.getContext('2d');
+            if (!context) return null;
+            context.clearRect(0, 0, 1, 1);
+            context.drawImage(nativeUnderlayImage, Math.floor(x), Math.floor(y), 1, 1, 0, 0, 1, 1);
+            return context.getImageData(0, 0, 1, 1)?.data ?? null;
+        }
+
+        function sampleAt(point) {
+            if (!Array.isArray(point) || point.length < 2) return null;
+            const [x, y] = point;
+            if (canvas.style.display === 'block' && presented) {
+                const {region} = presented.geometry;
+                const localX = x - region.x, localY = y - region.y;
+                if (localX >= 0 && localY >= 0 && localX < region.width && localY < region.height) {
+                    const data = canvas.getContext('2d')?.getImageData(
+                        Math.floor(localX * canvas.width / region.width),
+                        Math.floor(localY * canvas.height / region.height), 1, 1,
+                    )?.data;
+                    if (data) return data;
+                }
+            }
+            return sampleNativeAt(x, y);
         }
 
         function setComparison(value, splitValue) {
@@ -454,15 +664,16 @@
             compare = nextCompare;
             split = normalizedSplit;
             drawTile();
-            if (desired && compare && !originalBitmap) schedule();
+            if (desired && compare && !hasOriginalFor(desired)) schedule();
         }
 
         function viewportEvent(event) {
             if (event && event.type === 'pointermove' && !(Number(event.buttons) > 0)) return;
-            schedule();
+            schedule(event?.type === 'pointerup' || event?.type === 'scrollend');
         }
 
         listen(workspace, 'scroll', viewportEvent, {passive: true});
+        listen(workspace, 'scrollend', viewportEvent, {passive: true});
         listen(workspace, 'wheel', viewportEvent, {passive: true});
         listen(workspace, 'pointermove', viewportEvent, {passive: true});
         listen(workspace, 'pointerup', viewportEvent, {passive: true});
@@ -481,17 +692,22 @@
 
         return {
             invalidate,
+            cancelPending,
             schedule,
+            renderEdit,
+            sampleAt,
             setComparison,
             destroy() {
                 if (destroyed) return;
                 destroyed = true;
+                setDetailActive(false);
                 revision += 1;
-                clearScheduledTimer();
+                cancelPending();
                 desired = null;
-                cancelRequest();
                 releaseBitmaps();
-                restoreUnderlayClipPath();
+                restoreUnderlay();
+                nativeUnderlayImage?.remove?.();
+                nativeUnderlayMounted = false;
                 resizeObserver?.disconnect?.();
                 resizeObserver = null;
                 for (const [target, name, callback, listenerOptions] of listeners.splice(0)) {
@@ -502,5 +718,5 @@
         };
     }
 
-    return {create, viewportRegion};
+    return {create, viewportRegion, BASE_PREVIEW_EDGE};
 });

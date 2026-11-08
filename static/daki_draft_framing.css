@@ -8,14 +8,14 @@
 .daki-draft-framing-mode:has(input:checked) { border-color: var(--accent); }
 .daki-draft-framing-mode input[type=radio] { flex: 0 0 auto; width: auto; height: auto; margin: 4px 0 0; accent-color: var(--accent); }
 .daki-draft-framing-mode strong, .daki-draft-framing-mode small { display: block; }
-.daki-draft-framing-mode strong { font-size: 13px; }
-.daki-draft-framing-mode small { color: #aaa; font-size: 12px; margin-top: 3px; }
+.daki-draft-framing-mode strong { font-size: var(--ui-text-body,12px); }
+.daki-draft-framing-mode small { color: #aaa; font-size: var(--ui-text-meta,12px); margin-top: 3px; }
 .daki-draft-framing-dimensions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.daki-draft-framing-dimensions label { font-size: 12px; color: #bbb; }
-.daki-draft-framing-dimensions input { box-sizing: border-box; width: 100%; min-width: 0; margin-top: 7px; padding: 10px 12px; border: 1px solid #555; border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 14px; }
+.daki-draft-framing-dimensions label { font-size: var(--ui-text-body,12px); color: #bbb; }
+.daki-draft-framing-dimensions input { box-sizing: border-box; width: 100%; min-width: 0; margin-top: 7px; padding: 10px 12px; border: 1px solid #555; border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: var(--ui-text-body,12px); }
 .daki-draft-framing-presets { display: flex; gap: 8px; flex-wrap: wrap; }
-.daki-draft-framing-presets button { padding: 6px 10px; font-size: 12px; }
-.daki-dialog .daki-draft-framing-size { color: var(--text); font-size: 14px; font-weight: 700; }
+.daki-draft-framing-presets button { padding: 6px 10px; font-size: var(--ui-text-body,12px); }
+.daki-dialog .daki-draft-framing-size { color: var(--text); font-size: var(--ui-text-body,12px); font-weight: 400; }
 .daki-dialog .daki-draft-framing-summary { white-space: pre-line; color: #c7c9d0; line-height: 1.9; }
 .daki-draft-framing-preview-column { min-width: 0; text-align: center; }
 .daki-draft-framing-preview { display: flex; min-height: 160px; align-items: center; justify-content: center; padding: 14px; border: 1px solid #ffffff26; border-radius: 10px; background: var(--bg); }
