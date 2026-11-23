@@ -38,6 +38,7 @@ PROTECTED_FILES = {
     "style_workspace.local.json",
     "quality_presets.json",
     "tag_dictionary_user_overrides.json",
+    "prompt-tags.csv.local",
     "canvas_saved_setups.json",
     "daki_projects.json",
     "tag_categories_ko.json",

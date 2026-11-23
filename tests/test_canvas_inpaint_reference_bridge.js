@@ -107,6 +107,7 @@ function createHarness({referenceRequest, fetchImpl} = {}) {
     context = {
         canvasLayers: [selection],
         clipInpaintLoadingClipId: null,
+        isSelectionRequestSizeAllowed: () => true,
         isClipInpaintMergedSourceMode: false,
         CanvasSelectionRotation: require('../static/canvas_selection_rotation.js'),
         layerIdSeq: 100,
@@ -247,6 +248,46 @@ test('clip inpainting without a reference uses the original warning size and omi
     assert.equal(Object.hasOwn(h.requests[0].body, 'reference'), false);
 });
 
+test('boundary request keeps the submitted world crop through the warning and places the result at its origin', async () => {
+    const h = createHarness();
+    const state = {anchor: {...h.clip, id: 7}, rect: {x: 0, y: 192, width: 320, height: 256}};
+    h.clip.rotation = 45;
+    h.context.checkedSelectionId = h.selection.id;
+    h.context.isClipInpaintPreviewMode = true;
+    const completed = [];
+    h.context.CanvasClipBoundary = {get: () => state, snapshotMask: () => ({toDataURL: () => 'crop-mask'}),
+        finishPass(_clip, _state, rect) { completed.push({...rect}); }};
+    h.context.createClipBoundarySource = (_selection, _base, anchor, merged) => {
+        assert.equal(anchor, state.anchor);
+        assert.equal(merged, false);
+        return async rect => ({toDataURL: () => 'crop:' + JSON.stringify(rect)});
+    };
+    h.context.showAnlasWarningModal = async () => { state.rect.x = 64; return true; };
+    await h.context.requestClipInpainting(2);
+    assert.deepEqual(h.referenceCalls, [[320, 256]]);
+    assert.equal(h.requests[0].body.mask, 'crop-mask');
+    assert.equal(h.requests[0].body.maskedPatch, true);
+    assert.deepEqual(JSON.parse(h.requests[0].body.image.slice(5)), {x: 0, y: 192, width: 320, height: 256});
+    const result = h.selection.children[0];
+    assert.deepEqual([result.x, result.y, result.imageWidth, result.layerHeight, result.rotation],
+        [0, 192, 320, 256, 0]);
+    assert.deepEqual(completed, [{x: 0, y: 192, width: 320, height: 256}]);
+    assert.equal(result.boundaryBaseClipId, h.clip.id);
+    assert.equal(result.boundaryAnchorId, state.anchor.id);
+    assert.equal(h.context.isClipInpaintPreviewMode, false);
+    assert.deepEqual(h.alerts, []);
+});
+
+test('an empty boundary mask cannot submit the original clip mask', async () => {
+    const h = createHarness();
+    h.context.CanvasClipBoundary = {get: () => ({rect: {width: 64, height: 64}}), snapshotMask: () => null};
+    h.context.createClipBoundarySource = () => assert.fail('empty crop should not render');
+    await h.context.requestClipInpainting(2);
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.warnings.length, 0);
+    assert.match(h.alerts[0], /마스크/);
+});
+
 test('invalid reference settings stop before the warning and request', async () => {
     const h = createHarness({referenceRequest() {
         throw new Error('invalid synthetic reference');
@@ -350,6 +391,7 @@ test('snapshot restore passes both new reference state and a missing legacy fiel
     const restoreCalls = [];
     const context = {
         structuredClone,
+        clearClipMergedSourcePreviewCache() {},
         CanvasInpaintReference: {restore(value) { restoreCalls.push(value); }},
         clipPromptGroups: [],
         normalizeSharedPromptGroups() { return []; },

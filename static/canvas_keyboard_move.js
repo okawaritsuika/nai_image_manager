@@ -150,6 +150,7 @@
 
     function movementIsBlocked() {
         return Boolean(
+            root.CanvasProject?.blocksLocalWrites?.() ||
             (typeof hasActiveCanvasGeometryDrag === 'function' && hasActiveCanvasGeometryDrag()) ||
             (typeof activePinnedReferenceMoveDrag !== 'undefined' && activePinnedReferenceMoveDrag) ||
             (typeof activePinnedReferenceResizeDrag !== 'undefined' && activePinnedReferenceResizeDrag) ||

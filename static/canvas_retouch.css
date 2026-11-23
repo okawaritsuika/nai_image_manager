@@ -3,6 +3,8 @@
     flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
+    padding: 14px;
+    overflow: hidden;
 }
 
 #canvasRetouchPanel[hidden] {
@@ -21,6 +23,10 @@
     color: var(--text-main);
     font-size: var(--ui-text-body, 12px);
     line-height: var(--ui-leading-body, 1.5);
+}
+
+.canvas-retouch-layer-content {
+    height: auto;
 }
 
 .canvas-retouch-panel,
@@ -652,11 +658,27 @@
     padding: 2px 1px 4px;
 }
 
-body.canvas-retouch-editing .canvas-layer-panel {
-    overflow: hidden;
+.canvas-base-layer-list {
+    display: contents;
 }
 
-body.canvas-retouch-editing .canvas-layer-panel > :not(#canvasRetouchPanel),
+body.canvas-retouch-editing .canvas-base-layer-list {
+    display: block;
+    flex: 0 0 auto;
+    max-height: min(32%, 260px);
+    overflow: auto;
+}
+
+body.canvas-retouch-editing #layerList {
+    overflow: visible;
+}
+
+body.canvas-retouch-editing .layer-panel-header,
+body.canvas-retouch-editing #canvasRetouchLayers {
+    flex: 0 0 auto;
+}
+
+body.canvas-retouch-editing .canvas-toolbar,
 body.canvas-retouch-editing .canvas-workspace .selection-area-layer,
 body.canvas-retouch-editing .canvas-workspace .multi-layer-transform-box,
 body.canvas-retouch-editing .canvas-workspace .canvas-resize-handle,
@@ -862,12 +884,45 @@ dialog.canvas-retouch-detail > button {
 }
 
 @media (max-width: 1000px) {
-    body.canvas-retouch-editing .canvas-page-layout {
-        grid-template-columns: minmax(0, 1fr) 300px;
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) .canvas-page-layout {
+        grid-template-columns: 220px minmax(0, 1fr) 260px;
+        gap: 12px;
     }
 
-    body.canvas-retouch-editing .canvas-toolbar {
-        display: none;
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) #layerList .layer-item {
+        display: flex;
+        flex-wrap: wrap;
+        padding-left: min(calc(8px + var(--layer-depth) * 16px), 32px);
+    }
+
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) #layerList .layer-info {
+        order: -1;
+        flex: 0 0 100%;
+    }
+
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) #layerList .layer-name {
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+}
+
+@media (max-width: 740px) {
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) .canvas-page-layout {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-areas: "image image" "controls layers";
+    }
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) .canvas-workspace-shell { grid-area: image; }
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) #canvasRetouchPanel { grid-area: controls; }
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) .canvas-layer-panel { grid-area: layers; min-width: 0; }
+}
+
+@media (max-width: 480px) {
+    body.canvas-retouch-editing:not(.canvas-workspace-pane) .canvas-page-layout {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: repeat(3, minmax(230px, 1fr));
+        grid-template-areas: "image" "controls" "layers";
+        overflow-y: auto;
     }
 }
 #canvasRetouchDraftControls .canvas-retouch-draft-label {

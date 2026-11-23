@@ -4,6 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const {test} = require('node:test');
 const {createProjectCanvasAutosave} = require('../static/canvas_project_autosave');
+const {createCanvasAutosave, writeCanvasAutosaveSnapshot} = require('../static/canvas_autosave');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'canvas_project.js'), 'utf8');
 const PROJECT_ID = 'a'.repeat(32);
@@ -118,7 +119,7 @@ function link({projectId = PROJECT_ID, projectName = 'Synthetic Project', canvas
 }
 
 function harness({search = '', state = canvasState('initial state', 100),
-    width = state.width, height = state.height} = {}) {
+    width = state.width, height = state.height, BroadcastChannel} = {}) {
     const requests = [];
     const responses = [];
     const applied = [];
@@ -148,10 +149,13 @@ function harness({search = '', state = canvasState('initial state', 100),
         },
         querySelector(selector) { return selector === '.main-header' ? header : null; }
     };
+    document.querySelectorAll = selector => selector.includes('.canvas-header-menu')
+        ? [document.getElementById('syntheticToolsMenu')] : [];
     document.body = element(document);
     document.activeElement = element(document);
     context = {
         document,
+        BroadcastChannel,
         URLSearchParams,
         location: {search, pathname: '/canvas', hash: ''},
         history: {replaceState(_state, _title, url) {
@@ -174,6 +178,7 @@ function harness({search = '', state = canvasState('initial state', 100),
             context.currentCanvasHeight = next.height;
         },
         getCanvasAutosave: () => ({
+            flush() { return true; },
             schedule(immediate) {
                 snapshots.push({local: true, immediate});
                 const projectLink = context.CanvasProject?.localLink();
@@ -223,6 +228,38 @@ function projectUrl() {
     return `?project=${PROJECT_ID}&canvas=${CANVAS_ID}`;
 }
 
+test('an occupied edit lock opens a read-only server preview without applying or saving the local draft', async () => {
+    const h = harness({search: projectUrl()});
+    const decisions = [];
+    h.context.navigator = {locks: {request: async (key, options, callback) => {
+        decisions.push({key, ifAvailable: options.ifAvailable});
+        return callback(null);
+    }}};
+    let preview;
+    h.context.CanvasProjectPreview = {open(options) {
+        preview = options;
+        return new Promise(() => {});
+    }};
+    h.context.CanvasProject.restoreLocalLink(link({unsaved: true}));
+
+    assert.equal(await h.context.CanvasProject.initialize(), false);
+    assert.equal(h.context.CanvasProject.isReadOnlyPreview(), true);
+    assert.equal(h.workspace.inert, true);
+    assert.equal(h.header.inert, true);
+    assert.match(preview.title, /이미 편집 중/);
+    assert.deepEqual(decisions, [{key: `naim-project-canvas:${PROJECT_ID}:${CANVAS_ID}`, ifAvailable: true}]);
+    assert.deepEqual(h.requests, []);
+    assert.deepEqual(h.applied, []);
+    assert.deepEqual(h.snapshots, []);
+    h.enqueue(initializeResponse({revision: 12}));
+    const [dialogCanvas, workspaceCanvas] = await Promise.all([preview.load(), h.context.CanvasProject.loadReadOnlyCanvas()]);
+    assert.equal(dialogCanvas.revision, 12);
+    assert.strictEqual(dialogCanvas, workspaceCanvas);
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.requests[0].url, `/api/daki/projects/${PROJECT_ID}/canvases/${CANVAS_ID}?preview=1`);
+    assert.equal(h.requests[0].method, 'GET');
+});
+
 async function initializeAndAcceptReplacement(h) {
     const pending = h.context.CanvasProject.initialize();
     h.element('canvasProjectOpenWarningAccept')?.click();
@@ -236,18 +273,35 @@ async function connectExistingCanvas(h, {projectId = OTHER_PROJECT_ID, projectNa
     await h.context.CanvasProject.initialize();
 }
 
+function deferredResponse() {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return {promise, resolve, reject};
+}
+
 async function conflictedCanvas({name = 'Back master', side = 'back'} = {}) {
     const original = canvasState('original project state', 100);
     const localState = canvasState('unresolved local edits', 900, 840, 1120);
+    localState.layers[0].src = '/canvas-imports/synthetic-inpaint.png';
+    localState.layers[0].maskSrc = '/canvas-imports/synthetic-mask.png';
     const h = harness({search: projectUrl(), state: canvasState('before open', 1)});
     h.enqueue(initializeResponse({state: original, revision: 11, side, name}));
     await initializeAndAcceptReplacement(h);
+    let idsAllocated = 0;
+    h.context.crypto.randomUUID = () => ++idsAllocated === 1
+        ? 'cccccccc-cccc-cccc-cccc-cccccccccccc' : 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
     h.setState(localState);
     h.enqueue(response({status: 'error', message: 'revision changed'}, {ok: false, status: 409}));
+    const copy = deferredResponse();
+    h.enqueue(() => copy.promise);
     h.context.CanvasProject.schedule(true);
-    assert.equal(await h.context.CanvasProject.flush(), false);
-    assert.equal(h.status().dataset.state, 'conflict');
-    return {h, localState};
+    const flush = h.context.CanvasProject.flush();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(h.requests.map(request => request.method), ['GET', 'PUT', 'POST']);
+    assert.equal(h.status().dataset.state, 'recovering');
+    const created = success({project: projectRecord(), canvas: canvasRecord({id: RECOVERED_CANVAS_ID,
+        name: name + ' (충돌 복구)', side, revision: 1, state: localState})});
+    return {h, localState, copy, flush, created};
 }
 
 test('suggestCanvasName uses the project, side, and local timestamp within 120 characters', () => {
@@ -518,6 +572,37 @@ test('an unsaved restored link at the same URL keeps local state and PUTs it fir
     assert.equal(h.snapshots.at(-1).localLink.unsaved, false);
 });
 
+test('restoring a full local backup sends its raw project state once before saving subsequent edits', async () => {
+    const binding = link({revision: 5, unsaved: true});
+    const raw = {
+        ...canvasState('legacy state', 111),
+        layers: [{id: 23, type: 'clip', src: '/canvas-imports/example.png', maskSrc: '/canvas-imports/mask.png'}],
+        legacyExtension: {enabled: false}
+    };
+    const backup = {...raw, projectLink: binding, workspaceSetupId: 'synthetic-tab', projectRestoreOnly: false};
+    const restored = {...raw, savedAt: 222, layers: [{...raw.layers[0], rotation: 0, visible: true}]};
+    const h = harness({search: projectUrl(), state: restored});
+    const project = h.context.CanvasProject;
+    project.restoreLocalLink(binding, backup);
+    h.enqueue(success({canvas: {revision: 6}}));
+    await project.initialize();
+    assert.equal(await project.flush(), true);
+
+    const latest = {...restored, savedAt: 333, layers: [{...restored.layers[0], visible: false}]};
+    h.setState(latest);
+    h.enqueue(success({canvas: {revision: 7}}));
+    project.schedule(true);
+    assert.equal(await project.flush(), true);
+
+    const url = `/api/daki/projects/${PROJECT_ID}/canvases/${CANVAS_ID}`;
+    assert.deepEqual(h.requests, [
+        {method: 'PUT', url, body: {revision: 5, state: raw}},
+        {method: 'PUT', url, body: {revision: 6, state: latest}}
+    ]);
+    assert.deepEqual(plain(project.localLink()), {...binding, revision: 7, unsaved: false});
+    assert.equal(h.currentState(), latest);
+});
+
 function missingTarget() {
     return response({status: 'error', code: 'daki_not_found', message: '다키 프로젝트를 찾을 수 없습니다.'},
         {ok: false, status: 404});
@@ -652,39 +737,286 @@ test('a failed clean startup refresh can retry loading without writing stale loc
     assert.equal(h.status().dataset.state, 'saved');
 });
 
-test('revision conflict preserves the editable local state and never blindly retries', async () => {
-    const initial = canvasState('server canvas', 200);
-    const edited = canvasState('local work after load', 201);
-    const h = harness({search: projectUrl(), state: canvasState('before open', 100)});
-    h.enqueue(initializeResponse({state: initial, revision: 9}));
-    await initializeAndAcceptReplacement(h);
-    h.setState(edited);
-    h.enqueue(response({status: 'error', message: 'revision changed'}, {ok: false, status: 409}));
+for (const search of ['', projectUrl()]) {
+    test('a compact browser backup cannot write until its server state is restored (URL=' + Boolean(search) + ')', async () => {
+        const h = harness({width: 0, height: 0, search});
+        const project = h.context.CanvasProject;
+        const binding = link();
+        const appliedOptions = [];
+        const apply = h.context.applyCanvasStateSnapshot;
+        h.context.applyCanvasStateSnapshot = (state, options) => { appliedOptions.push(options); apply(state); };
+        let migrations = 0;
+        h.context.migrateCanvasLayerDataUrlsToServer = () => { migrations++; };
+        project.restoreLocalLink(binding, {projectRestoreOnly: true, projectLink: binding, width: 640, height: 800});
+        h.enqueue(response({status: 'error', message: 'temporary outage'}, {ok: false, status: 503}));
+        await project.initialize();
+        assert.equal(h.workspace.inert, true);
+        assert.equal(h.header.inert, false);
+        assert.equal(h.element('syntheticToolsMenu').inert, true);
+        assert.equal(h.element('canvasProjectRetry').hidden, false);
+        assert.equal(project.blocksLocalWrites(), true);
+        assert.equal(await project.prepareImageImport(null), false);
+        project.schedule(true);
+        await project.flush();
+        assert.equal(await project.leave(), false);
+        assert.deepEqual(h.requests.map(request => request.method), ['GET']);
+        assert.equal(h.snapshots.length, 0);
 
-    h.context.CanvasProject.schedule(true);
-    assert.equal(await h.context.CanvasProject.flush(), false);
-    assert.equal(h.status().dataset.state, 'conflict');
-    assert.match(h.message().textContent, /충돌했습니다/);
-    assert.equal(h.context.CanvasProject.localLink().revision, 9);
-    assert.equal(h.context.CanvasProject.localLink().unsaved, true);
-    assert.equal(h.currentState(), edited);
+        const recovery = deferredResponse();
+        h.enqueue(() => recovery.promise);
+        const retry = project.retry();
+        assert.equal(project.isChangingConnection(), true);
+        recovery.resolve(initializeResponse({revision: 9}));
+        await retry;
+        assert.equal(project.isChangingConnection(), false);
+        assert.equal(h.element('syntheticToolsMenu').inert, false);
+        assert.equal(project.blocksLocalWrites(), false);
+        assert.equal(h.workspace.inert, false);
+        assert.equal(h.applied.length, 1);
+        assert.equal(appliedOptions[0].deferMigration, true);
+        assert.equal(migrations, 1);
+        assert.equal(project.localLink().revision, 9);
+        h.enqueue(success({canvas: {revision: 10}}));
+        project.schedule(true);
+        await project.flush();
+        assert.deepEqual(h.requests.map(request => [request.method, request.body?.revision]),
+            [['GET', undefined], ['GET', undefined], ['PUT', 9]]);
+    });
+}
+
+test('a missing explicit target leaves the compact backup available and reopens its original project', async () => {
+    const h = harness({search: '?project=' + OTHER_PROJECT_ID + '&canvas=' + RECOVERED_CANVAS_ID,
+        width: 0, height: 0});
+    const project = h.context.CanvasProject;
+    project.restoreLocalLink(link(), {projectRestoreOnly: true});
+    h.enqueue(missingTarget());
+    h.enqueue(initializeResponse({revision: 8}));
+    await project.initialize();
     assert.equal(h.applied.length, 1);
-    assert.equal(await h.context.CanvasProject.retry(), false);
-    assert.equal(await h.context.CanvasProject.flush(), false);
-    assert.equal(h.requests.length, 2);
-    assert.equal(h.currentState(), edited);
+    assert.equal(project.localLink().revision, 8);
+    assert.equal(project.blocksLocalWrites(), false);
+    assert.equal(h.context.location.search, projectUrl());
+    assert.deepEqual(h.requests.map(request => [request.method, request.url]), [
+        ['GET', '/api/daki/projects/' + OTHER_PROJECT_ID + '/canvases/' + RECOVERED_CANVAS_ID],
+        ['GET', '/api/daki/projects/' + PROJECT_ID + '/canvases/' + CANVAS_ID]
+    ]);
 });
 
-test('conflict recovery creates a new same-side canvas and autosaves only to that canvas', async () => {
-    const {h, localState} = await conflictedCanvas({name: 'Back master', side: 'back'});
-    const newCanvas = canvasRecord({id: RECOVERED_CANVAS_ID, name: 'Back master (충돌 복구)',
-        side: 'back', revision: 1, state: localState});
-    h.enqueue(success({project: projectRecord(), canvas: newCanvas}));
+test('a deleted compact project clears its marker and leaves an editable separate canvas', async () => {
+    const h = harness({search: projectUrl(), width: 0, height: 0});
+    const project = h.context.CanvasProject;
+    project.restoreLocalLink(link(), {projectRestoreOnly: true});
+    h.enqueue(missingTarget());
+    await project.initialize();
+    assert.equal(project.blocksLocalWrites(), false);
+    assert.equal(project.localLink(), null);
+    assert.equal(h.context.location.search, '');
+    assert.equal(h.workspace.inert, false);
+    assert.deepEqual(h.requests.map(request => request.method), ['GET']);
+});
+
+test('closing and reopening an inline project releases the lock and keeps undo only at the same revision', async () => {
+    const h = harness({search: projectUrl(), width: 0, height: 0});
+    let held = false;
+    h.context.navigator = {locks: {request: async (_key, _options, run) => {
+        if (held) return run(null);
+        held = true;
+        try { return await run({}); } finally { held = false; }
+    }}};
+    const project = h.context.CanvasProject;
+    h.enqueue(initializeResponse({revision: 4}));
+    await project.initialize();
+    assert.equal(held, true);
+    project.suspendClosedPane();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(held, false);
+    assert.equal(project.blocksLocalWrites(), true);
+    project.schedule(true);
+    assert.equal(h.requests.length, 1);
+    held = true;
+    assert.equal(await project.resumeClosedPane(), false);
+    held = false;
+    h.enqueue(initializeResponse({revision: 4}));
+    assert.equal(await project.resumeClosedPane(), true);
+    assert.equal(h.applied.length, 1);
+    assert.equal(project.blocksLocalWrites(), false);
+    project.suspendClosedPane();
+    await new Promise(resolve => setImmediate(resolve));
+    h.enqueue(initializeResponse({revision: 8}));
+    assert.equal(await project.resumeClosedPane(), true);
+    assert.equal(h.applied.length, 2);
+    assert.equal(project.localLink().revision, 8);
+    assert.deepEqual(h.requests.map(request => request.method), ['GET', 'GET', 'GET']);
+});
+
+test('a duplicate gallery tab forwards its pending import only to the owning editor', async () => {
+    const channels = [];
+    class Channel {
+        constructor() { channels.push(this); }
+        postMessage(data) { for (const channel of channels) if (channel !== this) channel.onmessage?.({data}); }
+    }
+    const owner = harness({search: projectUrl(), width: 0, height: 0, BroadcastChannel: Channel});
+    owner.enqueue(initializeResponse());
+    await owner.context.CanvasProject.initialize();
+    let consumed = 0;
+    owner.context.consumePendingCanvasImport = () => { consumed++; };
+    const duplicate = harness({BroadcastChannel: Channel});
+    duplicate.context.navigator = {locks: {request: async (_key, _options, run) => run(null)}};
+    duplicate.context.CanvasProjectPreview = {open() { return new Promise(() => {}); }};
+    duplicate.context.CanvasProject.restoreLocalLink(link());
+    assert.equal(await duplicate.context.CanvasProject.initialize(), false);
+    assert.equal(duplicate.context.CanvasProject.forwardPendingImport(), true);
+    await Promise.resolve();
+    assert.equal(consumed, 1);
+    assert.deepEqual(duplicate.requests, []);
+});
+
+test('quota compares confirmed editing content and queues at most one corrective save until another edit', async () => {
+    const h = harness({search: projectUrl(), width: 0, height: 0});
+    const project = h.context.CanvasProject;
+    const state = {height: 600, width: 400, layers: [{name: 'initial', id: 1}], savedAt: 10};
+    h.enqueue(initializeResponse({state, revision: 3}));
+    await project.initialize();
+    const equivalent = {savedAt: 20, layers: [{id: 1, name: 'initial'}], width: 400, height: 600,
+        inpaintReference: {reference: null, showArea: false, include: false},
+        canvasZoom: 2, workspaceSetupId: 'pane', projectLink: project.localLink()};
+    assert.equal(project.canRestoreFromServer(equivalent), true);
+    const changed = {...equivalent, inpaintSettings: {steps: 32}};
+    h.setState({...state, inpaintSettings: {steps: 32}});
+    assert.equal(project.canRestoreFromServer(changed), false);
+    assert.equal(project.canRestoreFromServer(changed), false);
+    h.enqueue(success({canvas: {revision: 4}}));
+    await project.flush();
+    assert.equal(project.canRestoreFromServer(changed), true);
+    assert.equal(project.canRestoreFromServer({...changed, inpaintSettings: {steps: 40}}), false);
+    await project.flush();
+    assert.deepEqual(h.requests.map(request => request.method), ['GET', 'PUT']);
+    assert.equal(h.requests[1].body.state.inpaintSettings.steps, 32);
+    h.enqueue(success({canvas: {revision: 5}}));
+    project.schedule(true);
+    await project.flush();
+    assert.equal(project.canRestoreFromServer({...changed, inpaintSettings: {steps: 44}}), false);
+    assert.equal(project.isSavePending(), true);
+    h.enqueue(success({canvas: {revision: 6}}));
+    await project.flush();
+    assert.equal(h.requests.length, 4);
+});
+
+test('project PUT declares reference placement support and uses the state confirmed by the server', async () => {
+    const h = harness({search: projectUrl(), width: 0, height: 0});
+    const headers = [];
+    const send = h.context.fetch;
+    h.context.fetch = (url, options) => {
+        headers.push(options.headers['X-NAIM-Reference-Placement']);
+        return send(url, options);
+    };
+    const project = h.context.CanvasProject;
+    h.enqueue(initializeResponse({revision: 3}));
+    await project.initialize();
+    h.setState(canvasState('edited', 10));
+    const confirmed = {...h.currentState(), inpaintSettings: {steps: 24}};
+    h.enqueue(success({canvas: {revision: 4, state: confirmed}}));
+    project.schedule(true);
+    assert.equal(await project.flush(), true);
+    assert.deepEqual(headers, [undefined, '1']);
+    assert.equal(project.canRestoreFromServer(confirmed), true);
+});
+
+test('browser quota waits for project saves and warns if the project save fails', async () => {
+    const h = harness({search: projectUrl()});
+    const project = h.context.CanvasProject;
+    const statuses = [];
+    let record;
+    const storage = {setItem(key, value) {
+        if (!JSON.parse(value).projectRestoreOnly) {
+            throw Object.assign(new Error('synthetic quota failure'), {name: 'QuotaExceededError'});
+        }
+        record = JSON.parse(value);
+    }};
+    const browser = createCanvasAutosave({
+        snapshot: () => ({...h.currentState(), projectLink: project.localLink()}),
+        write: (text, state) => writeCanvasAutosaveSnapshot(storage, 'canvas', text, state, project.canRestoreFromServer()),
+        isProjectSavePending: () => project.isSavePending(),
+        status: (state, reason) => statuses.push([state, reason])
+    });
+    h.context.getCanvasAutosave = () => browser;
+    h.enqueue(initializeResponse({revision: 4}));
+    await initializeAndAcceptReplacement(h);
+    assert.equal(record.projectLink.revision, 4);
+
+    for (const revision of [5, 6]) {
+        let finishRequest;
+        h.enqueue(() => new Promise(resolve => { finishRequest = resolve; }));
+        h.setState(canvasState(`edit ${revision}`, revision));
+        project.schedule();
+        assert.equal(browser.schedule(true), false);
+        const saving = project.flush();
+        assert.equal(browser.flush(), false);
+        assert.equal(statuses.at(-1)[0], 'project-pending');
+        assert.equal(record.projectLink.revision, revision - 1);
+        finishRequest(success({canvas: {revision}}));
+        assert.equal(await saving, true);
+        assert.equal(statuses.at(-1)[0], 'project');
+        assert.equal(record.projectLink.revision, revision);
+    }
+    assert.equal(statuses.some(([state]) => state === 'error'), false);
+
+    h.setState(canvasState('unsaved edit', 7));
+    h.enqueue(response({status: 'error'}, {ok: false, status: 503}));
+    project.schedule();
+    assert.equal(browser.schedule(true), false);
+    assert.equal(statuses.at(-1)[0], 'project-pending');
+    assert.equal(await project.flush(), false);
+    assert.deepEqual(statuses.at(-1), ['error', 'QuotaExceededError']);
+    assert.equal(browser.flush(), false);
+    assert.equal(record.projectLink.revision, 6);
+
+    h.enqueue(success({canvas: {revision: 7}}));
+    assert.equal(await project.retry(), true);
+    assert.equal(statuses.at(-1)[0], 'project');
+    assert.equal(record.projectLink.revision, 7);
+});
+
+test('concurrent flush and leave wait for edits made while the automatic conflict copy is being created', async () => {
+    const {h, localState, copy, flush, created} = await conflictedCanvas();
+    const project = h.context.CanvasProject;
+    const latest = {...localState, content: 'edited during conflict recovery', savedAt: 901};
+    h.setState(latest);
+    project.schedule();
+    assert.equal(project.isUnsaved(), true);
+    assert.equal(project.canRestoreFromServer(), false);
+    const followup = deferredResponse();
+    h.enqueue(() => followup.promise);
+    const anotherFlush = project.flush();
+    let left = false;
+    const leaving = project.leave().then(value => { left = true; return value; });
+    copy.resolve(created);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(left, false);
+    assert.deepEqual(h.requests.map(request => request.method), ['GET', 'PUT', 'POST', 'PUT']);
+    assert.deepEqual(h.requests[2].body.state, localState);
+    assert.deepEqual(h.requests[3].body, {state: latest, revision: 1});
+    assert.deepEqual(h.requests.filter(request => request.method === 'PUT').map(request => request.url), [
+        `/api/daki/projects/${PROJECT_ID}/canvases/${CANVAS_ID}`,
+        `/api/daki/projects/${PROJECT_ID}/canvases/${RECOVERED_CANVAS_ID}`
+    ]);
+    followup.resolve(success({canvas: {revision: 2}}));
+    assert.deepEqual(await Promise.all([flush, anotherFlush, leaving]), [true, true, true]);
+    assert.equal(h.currentState(), latest);
+    assert.equal(h.applied.length, 1);
+    assert.equal(project.localLink(), null);
+    assert.equal(h.snapshots.at(-1).localLink, null);
+    assert.equal(h.context.location.search, '');
+});
+
+test('an autosave conflict creates a new same-side canvas and saves only to that canvas', async () => {
+    const {h, localState, copy, flush, created} = await conflictedCanvas();
     h.enqueue(success({canvas: {revision: 2}}));
 
-    assert.equal(h.recoverButton().hidden, false);
-    await h.context.CanvasProject.recoverConflict();
-    await h.context.CanvasProject.flush();
+    assert.equal(h.context.CanvasProject.canRestoreFromServer(), false);
+    copy.resolve(created);
+    assert.equal(await flush, true);
+    assert.equal(h.context.CanvasProject.canRestoreFromServer(), true);
 
     const oldUrl = `/api/daki/projects/${PROJECT_ID}/canvases/${CANVAS_ID}`;
     const newUrl = `/api/daki/projects/${PROJECT_ID}/canvases/${RECOVERED_CANVAS_ID}`;
@@ -704,16 +1036,21 @@ test('conflict recovery creates a new same-side canvas and autosaves only to tha
     });
     assert.equal(h.currentState(), localState);
     assert.equal(h.recoverButton().hidden, true);
-    assert.match(h.toasts.at(-1), /기존 캔버스도 그대로 유지됩니다/);
+    assert.equal(h.status().dataset.state, 'saved');
+    assert.equal(new URLSearchParams(h.context.location.search).get('canvas'), RECOVERED_CANVAS_ID);
+    h.context.CanvasProject.schedule();
+    assert.equal(h.context.CanvasProject.canRestoreFromServer(), false);
+    h.enqueue(success({canvas: {revision: 3}}));
+    await h.context.CanvasProject.flush();
+    assert.equal(h.context.CanvasProject.canRestoreFromServer(), true);
 });
 
 test('failed conflict copy retries the same ID and snapshot while retaining the original link', async () => {
-    const {h, localState} = await conflictedCanvas({name: 'Front master', side: 'front'});
-    const failedBody = response({status: 'error', message: 'copy temporarily unavailable'},
-        {ok: false, status: 503});
-    h.enqueue(failedBody);
-
-    await h.context.CanvasProject.recoverConflict();
+    const {h, localState, copy, flush, created} = await conflictedCanvas({name: 'Front master', side: 'front'});
+    copy.reject(new Error('copy response lost'));
+    assert.equal(await flush, false);
+    assert.equal(h.status().dataset.state, 'conflict');
+    assert.equal(h.recoverButton().hidden, false);
 
     const oldUrl = `/api/daki/projects/${PROJECT_ID}/canvases/${CANVAS_ID}`;
     const postUrl = `/api/daki/projects/${PROJECT_ID}/canvases`;
@@ -729,11 +1066,16 @@ test('failed conflict copy retries the same ID and snapshot while retaining the 
     assert.equal(h.requests.filter(request => request.method === 'PUT' && request.url === oldUrl).length, 1);
     assert.equal(h.recoverButton().disabled, false);
 
-    h.enqueue(success({project: projectRecord(), canvas: canvasRecord({id: RECOVERED_CANVAS_ID,
-        name: 'Front master (충돌 복구)', side: 'front', revision: 1, state: localState})}));
+    const latest = {...localState, content: 'newer edits before retry', savedAt: 901};
+    h.setState(latest);
+    h.context.CanvasProject.schedule(true);
+    assert.equal(await h.context.CanvasProject.flush(), false);
+    assert.equal(await h.context.CanvasProject.leave(), false);
+    assert.equal(h.requests.length, 3);
+    h.enqueue(created);
     h.enqueue(success({canvas: {revision: 2}}));
-    await h.context.CanvasProject.recoverConflict();
-    await h.context.CanvasProject.flush();
+    assert.equal(await h.context.CanvasProject.recoverConflict(), true);
+    assert.equal(await h.context.CanvasProject.flush(), true);
 
     const attempts = h.requests.filter(request => request.method === 'POST' && request.url === postUrl);
     assert.equal(attempts.length, 2);
@@ -745,7 +1087,8 @@ test('failed conflict copy retries the same ID and snapshot while retaining the 
     ]);
     assert.equal(h.context.CanvasProject.localLink().canvasId, RECOVERED_CANVAS_ID);
     assert.equal(h.context.CanvasProject.localLink().unsaved, false);
-    assert.equal(h.currentState(), localState);
+    assert.deepEqual(h.requests.at(-1).body, {state: latest, revision: 1});
+    assert.equal(h.currentState(), latest);
     assert.equal(new URLSearchParams(h.context.location.search).get('canvas'), RECOVERED_CANVAS_ID);
     assert.equal(await h.context.CanvasProject.leave(), true);
     assert.equal(h.context.location.search, '');

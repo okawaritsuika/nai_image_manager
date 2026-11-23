@@ -462,6 +462,13 @@
             render();
         }
 
+        function confirmAction(options) {
+            if (global.CanvasNativeDialogs?.confirm) {
+                return global.CanvasNativeDialogs.confirm(options);
+            }
+            return global.confirm(options.message);
+        }
+
         function confirmDelete(model) {
             const othersKnown = NEW_MODEL_IDS.every(id => models.has(id));
             const isLastNewModel = NEW_MODEL_IDS.includes(model.id)
@@ -476,26 +483,36 @@
             const runtimeCopy = isLastNewModel
                 ? ' 이 모델이 마지막으로 설치된 신규 모델이므로 공용 실행 환경도 함께 삭제됩니다.'
                 : (model.requires_runtime ? ' 이 모델이 마지막 신규 모델이면 공용 실행 환경도 함께 삭제됩니다.' : '');
-            return global.confirm(
-                `선택한 ${model.name || MODEL_INFO[model.id]?.name || '모델'}만 삭제합니다. 원본 이미지와 업스케일 결과는 보존됩니다.${runtimeCopy}\n계속할까요?`
-            );
+            return confirmAction({
+                title: '모델 삭제',
+                message: `선택한 ${model.name || MODEL_INFO[model.id]?.name || '모델'}만 삭제합니다. 원본 이미지와 업스케일 결과는 보존됩니다.${runtimeCopy}\n계속할까요?`,
+                confirmLabel: '삭제',
+                danger: true
+            });
         }
 
         async function mutate(action) {
-            if (!isOpen || mutationPending) return;
+            if (!isOpen || mutationPending || preparePending) return;
             const model = selectedModel();
             const engine = selectedEngine();
             if (!model || !MANAGED_MODEL_IDS.includes(engine)) return;
-            if (action === 'delete' && !confirmDelete(model)) return;
-
             mutationPending = true;
-            operationError = '';
             const requestVersion = ++mutationVersion;
             const requestEpoch = epoch;
-            const controller = new AbortController();
-            mutationAbort = controller;
-            render();
+            const requestSelection = selectionVersion;
             try {
+                if (action === 'delete') {
+                    render();
+                    if (!await confirmDelete(model) || !isOpen || requestEpoch !== epoch
+                        || requestSelection !== selectionVersion || selectedEngine() !== engine) return;
+                    const current = selectedModel();
+                    if (statusError || current?.id !== model.id || current.state !== model.state
+                        || current.can_delete !== model.can_delete || current.installed !== model.installed) return;
+                }
+                operationError = '';
+                const controller = new AbortController();
+                mutationAbort = controller;
+                render();
                 const response = await global.fetch(`/api/upscale/models/${encodeURIComponent(engine)}/${action}`, {
                     method: 'POST',
                     signal: controller.signal
@@ -515,10 +532,11 @@
                 render();
             } finally {
                 if (requestEpoch === epoch && requestVersion === mutationVersion) {
+                    const requestStarted = mutationAbort !== null;
                     mutationPending = false;
                     mutationAbort = null;
                     render();
-                    refreshStatus();
+                    if (requestStarted) refreshStatus();
                 }
             }
         }
@@ -563,7 +581,7 @@
 
         async function prepare() {
             if (ui.start && !panelStartBlocked) callerStartDisabled = ui.start.disabled;
-            if (!isOpen || preparePending || callerStartDisabled) return null;
+            if (!isOpen || preparePending || mutationPending || callerStartDisabled) return null;
             preparePending = true;
             const prepareEpoch = epoch;
             const prepareSelection = selectionVersion;
@@ -582,10 +600,14 @@
                         return null;
                     }
                     const summary = formatNaiSteps(plan);
-                    const accepted = global.confirm(
-                        `NovelAI 업스케일을 시작합니다. 원본은 보존되며 중앙을 잘라 5:16 비율과 64px 배수 입력 크기에 맞춥니다.\n${summary}\n\nAnlas가 소모될 수 있습니다. 정확한 비용은 이 앱에서 계산하지 않습니다.\n계속하시겠습니까?`
-                    );
-                    if (!accepted || !isOpen || prepareEpoch !== epoch || prepareSelection !== selectionVersion) return null;
+                    const accepted = await confirmAction({
+                        title: 'NovelAI 업스케일',
+                        message: `NovelAI 업스케일을 시작합니다. 원본은 보존되며 중앙을 잘라 5:16 비율과 64px 배수 입력 크기에 맞춥니다.\n${summary}\n\nAnlas가 소모될 수 있습니다. 정확한 비용은 이 앱에서 계산하지 않습니다.\n계속하시겠습니까?`,
+                        confirmLabel: '시작'
+                    });
+                    if (!accepted || !isOpen || prepareEpoch !== epoch || prepareSelection !== selectionVersion
+                        || selectedEngine() !== 'nai' || !sameIdentity(prepareIdentity, sourceIdentity())
+                        || !sameSize(dimensions, sourceSize())) return null;
                     return {
                         engine: 'nai',
                         target_width: Number(plan.output_width),

@@ -84,7 +84,17 @@ def normalize_reference(value):
     x = _number(value.get("x", 0.5), "가로 위치", 0, 1)
     y = _number(value.get("y", 0.5), "세로 위치", 0, 1)
     zoom = _number(value.get("zoom", 1), "확대", 1, 8)
-    return {"src": src, "name": name, "width": width, "x": x, "y": y, "zoom": zoom}
+    scale = _number(value.get("scale", 1), "참고 그림 배율", 0.1, 32)
+    pan_x = _number(value.get("panX", 0.5), "참고 그림 가로 위치", 0, 1)
+    pan_y = _number(value.get("panY", 0.5), "참고 그림 세로 위치", 0, 1)
+    reference = {"src": src, "name": name, "width": width, "x": x, "y": y, "zoom": zoom}
+    if scale != 1:
+        reference["scale"] = scale
+    if pan_x != 0.5:
+        reference["panX"] = pan_x
+    if pan_y != 0.5:
+        reference["panY"] = pan_y
+    return reference
 
 
 def _positive_size(size, label):
@@ -109,14 +119,15 @@ def reference_crop_box(source_size, target_size, reference):
     return (float(left), float(top), float(left + crop_width), float(top + crop_height))
 
 
-def reference_fit_box(source_size, target_size):
-    """Fit the whole image in a centered box, shrinking only when necessary."""
+def reference_fit_box(source_size, target_size, scale=1, pan_x=0.5, pan_y=0.5):
+    """Position the scaled image within the strip, including any overflow."""
     source_width, source_height = _positive_size(source_size, "원본")
     target_width, target_height = _positive_size(target_size, "대상")
-    scale = min(1, target_width / source_width, target_height / source_height)
+    scale *= min(1, target_width / source_width, target_height / source_height)
     width = max(1, math.floor(source_width * scale + 0.5))
     height = max(1, math.floor(source_height * scale + 0.5))
-    return ((target_width - width) // 2, (target_height - height) // 2, width, height)
+    return (math.floor((target_width - width) * pan_x),
+            math.floor((target_height - height) * pan_y), width, height)
 
 
 def _decode_image(data, label):
@@ -160,14 +171,29 @@ def prepare_reference_input(source_bytes, mask_bytes, reference_bytes, reference
     left, top, fitted_width, fitted_height = reference_fit_box(
         reference_rgb.size,
         (reference_width, source_height),
+        normalized_reference.get("scale", 1),
+        normalized_reference.get("panX", 0.5),
+        normalized_reference.get("panY", 0.5),
+    )
+    visible_left = max(0, left)
+    visible_top = max(0, top)
+    visible_right = min(reference_width, left + fitted_width)
+    visible_bottom = min(source_height, top + fitted_height)
+    # Project just the visible rectangle back into the original to bound the resized raster.
+    source_box = (
+        (visible_left - left) * reference_rgb.width / fitted_width,
+        (visible_top - top) * reference_rgb.height / fitted_height,
+        (visible_right - left) * reference_rgb.width / fitted_width,
+        (visible_bottom - top) * reference_rgb.height / fitted_height,
     )
     resized_reference = reference_rgb.resize(
-        (fitted_width, fitted_height),
+        (visible_right - visible_left, visible_bottom - visible_top),
         Image.Resampling.LANCZOS,
+        box=source_box,
     )
 
     combined_image = Image.new("RGB", (source_width + reference_width, source_height), "white")
-    combined_image.paste(resized_reference, (left, top))
+    combined_image.paste(resized_reference, (visible_left, visible_top))
     combined_image.paste(source_image, (reference_width, 0))
 
     combined_mask = Image.new("RGB", combined_image.size, (0, 0, 0))

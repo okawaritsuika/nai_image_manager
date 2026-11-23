@@ -277,6 +277,56 @@ async function settleInitialization(env, view) {
     assert.ok(view.stats().frames > 0, 'the first frame was submitted to the renderer');
 }
 
+test('a clip visibility switch keeps the sharp frame until the replacement is complete', async () => {
+    const env = makeEnvironment();
+    const coarse = {...makeTile(env, {key: 'overview', lod: 16}), overview: true};
+    const original = fourTiles(env, 1);
+    const changed = [...original];
+    changed[0] = makeTile(env, {key: 'clip-hidden', width: 500, height: 500});
+    let available = original;
+    const view = env.CanvasEditorView.create({host: env.host, workspace: env.workspace,
+        width: WIDTH, height: HEIGHT, overview: () => coarse, tiles: () => available, setFallback() {}});
+    await settleInitialization(env, view);
+    const before = env.app.stage.children[0].children.slice();
+    view.retainDetail();
+    available = {partial: changed.slice(1), bounds: changed};
+    view.present();
+    env.flushOne();
+    assert.equal(env.app.renderCount, 1);
+    assert.deepEqual(env.app.stage.children[0].children, before);
+    assert.equal(env.rafQueue.size, 0, 'the next tile notification wakes the view');
+    available = changed;
+    view.present();
+    assert.equal(env.app.renderCount, 1, 'wait for the new texture to upload');
+    env.flushOne();
+    const after = env.app.stage.children[0].children;
+    assert.equal(after[0].texture.source.resource, changed[0].canvas);
+    assert.deepEqual(after.slice(1), before.slice(1));
+    assert.equal(view.stats().overviewFrames + view.stats().partialFrames, 0);
+    // Subsequent unrelated rendering still shows the usual overview.
+    available = null;
+    view.present();
+    assert.equal(view.stats().displayedLod, coarse.lod);
+    view.destroy();
+});
+
+test('panning releases the sharp frame held for a clip visibility switch', async () => {
+    const env = makeEnvironment();
+    const full = fourTiles(env, 1);
+    const coarse = {...makeTile(env, {key: 'overview', lod: 16}), overview: true};
+    let available = full;
+    const view = env.CanvasEditorView.create({host: env.host, workspace: env.workspace,
+        width: WIDTH, height: HEIGHT, overview: () => coarse, tiles: () => available, setFallback() {}});
+    await settleInitialization(env, view);
+    view.retainDetail();
+    available = null;
+    env.host.getBoundingClientRect = () => ({left: -1, top: 0, right: WIDTH - 1, bottom: HEIGHT,
+        width: WIDTH, height: HEIGHT});
+    view.present();
+    assert.equal(view.stats().displayedLod, coarse.lod);
+    view.destroy();
+});
+
 test('a revised visible tile uploads its brush patch in the same presented frame', async () => {
     const env = makeEnvironment();
     const tile = makeTile(env, {key: 'brush-patch', revision: 1});

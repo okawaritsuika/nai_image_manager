@@ -47,6 +47,7 @@
 
     function seed(promptInfo) {
         if (settings || !hasGenerationSettings(promptInfo)) return false;
+        if ((getDialog()?.open && formDirty) || doc?.getElementById('clipPromptModalOverlay')?.classList.contains('open')) return false;
         settings = generationSettingsFrom(promptInfo);
         revision += 1;
         syncOpenClipEditor();
@@ -61,6 +62,7 @@
     }
 
     function syncOpenClipEditor() {
+        root.dispatchEvent?.(new Event('canvas-inpaint-settings-changed'));
         const modal = doc?.getElementById('clipPromptModalOverlay');
         if (!modal?.classList?.contains('open') || typeof setGenerationSettings !== 'function') return;
         setGenerationSettings('clip', apply({}));
@@ -128,7 +130,7 @@
         const values = readGenerationSettings('inpaint');
         if (!values) return;
         update(values);
-        if (typeof saveCanvasState === 'function') saveCanvasState();
+        if (typeof saveCanvasState === 'function') saveCanvasState({syncProject: true});
         close();
         root.showToast?.('캔버스 인페인팅 설정을 저장했습니다.');
     }

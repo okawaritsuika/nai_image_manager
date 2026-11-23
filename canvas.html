@@ -5,7 +5,8 @@
     <title>NAI ImageManager - 캔버스</title>
     <link rel="stylesheet" href="/static/ui_typography.css?v=20261103">
     <link rel="stylesheet" href="/static/style_lab.css">
-    <link rel="stylesheet" href="/static/canvas.css?v=20261107-editor-scene">
+    <link rel="stylesheet" href="/static/canvas.css?v=20261123-clip-boundary">
+    <link rel="stylesheet" href="/static/canvas_clip_boundary.css?v=20261123-boundary-passes">
     <link rel="stylesheet" href="/static/canvas_layer_delete.css">
     <link rel="stylesheet" href="/static/canvas_export_feedback.css">
     <link rel="stylesheet" href="/static/upscale_models.css">
@@ -14,7 +15,8 @@
     <link rel="stylesheet" href="/static/canvas_keyboard_move.css">
     <link rel="stylesheet" href="/static/canvas_inpaint_settings.css">
     <link rel="stylesheet" href="/static/canvas_detail_presets.css?v=20261025">
-    <link rel="stylesheet" href="/static/canvas_inpaint_reference.css?v=20261025-selection-size">
+    <link rel="stylesheet" href="/static/canvas_inpaint_reference_preview.css?v=20261120-pan">
+    <link rel="stylesheet" href="/static/canvas_inpaint_reference.css?v=20261120-pan">
     <link rel="stylesheet" href="/static/canvas_style_link.css">
     <link rel="stylesheet" href="/static/canvas_project.css">
     <link rel="stylesheet" href="/static/daki_project_settings.css">
@@ -22,10 +24,10 @@
     <link rel="stylesheet" href="/static/canvas_opposite_reference.css">
     <link rel="stylesheet" href="/static/canvas_daki_focus.css">
     <link rel="stylesheet" href="/static/canvas_daki_map_editor.css">
-    <link rel="stylesheet" href="/static/canvas_retouch.css?v=20261107-clear-brush-view">
+    <link rel="stylesheet" href="/static/canvas_retouch.css?v=20261123-compat2">
     <link rel="stylesheet" href="/static/common_anlas_warning.css">
     <link rel="stylesheet" href="/static/novelai_account.css">
-    <link rel="stylesheet" href="/static/canvas_workspace.css?v=20261031-inline-previews">
+    <link rel="stylesheet" href="/static/canvas_workspace.css?v=20261109-split-retouch">
     <link rel="stylesheet" href="/static/workspace_header.css">
     <script src="/static/novelai_account.js" defer></script>
     <link rel="stylesheet" href="/static/prompt_autocomplete.css?v=20261031">
@@ -113,7 +115,8 @@
                                         <p id="canvasProjectMessage" role="status" aria-live="polite"></p>
                                         <div class="canvas-project-actions">
                                             <button id="canvasProjectRetry" type="button" class="secondary" hidden onclick="CanvasProject.retry()">저장 다시 시도</button>
-                                            <button id="canvasProjectRecover" type="button" class="secondary" hidden onclick="CanvasProject.recoverConflict()">내 작업을 새 캔버스로 보관</button>
+                                            <button id="canvasProjectPreviewLatest" type="button" class="secondary" hidden onclick="CanvasProject.previewLatest()">서버 최신본 미리보기</button>
+                                            <button id="canvasProjectRecover" type="button" class="secondary" hidden onclick="CanvasProject.recoverConflict()">복구 사본 저장 다시 시도</button>
                                             <button id="canvasProjectDisconnect" type="button" class="secondary canvas-project-disconnect" hidden onclick="CanvasProject.leave()">연결 종료</button>
                                         </div>
                                     </div>
@@ -140,7 +143,7 @@
         <section class="canvas-toolbar panel" aria-labelledby="canvasSettingsTitle">
             <div id="canvasAutosaveStatus" role="status" aria-live="polite" hidden class="canvas-help">
                 <span id="canvasAutosaveMessage"></span>
-                <button id="canvasAutosaveRetry" type="button" hidden onclick="saveCanvasState({immediate:true})">자동 저장 다시 시도</button>
+                <button id="canvasAutosaveRetry" type="button" hidden onclick="getCanvasAutosave().schedule(true)">브라우저 백업 다시 시도</button>
             </div>
             <div>
                 <div class="canvas-size-readout">
@@ -310,6 +313,8 @@
             </details>
         </section>
 
+        <div id="canvasRetouchPanel" class="panel" hidden></div>
+
         <section class="canvas-workspace-shell">
             <section id="canvasDakiFocus" class="canvas-daki-focus canvas-daki-hud" aria-label="다키 부위 포커스" hidden></section>
             <div class="canvas-workspace">
@@ -327,7 +332,6 @@
 
         <aside class="canvas-layer-panel panel">
             <div id="canvasDakiMapPanel" hidden></div>
-            <div id="canvasRetouchPanel" hidden></div>
             <div class="layer-panel-header">
                 <h3>레이어</h3>
                 <div class="layer-panel-actions">
@@ -337,9 +341,12 @@
                 </div>
             </div>
 
-            <div id="layerList" class="layer-list">
-                <div class="layer-empty">캔버스를 생성하면 레이어가 표시됩니다.</div>
+            <div class="canvas-base-layer-list">
+                <div id="layerList" class="layer-list">
+                    <div class="layer-empty">캔버스를 생성하면 레이어가 표시됩니다.</div>
+                </div>
             </div>
+            <div id="canvasRetouchLayers" hidden></div>
         </aside>
     </main>
 
@@ -1111,52 +1118,58 @@
 
     <script src="/static/common_anlas_warning.js"></script>
     <script src="/static/canvas_clipboard.js"></script>
-    <script src="/static/canvas_autosave.js"></script>
+    <script src="/static/canvas_autosave.js?v=20261123-compat2"></script>
     <script src="/static/canvas_history.js"></script>
-    <script src="/static/canvas_project_autosave.js"></script>
+    <script src="/static/canvas_project_autosave.js?v=20261123-compat2"></script>
     <script src="/static/generation_settings.js"></script>
     <script src="/static/daki_project_style_picker.js"></script>
     <script src="/static/daki_project_settings.js"></script>
-    <script src="/static/canvas_inpaint_settings.js"></script>
-    <script src="/static/canvas_inpaint_reference.js?v=20261031-opposite-inpaint"></script>
+    <script src="/static/canvas_inpaint_settings.js?v=20261123-compat2"></script>
+    <script src="/static/canvas_inpaint_reference_preview.js?v=20261120-pan"></script>
+    <script src="/static/canvas_inpaint_reference.js?v=20261123-compat2"></script>
     <script src="/static/canvas_workspace_state.js?v=20261017-inline"></script>
-    <script src="/static/canvas_workspace_bridge.js?v=20261031-reference-quality"></script>
-    <script src="/static/canvas_composite.js?v=20261107-composite-preview"></script>
+    <script src="/static/canvas_workspace_bridge.js?v=20261123-compat2"></script>
+    <script src="/static/canvas_composite.js?v=20261123-compat2"></script>
     <script src="/static/daki_canvas_previews.js"></script>
+    <script src="/static/canvas_project_preview.js"></script>
     <script src="/static/canvas_selection_rotation.js"></script>
     <script src="/static/canvas_layer_delete.js"></script>
     <script src="/static/canvas_export_feedback.js"></script>
     <script type="module" src="/api/canvas/source-tiles.js"></script>
-    <script src="/static/canvas.js?v=20261108-editor-camera"></script>
+    <script src="/static/inpaint_grid_brush.js"></script>
+    <script src="/static/canvas_clip_boundary.js?v=20261123-boundary-passes"></script>
+    <script src="/static/canvas_clip_boundary_editor.js?v=20261123-boundary-passes"></script>
+    <script src="/static/canvas_pending_import.js"></script>
+    <script src="/static/canvas.js?v=20261123-compat2"></script>
     <script src="/static/canvas_grid.js"></script>
     <script src="/static/canvas_keyboard_move.js"></script>
     <script src="/static/canvas_style_link.js"></script>
     <script src="/static/canvas_style_bridge.js"></script>
     <script src="/static/canvas_project_settings.js"></script>
     <script src="/static/canvas_eraser.js"></script>
-    <script src="/static/canvas_setups.js?v=20261017-workspace"></script>
+    <script src="/static/canvas_setups.js?v=20261123-compat2"></script>
     <script src="/static/canvas_history_bridge.js"></script>
-    <script src="/static/canvas_project.js?v=20261025-detail-presets"></script>
+    <script src="/static/canvas_project.js?v=20261123-compat2"></script>
     <script src="/static/canvas_detail_presets.js?v=20261025"></script>
-    <script src="/static/canvas_opposite_reference.js?v=20261031-opposite-inpaint"></script>
+    <script src="/static/canvas_opposite_reference.js?v=20261121-picker-preview"></script>
     <script src="/static/canvas_daki_regions.js"></script>
     <script src="/static/canvas_daki_prompt_rules.js"></script>
     <script src="/static/canvas_daki_map_editor.js"></script>
     <script src="/static/canvas_daki_focus.js"></script>
     <script src="/static/canvas_retouch_state.js?v=20261025-preview"></script>
-    <script src="/static/canvas_retouch_panel.js?v=20261107-new-retouch-entry"></script>
+    <script src="/static/canvas_retouch_panel.js?v=20261109-split-retouch"></script>
     <script src="/static/canvas_retouch_brush.js?v=20261108-normal-lookup"></script>
-    <script src="/static/canvas_editor_view.js?v=7"></script>
-    <script src="/static/canvas_editor_scene.js?v=5"></script>
+    <script src="/static/canvas_editor_view.js?v=8"></script>
+    <script src="/static/canvas_editor_scene.js?v=8"></script>
     <script src="/static/canvas_retouch_surface.js?v=20261108-dirty-tiles"></script>
     <script src="/static/canvas_editor_engine.js?v=8"></script>
     <script src="/static/canvas_retouch_liquify.js?v=20261108-segment-updates"></script>
     <script src="/static/canvas_retouch_viewport.js?v=20261107-native-underlay"></script>
-    <script src="/static/canvas_retouch.js?v=20261108-source-preload"></script>
+    <script src="/static/canvas_retouch.js?v=20261123-compat2"></script>
     <script src="/static/upscale_models.js"></script>
     <script src="/static/canvas_reference.js"></script>
-    <script src="/static/canvas_dialogs.js?v=20261025-detail-presets"></script>
+    <script src="/static/canvas_dialogs.js?v=20261123-compat2"></script>
     <script src="/static/canvas_header.js?v=20261017-header"></script>
-    <script src="/static/canvas_workspace.js?v=20261031-inline-previews"></script>
+    <script src="/static/canvas_workspace.js?v=20261123-compat2"></script>
 </body>
 </html>

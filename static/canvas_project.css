@@ -122,3 +122,20 @@
 .canvas-project-import-card strong { min-width: 0; color: var(--text-main); font-size: var(--ui-text-body, 12px); font-weight: 600; line-height: var(--ui-leading-body, 1.5); overflow-wrap: anywhere; }
 .canvas-project-import-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px !important; }
 .canvas-project-import-actions button { flex: 0 0 auto; max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: var(--ui-leading-control, 1.4); }
+.canvas-project-preview[open] { display: flex; flex-direction: column; width: min(600px, calc(100vw - 32px)); overflow: hidden; padding: 0; }
+.canvas-project-preview-header,
+.canvas-project-preview-body,
+.canvas-project-preview-footer { min-width: 0; padding: 16px 20px; overflow-wrap: anywhere; }
+.canvas-project-preview-header,
+.canvas-project-preview-footer { flex: 0 0 auto; }
+.canvas-project-preview-header h2 { margin: 0; overflow-wrap: anywhere; }
+.canvas-project-preview-body { display: flex; flex: 1 1 auto; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-top: 0; }
+.canvas-project-preview-body p { margin: 0; }
+.canvas-project-preview-metadata { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.canvas-project-preview-metadata strong { min-width: 0; overflow-wrap: anywhere; }
+.canvas-project-preview-revision,
+.canvas-project-preview-status { color: var(--text-muted); }
+.canvas-project-preview-image { display: grid; justify-items: center; align-items: center; gap: 8px; min-height: 80px; padding: 12px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-color); text-align: center; }
+.canvas-project-preview-image img { display: block; width: auto; height: auto; max-width: 100%; max-height: min(52dvh, 480px); object-fit: contain; }
+.canvas-project-preview-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--border-color); }
+.canvas-project-preview-footer button { flex: 0 0 auto; max-width: 100%; min-height: 40px; white-space: normal; overflow-wrap: anywhere; }

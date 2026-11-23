@@ -8,7 +8,7 @@ import unittest
 import zipfile
 from unittest import mock
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 import app
 
@@ -143,6 +143,110 @@ class CanvasInpaintReferenceApiTests(unittest.TestCase):
             self.assertEqual(output.getpixel((0, 32)), (0, 255, 0))
             self.assertEqual(output.getpixel((63, 32)), (255, 0, 0))
 
+    def test_zoomed_reference_sends_the_selected_end_next_to_the_original(self):
+        reference = Image.new("RGB", (640, 128), "red")
+        reference.paste("blue", (320, 0, 640, 128))
+        clip = Image.new("RGB", (64, 64), "green")
+        for pan, expected in [(0, (255, 0, 0)), (1, (0, 0, 255))]:
+            with self.subTest(pan=pan):
+                request = self._request(clip, self._mask_halves(), reference=self._reference(scale=4, panX=pan))
+                result, send = self._post_with_reference(request, self._generated_with_reference_strip(), reference)
+                self.assertEqual(result.status_code, 200, result.json)
+                params = json.loads(send.call_args.kwargs["data"])["parameters"]
+                with Image.open(io.BytesIO(base64.b64decode(params["image"]))) as actual:
+                    self.assertEqual(actual.size, (384, 64))
+                    self.assertEqual(actual.crop((0, 0, 320, 64)).getcolors(), [(320 * 64, expected)])
+                    self.assertEqual(actual.crop((320, 0, 384, 64)).tobytes(), clip.tobytes())
+
+    def test_boundary_patch_composites_only_generated_mask_pixels_over_translucent_source(self):
+        source = Image.new("RGBA", (64, 64), (64, 32, 160, 96))
+        source.paste((20, 120, 50, 0), (48, 0, 64, 64))
+        mask = self._mask_halves()
+        reference = Image.new("RGB", (64, 64), "blue")
+        payload = self._request(source, mask, prompt_info={"basePrompt": "synthetic"}, reference=self._reference())
+        payload["maskedPatch"] = True
+        result, _ = self._post_with_reference(payload, self._generated_with_reference_strip(), reference)
+        self.assertEqual(result.status_code, 200, result.json)
+        with Image.open(io.BytesIO(base64.b64decode(result.json["image"].split(",", 1)[1]))) as patch:
+            self.assertEqual(patch.mode, "RGBA")
+            self.assertEqual(patch.size, source.size)
+            self.assertEqual(patch.getchannel("A").tobytes(), mask.convert("L").tobytes())
+            self.assertEqual(patch.getpixel((0, 32)), (0, 255, 0, 255))
+            self.assertEqual(patch.info["parameters"], "synthetic")
+            applied = Image.alpha_composite(source, patch)
+            for point in ((44, 20), (60, 20)):
+                self.assertEqual(applied.getpixel(point), source.getpixel(point))
+
+    def test_feathered_patch_matches_normal_blend_after_one_alpha_composite(self):
+        source = Image.new("RGB", (64, 64), "red")
+        generated = Image.new("RGB", (32, 32), "lime")
+        mask = Image.new("L", source.size, 0)
+        mask.paste(255, (31, 31, 39, 39))
+        images = [self._png_bytes(image) for image in (source, generated, mask)]
+        patch = app.blend_canvas_inpaint_result_with_source(*images, feather=2, masked_patch=True)
+        self.assertEqual(patch.getchannel("A").tobytes(), mask.convert("L").filter(ImageFilter.GaussianBlur(2)).tobytes())
+        expected = app.blend_canvas_inpaint_result_with_source(*images, feather=2)
+        applied = Image.alpha_composite(source.convert("RGBA"), patch).convert("RGB")
+        self.assertEqual(applied.tobytes(), expected.tobytes())
+
+    def test_moved_boundary_preserves_displayed_pixels_and_only_snaps_the_model_mask(self):
+        source = Image.new("RGB", (64, 64), "red")
+        reference = Image.new("RGB", (64, 64), "blue")
+        for painted, grid, masked_patch in (
+            ((31, 31, 39, 39), (24, 24, 40, 40), True),
+            ((0, 31, 3, 39), (0, 24, 8, 40), True),
+            ((31, 31, 39, 39), (24, 24, 40, 40), False),
+        ):
+            with self.subTest(painted=painted, masked_patch=masked_patch):
+                # Transparent white must stay outside both masks, including for old RGBA drafts.
+                mask = Image.new("RGBA", source.size, (255, 255, 255, 0))
+                mask.paste((255, 255, 255, 255), painted)
+                payload = self._request(source, mask, reference=self._reference())
+                if masked_patch:
+                    payload["maskedPatch"] = True
+                result, send = self._post_with_reference(payload, self._generated_with_reference_strip(), reference)
+                self.assertEqual(result.status_code, 200, result.json)
+                send.assert_called_once()
+                params = json.loads(send.call_args.kwargs["data"])["parameters"]
+                with Image.open(io.BytesIO(base64.b64decode(params["mask"]))) as model_mask:
+                    self.assertEqual(model_mask.size, (384, 64))
+                    self.assertEqual(model_mask.crop((0, 0, 320, 64)).getbbox(), None)
+                    self.assertEqual(model_mask.crop((320, 0, 384, 64)).getbbox(), grid)
+                with Image.open(io.BytesIO(base64.b64decode(result.json["image"].split(",", 1)[1]))) as output:
+                    if masked_patch:
+                        self.assertEqual(output.getchannel("A").tobytes(), mask.getchannel("A").tobytes())
+                    else:
+                        expected = source.copy()
+                        expected.paste((0, 255, 0), grid)
+                        self.assertEqual(output.tobytes(), expected.tobytes())
+
+    def test_boundary_patch_requires_boolean_true(self):
+        source = Image.new("RGB", (64, 64), "red")
+        payload = self._request(source, self._mask_halves())
+        payload["maskedPatch"] = "true"
+        generated = Image.new("RGB", (32, 32), "lime")
+        with mock.patch("naim.novelai.urllib.request.urlopen", return_value=self._archive_response(generated)):
+            response = app.app.test_client().post("/api/canvas/inpaint", json=payload)
+        self.assertEqual(response.status_code, 200, response.json)
+        with Image.open(io.BytesIO(base64.b64decode(response.json["image"].split(",", 1)[1]))) as result:
+            self.assertEqual(result.mode, "RGB")
+            self.assertEqual(result.size, source.size)
+            self.assertEqual(result.getpixel((12, 12)), (0, 255, 0))
+            self.assertEqual(result.getpixel((52, 12)), (255, 0, 0))
+
+    def test_preparation_and_blend_decode_each_input_once_and_only_encode_the_model_mask(self):
+        source = self._png_bytes(Image.new("RGB", (64, 64), "red"))
+        generated = self._png_bytes(Image.new("RGB", (64, 64), "lime"))
+        mask = self._png_bytes(self._mask_halves())
+        for masked_patch in (False, True):
+            with self.subTest(masked_patch=masked_patch), mock.patch.object(Image, "open", wraps=Image.open) as decode, \
+                    mock.patch.object(Image.Image, "save", autospec=True, side_effect=Image.Image.save) as encode:
+                model_png, pixels = app.prepare_inpaint_masks(mask, masked_patch=masked_patch)
+                self.assertTrue(model_png.startswith(b"\x89PNG"))
+                app.blend_canvas_inpaint_result_with_source(source, generated, pixels, masked_patch=masked_patch)
+                self.assertEqual(decode.call_count, 3)
+                encode.assert_called_once()
+
     def test_invalid_reference_and_input_dimension_mismatch_fail_before_network(self):
         source = Image.new("RGB", (64, 64), (255, 0, 0))
         mask = self._mask_halves()
@@ -210,6 +314,37 @@ class CanvasInpaintReferenceApiTests(unittest.TestCase):
             types.SimpleNamespace(stream=io.BytesIO(saved_bytes))
         )
         self.assertEqual(saved_prompt["basePrompt"], "synthetic scene")
+
+    def test_saved_result_can_omit_the_inline_png(self):
+        source = Image.new("RGB", (64, 64), "red")
+        generated = Image.new("RGB", (64, 64), "green")
+        for options, expects_inline in [
+            ({}, True),
+            ({"includeResultImage": False}, False),
+            ({"includeResultImage": 0}, True),
+            ({"persistResult": False, "includeResultImage": False}, True),
+        ]:
+            with self.subTest(options=options):
+                payload = self._request(source, self._mask_halves(), persist_result=True)
+                payload.update(options)
+                with mock.patch("naim.novelai.urllib.request.urlopen",
+                                return_value=self._archive_response(generated)), \
+                        mock.patch.object(app, "save_canvas_generated_image",
+                                          return_value=("/canvas-imports/saved.png", "saved.png")) as save, \
+                        mock.patch.object(base64, "b64encode", wraps=base64.b64encode) as encode:
+                    response = app.app.test_client().post("/api/canvas/inpaint", json=payload)
+                self.assertEqual(response.status_code, 200, response.json)
+                self.assertEqual("image" in response.json, expects_inline)
+                if payload["persistResult"]:
+                    save.assert_called_once()
+                    saved_png = save.call_args.args[0]
+                    self.assertEqual(mock.call(saved_png) in encode.call_args_list, expects_inline)
+                    self.assertEqual(response.json["src"], "/canvas-imports/saved.png")
+                    if expects_inline:
+                        self.assertEqual(base64.b64decode(response.json["image"].split(",")[1]), saved_png)
+                else:
+                    save.assert_not_called()
+                    self.assertEqual(response.json["image"], response.json["src"])
 
     def test_project_canvas_reference_is_kept_as_an_import_asset_reference(self):
         projects = types.SimpleNamespace(

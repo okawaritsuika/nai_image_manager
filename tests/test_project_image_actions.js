@@ -85,7 +85,7 @@ function fixture() {
         ResizeObserver: class { observe() {} disconnect() {} },
     };
     const context = vm.createContext(sandbox);
-    for (const filename of ['static/index.js', 'static/gallery_inpaint.js', 'static/gallery_upscale.js']) {
+    for (const filename of ['static/canvas_pending_import.js', 'static/index.js', 'static/gallery_inpaint.js', 'static/gallery_upscale.js']) {
         vm.runInContext(fs.readFileSync(require.resolve(`../${filename}`), 'utf8'), context, {filename});
     }
     context.showToast = message => toasts.push(message);
@@ -225,37 +225,32 @@ test('project context allows catalog image actions and invalid context keeps the
     assert.equal(canvasRedirects, 2);
 });
 
-test('canvas prompt transfer keeps cfg_rescale, noise_schedule, and character prompts', async () => {
-    const f = fixture();
-    openMenu(f, 'gallery/ordinary.png', null);
-    f.setFetch(async () => response(200, {status: 'success', data: {
-        basePrompt: 'synthetic base', charPrompts: ['synthetic character'],
-        cfg_rescale: 0, noise_schedule: 'native',
-    }}));
-
-    await f.context.sendContextImageToCanvas();
-    const payload = JSON.parse(f.storage.get('naia_canvas_pending_import'));
-    assert.equal(payload.promptInfo.cfg_rescale, 0);
-    assert.equal(payload.promptInfo.noise_schedule, 'native');
-    assert.equal(payload.promptInfo.charPrompt, 'synthetic character');
-    assert.equal(payload.projectContext, null);
-});
-
-test('canvas transfer captures the project and image before async prompt loading', async () => {
+test('canvas transfer opens immediately and sends the selected project and original image path', async () => {
     const f = fixture();
     openMenu(f, 'synthetic/project.png', projectContext);
-    let release;
-    f.setFetch(() => new Promise(resolve => { release = resolve; }));
-    const transfer = f.context.sendContextImageToCanvas();
-    openMenu(f, 'synthetic/other.png', {...projectContext, projectId: 'other-project', side: 'back'});
-    release(response(200, {status: 'success', data: {basePrompt: 'synthetic prompt'}}));
-    await transfer;
+    let requests = 0;
+    f.setFetch(() => {
+        requests += 1;
+        return new Promise(() => {});
+    });
+    await f.context.sendContextImageToCanvas();
+    assert.equal(f.context.location.href, '/canvas');
+    assert.equal(requests, 0);
     const payload = JSON.parse(f.storage.get('naia_canvas_pending_import'));
     assert.deepEqual(payload.projectContext, projectContext);
     assert.equal(payload.path, 'synthetic/project.png');
     assert.equal(payload.name, 'project.png');
     assert.equal(payload.displayName, '보여줄 이름.png');
-    assert.equal(payload.promptInfo.basePrompt, 'synthetic prompt');
+    assert.equal(payload.promptInfo, null);
+});
+
+test('canvas transfer reports a storage failure before navigating', async () => {
+    const f = fixture();
+    openMenu(f, 'gallery/ordinary.png', null);
+    f.context.localStorage.setItem = () => { throw new Error('synthetic storage failure'); };
+    await f.context.sendContextImageToCanvas();
+    assert.equal(f.context.location.href, undefined);
+    assert.match(f.alerts.at(-1), /synthetic storage failure/);
 });
 
 test('inpaint context is captured before async image and prompt loading', async () => {

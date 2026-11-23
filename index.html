@@ -520,6 +520,7 @@
     <script src="/static/common_anlas_warning.js"></script>
     <script src="/static/gallery_catalog.js"></script>
     <script src="/static/gallery_recycling.js"></script>
+    <script src="/static/canvas_pending_import.js"></script>
     <script src="/static/index.js"></script>
     <script src="/static/gallery_image_tools.js"></script>
     <script src="/static/gallery_index_jobs.js"></script>
@@ -527,6 +528,7 @@
     <script src="/static/gallery_zoom_view.js"></script>
     <script src="/static/gallery_zoom.js"></script>
     <script src="/static/generation_settings.js"></script>
+    <script src="/static/inpaint_grid_brush.js"></script>
     <script src="/static/gallery_inpaint.js"></script>
     <script src="/static/gallery_rules.js"></script>
     <script src="/static/upscale_models.js"></script>
@@ -944,6 +946,9 @@
                 <div id="galleryInpaintImageWrap">
                     <img id="galleryInpaintImage" src="" alt="gallery inpaint target">
                     <canvas id="galleryInpaintOverlay"></canvas>
+                    <svg id="galleryInpaintBrushCursor" aria-hidden="true" preserveAspectRatio="none">
+                        <path vector-effect="non-scaling-stroke"></path>
+                    </svg>
 
                     <div id="galleryInpaintLoading" class="gallery-inpaint-loading">
                         <div class="gallery-inpaint-loading-spinner"></div>
@@ -1003,7 +1008,6 @@
         </div>
     </div>
 
-    <div id="galleryInpaintBrushCursor"></div>
     <div id="galleryCharacterNameManagerLayer" class="gallery-character-name-layer">
         <div class="gallery-character-name-card">
             <div class="gallery-character-name-header">

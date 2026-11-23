@@ -1,5 +1,7 @@
 import csv
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -8,8 +10,10 @@ import unittest
 from unittest import mock
 
 from flask import Flask
+from requests import ConnectionError
 
 from naim.prompt_suggestions import PromptSuggestionCatalog
+from naim.web import prompt_suggestions
 from naim.web.prompt_suggestions import register_prompt_suggestion_routes
 
 
@@ -41,7 +45,8 @@ class PromptSuggestionTests(unittest.TestCase):
         )
         self.app = Flask(__name__)
         self.app.config['TESTING'] = True
-        register_prompt_suggestion_routes(self.app, self.root)
+        self.import_path = self.root / 'prompt-tags.csv.local'
+        register_prompt_suggestion_routes(self.app, self.root, self.import_path)
         self.client = self.app.test_client()
 
     def _write_data(self, translations=None, contents=None):
@@ -132,6 +137,130 @@ class PromptSuggestionTests(unittest.TestCase):
             self.assertTrue(all(result == results[0] for result in results))
             catalog.suggest('long')
             self.assertEqual(loader.call_count, 1)
+
+    def _import_csv(self, rows):
+        stream = io.StringIO(newline='')
+        csv.writer(stream).writerows(rows)
+        return self.client.post('/api/prompt-tags/import',
+                                data=stream.getvalue().encode('utf-8-sig'),
+                                content_type='application/octet-stream')
+
+    def test_import_adds_korean_aliases_to_builtin_and_new_tags_and_persists(self):
+        route = '/api/prompt-tags/import'
+        self.assertFalse(self.client.get(route).json['imported'])
+        self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=장발').json['items'], [])
+        response = self._import_csv([
+            ('long hair', 0, 300, '[머리] 설명, 쉼표. <키워드> 장발, 아주 긴 머리.'),
+            ('synthetic hero', 4, 15, '[인물] 설명. <키워드> 가상 영웅, 합성 인물.'),
+        ])
+        self.assertEqual(response.json, {'status': 'success', 'count': 2})
+        self.assertTrue(self.client.get(route).json['imported'])
+        builtin = self.client.get('/api/prompt-tags/suggest?q=장발').json['items']
+        self.assertEqual(builtin, [{'tag': 'long_hair', 'ko': '긴 머리', 'count': 40}])
+        restarted = PromptSuggestionCatalog(self.root, self.import_path)
+        self.assertEqual(restarted.suggest('합성 인물'), [
+            {'tag': 'synthetic hero', 'ko': '가상 영웅', 'count': 15},
+        ])
+
+    def test_import_errors_keep_the_saved_csv_and_current_suggestions(self):
+        self.assertEqual(self._import_csv([('old', 0, 1, '<키워드> 이전.')]).status_code, 200)
+        saved = self.import_path.read_bytes()
+        self.assertEqual(self._import_csv([('invalid', 0, 'bad count', '')]).status_code, 400)
+        with self.assertLogs(self.app.logger, level='WARNING'), mock.patch(
+                'naim.prompt_suggestions.os.replace', side_effect=OSError):
+            self.assertEqual(self._import_csv([('new', 0, 1, '<키워드> 신규.')]).status_code, 503)
+        self.assertEqual(self.import_path.read_bytes(), saved)
+        self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=이전').json['items'][0]['tag'], 'old')
+        self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=신규').json['items'], [])
+        self.assertEqual(self._import_csv([('new', 0, 1, '<키워드> 신규.')]).status_code, 200)
+        self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=이전').json['items'], [])
+
+    def test_download_verifies_the_fixed_source_and_applies_without_an_upload(self):
+        payload = 'downloaded,0,2,<키워드> 내려받음.'.encode()
+        with mock.patch.object(prompt_suggestions, '_CSV_BYTES', len(payload)), mock.patch.object(
+                prompt_suggestions, '_CSV_SHA256', hashlib.sha256(payload).hexdigest()), mock.patch.object(
+                prompt_suggestions, 'public_session') as session:
+            get = session.return_value.__enter__.return_value.get
+            response = get.return_value.__enter__.return_value
+            response.iter_content.return_value = [payload[:7], payload[7:]]
+
+            self.assertEqual(self.client.post('/api/prompt-tags/download').status_code, 415)
+            get.assert_not_called()
+            reply = self.client.post('/api/prompt-tags/download', json={})
+            self.assertEqual(reply.json, {'status': 'success', 'count': 1})
+            get.assert_called_once_with(prompt_suggestions._CSV_URL, stream=True, timeout=(8, 20))
+            self.assertEqual(self.import_path.read_bytes(), payload)
+            self.assertTrue(self.client.get('/api/prompt-tags/import').json['imported'])
+            self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=내려받음').json['items'][0]['tag'], 'downloaded')
+
+            for bad_payload in (payload[:-1], payload + b'extra', b'x' * len(payload)):
+                with self.subTest(length=len(bad_payload)):
+                    response.iter_content.return_value = [bad_payload]
+                    self.assertEqual(self.client.post('/api/prompt-tags/download', json={}).status_code, 502)
+                    self.assertEqual(self.import_path.read_bytes(), payload)
+            get.side_effect = ConnectionError
+            self.assertEqual(self.client.post('/api/prompt-tags/download', json={}).status_code, 502)
+            self.assertEqual(self.import_path.read_bytes(), payload)
+
+    def test_download_serializes_csv_updates_across_tabs(self):
+        started = threading.Event()
+        finish = threading.Event()
+
+        def slow_download():
+            started.set()
+            if not finish.wait(3):
+                raise AssertionError('download was not released')
+            return 'new,0,1,<키워드> 신규.'.encode()
+
+        with mock.patch.object(prompt_suggestions, '_download_prompt_tag_csv', side_effect=slow_download) as download:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.app.test_client().post, '/api/prompt-tags/download', json={})
+                try:
+                    self.assertTrue(started.wait(3))
+                    self.assertEqual(self.client.post('/api/prompt-tags/download', json={}).status_code, 409)
+                    self.assertEqual(self._import_csv([('old', 0, 1, '<키워드> 이전.')]).status_code, 409)
+                    download.assert_called_once()
+                finally:
+                    finish.set()
+                self.assertEqual(future.result(timeout=3).status_code, 200)
+
+    def test_keywordless_import_keeps_previous_file_and_mixed_catalog_remains_searchable(self):
+        response = self._import_csv([('ink', 0, 1, '<키워드> 잉크'), ('art paper', 0, 2, '')])
+        self.assertEqual(response.json['count'], 2)
+        saved = self.import_path.read_bytes()
+        response = self._import_csv([('unused', 0, 1, 'English description'), ('empty', 0, 1, '<키워드> ...')])
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.import_path.read_bytes(), saved)
+        self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=잉크').json['items'][0]['tag'], 'ink')
+        self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=art_paper').json['items'][0]['tag'], 'art paper')
+
+    def test_import_status_and_search_share_validation_after_external_file_changes(self):
+        from naim.prompt_suggestions import _parse_import
+        route = '/api/prompt-tags/import'
+        self.assertFalse(self.client.get(route).json['imported'])
+        self.import_path.write_text('broken', encoding='utf-8')
+        with mock.patch('naim.prompt_suggestions._parse_import', wraps=_parse_import) as parse:
+            with self.assertLogs('naim.prompt_suggestions', level='WARNING'):
+                status = self.client.get(route).json
+            self.assertFalse(status['imported'])
+            self.assertEqual(status['import_state'], 'invalid')
+            self.assertEqual(self.client.get(route).json, status)
+            self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=긴_머리').json['items'][0]['tag'], 'long_hair')
+            self.assertEqual(parse.call_count, 1)
+            self.import_path.write_text('ink,0,1,<키워드> 잉크', encoding='utf-8')
+            self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=잉크').json['items'][0]['tag'], 'ink')
+            self.assertTrue(self.client.get(route).json['imported'])
+            self.assertEqual(parse.call_count, 2)
+            self.import_path.unlink()
+            self.assertEqual(self.client.get(route).json['import_state'], 'missing')
+            self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=잉크').json['items'], [])
+
+    def test_keywordless_duplicate_preserves_search_words_and_the_highest_count(self):
+        rows = [('ink', 0, 1, '<키워드> 잉크'), ('INK', 0, 3, '')]
+        for ordered in (rows, rows[::-1]):
+            self.assertEqual(self._import_csv(ordered).json.get('count'), 1)
+            self.assertEqual(self.client.get('/api/prompt-tags/suggest?q=잉크').json['items'],
+                             [{'tag': 'INK', 'ko': '잉크', 'count': 3}])
 
 
 if __name__ == '__main__':

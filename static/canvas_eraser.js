@@ -56,7 +56,7 @@ function setCanvasLayerEraserEnabled(enabled) {
 
 function toggleCanvasLayerEraser() {
     if (!canvasLayerEraserEnabled && !getCanvasEraserTargets().length) {
-        alert('레이어 목록에서 지울 그림, 인페인팅 결과 또는 결과가 있는 선택 영역을 먼저 선택해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('레이어 목록에서 지울 그림, 인페인팅 결과 또는 결과가 있는 선택 영역을 먼저 선택해 주세요.');
         return;
     }
     setCanvasLayerEraserEnabled(!canvasLayerEraserEnabled);
@@ -205,7 +205,7 @@ async function commitCanvasLayerEraserStroke(session) {
         clearClipMergedSourcePreviewCache();
         saveCanvasState();
     } catch (error) {
-        alert(`지우기 저장 실패: ${error.message}\n이 획은 적용되지 않았습니다.`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`지우기 저장 실패: ${error.message}\n이 획은 적용되지 않았습니다.`);
     } finally {
         locked.forEach(layer => canvasLayerEraserWrites.delete(layer));
         renderLayerList();

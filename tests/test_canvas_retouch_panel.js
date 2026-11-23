@@ -111,20 +111,24 @@ function byLabel(root, label) {
     return match;
 }
 
-function createHarness() {
+function createHarness({split = false} = {}) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'canvas_retouch_panel.js'), 'utf8');
     const document = new FakeDocument();
     const host = document.createElement('div');
     host.id = 'canvasRetouchPanel';
     document.body.append(host);
+    const layerHost = split ? document.createElement('div') : null;
+    if (layerHost) document.body.append(layerHost);
     const context = {document, CanvasRetouchState: RetouchState, Math};
     context.window = context;
     vm.runInNewContext(source, context, {filename: 'canvas_retouch_panel.js'});
     const calls = [];
     const names = ['add', 'recipe', 'preset', 'select', 'toggle', 'move', 'duplicate', 'remove', 'change', 'mask', 'setTool', 'brush', 'undo', 'redo', 'compare', 'compareSplit', 'guides', 'maskShow', 'print', 'copy', 'paste', 'notes', 'check', 'apply', 'close', 'download', 'downloadPair'];
     const actions = Object.fromEntries(names.map(name => [name, (...args) => calls.push([name, ...args])]));
-    const panel = context.CanvasRetouchPanel.create(host, actions);
-    return {document, host, panel, calls, root: host.children[0]};
+    const panel = split
+        ? context.CanvasRetouchPanel.create(host, actions, layerHost)
+        : context.CanvasRetouchPanel.create(host, actions);
+    return {document, host, layerHost, panel, calls, root: host.children[0]};
 }
 
 function view({layers = [], selectedId = null, busy = false, extra = {}} = {}) {
@@ -166,6 +170,45 @@ test('panel starts with loading state and forwards add, recipe, and close action
         ['recipe', ['skin-tone', 'warm-color', 'tone', 'beige', 'line', 'blush', 'texture', 'sharpen']],
         ['close']
     ]);
+});
+
+test('split panel keeps common tools on the left and layer settings on the right', () => {
+    const h = createHarness({split: true});
+    const leftContent = byClass(h.root, 'canvas-retouch-content');
+    const toolSection = byClass(h.root, 'canvas-retouch-tool-section');
+    const brushDetails = byClass(h.root, 'canvas-retouch-brush');
+    assert.equal(leftContent.children[0], toolSection);
+    assert.equal(leftContent.children[1], brushDetails);
+    assert.equal(toolSection.children[0].textContent, '보정 도구');
+    assert.equal(find(h.root, item => item.classList?.contains('canvas-retouch-layer-section')), null);
+    assert.equal(h.layerHost.hidden, true);
+
+    const layerContent = h.layerHost.children[0];
+    assert.equal(layerContent.classList.contains('canvas-retouch-panel'), true);
+    assert.equal(layerContent.classList.contains('canvas-retouch-layer-content'), true);
+    const layerSection = byClass(layerContent, 'canvas-retouch-layer-section');
+    const settingsSection = byClass(layerContent, 'canvas-retouch-settings-section');
+    assert.equal(layerContent.children[0], layerSection);
+    assert.equal(layerContent.children[1], settingsSection);
+
+    h.panel.update({doc: null, busy: false});
+    assert.equal(h.layerHost.hidden, true);
+    assert.equal(byClass(h.root, 'canvas-retouch-loading').hidden, false);
+    h.panel.update(view());
+    assert.equal(h.layerHost.hidden, false);
+
+    const addType = byLabel(layerContent, '새 보정 레이어 종류');
+    const blurOption = addType.options.find(option => option.value === 'blur');
+    assert.ok(blurOption);
+    assert.equal(blurOption.textContent, '흐리기');
+    addType.value = 'blur';
+    byLabel(layerContent, '보정 레이어 추가').dispatch('click');
+    assert.deepEqual(h.calls.at(-1), ['add', 'blur']);
+
+    h.panel.destroy();
+    assert.equal(h.host.children.length, 0);
+    assert.equal(h.layerHost.hidden, true);
+    assert.equal(h.layerHost.children.length, 0);
 });
 
 test('panel explains whether apply creates a new layer or updates an existing correction', () => {

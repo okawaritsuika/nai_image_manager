@@ -52,6 +52,36 @@ class JsonFilesTests(unittest.TestCase):
             list(pool.map(lambda i: json_files.merge_json_object(self.path, {str(i): i}), range(40)))
         self.assertEqual(json_files.read_json(self.path), {str(i): i for i in range(40)})
 
+    def test_temporary_windows_lock_retries_only_the_replace_and_keeps_the_previous_document(self):
+        self.path.write_bytes(b'{"old": true}')
+        original_replace = os.replace
+        locked = PermissionError('synthetic Windows file lock')
+        locked.winerror = 32
+        attempts = []
+
+        def replace(source, target):
+            attempts.append(source)
+            if len(attempts) == 1:
+                raise locked
+            return original_replace(source, target)
+
+        with mock.patch.object(json_files.os, 'replace', side_effect=replace), \
+                mock.patch('naim.paths.time.sleep', side_effect=lambda _: self.assertEqual(self.path.read_bytes(), b'{"old": true}')) as wait:
+            json_files.merge_json_object(self.path, {'new': True})
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0], attempts[1])
+        wait.assert_called_once_with(0.03)
+        self.assertEqual(json_files.read_json(self.path), {'old': True, 'new': True})
+
+        with mock.patch('naim.paths.time.sleep') as wait:
+            json_files.write_json(self.path, {'confirmed': True})
+            wait.assert_not_called()
+            with mock.patch.object(json_files.os, 'replace', side_effect=locked), self.assertRaises(PermissionError):
+                json_files.write_json(self.path, {'lost': False})
+            self.assertEqual(wait.call_count, 4)
+        self.assertEqual(json_files.read_json(self.path), {'confirmed': True})
+        self.assertEqual(list(self.path.parent.glob('*.tmp')), [])
+
     @unittest.skipUnless(os.name == 'nt', 'Windows path aliases only')
     def test_windows_path_identity_key_normalizes_extended_drive_and_unc_aliases(self):
         self.assertEqual(path_identity_key(r'C:\synthetic\settings.json'),

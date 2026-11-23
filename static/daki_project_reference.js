@@ -169,7 +169,7 @@
             syncControls();
         }
 
-        function normalizeSettingsResponse(payload) {
+        function normalizeSettingsResponse(payload, operation, sentReference) {
             const settings = payload?.settings;
             if (!payload || payload.status !== 'success' || !settings
                 || typeof settings !== 'object' || Array.isArray(settings)
@@ -183,6 +183,13 @@
             if (settings.inpaintReference !== undefined && settings.inpaintReference !== null) {
                 reference = normalizeReference(settings.inpaintReference);
                 if (!reference) throw new Error('프로젝트 참고 이미지 설정을 확인할 수 없습니다.');
+            }
+            const codec = root.CanvasInpaintReference;
+            if (sentReference !== undefined) {
+                codec.rememberProjectReference?.(projectId, sentReference, settings, operation.supportsPlacement);
+            }
+            if (codec.readProjectReference) {
+                reference = normalizeReference(codec.readProjectReference(projectId, settings, operation.supportsPlacement));
             }
             return {revision: settings.revision, settings, reference};
         }
@@ -214,6 +221,7 @@
             if (!response.ok || !payload || payload.status !== 'success') {
                 throw responseError(response, payload);
             }
+            if (url === endpoint) operation.supportsPlacement = response.headers?.get?.('X-NAIM-Reference-Placement') === '1';
             return payload;
         }
 
@@ -248,7 +256,7 @@
             try {
                 const payload = await requestJson(endpoint, {signal: operation.controller.signal}, operation);
                 if (!operationActive(operation) || !payload) return;
-                const normalized = normalizeSettingsResponse(payload);
+                const normalized = normalizeSettingsResponse(payload, operation);
                 if (!operationActive(operation)) return;
                 hasLoadedSettings = true;
                 applyReference(normalized.reference);
@@ -274,11 +282,12 @@
                 || ['png', 'jpg', 'jpeg', 'webp'].includes(extension);
         }
 
-        function uploadedDescriptor(payload, file, width) {
+        function uploadedDescriptor(payload, file, previous) {
             const descriptor = normalizeReference({
                 src: payload?.src || payload?.path,
                 name: payload?.name || file.name || '참고 이미지',
-                width: width || DEFAULT_WIDTH,
+                width: previous?.width || DEFAULT_WIDTH,
+                scale: previous?.scale,
                 x: 0.5,
                 y: 0.5,
                 zoom: 1,
@@ -316,10 +325,9 @@
                     signal: operation.controller.signal,
                 }, operation);
                 if (!operationActive(operation) || !latestPayload) return;
-                const latest = normalizeSettingsResponse(latestPayload);
+                const latest = normalizeSettingsResponse(latestPayload, operation);
                 if (!operationActive(operation)) return;
-                const descriptor = uploadedDescriptor(uploaded, file,
-                    latest.reference?.width || DEFAULT_WIDTH);
+                const descriptor = uploadedDescriptor(uploaded, file, latest.reference);
 
                 stage = 'save';
                 statusMessage = '프로젝트 설정에 이미지를 저장하는 중…';
@@ -327,7 +335,7 @@
                 const {revision, ...settings} = latest.settings;
                 const putPayload = await requestJson(endpoint, {
                     method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
+                    headers: {'Content-Type': 'application/json', 'X-NAIM-Reference-Placement': '1'},
                     body: JSON.stringify({
                         revision,
                         settings: {...settings, inpaintReference: descriptor},
@@ -335,7 +343,7 @@
                     signal: operation.controller.signal,
                 }, operation);
                 if (!operationActive(operation) || !putPayload) return;
-                const saved = normalizeSettingsResponse(putPayload);
+                const saved = normalizeSettingsResponse(putPayload, operation, descriptor);
                 if (!operationActive(operation)) return;
                 applyReference(saved.reference);
                 setStatus('인페인팅 참고 이미지를 프로젝트에 등록했습니다.');

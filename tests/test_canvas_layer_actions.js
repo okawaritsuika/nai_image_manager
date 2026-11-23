@@ -14,6 +14,39 @@ function extractFunction(source, name) {
     return source.slice(start, end + 2);
 }
 
+test('dropping a selection into a folder moves its entire subtree in order', () => {
+    const original = {id: 3, type: 'clip'};
+    const result = {id: 5, type: 'clip'};
+    const results = {id: 4, type: 'folder', children: [result]};
+    const selection = {id: 2, type: 'selection', children: [results, original]};
+    const image = {id: 6, type: 'image'};
+    const folder = {id: 1, type: 'folder', expanded: false, children: [image]};
+    const other = {id: 7, type: 'selection', children: []};
+    const layers = [selection, other, folder];
+    let saves = 0;
+    const context = vm.createContext({
+        canvasLayers: layers, draggedLayerId: selection.id, activeLayerId: null,
+        clearLayerDropMarkers() {}, renderLayerList() {}, renderCanvasLayersOnSurface() {},
+        saveCanvasState() { saves++; }
+    });
+    for (const name of ['findCanvasLayer', 'layerTreeContainsLayerId', 'canDropLayerOnTarget',
+        'removeCanvasLayerById', 'moveDraggedLayerToTarget']) {
+        vm.runInContext(extractFunction(canvasSource, name), context);
+    }
+    assert.equal(context.canDropLayerOnTarget(selection.id, results.id, 'inside'), false);
+    assert.equal(context.canDropLayerOnTarget(selection.id, other.id, 'inside'), false);
+    assert.equal(context.canDropLayerOnTarget(results.id, folder.id, 'inside'), false);
+
+    context.moveDraggedLayerToTarget({preventDefault() {}, stopPropagation() {}}, folder.id, 'inside');
+    assert.deepEqual(layers, [other, folder]);
+    assert.deepEqual(folder.children, [selection, image]);
+    assert.deepEqual(selection.children, [results, original]);
+    assert.deepEqual(results.children, [result]);
+    assert.equal(folder.expanded, true);
+    assert.equal(context.activeLayerId, selection.id);
+    assert.equal(saves, 1);
+});
+
 function createHarness() {
     const deleted = [];
     const toasts = [];
@@ -200,4 +233,104 @@ test('processing feedback updates existing nodes and ignores an obsolete complet
     assert.equal(state.loading, true);
     context.setClipInpaintProcessing(3, false);
     assert.equal(state.loading, false); assert.equal(button.disabled, false);
+});
+
+function stackedResults() {
+    const clips = Array.from({length: 40}, (_, i) => ({id: i + 10, type: 'clip', visible: true, renderOnCanvas: true}));
+    const result = {...clips[0], id: 90};
+    return {clips, result, folder: {id: 2, children: [result, ...clips]}, selection: {id: 1}};
+}
+
+test('an expanded result folder prepends only the new row and clears the previous active row', () => {
+    const stack = stackedResults();
+    const rows = stack.clips.map(clip => ({id: clip.id}));
+    const original = [...rows];
+    const meta = {};
+    const active = original[0];
+    const activeClasses = new Set(['active']);
+    active.classList = {remove: name => activeClasses.delete(name)};
+    const children = {
+        classList: {contains: name => name === 'layer-children'},
+        querySelector: () => null,
+        prepend(fragment) { rows.unshift(...fragment); }
+    };
+    const folderRow = {nextElementSibling: children, style: {getPropertyValue: () => '2'},
+        querySelector: selector => selector === '.layer-meta' ? meta : null};
+    const list = {querySelector: selector => ({
+        '.folder-item[data-layer-id="2"]': folderRow, '.layer-item.active': active
+    })[selector]};
+    const context = vm.createContext({
+        document: {createDocumentFragment: () => []},
+        renderLayerTree(layers, fragment, depth) {
+            assert.equal(depth, 3);
+            assert.equal(layers.length, 1);
+            assert.equal(layers[0], stack.result);
+            fragment.push({id: layers[0].id});
+        }
+    });
+    vm.runInContext(extractFunction(canvasSource, 'insertInpaintResultRow'), context);
+    assert.equal(context.insertInpaintResultRow(list, stack), true);
+    assert.equal(rows.length, 41);
+    assert.equal(rows[0].id, stack.result.id);
+    assert.ok(original.every((row, i) => rows[i + 1] === row));
+    assert.equal(activeClasses.has('active'), false);
+    assert.equal(meta.textContent, '폴더 · 41개');
+
+    folderRow.nextElementSibling = null;
+    assert.equal(context.insertInpaintResultRow(list, stack), false);
+    assert.equal(rows.length, 41);
+});
+
+test('a surface result goes above the highest visible sibling and below the next overlay', () => {
+    const stack = stackedResults();
+    stack.clips[0].visible = false;
+    const original = stack.clips.slice(1).reverse().map(clip => ({id: clip.id}));
+    const overlay = {};
+    const nodes = [...original, overlay];
+    const anchor = original.at(-1);
+    anchor.after = fragment => nodes.splice(nodes.indexOf(anchor) + 1, 0, ...fragment);
+    const surface = {querySelector: selector => selector === `.image-layer[data-layer-id="${anchor.id}"]` ? anchor : null};
+    const context = vm.createContext({
+        isImageResizeMode: false, isCanvasResizeMode: false, isLayerMoveMode: false,
+        selectedLayerIds: new Set(), canvasLayerEraserEnabled: false, window: {},
+        document: {createDocumentFragment: () => []},
+        renderCanvasLayerStack(layers, fragment, scale, selection) {
+            assert.equal(scale, 0.5);
+            assert.equal(selection, stack.selection);
+            assert.equal(layers.length, 1);
+            assert.equal(layers[0], stack.result);
+            fragment.push({id: layers[0].id});
+        }
+    });
+    vm.runInContext(extractFunction(canvasSource, 'insertInpaintResultOnSurface'), context);
+    assert.equal(context.insertInpaintResultOnSurface(surface, 0.5, stack), true);
+    assert.ok(original.every((node, i) => nodes[i] === node));
+    assert.equal(nodes.at(-2).id, stack.result.id);
+    assert.equal(nodes.at(-1), overlay);
+
+    assert.equal(context.insertInpaintResultOnSurface({querySelector: () => null}, 0.5, stack), false);
+    context.isImageResizeMode = true;
+    assert.equal(context.insertInpaintResultOnSurface(surface, 0.5, stack), false);
+    assert.equal(nodes.length, original.length + 2);
+});
+
+test('switching a result keeps its image node and restores placement at the current zoom', () => {
+    const clip = {id: 9, type: 'clip', renderOnCanvas: true, src: '/result', visible: false};
+    const node = {style: {}, querySelector: () => ({classList: {remove() {}}})};
+    const surface = {querySelector: selector => selector === '.image-layer[data-layer-id="9"]' ? node : null};
+    const placements = [];
+    const context = vm.createContext({
+        isImageResizeMode: false, isCanvasResizeMode: false, isLayerMoveMode: false, window: {},
+        selectedLayerIds: new Set(), canvasLayerEraserEnabled: false,
+        updateCanvasLayerNodeGeometry(...args) { placements.push(args); }
+    });
+    vm.runInContext(extractFunction(canvasSource, 'updateInpaintResultVisibilityOnSurface'), context);
+    assert.equal(context.updateInpaintResultVisibilityOnSurface(surface, 1, clip), true);
+    assert.equal(node.style.display, 'none');
+    clip.visible = true;
+    assert.equal(context.updateInpaintResultVisibilityOnSurface(surface, 2, clip), true);
+    assert.equal(node.style.display, '');
+    assert.deepEqual(placements, [[clip, 2, node]]);
+    context.canvasLayerEraserEnabled = true;
+    assert.equal(context.updateInpaintResultVisibilityOnSurface(surface, 2, clip), false);
 });

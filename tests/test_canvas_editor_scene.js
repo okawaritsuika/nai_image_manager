@@ -75,6 +75,8 @@ function makeEnvironment({sourceTiles = false, imageDecode, perf = performance} 
                     overview: options.overview,
                     paused: [],
                     clears: 0,
+                    retained: 0,
+                    retainDetail() { this.retained += 1; },
                     destroyed: false,
                     schedule() {},
                     present() {},
@@ -117,9 +119,9 @@ function makeEnvironment({sourceTiles = false, imageDecode, perf = performance} 
             });
             surface.querySelectorAll = () => surface.nodes;
         },
-        refresh(layers) {
+        refresh(layers, options = {}) {
             this.attach(layers);
-            this.scene.refresh({surface, workspace, width: WIDTH, height: HEIGHT, layers, paused: false});
+            this.scene.refresh({surface, workspace, width: WIDTH, height: HEIGHT, layers, paused: false, ...options});
             return state.views.at(-1);
         },
     };
@@ -157,6 +159,7 @@ async function testLocalSceneCacheAndStaging() {
 async function testSourceAtlasReuseForVisibilitySubset() {
     const env = makeEnvironment({sourceTiles: true});
     const layers = [0, 1, 2, 3].map(makeLayer);
+    layers[1].type = 'clip';
     const view = env.refresh(layers);
     view.tiles(tileBox(), 1);
     await pause();
@@ -166,7 +169,8 @@ async function testSourceAtlasReuseForVisibilitySubset() {
     assert.equal(env.state.requests.length, 1);
     const clearsBeforeToggle = view.clears;
 
-    env.refresh(layers.filter(layer => layer.id !== '2'));
+    env.refresh(layers.filter(layer => layer.id !== '2'), {toggledClipId: 2});
+    assert.equal(view.retained, 1, 'a full-size clip retains the sharp frame through remote compositing');
     assert.equal(view.clears, clearsBeforeToggle, 'a source-backed visibility change keeps the old frame staged');
     assert.equal(env.scene.usesTiledSource(layers[0]), true,
         'the current subset keeps source-tile DOM ownership for its visible layers');
@@ -193,6 +197,21 @@ async function testSourceAtlasReuseForVisibilitySubset() {
     assert.equal(view.clears, clearsBeforeToggle, 'the repeated toggle preserves view ownership and caches');
 }
 
+function testImageAndFolderVisibilityRetainDetail() {
+    const layers = [0, 1, 2, 3].map(makeLayer);
+    for (const sourceTiles of [false, true]) {
+        const env = makeEnvironment({sourceTiles});
+        const view = env.refresh(layers);
+        // An image removes one drawable. A folder can remove several at once.
+        for (const next of [layers.slice(1), layers, layers.slice(2), layers]) {
+            env.refresh(next, {visibilityChanged: true});
+        }
+        assert.equal(view.retained, 4, 'eye toggles keep the sharp frame until the new stack is ready');
+        env.refresh(layers.slice(1));
+        assert.equal(view.retained, 4, 'ordinary stack edits do not request a sharp-frame hold');
+    }
+}
+
 async function testDecodeRejectionUsesCanvasDrawPath() {
     const env = makeEnvironment({imageDecode: async () => {throw new Error('decode unavailable');}});
     const view = env.refresh([makeLayer(0)]);
@@ -214,11 +233,157 @@ async function testLocalTileBuildProgressSurvivesFrames() {
         'the per-layer work remains cached between frames instead of restarting');
 }
 
+function testGeneratedClipAppend() {
+    const env = makeEnvironment({perf: {now: () => 0}});
+    const old = Array.from({length: 120}, (_, i) => makeLayer(i));
+    const clip = {...makeLayer(120), type: 'clip', x: 100, y: 200, layerWidth: 96, layerHeight: 80, rotation: 15};
+    const next = [...old, clip];
+    const view = env.refresh(old);
+    const complete = view.tiles(tileBox(), 1)[0];
+    const coarse = view.overview();
+    const distantBox = {...tileBox(), x: 3000};
+    const distant = view.tiles(distantBox, 1)[0];
+    const clears = view.clears;
+    const pauseCount = view.paused.length;
+    env.refresh(next, {appendedClipId: Number(clip.id)});
+    assert.equal(view.clears, clears, 'the current GPU frame stays visible while its replacement is prepared');
+    assert.equal(view.paused.slice(pauseCount).includes(true), false);
+    const updated = view.tiles(tileBox(), 1)[0];
+    const appendedImage = env.surface.nodes.at(-1).image;
+    for (const [tile, base] of [[updated, complete], [view.overview(), coarse]]) {
+        const draws = tile.canvas.getContext().draws;
+        assert.deepEqual(draws[0], [base.canvas, 0, 0]);
+        assert.deepEqual(draws[1], [appendedImage, -48, -40, 96, 80]);
+        assert.equal(draws.length, 2);
+        assert.equal(base.canvas.getContext().draws.length, old.length);
+    }
+    assert.equal(view.tiles(distantBox, 1)[0].canvas, distant.canvas);
+    assert.equal(view.tiles({...tileBox(), y: 3000}, 1)[0].canvas.getContext().draws.length, old.length,
+        'a missing seed tile draws every intersecting old layer');
+    const second = {...clip, id: '122', src: '/image/second.png'};
+    env.refresh([...next, second], {appendedClipId: second.id});
+    assert.deepEqual(view.tiles(tileBox(), 1)[0].canvas.getContext().draws.map(draw => draw[0]),
+        [updated.canvas, env.surface.nodes.at(-1).image]);
+}
+
+function testOnlyAnUnchangedLocalPrefixCanSeedAnAppend() {
+    const old = [makeLayer(0), makeLayer(1)];
+    const clip = {...makeLayer(2), type: 'clip'};
+    for (const [label, next, id] of [
+        ['reordered', [old[1], old[0], clip], clip.id],
+        ['inserted between layers', [old[0], clip, old[1]], clip.id],
+        ['moved', [{...old[0], x: 5}, old[1], clip], clip.id],
+        ['replaced pixels', [{...old[0], src: '/image/edited.png'}, old[1], clip], clip.id],
+        ['different result', [...old, clip], 999],
+        ['missing generation hint', [...old, clip], undefined],
+    ]) {
+        const env = makeEnvironment({perf: {now: () => 0}});
+        const view = env.refresh(old);
+        view.tiles(tileBox(), 1);
+        env.refresh(next, {appendedClipId: id});
+        const draws = view.tiles(tileBox(), 1)[0].canvas.getContext().draws;
+        assert.deepEqual(draws.map(args => args[0]), env.surface.nodes.map(node => node.image), label);
+    }
+}
+
+function testClipVisibilityChangesOnlyIntersectingTiles() {
+    const env = makeEnvironment({perf: {now: () => 0}});
+    const base = makeLayer(0), upper = makeLayer(2);
+    // Rotation extends into the first tile's one-pixel gutter, without covering its interior.
+    const clip = {...makeLayer(1), type: 'clip', x: 1030.5, y: 20, layerWidth: 4, layerHeight: 16, rotation: 90};
+    const layers = [base, clip, upper];
+    const view = env.refresh(layers);
+    const tileAt = x => view.tiles({...tileBox(), x}, 1)[0];
+    const first = tileAt(0), middle = tileAt(1024), far = tileAt(2048);
+    const bytes = env.scene.stats().cpu.bytes;
+    env.refresh([base, upper], {toggledClipId: Number(clip.id)});
+    assert.equal(tileAt(2048), far, 'unaffected CPU and GPU tiles keep their identity');
+    assert.equal(env.scene.stats().cpu.bytes, bytes, 'moving a tile does not charge a second backing store');
+    for (const [x, previous] of [[0, first], [1024, middle]]) {
+        const tile = tileAt(x);
+        assert.notEqual(tile, previous, 'the rotated clip and its sampling gutter are invalidated');
+        assert.deepEqual(tile.canvas.getContext().draws.map(draw => draw[0].src), [base.src, upper.src]);
+    }
+    env.refresh(layers, {toggledClipId: clip.id});
+    assert.equal(tileAt(2048), far);
+    assert.equal(tileAt(0), first);
+    assert.equal(tileAt(1024), middle);
+    assert.equal(view.retained, 2);
+
+    // Append after a transfer while the retained tile's original scene is not the lookup key.
+    env.refresh([base, upper], {toggledClipId: clip.id});
+    const extra = {...clip, id: '4'};
+    const beforeAppend = env.scene.stats().cpu.bytes;
+    env.refresh([base, upper, extra], {appendedClipId: extra.id});
+    assert.equal(tileAt(2048).canvas, far.canvas);
+    assert.equal(env.scene.stats().cpu.bytes, beforeAppend);
+}
+
+function testClipVisibilityHintsValidateTheRestOfTheStack() {
+    const base = makeLayer(0), upper = makeLayer(2);
+    const clip = {...makeLayer(1), type: 'clip', layerWidth: 100, layerHeight: 80};
+    for (const [label, next, id] of [
+        ['wrong ID', [base, upper], upper.id],
+        ['changed order', [upper, base], clip.id],
+        ['changed position', [base, {...upper, x: 10}], clip.id],
+        ['changed source', [{...base, src: '/image/other.png'}, upper], clip.id],
+        ['image instead of clip', [clip, upper], base.id],
+    ]) {
+        const env = makeEnvironment({perf: {now: () => 0}});
+        const view = env.refresh([base, clip, upper]);
+        const box = {...tileBox(), x: 2048};
+        const original = view.tiles(box, 1)[0];
+        env.refresh(next, {toggledClipId: id});
+        assert.notEqual(view.tiles(box, 1)[0], original, label);
+        assert.equal(view.retained, 0, label);
+    }
+}
+
+function testPartialClipSwitchesBetweenLocalAndSourceTiles() {
+    const env = makeEnvironment({sourceTiles: true});
+    const base = [0, 1, 2, 3].map(makeLayer);
+    const clip = {...makeLayer(4), type: 'clip', layerWidth: 100, layerHeight: 80};
+    const view = env.refresh([...base, clip]);
+    for (const layers of [base, [...base, clip]]) {
+        env.refresh(layers, {toggledClipId: clip.id});
+        assert.equal(Boolean(env.scene.usesTiledSource(base[0])), layers === base);
+    }
+    assert.equal(view.retained, 2, 'both source-plan changes keep the last sharp frame');
+}
+
+function testIncompleteAndPausedTilesAreNotSeeds() {
+    const old = [makeLayer(0), makeLayer(1)];
+    const clip = {...makeLayer(2), type: 'clip'};
+    const layers = [...old, clip];
+    let ticks = 0;
+    const env = makeEnvironment({perf: {now() {ticks += 5; return ticks;}}});
+    const view = env.refresh(old);
+    assert.equal(view.tiles(tileBox(), 1).partial.length, 0);
+    env.refresh(layers, {appendedClipId: clip.id});
+    let tile;
+    for (let i = 0; i < 6 && !tile; i++) tile = view.tiles(tileBox(), 1)[0];
+    assert.deepEqual(tile.canvas.getContext().draws.map(args => args[0]), env.surface.nodes.map(node => node.image));
+
+    env.scene.pause(true);
+    const more = {...clip, id: '4'};
+    env.refresh([...layers, more], {appendedClipId: more.id});
+    let resumed;
+    for (let i = 0; i < 6 && !resumed; i++) resumed = view.tiles(tileBox(), 1)[0];
+    assert.deepEqual(resumed.canvas.getContext().draws.map(args => args[0]), env.surface.nodes.map(node => node.image));
+}
+
 (async () => {
     await testLocalSceneCacheAndStaging();
     await testSourceAtlasReuseForVisibilitySubset();
+    testImageAndFolderVisibilityRetainDetail();
     await testDecodeRejectionUsesCanvasDrawPath();
     await testLocalTileBuildProgressSurvivesFrames();
+    testGeneratedClipAppend();
+    testClipVisibilityChangesOnlyIntersectingTiles();
+    testClipVisibilityHintsValidateTheRestOfTheStack();
+    testPartialClipSwitchesBetweenLocalAndSourceTiles();
+    testOnlyAnUnchangedLocalPrefixCanSeedAnAppend();
+    testIncompleteAndPausedTilesAreNotSeeds();
     process.stdout.write('canvas editor scene visibility cache tests passed\n');
 })().catch(error => {
     process.stderr.write(`${error.stack || error}\n`);

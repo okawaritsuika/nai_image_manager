@@ -1,5 +1,7 @@
 // Saved canvas state and legacy browser storage compatibility.
 let savedCanvasSetupsSaveRevision = 0;
+let savedCanvasSetupsSettledRevision = 0;
+let confirmedSavedCanvasSetups = [];
 let savedCanvasSetupsLoadRevision = 0;
 let savedCanvasSetupsLoadFailed = false;
 let savedCanvasGalleryRevision = 0;
@@ -99,9 +101,12 @@ async function loadSavedCanvasSetupsFromServer(force = false) {
     }
 
     const loadRevision = ++savedCanvasSetupsLoadRevision;
+    const saveRevision = savedCanvasSetupsSaveRevision;
     savedCanvasSetupsLoadFailed = false;
     const loadPromise = (async () => {
         try {
+            if (savedCanvasSetupsSettledRevision !== saveRevision) await savedCanvasSetupsSavePromise;
+            if (saveRevision !== savedCanvasSetupsSaveRevision) return loadSavedCanvasSetups();
             const res = await fetch('/api/canvas/setups');
             const data = await res.json();
 
@@ -109,11 +114,12 @@ async function loadSavedCanvasSetupsFromServer(force = false) {
                 throw new Error(data.message || '캔버스 저장본을 불러오지 못했습니다.');
             }
 
-            if (loadRevision !== savedCanvasSetupsLoadRevision) {
+            if (loadRevision !== savedCanvasSetupsLoadRevision || saveRevision !== savedCanvasSetupsSaveRevision) {
                 return loadSavedCanvasSetups();
             }
 
             const serverList = normalizeSavedCanvasSetupsList(data.setups);
+            confirmedSavedCanvasSetups = serverList;
             const legacyList = data.allowLegacyMigration === false ? [] : readLegacySavedCanvasSetups();
 
             if (legacyList.length) {
@@ -146,9 +152,9 @@ async function loadSavedCanvasSetupsFromServer(force = false) {
             return cachedSavedCanvasSetups;
         } catch (error) {
             console.warn('Saved canvas setups server load failed:', error);
-            if (loadRevision === savedCanvasSetupsLoadRevision) {
+            if (loadRevision === savedCanvasSetupsLoadRevision && saveRevision === savedCanvasSetupsSaveRevision) {
                 savedCanvasSetupsLoadFailed = true;
-                cachedSavedCanvasSetups = [];
+                cachedSavedCanvasSetups = confirmedSavedCanvasSetups;
             }
             return loadSavedCanvasSetups();
         } finally {
@@ -160,12 +166,14 @@ async function loadSavedCanvasSetupsFromServer(force = false) {
     return loadPromise;
 }
 
-function loadSavedCanvasSetups() {
+function loadSavedCanvasSetups(confirmed = false) {
+    if (confirmed) return confirmedSavedCanvasSetups;
     return Array.isArray(cachedSavedCanvasSetups) ? cachedSavedCanvasSetups : [];
 }
 
 function persistSavedCanvasSetups(list, patch = undefined) {
-    cachedSavedCanvasSetups = normalizeSavedCanvasSetupsList(list);
+    const submitted = normalizeSavedCanvasSetupsList(list);
+    cachedSavedCanvasSetups = submitted;
     const revision = ++savedCanvasSetupsSaveRevision;
     // An earlier response must not replace the contents of a later queued save.
     const bodyData = patch === undefined
@@ -195,25 +203,25 @@ function persistSavedCanvasSetups(list, patch = undefined) {
                 throw new Error(data.message || '캔버스 저장본 저장 실패');
             }
 
-            if (revision === savedCanvasSetupsSaveRevision) {
-                cachedSavedCanvasSetups = normalizeSavedCanvasSetupsList(data.setups || cachedSavedCanvasSetups);
-            }
+            confirmedSavedCanvasSetups = Array.isArray(data.setups) ? normalizeSavedCanvasSetupsList(data.setups) : submitted;
+            if (revision === savedCanvasSetupsSaveRevision) cachedSavedCanvasSetups = confirmedSavedCanvasSetups;
             return true;
         })
         .catch((error) => {
+            if (revision === savedCanvasSetupsSaveRevision) cachedSavedCanvasSetups = confirmedSavedCanvasSetups;
             console.warn('Saved canvas setups server save failed:', error);
             if (typeof showToast === 'function') {
                 showToast(`⚠️ 캔버스 저장본 저장 실패: ${error.message || error}`);
             }
             return false;
-        });
+        }).finally(() => { savedCanvasSetupsSettledRevision = revision; });
 
     return savedCanvasSetupsSavePromise;
 }
 
 function saveCurrentCanvasSetup() {
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('저장할 캔버스가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('저장할 캔버스가 없습니다.');
         return;
     }
 
@@ -244,13 +252,13 @@ function saveCurrentCanvasSetup() {
 
 async function confirmSaveCurrentCanvasSetup() {
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('저장할 캔버스가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('저장할 캔버스가 없습니다.');
         return;
     }
 
     const name = String(el('canvasSaveNameInput')?.value || '').trim();
     if (!name) {
-        alert('저장 이름을 입력해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('저장 이름을 입력해 주세요.');
         return;
     }
 
@@ -259,7 +267,7 @@ async function confirmSaveCurrentCanvasSetup() {
     try {
         const snapshot = mode === 'imageOnly'
             ? await buildMergedOnlyCanvasStateSnapshot()
-            : buildCanvasStateSnapshot();
+            : buildCanvasStateSnapshot({preserveBoundaryMask: true});
 
         const saveOptions = {
             mode,
@@ -274,12 +282,26 @@ async function confirmSaveCurrentCanvasSetup() {
         const overwriteTarget = activeSavedItem || sameNameItem || null;
 
         if (overwriteTarget) {
-            const ok = confirm(
-                `'${overwriteTarget.name}' 저장본을 덮어쓸까요?\n\n` +
-                '취소하면 새 저장본으로 추가합니다.'
-            );
+            const message = `'${overwriteTarget.name}' 저장본을 덮어쓸까요?\n\n새 저장본으로 추가할 수도 있습니다.`;
+            let ok;
+            if (globalThis.CanvasNativeDialogs) {
+                ok = await CanvasNativeDialogs.confirm({
+                    title: '캔버스 저장본 저장',
+                    message,
+                    confirmLabel: '덮어쓰기',
+                    cancelLabel: '새 저장본으로 추가',
+                    distinguishDismiss: true,
+                    danger: true
+                });
+            } else if (confirm(message)) {
+                ok = true;
+            } else {
+                ok = confirm('새 저장본으로 추가할까요?') ? false : null;
+            }
 
+            if (ok == null) return;
             if (ok) {
+                if (!loadSavedCanvasSetups().includes(overwriteTarget)) return;
                 await updateCanvasSetupItem(overwriteTarget.id, name, snapshot, saveOptions);
             } else {
                 await saveCanvasSetupItem(name, snapshot, saveOptions);
@@ -292,25 +314,25 @@ async function confirmSaveCurrentCanvasSetup() {
 
         if (mode === 'mergeAfterSave') {
             await replaceCurrentCanvasWithMergedImage();
-            alert(`'${name}' 저장 완료\n현재 캔버스는 통합 이미지 1장만 남겼습니다.`);
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)(`'${name}' 저장 완료\n현재 캔버스는 통합 이미지 1장만 남겼습니다.`);
             return;
         }
 
         if (mode === 'resetAfterSave') {
             if (!await resetCurrentCanvasAfterSave()) return;
-            alert(`'${name}' 저장 완료\n현재 캔버스를 초기화했습니다.`);
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)(`'${name}' 저장 완료\n현재 캔버스를 초기화했습니다.`);
             return;
         }
 
         if (mode === 'imageOnly') {
-            alert(`'${name}' 그림만 저장 완료`);
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)(`'${name}' 그림만 저장 완료`);
             return;
         }
 
-        alert(`'${name}' 저장 완료`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`'${name}' 저장 완료`);
 
     } catch (error) {
-        alert(`저장 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`저장 실패: ${error.message || error}`);
     }
 }
 
@@ -607,15 +629,18 @@ async function loadCanvasSetup(setupId) {
     const item = list.find((entry) => entry.id === setupId);
 
     if (!item || !item.state) {
-        alert('저장본을 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('저장본을 찾을 수 없습니다.');
         return;
     }
 
-    const ok = confirm(`'${item.name}' 캔버스를 불러올까요?\n현재 캔버스 작업 상태는 자동 저장 슬롯에서 덮어써집니다.`);
-    if (!ok) return;
+    const message = `'${item.name}' 캔버스를 불러올까요?\n자동 저장 슬롯이 이 저장본으로 바뀝니다.`;
+    const ok = await (globalThis.CanvasNativeDialogs
+        ? CanvasNativeDialogs.confirm({title: '캔버스 저장본 불러오기', message, confirmLabel: '불러오기'})
+        : confirm(message));
+    if (!ok || !loadSavedCanvasSetups().includes(item)) return;
 
     if (window.CanvasProject && !await CanvasProject.leave()) return;
-    applyCanvasStateSnapshot(item.state);
+    applyCanvasStateSnapshot(item.state, {referencePlacement: item.inpaintReferencePlacement});
     activeCanvasSetupId = item.id;
 
     if (isSavedCanvasGalleryOpen(galleryRevision)) closeSavedCanvasSetupsModal();
@@ -628,15 +653,19 @@ async function renameCanvasSetup(setupId) {
 
     if (!item) return;
 
-    const nextName = prompt('새 이름을 입력하세요.', item.name || '');
-    if (!nextName || !nextName.trim()) return;
+    const message = '새 이름을 입력하세요.';
+    const defaultValue = item.name || '';
+    const nextName = await (globalThis.CanvasNativeDialogs
+        ? CanvasNativeDialogs.prompt({title: '캔버스 저장본 이름 변경', message, defaultValue, confirmLabel: '이름 변경'})
+        : prompt(message, defaultValue));
+    const currentList = loadSavedCanvasSetups();
+    if (!nextName?.trim() || !currentList.includes(item)) return;
 
-    item.name = nextName.trim();
-    item.savedAt = Date.now();
-
-    const saved = await persistSavedCanvasSetups(list, {upserts: [item], removeIds: []});
+    const renamed = {...item, name: nextName.trim(), savedAt: Date.now()};
+    const saved = await persistSavedCanvasSetups(currentList.map(entry => entry === item ? renamed : entry),
+        {upserts: [renamed], removeIds: []});
     if (!saved) {
-        if (isSavedCanvasGalleryOpen(galleryRevision)) alert('이름 변경 저장에 실패했습니다.');
+        if (isSavedCanvasGalleryOpen(galleryRevision)) (globalThis.CanvasNativeDialogs?.alert ?? alert)('이름 변경 저장에 실패했습니다.');
         return;
     }
     if (isSavedCanvasGalleryOpen(galleryRevision)) renderSavedCanvasSetupList();
@@ -649,14 +678,18 @@ async function deleteCanvasSetup(setupId) {
 
     if (!item) return;
 
-    const ok = confirm(`'${item.name}' 저장본을 삭제할까요?`);
-    if (!ok) return;
+    const message = `'${item.name}' 저장본을 삭제할까요?`;
+    const ok = await (globalThis.CanvasNativeDialogs
+        ? CanvasNativeDialogs.confirm({title: '캔버스 저장본 삭제', message, confirmLabel: '삭제', danger: true})
+        : confirm(message));
+    const currentList = loadSavedCanvasSetups();
+    if (!ok || !currentList.includes(item)) return;
 
     const detachedRefs = collectCanvasImportRefsFromLayer(item.state);
-    const nextList = list.filter((entry) => entry.id !== setupId);
+    const nextList = currentList.filter((entry) => entry.id !== setupId);
     const saved = await persistSavedCanvasSetups(nextList, {upserts: [], removeIds: [setupId]});
     if (!saved) {
-        if (isSavedCanvasGalleryOpen(galleryRevision)) alert('캔버스 저장본 삭제에 실패했습니다.');
+        if (isSavedCanvasGalleryOpen(galleryRevision)) (globalThis.CanvasNativeDialogs?.alert ?? alert)('캔버스 저장본 삭제에 실패했습니다.');
         return;
     }
 
@@ -674,13 +707,14 @@ function isSavedCanvasGalleryOpen(revision) {
 
 function applyCanvasStateSnapshot(state, options = {}) {
     if (!state || !state.width || !state.height) {
-        alert('불러올 수 없는 캔버스 저장본입니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('불러올 수 없는 캔버스 저장본입니다.');
         return;
     }
 
     currentCanvasWidth = parseInt(state.width, 10) || 0;
     currentCanvasHeight = parseInt(state.height, 10) || 0;
     canvasLayers = Array.isArray(state.layers) ? structuredClone(state.layers) : [];
+    clearClipMergedSourcePreviewCache();
     activeLayerId = state.activeLayerId || canvasLayers[0]?.id || null;
     layerIdSeq = parseInt(state.layerIdSeq, 10) || (canvasLayers.length + 1);
     if (typeof getCanvasStyleLink === 'function') getCanvasStyleLink()?.restore(state.styleLink);
@@ -688,7 +722,10 @@ function applyCanvasStateSnapshot(state, options = {}) {
     if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.restore(state.dakiBodyMap);
     if (!options.fromHistory && typeof CanvasRetouch !== 'undefined') CanvasRetouch.restore(state.retouchDraft);
     if (!options.fromHistory && typeof CanvasOppositeReference !== 'undefined') CanvasOppositeReference.restore(state.oppositeReference);
-    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.restore(state.inpaintReference);
+    if (typeof CanvasInpaintReference !== 'undefined') {
+        const reference = CanvasInpaintReference.restorePlacement?.(state.inpaintReference, canvasLayers, options.referencePlacement);
+        CanvasInpaintReference.restore(reference ?? state.inpaintReference);
+    }
     if (typeof CanvasInpaintSettings !== 'undefined') {
         CanvasInpaintSettings.restore(Object.prototype.hasOwnProperty.call(state, 'inpaintSettings')
             ? state.inpaintSettings
@@ -764,7 +801,7 @@ function applyCanvasStateSnapshot(state, options = {}) {
 
     updateCanvasRatioInfo();
     if (!options.fromHistory) {
-        migrateCanvasLayerDataUrlsToServer();
+        if (!options.deferMigration) void migrateCanvasLayerDataUrlsToServer();
         if (typeof resetCanvasEditHistory === 'function') resetCanvasEditHistory();
     }
 }

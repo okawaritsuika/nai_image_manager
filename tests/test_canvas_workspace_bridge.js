@@ -498,6 +498,26 @@ test('preview captures a scaled merged canvas while inactive and returns it in c
     });
 });
 
+test('a read-only reference renders the saved project layers and distinguishes an unavailable preview', async () => {
+    const h = harness({width: 0, height: 0});
+    const bridge = h.context.CanvasWorkspaceBridge;
+    const saved = {width: 700, height: 1200, layers: [{id: 8, type: 'image'}]};
+    h.context.CanvasProject.isReadOnlyPreview = () => true;
+    h.context.CanvasProject.loadReadOnlyCanvas = async () => ({state: saved});
+    h.context.buildCanvasStateSnapshot = () => { throw Error('must not snapshot the inactive editor'); };
+    let rendered;
+    h.context.renderMergedCanvasToDataUrl = async options => {
+        rendered = options;
+        return 'data:image/png;base64,reference';
+    };
+    bridge.ready();
+    assert.deepEqual(plain(await bridge.execute('preview')), {ok: true, preview: 'data:image/png;base64,reference'});
+    assert.deepEqual(plain(rendered.state), saved);
+    assert.equal(rendered.maxDimension, 1600);
+    h.context.CanvasProject.loadReadOnlyCanvas = async () => { throw Error('preview unavailable'); };
+    assert.deepEqual(plain(await bridge.execute('preview')), {ok: false, error: 'preview unavailable'});
+});
+
 test('preview copies the visible retouch overlay at the opposite-reference limit of 1600', async () => {
     const overlay = {width: 2048, height: 1024};
     const h = harness({mode: 'pane', overlayCanvas: overlay});

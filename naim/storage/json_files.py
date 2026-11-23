@@ -12,7 +12,7 @@ import tempfile
 import threading
 import uuid
 
-from naim.paths import path_identity_key
+from naim.paths import path_identity_key, retry_windows_file_lock
 
 
 _locks = {}
@@ -45,7 +45,7 @@ def _replace_json(path, data, indent):
             json.dump(data, target, ensure_ascii=False, indent=indent)
             target.flush()
             os.fsync(target.fileno())
-        os.replace(temporary, path)
+        retry_windows_file_lock(os.replace, temporary, path)
     finally:
         if temporary is not None and temporary.exists():
             temporary.unlink()

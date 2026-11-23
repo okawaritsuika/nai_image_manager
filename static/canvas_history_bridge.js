@@ -10,7 +10,7 @@ const canvasEditContextKeys = [
     'sharedSelectionClipPromptControlGroups', 'isSelectionOverlayHidden', 'isClipInpaintMergedSourceMode'
 ];
 const canvasLayerEditContextKeys = [
-    'name', 'expanded', 'promptInfo', 'promptControlGroups', 'promptOwnerId',
+    'name', 'expanded', 'promptInfo', 'promptControlGroups', 'promptOwnerId', 'exportCharPrompts',
     'instancePrompt', 'instanceNegativePrompt', 'dakiFocus',
     'pinnedWidth', 'pinnedHeight', 'pinnedOffsetX', 'pinnedOffsetY',
     'pinnedPanelOffsetX', 'pinnedPanelOffsetY', 'pinnedUiX', 'pinnedUiY', 'pinnedUiLocked'
@@ -105,6 +105,7 @@ function collectCanvasEditHistoryImportRefs() {
 }
 
 function undoCanvasEdit() {
+    if (globalThis.CanvasProject?.blocksLocalWrites?.()) return;
     if (hasActiveCanvasGeometryDrag() || activePinnedReferenceMoveDrag || activePinnedReferenceResizeDrag ||
         isClipMaskPainting || clipInpaintLoadingClipId || externalCanvasImageImportBusy ||
         (typeof pendingCanvasClipMaskWrites !== 'undefined' && pendingCanvasClipMaskWrites > 0) ||

@@ -9,7 +9,7 @@ function deferred() {
     return {promise, resolve, reject};
 }
 
-function harness({send, onSaved, onMissing, snapshot} = {}) {
+function harness({send, onSaved, onMissing, snapshot, recover, onRecovered} = {}) {
     const timers = new Map();
     const calls = [];
     const states = [];
@@ -20,6 +20,7 @@ function harness({send, onSaved, onMissing, snapshot} = {}) {
     let snapshots = 0;
     let save;
     save = createProjectCanvasAutosave({
+        recover, onRecovered,
         snapshot: snapshot || (() => { snapshots++; return {...value}; }),
         send: send || (async (binding, state, revision) => {
             calls.push({binding, state, revision});
@@ -190,12 +191,139 @@ test('a revision conflict stays latched and cannot be blindly retried', async ()
     h.setValue({content: 'preserve local edit'});
     assert.equal(h.save.schedule(), false);
     assert.equal(await h.save.retry(), false);
+    assert.equal(await h.save.retryConflict(), false);
     assert.equal(await h.save.flush(), false);
     assert.equal(h.calls.length, 1);
     assert.equal(h.save.current().revision, 1);
     assert.equal(h.save.isUnsaved(), true);
     assert.equal(h.states.at(-1).state, 'conflict');
     assert.equal(h.saved.length, 0);
+});
+
+const original = {...binding(), side: 'front'};
+const copy = {...original, canvasId: 'new-canvas', revision: 1};
+const conflict = () => Object.assign(new Error('revision conflict'), {status: 409});
+
+test('recovering a conflict drains ongoing edits to the new canvas before disconnect', async () => {
+    const started = deferred(), recovered = deferred(), writing = deferred(), commit = deferred();
+    const notices = [];
+    const h = harness({
+        recover(target) { started.resolve(target); return recovered.promise; },
+        onRecovered(target) { notices.push(target); assert.deepEqual(target, h.save.current()); },
+        async send(target, state, revision) {
+            h.calls.push([target.canvasId, state.content, revision]);
+            if (target.canvasId === original.canvasId) throw conflict();
+            if (h.calls.length === 2) { writing.resolve(); return commit.promise; }
+            return {revision: revision + 1};
+        }
+    });
+    h.save.connect(original);
+    const task = h.save.schedule(true);
+    assert.deepEqual(await started.promise, original);
+    const leaving = h.save.disconnect();
+    assert.strictEqual(h.save.flush(), task);
+    assert.strictEqual(h.save.retryConflict(), task);
+    assert.deepEqual(h.save.current(), original);
+    assert.equal(h.save.isSavePending(), true);
+    h.setValue({content: 1});
+    h.save.schedule();
+    assert.equal(h.states.at(-1).state, 'recovering');
+    recovered.resolve(copy);
+    await writing.promise;
+    h.setValue({content: 2});
+    h.save.schedule();
+    commit.resolve({revision: 2});
+    assert.equal(await task, true);
+    assert.equal(await leaving, true);
+    assert.deepEqual(h.calls, [['front', 0, 1], ['new-canvas', 1, 1], ['new-canvas', 2, 2]]);
+    assert.deepEqual(notices, [copy]);
+    assert.equal(h.save.current(), null);
+});
+
+test('a failed copy or immediately conflicting copy requires explicit conflict retry', async () => {
+    const offline = new Error('copy unavailable');
+    const attempts = [];
+    const h = harness({recover: async target => {
+        attempts.push(target.canvasId);
+        if (attempts.length === 1) throw offline;
+        return {...copy, canvasId: attempts.length === 2 ? 'first-copy' : 'last-copy'};
+    }, send: async (target, state) => {
+        h.calls.push([target.canvasId, state.content]);
+        if (target.canvasId !== 'last-copy') throw conflict();
+        return {revision: 2};
+    }});
+    h.save.connect(original);
+    assert.equal(await h.save.schedule(true), false);
+    assert.deepEqual(h.states.at(-1), {state: 'conflict', error: offline});
+    assert.deepEqual(h.save.current(), original);
+    assert.equal(h.save.isSavePending(), false);
+    assert.equal(h.save.isUnsaved(), true);
+    assert.equal(await h.save.retry(), false);
+    assert.equal(await h.save.flush(), false);
+    h.setValue({content: 1});
+    const second = h.save.retryConflict();
+    assert.strictEqual(h.save.retryConflict(), second);
+    assert.equal(await second, false);
+    assert.equal(h.save.current().canvasId, 'first-copy');
+    assert.equal(await h.save.retryConflict(), true);
+    assert.deepEqual(attempts, ['front', 'front', 'first-copy']);
+    assert.deepEqual(h.calls, [['front', 0], ['first-copy', 1], ['last-copy', 1]]);
+});
+
+test('invalid or stale recovered links cannot replace the current canvas', async () => {
+    for (const result of [original, {...copy, projectId: 'elsewhere'}, {...copy, side: 'back'}, {...copy, revision: 0}]) {
+        const h = harness({send: async () => {throw conflict();}, recover: async () => result});
+        h.save.connect(original);
+        assert.equal(await h.save.schedule(true), false);
+        assert.equal(h.states.at(-1).state, 'conflict');
+        assert.deepEqual(h.save.current(), original);
+    }
+    const started = deferred(), recovered = deferred();
+    const h = harness({send: async () => {throw conflict();}, recover() {started.resolve(); return recovered.promise;}});
+    h.save.connect(original);
+    const first = h.save.schedule(true);
+    await started.promise;
+    h.save.disconnectMissing(Object.assign(new Error('missing'), {status: 404, code: 'daki_not_found'}));
+    h.save.connect(binding('other-project', 'another-id', 7));
+    recovered.resolve(copy);
+    assert.equal(await first, false);
+    assert.equal(h.save.current().projectId, 'other-project');
+});
+
+test('a temporary PUT failure after recovery retries the same new binding and payload', async () => {
+    let recoveries = 0;
+    const h = harness({recover: async () => {recoveries++; return copy;}, send: async (target, state, revision) => {
+        h.calls.push({target, state, revision});
+        if (target.canvasId === original.canvasId) throw conflict();
+        if (h.calls.length === 2) throw new Error('offline');
+        return {revision: 2};
+    }});
+    h.save.connect(original);
+    assert.equal(await h.save.schedule(true), false);
+    assert.equal(h.states.at(-1).state, 'error');
+    assert.deepEqual(h.save.current(), copy);
+    assert.equal(await h.save.retryConflict(), false);
+    assert.equal(await h.save.retry(), true);
+    assert.deepEqual(h.calls[2], h.calls[1]);
+    assert.equal(recoveries, 1);
+});
+
+test('an edit queued as the final recovery PUT settles still drains before leaving', async () => {
+    const finalPut = deferred(), started = deferred();
+    const h = harness({recover: async () => copy, send(target, state, revision) {
+        h.calls.push([target.canvasId, state.content]);
+        if (target.canvasId === original.canvasId) return Promise.reject(conflict());
+        if (h.calls.length === 2) {started.resolve(); return finalPut.promise;}
+        return Promise.resolve({revision: revision + 1});
+    }});
+    h.save.connect(original);
+    h.save.schedule(true);
+    const leaving = h.save.disconnect();
+    await started.promise;
+    finalPut.resolve({revision: 2});
+    queueMicrotask(() => {h.setValue({content: 'last edit'}); h.save.schedule();});
+    assert.equal(await leaving, true);
+    assert.deepEqual(h.calls, [['front', 0], ['new-canvas', 0], ['new-canvas', 'last edit']]);
 });
 
 test('disconnect waits for in-flight and trailing saves, then allows a fresh binding', async () => {

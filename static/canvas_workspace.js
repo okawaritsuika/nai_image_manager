@@ -311,6 +311,25 @@
             layoutReferences();
         });
         image.addEventListener('error', () => {fit.disabled = true;});
+        if (local && root.CanvasProject?.isPaneSuspended?.()) {
+            const entry = frames.get(pane.id);
+            entry.ready = false;
+            entry.resuming = true;
+            void root.CanvasProject.resumeClosedPane().then(resumed => {
+                if (frames.get(pane.id) !== entry) return;
+                entry.resuming = false;
+                if (resumed) {
+                    root.CanvasWorkspaceBridge.ready();
+                } else {
+                    // The old document stays suspended. A fresh pane can show the other editor's saved preview.
+                    entry.card.remove();
+                    frames.delete(pane.id);
+                    inlinePaneId = null;
+                    mount(pane);
+                }
+                refreshSelection();
+            });
+        }
     }
     function fitReference(paneId) {
         const pane = manifest.panes.find(value => value.id === paneId), entry = frames.get(paneId);
@@ -340,10 +359,16 @@
         entry.closing = true; renderManager();
         try {
             const result = await request(paneId, 'flush'); if (!result.ok) throw new Error(result.error);
+            if (entry.local && (root.CanvasProject?.isUnsaved?.() || root.CanvasProject?.isChangingConnection?.())) {
+                throw new Error('프로젝트 연결과 저장이 끝난 뒤 닫아 주세요.');
+            }
             commit({...manifest, panes: manifest.panes.map(pane => pane.id === paneId ? {...pane, closed: true} : pane)});
             entry.card.remove();
             // The original editor remains alive so its pending callbacks and undo history stay isolated.
-            if (entry.local) send(paneId, 'active', {active: false});
+            if (entry.local) {
+                root.CanvasProject?.suspendClosedPane?.();
+                send(paneId, 'active', {active: false});
+            }
             else entry.frame.remove();
             frames.delete(paneId); refreshSelection(); message('작업을 보관했어요. 캔버스 추가에서 다시 열 수 있습니다.'); return true;
         } catch (error) {message(error.message, true); return false;}
@@ -376,7 +401,7 @@
             root.clearTimeout(item.timer); pending.delete(data.requestId);
             item.resolve({ok: data.ok === true, error: typeof data.error === 'string' ? data.error : '', preview: data.preview}); return;
         }
-        if (!['ready', 'status'].includes(data.type)) return;
+        if (!['ready', 'status'].includes(data.type) || entry.resuming) return;
         const pane = manifest.panes.find(value => value.id === data.paneId);
         const restoreRetouch = data.type === 'ready' && pane.retouch;
         entry.ready = data.ready === true; entry.status = data.status;

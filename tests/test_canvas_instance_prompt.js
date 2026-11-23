@@ -206,6 +206,7 @@ function makeSaveHarness(settings = {steps: 17}) {
         ['clipInstanceNegativePromptInput', {value: '  avoid A  '}]
     ]);
     context.activeClipPromptId = 101;
+    context.collectPromptSourceLayersFromSelection = () => [];
     context.el = id => inputs.get(id) || null;
     context.getClipCharPromptValues = () => ['updated character'];
     context.getClipPromptEditorValue = kind => kind === 'base' ? 'updated shared base' : 'updated negative';
@@ -244,6 +245,40 @@ test('saving updates shared base and only the active selection instance prompt',
     assert.deepEqual(calls, {settings: 1, saves: 1, closes: 1, settingUpdates: 1});
 });
 
+test('saving prompt-only edits sends the finalized prompt and style to project autosave', () => {
+    const {context} = makeSaveHarness();
+    let finalized = false;
+    let scheduled = false;
+    context.getCanvasStyleLink = () => ({finishManualDraft(save) { finalized = save; }});
+    context.recordCanvasEditHistory = () => false;
+    context.window = {CanvasProject: {schedule() {
+        assert.equal(finalized, true);
+        assert.equal(context.sharedSelectionClipPromptInfo.negativePrompt, 'updated negative');
+        scheduled = true;
+    }}};
+    context.getCanvasAutosave = () => ({schedule() {}});
+    installFunctions(context, canvasSource, ['saveCanvasState']);
+
+    context.saveClipPromptModal();
+
+    assert.equal(scheduled, true);
+});
+
+test('editing and clearing character slots affects only the image that supplied the clip', () => {
+    const {context} = makeSaveHarness();
+    const edited = {id: 301, type: 'image', promptInfo: {charPrompts: ['original']}};
+    const other = {id: 302, type: 'image', promptInfo: {charPrompts: ['other']}};
+    context.canvasLayers.push(edited, other);
+    context.canvasLayers[0].children[0].sourceImageLayerId = edited.id;
+    context.saveClipPromptModal();
+    assert.deepEqual(plain(edited.exportCharPrompts), ['updated character']);
+    context.getClipCharPromptValues = () => [];
+    context.saveClipPromptModal();
+    assert.deepEqual(plain(edited.exportCharPrompts), []);
+    assert.deepEqual(other.promptInfo.charPrompts, ['other']);
+    assert.equal(Object.hasOwn(other, 'exportCharPrompts'), false);
+});
+
 test('invalid generation settings leave selection and shared prompt state untouched', () => {
     const {context, calls} = makeSaveHarness(null);
     const beforeShared = JSON.stringify(context.sharedSelectionClipPromptInfo);
@@ -279,6 +314,7 @@ test('canvas snapshot and restore preserve the optional selection instance promp
         syncClipPromptControlGroupSeqFromAllLayers() {},
         refreshPinnedReferenceStateFromLayers() {},
         ensureCheckedSelectionId() {},
+        clearClipMergedSourcePreviewCache() {},
         updateSelectionOverlayToggleUI() {},
         renderCanvas() {},
         renderLayerList() {},

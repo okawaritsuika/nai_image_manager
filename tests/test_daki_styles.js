@@ -1142,12 +1142,26 @@ test('settings prompt tabs are keyboard accessible and options loading failures 
 test('shared folder presents tests as gallery folders and excludes personal batches', async () => {
     const f = fixture();
     const render = f.render('library=shared');
+    assert.equal(f.doc.getElementById('dakiTitle').textContent, '공유 그림체');
+    assert.equal(f.doc.getElementById('dakiBack').href, '#daki');
+    assert.equal(f.doc.getElementById('dakiPageStatus').textContent, '불러오는 중…');
+    assert.deepEqual(f.requests.map(request => request.url), ['/api/daki/shared-styles', '/api/daki/style-tests']);
+    const initialGrid = f.content.querySelector('.daki-project-grid');
+    const initialLinks = f.content.querySelectorAll('a');
+    assert.equal(initialLinks.length, 2);
+    assert.deepEqual(initialLinks.map(link => [link.textContent, link.folder.count, link.folder.src]), [
+        ['기존 공유 그림체', undefined, undefined], ['그림체 관리 공유 그림체', undefined, undefined],
+    ]);
+    initialLinks[0].focus();
     const catalog = {configured: true, styles: [
         {id: 'one', name: 'Synthetic blue style', src: '/source/one'},
         {id: 'two', name: 'Synthetic green style', src: '/source/two'},
     ]};
     f.reply(catalog);
     await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.content.querySelector('.daki-project-grid'), initialGrid);
+    assert.ok(f.content.querySelector('.daki-style-toolbar'));
+    assert.equal(f.content.querySelectorAll('a')[0].folder.count, 0);
     assert.equal(f.pending[0].request.url, '/api/daki/style-tests');
     f.reply({batches: [batch({name: 'Shared named gallery', cover_src: '/covers/shared.png'}),
         batch({id: 'personal-only', library: 'personal', name: 'Personal named gallery'})]}); await render;
@@ -1158,6 +1172,7 @@ test('shared folder presents tests as gallery folders and excludes personal batc
     assert.equal(f.content.querySelector('.daki-style-card'), null);
     const folders = f.content.querySelectorAll('a');
     assert.equal(folders.length, 4);
+    assert.equal(f.doc.activeElement, folders[0]);
     assert.ok(folders.some(folder => folder.textContent === 'Shared named gallery' && folder.querySelector('img').src === '/covers/shared.png'));
     assert.equal(folders.some(folder => folder.textContent === 'Personal named gallery'), false);
     assert.ok(folders.some(folder => folder.textContent === '기존 공유 그림체' && folder.href === '#daki&library=shared&category=all'));
@@ -1165,6 +1180,80 @@ test('shared folder presents tests as gallery folders and excludes personal batc
     assert.ok(folders.some(folder => folder.textContent === '상반신' && folder.href === '#daki&library=shared&category=upper'));
     assert.equal(folders.some(folder => folder.href === '#daki&library=shared&category=v5'), false);
 
+});
+
+test('shared root keeps source navigation and reports catalog or saved-test failures', async () => {
+    const catalogFailure = fixture(), failedCatalog = catalogFailure.render('library=shared');
+    catalogFailure.reply({message: 'Synthetic catalog failure'}, 503);
+    await failedCatalog;
+    catalogFailure.reply({batches: []});
+    assert.equal(catalogFailure.content.querySelectorAll('a').length, 2);
+    assert.ok(catalogFailure.content.querySelector('.daki-root-retry'));
+    assert.equal(catalogFailure.doc.getElementById('dakiTitle').textContent, '공유 그림체');
+    assert.equal(catalogFailure.doc.getElementById('dakiSubtitle').textContent, '원본 폴더의 연결 상태를 확인해 주세요.');
+    assert.equal(catalogFailure.doc.getElementById('dakiPageStatus').textContent, 'Synthetic catalog failure');
+
+    const batchFailure = fixture(), failedBatches = batchFailure.render('library=shared');
+    batchFailure.reply(styleCatalog());
+    await new Promise(resolve => setImmediate(resolve));
+    batchFailure.reply({message: 'Synthetic saved-test failure'}, 503); await failedBatches;
+    assert.equal(batchFailure.content.querySelectorAll('a').length, 2);
+    assert.ok(batchFailure.button('전체 그림체로 테스트 만들기'));
+    assert.equal(batchFailure.doc.getElementById('dakiPageStatus').textContent, 'Synthetic saved-test failure');
+});
+
+test('a failed shared root refresh disables outdated actions and keeps a working retry', async () => {
+    const f = fixture(), opened = f.render('library=shared');
+    f.reply(styleCatalog()); f.reply({batches: []}); await opened;
+    const start = f.button('추천수만 갱신');
+    const sync = f.button('공유 그림체 최신화');
+    sync.onclick();
+    const reloading = f.syncs[0].onComplete({added: 1});
+    assert.equal(start.disabled, true);
+    f.reply({message: 'Synthetic refresh failure'}, 503);
+    f.reply({batches: []}); await reloading;
+    const count = f.requests.length;
+    await start.onclick(); sync.onclick();
+    assert.equal(f.requests.length, count);
+    assert.equal(f.syncs.length, 1);
+    assert.match(f.doc.getElementById('dakiPageStatus').textContent, /Synthetic refresh failure/);
+    const retryButton = f.button('다시 불러오기');
+    const retry = retryButton.onclick();
+    const loadingCount = f.requests.length;
+    retryButton.onclick();
+    assert.equal(f.requests.length, loadingCount);
+    f.reply(styleCatalog()); f.reply({batches: []}); await retry;
+    assert.equal(f.content.querySelector('.daki-root-retry'), null);
+    assert.equal(f.button('추천수만 갱신').disabled, false);
+});
+
+test('a completed pack refresh keeps newer history when the initial history arrives late', async () => {
+    const f = fixture(), render = f.render('library=shared');
+    f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
+    const initial = f.pending.shift();
+    f.button('공유 테스트 다운로드').onclick();
+    const reload = f.testPackOpens[0].onComplete({installed: 1});
+    f.reply({batches: [batch({name: 'Newly installed'})]}); await reload;
+    initial.resolve({ok: true, json: async () => ({status: 'success', batches: []})});
+    await render;
+    assert.ok(f.content.querySelectorAll('a').some(card => card.textContent === 'Newly installed'));
+});
+
+test('shared category title and back link render before the catalog reply', async () => {
+    const f = fixture();
+    for (const [category, title] of [
+        ['all', '공유 그림체 · 기존 공유 그림체'],
+        ['artist', '공유 그림체 · 그림체 관리 공유 그림체'],
+        ['v5', '공유 그림체 · V5 그림체'],
+    ]) {
+        f.content.replaceChildren();
+        const render = f.render('library=shared&category=' + category);
+        assert.equal(f.doc.getElementById('dakiTitle').textContent, title);
+        assert.equal(f.doc.getElementById('dakiSubtitle').textContent, '그림체 목록을 불러오는 중…');
+        assert.equal(f.doc.getElementById('dakiBack').href, '#daki&library=shared');
+        assert.equal(f.doc.getElementById('dakiBack').textContent, '← 공유 그림체');
+        f.reply(styleCatalog()); await render;
+    }
 });
 
 test('shared sources and original models stay separated in folders, filters, test targets, and polling', async () => {
@@ -1638,6 +1727,8 @@ test('shared sync is beside test creation, reloads the root and retains completi
     const f = fixture(), render = f.render('library=shared');
     f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
     f.reply({batches: []}); await render;
+    const previousGrid = f.content.querySelector('.daki-project-grid');
+    const previousChildren = [...f.content.children];
     const toolbar = f.content.querySelector('.daki-style-toolbar');
     assert.deepEqual(toolbar.querySelectorAll('button').filter(child => !child.hidden).map(child => child.textContent),
         ['전체 그림체로 테스트 만들기', '공유 테스트 다운로드', '공유 그림체 최신화', '추천수만 갱신']);
@@ -1649,7 +1740,9 @@ test('shared sync is beside test creation, reloads the root and retains completi
     assert.equal(f.content.querySelector('.daki-stats-controls').querySelectorAll('button').length, 0);
     f.button('공유 그림체 최신화').onclick(); assert.equal(f.syncs.length, 1);
     const reload = f.syncs[0].onComplete({added: 2, skipped: 3});
-    assert.equal(f.content.children.length, 0);
+    assert.equal(f.content.children.length, previousChildren.length);
+    assert.ok(previousChildren.every((child, index) => f.content.children[index] === child));
+    assert.equal(f.content.querySelector('.daki-project-grid'), previousGrid);
     f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
     f.reply({batches: []}); await reload;
     assert.equal(f.content.querySelectorAll('.daki-style-toolbar').length, 1);
@@ -1658,10 +1751,43 @@ test('shared sync is beside test creation, reloads the root and retains completi
     assert.equal(f.pending.length, 0);
 });
 
+test('shared root polling preserves unchanged DOM and reuses the changed catalog response', async () => {
+    const f = fixture(), render = f.render('library=shared'), catalog = styleCatalog();
+    f.reply(catalog); await new Promise(resolve => setImmediate(resolve));
+    f.reply({batches: []}); await render;
+    const originalGrid = f.content.querySelector('.daki-project-grid');
+    const pollTimer = () => {
+        const entry = [...f.timers.entries()].find(([, timer]) => timer.delay === 2000);
+        assert.ok(entry, 'Expected a shared catalog poll');
+        f.timers.delete(entry[0]);
+        return entry[1].callback();
+    };
+
+    const unchangedPoll = pollTimer();
+    assert.equal(f.reply(catalog).url, '/api/daki/shared-styles');
+    await unchangedPoll;
+    assert.equal(f.content.querySelector('.daki-project-grid'), originalGrid);
+    assert.equal(f.requests.filter(request => request.url === '/api/daki/shared-styles').length, 2);
+    assert.equal(f.requests.filter(request => request.url === '/api/daki/style-tests').length, 1);
+
+    const changedCatalog = {...catalog, styles: [...catalog.styles, {id: 'new-style', name: 'New style', category: 'v5'}]};
+    const changedPoll = pollTimer();
+    f.reply(changedCatalog);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.content.querySelector('.daki-project-grid'), originalGrid);
+    assert.equal(f.requests.filter(request => request.url === '/api/daki/shared-styles').length, 3);
+    assert.equal(f.requests.filter(request => request.url === '/api/daki/style-tests').length, 2);
+    f.reply({batches: []}); await changedPoll;
+    assert.equal(f.content.querySelector('.daki-project-grid'), originalGrid);
+    assert.equal(f.requests.filter(request => request.url === '/api/daki/shared-styles').length, 3);
+    assert.equal(f.content.querySelectorAll('a').find(link => link.href.endsWith('category=all')).folder.count, 4);
+});
+
 test('shared recommendation refresh starts once, shows progress, stops and reloads current votes', async () => {
     const f = fixture(), rendered = f.render('library=shared');
     f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
     f.reply({batches: []}); await rendered;
+    const previousGrid = f.content.querySelector('.daki-project-grid');
     const start = f.button('추천수만 갱신');
     const starting = start.onclick();
     assert.equal(start.disabled, true);
@@ -1678,8 +1804,11 @@ test('shared recommendation refresh starts once, shows progress, stops and reloa
     f.timers.delete(timer[0]); const polling = timer[1].callback();
     f.reply({status: 'stopped', scanned_posts: 2, total_posts: 3, updated: 2});
     await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.content.querySelector('.daki-project-grid'), previousGrid);
     f.reply(styleCatalog()); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.content.querySelector('.daki-project-grid'), previousGrid);
     f.reply({batches: []}); await polling;
+    assert.equal(f.content.querySelector('.daki-project-grid'), previousGrid);
     assert.match(f.doc.getElementById('dakiPageStatus').textContent, /갱신 2 · 중지/);
     assert.equal(f.button('추천수만 갱신').disabled, false);
 });
@@ -1699,6 +1828,25 @@ test('recommendation start errors restore retry and late progress cannot change 
     f.reply({status: 'completed', updated: 10}); await retrying;
     assert.equal(f.content.textContent, 'destination');
     assert.equal(f.timers.size, 0);
+});
+
+test('a shared root refresh follows a recommendation job that is still starting', async () => {
+    const f = fixture(), opened = f.render('library=shared');
+    f.reply(styleCatalog()); f.reply({batches: []}); await opened;
+    const starting = f.button('추천수만 갱신').onclick();
+    f.reply({ok: true}); await new Promise(resolve => setImmediate(resolve));
+    const pendingStart = f.pending.shift();
+    const reloaded = f.render('library=shared');
+    f.reply(styleCatalog()); f.reply({batches: []}); await reloaded;
+    assert.equal(f.button('추천수만 갱신').disabled, true);
+    pendingStart.resolve({ok: true, json: async () => ({job_id: 23})});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.button('갱신 중지').hidden, false);
+    assert.equal(f.reply({status: 'running'}).url, '/style-workspace/api/arca-styles/collection-jobs/23');
+    await starting;
+    const stopping = f.button('갱신 중지').onclick();
+    assert.equal(f.reply({status: 'stop_requested'}).url, '/style-workspace/api/arca-styles/collection-jobs/23/stop');
+    await stopping;
 });
 
 test('shared test pack download is manual and refreshes root saved test cards after an install', async () => {

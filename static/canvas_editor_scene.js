@@ -42,7 +42,7 @@
         const images = new Map([...surface.querySelectorAll('.canvas-render-layer.image-layer')]
             .map(node => [String(node.dataset.layerId), node.querySelector('img')]));
         return layers.filter(layer => images.get(String(layer.id))).map(layer => ({
-            id: String(layer.id), image: images.get(String(layer.id)), src: layer.src,
+            id: String(layer.id), type: layer.type, image: images.get(String(layer.id)), src: layer.src,
             x: layer.x || 0, y: layer.y || 0,
             width: layer.layerWidth, height: layer.layerHeight,
             rotation: layer.type === 'clip' ? (Number(layer.rotation) || 0) % 360 : 0
@@ -86,6 +86,20 @@
             left.width === right.width && left.height === right.height && left.rotation === right.rotation;
     }
 
+    function changedVisibilityClip(previous, next, id) {
+        if (id == null || Math.abs(previous.length - next.length) !== 1) return null;
+        const showing = next.length > previous.length;
+        const withClip = showing ? next : previous;
+        const withoutClip = showing ? previous : next;
+        const clipIndex = withClip.findIndex(layer => layer.id === String(id));
+        const clip = withClip[clipIndex];
+        if (clip?.type !== 'clip') return null;
+        return withoutClip.every((layer, i) => {
+            const other = withClip[i < clipIndex ? i : i + 1];
+            return layer.id !== clip.id && layer.id === other.id && samePlacement(layer, other);
+        }) ? clip : null;
+    }
+
     function isVisibilitySubsetChange(previous, next) {
         if (!previous.length || !next.length || previous.length === next.length) return false;
         const previousById = new Map(previous.map(layer => [layer.id, layer]));
@@ -102,7 +116,7 @@
             [id, src, x, y, width, height, rotation]))}`;
     }
 
-    function refresh({surface, workspace, width, height, layers, paused}) {
+    function refresh({surface, workspace, width, height, layers, paused, appendedClipId, toggledClipId, visibilityChanged}) {
         if (!surface || !workspace || !root.CanvasEditorView || width * height < 4_000_000) {
             destroy(); return;
         }
@@ -112,7 +126,7 @@
         if (active && (active.surface !== surface || active.width !== width || active.height !== height)) destroy();
         if (root.CanvasSourceTilesAvailable) configureSources(layers, width, height, paused);
         active ||= create(surface, workspace, width, height);
-        active?.refresh(records, paused, sourcePlan);
+        active?.refresh(records, paused, sourcePlan, appendedClipId, toggledClipId, visibilityChanged);
     }
 
     function destroy() {
@@ -134,7 +148,7 @@
         const renderJobs = new Map(), decodedSources = new WeakMap(), decodeJobs = new WeakMap(), decodeFailures = new WeakMap();
         let sourceAtlasBytes = 0;
         let records = [], bytes = 0, load = new AbortController(), coarse, retry, plan, failures = 0, closed = false;
-        let lastRemoteBox, sceneKey = '';
+        let lastRemoteBox, sceneKey = '', appendBaseKey = '', scenePaused = false;
         function fallback(visible) {surface.classList.toggle('canvas-editor-scene-active', !visible);}
         const view = root.CanvasEditorView.create({host, workspace, width, height,
             tiles: visibleTiles, overview, setFallback: fallback, onFailure: restoreOriginals});
@@ -160,17 +174,42 @@
                 frame: {x: 1, y: 1, width: tile.width / lod, height: tile.height / lod}};
         }
 
+        function sampledBounds(tile, lod) {
+            return {x: tile.x - lod, y: tile.y - lod,
+                width: (Math.ceil(tile.width / lod) + 2) * lod,
+                height: (Math.ceil(tile.height / lod) + 2) * lod};
+        }
+
+        function retainUnchangedClipTiles(clip, nextSceneKey) {
+            for (const [key, tile] of cache) {
+                if (tile.overview || key !== sceneTileKey(tile) || intersect(clip, sampledBounds(tile, tile.lod))) continue;
+                const nextKey = sceneTileKey(tile, nextSceneKey);
+                if (cache.has(nextKey)) continue;
+                // Keep the tile object and its texture key so an unchanged region needs no GPU upload.
+                cache.delete(key);
+                cache.set(nextKey, tile);
+            }
+        }
+
         function renderTile(tile, lod) {
             let job = renderJobs.get(tile.key);
             if (!job) {
+                const seedKey = appendBaseKey && sceneTileKey(tile, appendBaseKey, lod);
+                const seed = seedKey && cache.get(seedKey);
+                const sample = sampledBounds(tile, lod);
+                if (seed && !intersect(records[records.length - 1], sample)) {
+                    // The one-pixel gutter is unchanged too. Transfer the backing store's cache charge.
+                    cache.delete(seedKey);
+                    bytes -= seed.canvas.width * seed.canvas.height * 4;
+                    return {...seed, key: tile.key};
+                }
                 const result = allocateTile(tile, lod);
                 const {canvas} = result;
-                const sample = {x: tile.x - lod, y: tile.y - lod,
-                    width: canvas.width * lod, height: canvas.height * lod};
                 const ctx = canvas.getContext('2d');
+                if (seed) ctx.drawImage(seed.canvas, 0, 0);
                 ctx.imageSmoothingQuality = 'high';
                 ctx.setTransform(1 / lod, 0, 0, 1 / lod, -sample.x / lod, -sample.y / lod);
-                job = {result, sample, ctx, index: 0, workMs: 0};
+                job = {result, sample, ctx, index: seed ? records.length - 1 : 0, workMs: 0};
                 renderJobs.set(tile.key, job);
             }
             const started = performance.now();
@@ -521,6 +560,7 @@
                         remember(tile);
                     }
                     cache.set(key, tile);
+                    bounds.key = tile.key;
                     result.push(tile);
                 }
             }
@@ -565,7 +605,7 @@
             return result;
         }
 
-        function update(next, paused, nextPlan) {
+        function update(next, paused, nextPlan, appendedClipId, toggledClipId, visibilityChanged) {
             if (host.parentNode !== surface) surface.prepend(host);
             load.abort(); load = new AbortController();
             const retainSourceAtlas = sourcePlanContainsRecords(plan, next);
@@ -579,13 +619,24 @@
             const sameScene = sceneKey === nextSceneKey && records.length === next.length && next.every((layer, i) =>
                 layer.id === records[i].id && samePlacement(layer, records[i]));
             if (!sameScene) {
-                const retainDisplay = isVisibilitySubsetChange(records, next);
+                const hasResult = appendedClipId != null;
+                const toggled = !hasResult && !paused && !scenePaused &&
+                    changedVisibilityClip(records, next, toggledClipId);
+                if (toggled && !plan && !nextPlanState) retainUnchangedClipTiles(toggled, nextSceneKey);
+                const topAppend = hasResult && !paused && !scenePaused && !plan && !nextPlanState &&
+                    next.length === records.length + 1 && next[next.length - 1].id === String(appendedClipId) &&
+                    records.every((layer, i) => layer.id === next[i].id && samePlacement(layer, next[i]));
+                appendBaseKey = topAppend ? sceneKey : '';
+                const subsetChange = !hasResult && isVisibilitySubsetChange(records, next);
+                if (subsetChange && (visibilityChanged || toggled) && !paused && !scenePaused) view.retainDetail();
+                const retainDisplay = topAppend || subsetChange;
                 renderJobs.clear();
                 if (!retainDisplay) {
                     view.setPaused(true);
                     view.clear();
                     cancelRequests();
-                    cache.clear(); bytes = 0; coarse = null;
+                    cache.clear(); bytes = 0;
+                    coarse = null;
                 }
                 clearTimeout(retry); retry = undefined;
                 failures = 0; lastRemoteBox = undefined;
@@ -602,12 +653,18 @@
                 }, {once: true, signal: load.signal});
                 else if (!nextPlanState && !paused) ensureImageDecoded(image);
             }
-            view.setPaused(Boolean(paused));
+            scenePaused = Boolean(paused);
+            if (scenePaused) appendBaseKey = '';
+            view.setPaused(scenePaused);
             view.schedule();
         }
 
         return {surface, width, height, refresh: update, schedule: view.schedule, present: view.present,
-            pause(paused) {if (paused) cancelRequests(); view.setPaused(paused);},
+            pause(paused) {
+                scenePaused = Boolean(paused);
+                if (scenePaused) {appendBaseKey = ''; cancelRequests();}
+                view.setPaused(scenePaused);
+            },
             stats: () => ({gpu: view.stats(), cpu: {...metrics, bytes, atlasBytes: sourceAtlasBytes}}),
             destroy() {closed = true; load.abort(); cancelRequests(); clearTimeout(retry); clearAtlases(); renderJobs.clear(); view.destroy(); cache.clear(); coarse = null; host.remove();}};
     }

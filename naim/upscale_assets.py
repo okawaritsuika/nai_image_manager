@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 import zipfile
 
-from naim.paths import get_app_dir, is_subpath
+from naim.paths import WINDOWS_FILE_LOCK_ERRORS, get_app_dir, is_subpath, retry_windows_file_lock
 from naim.processes import UpscaleCancelled, run_process_with_cancel
 
 
@@ -88,6 +88,27 @@ def _format_bytes(value):
             return f'{amount:.1f} {unit}' if unit != 'B' else f'{int(amount)} B'
         amount /= 1024
     return f'{amount:.1f} TB'
+
+
+def _move_install_directory(source, destination, expected=None):
+    def move():
+        nonlocal expected
+        current = os.lstat(source)
+        if expected is None:
+            expected = current
+        if not os.path.samestat(expected, current) or os.path.lexists(destination):
+            raise UpscaleAssetError('설치 대상 폴더가 변경되었습니다. 기존 자료를 확인해 주세요.')
+        os.replace(source, destination)
+        return current
+
+    try:
+        return retry_windows_file_lock(move)
+    except OSError as error:
+        if getattr(error, 'winerror', None) not in WINDOWS_FILE_LOCK_ERRORS:
+            raise
+        raise UpscaleAssetError(
+            '설치 폴더를 이동할 수 없습니다. 폴더 접근 권한을 확인하고 사용 중인 프로그램을 닫은 뒤 다시 시도해 주세요.'
+        ) from error
 
 
 class _DownloadTask:
@@ -667,22 +688,26 @@ class UpscaleAssets:
     def _commit_stage(self, stage, destination, spec):
         self._check_no_reparse(destination)
         backup = destination.parent / f'.{destination.name}.backup-{uuid.uuid4().hex}'
-        moved_previous = False
+        previous = None
+        published = None
         try:
             if destination.exists():
                 self._check_tree_no_reparse(destination)
-                os.replace(destination, backup)
-                moved_previous = True
-            os.replace(stage, destination)
+                previous = _move_install_directory(destination, backup)
+            published = _move_install_directory(stage, destination)
             if not self._required_files_exist(spec):
                 raise UpscaleAssetError('설치된 업스케일 파일을 확인하지 못했습니다.')
         except Exception:
-            if destination.exists() and moved_previous:
-                self._remove_managed_tree(destination)
-            if moved_previous and backup.exists():
-                os.replace(backup, destination)
+            if published is not None:
+                # Move only our own installation back into the task's cleanup directory.
+                try:
+                    _move_install_directory(destination, stage, expected=published)
+                except FileNotFoundError:
+                    pass
+            if previous is not None and not os.path.lexists(destination):
+                _move_install_directory(backup, destination, expected=previous)
             raise
-        if moved_previous and backup.exists():
+        if previous is not None and backup.exists() and os.path.samestat(previous, os.lstat(backup)):
             self._remove_managed_tree(backup)
 
     def _check_tree_no_reparse(self, folder):

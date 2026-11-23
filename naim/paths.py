@@ -1,6 +1,20 @@
 """Legacy path containment rules shared by filesystem and database callers."""
 import os
 import sys
+import time
+
+WINDOWS_FILE_LOCK_ERRORS = (5, 32, 33)
+
+
+def retry_windows_file_lock(operation, *args):
+    """Retry only sharing and access conflicts, keeping ordinary filesystem calls single-shot."""
+    for delay in (0.03, 0.06, 0.12, 0.24, None):
+        try:
+            return operation(*args)
+        except OSError as error:
+            if delay is None or getattr(error, 'winerror', None) not in WINDOWS_FILE_LOCK_ERRORS:
+                raise
+            time.sleep(delay)
 
 def get_app_dir():
     if getattr(sys, "frozen", False):

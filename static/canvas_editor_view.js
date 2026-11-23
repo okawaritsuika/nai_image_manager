@@ -63,6 +63,7 @@
         let requestedLod, displayedLod, nearest, ownsDisplay = false;
         let detailLod, overviewEntry;
         let displayed = [];
+        let detailViewport, holdingDetail = false;
 
         function release(entry) {
             bytes -= entry.bytes;
@@ -83,6 +84,8 @@
             for (const entry of retired) release(entry);
             retired.clear();
             displayed = [];
+            detailViewport = undefined;
+            holdingDetail = false;
             requestedLod = displayedLod = detailLod = nearest = overviewEntry = undefined;
         }
 
@@ -95,6 +98,8 @@
         }
 
         function showFallback() {
+            detailViewport = undefined;
+            holdingDetail = false;
             if (canvas) canvas.hidden = true;
             if (ownsDisplay) {ownsDisplay = false; setFallback(true);}
         }
@@ -256,7 +261,12 @@
                 const left = Math.max(docBox.left, viewLeft), top = Math.max(docBox.top, viewTop);
                 const right = Math.min(docBox.right, viewLeft + drawWidth);
                 const bottom = Math.min(docBox.bottom, viewTop + drawHeight);
-                if (right <= left || bottom <= top) {canvas.hidden = true; return;}
+                if (right <= left || bottom <= top) {
+                    holdingDetail = false;
+                    detailViewport = undefined;
+                    canvas.hidden = true;
+                    return;
+                }
                 const resolution = root.devicePixelRatio || 1;
                 const scaleX = docBox.width / width, scaleY = docBox.height / height;
                 const scale = Math.max(scaleX, scaleY) * resolution;
@@ -265,6 +275,10 @@
                 else if (nearest && scale < .92) nearest = false;
                 else if (!nearest && scale >= 1.08) nearest = true;
                 const offsetX = viewLeft - docBox.left, offsetY = viewTop - docBox.top;
+                const viewport = [offsetX, offsetY, scaleX, scaleY, drawWidth, drawHeight, resolution];
+                if (holdingDetail && viewport.some((value, index) => value !== detailViewport[index])) {
+                    holdingDetail = false;
+                }
                 const x = Math.floor((left - docBox.left) / scaleX), y = Math.floor((top - docBox.top) / scaleY);
                 const box = {x, y, width: Math.min(width, Math.ceil((right - docBox.left) / scaleX)) - x,
                     height: Math.min(height, Math.ceil((bottom - docBox.top) / scaleY)) - y};
@@ -277,9 +291,11 @@
                     prepareTiles(visible.partial, lod, lod === 1 && nearest, cachedOnly);
                     visible = null;
                 }
-                if (visible && visible.reduce((total, tile) => total +
+                const bounds = visible || (holdingDetail && incomplete?.bounds);
+                if (bounds && bounds.reduce((total, tile) => total +
                         (Math.ceil(tile.width / lod) + 2) * (Math.ceil(tile.height / lod) + 2) * 4, 0) > CACHE_LIMIT) {
                     visible = null;
+                    holdingDetail = false;
                 }
                 if (visible && overview && !prepareTiles(visible, lod, lod === 1 && nearest, cachedOnly)) {
                     incomplete = {partial: visible, bounds: visible};
@@ -289,6 +305,8 @@
                 if (!visible) {
                     metrics.waitingFrames += 1;
                     if (cachedOnly) schedule();
+                    // The clip is the only change. Keep the already submitted pixels while its tiles load.
+                    if (holdingDetail) return;
                     if (displayedLod && displayedLod !== lod) {
                         const old = tiles(box, displayedLod, {cachedOnly: true, nearest: displayedLod === 1 && nearest});
                         if (Array.isArray(old)) {lod = displayedLod; visible = old;}
@@ -312,7 +330,8 @@
                     if (!visible && !entries) return;
                 }
                 entries ||= visible.map(tile => textureFor(tile, lod, lod === 1 && nearest));
-                if (visible && !visible[0]?.overview && visible[0]?.key !== 'overview') detailLod = lod;
+                const completeDetail = visible?.length && !visible[0].overview && visible[0].key !== 'overview';
+                if (completeDetail) detailLod = lod;
                 else if (visible) overviewEntry = entries[0];
                 if (lastWidth !== drawWidth || lastHeight !== drawHeight || lastResolution !== resolution) {
                     app.renderer.resize(drawWidth, drawHeight, resolution);
@@ -335,6 +354,8 @@
                 // WebGL uploads and draws are ordered on the same context. Present the
                 // new sprite set before releasing textures used by the previous frame.
                 app.render();
+                detailViewport = completeDetail && lod === requestedLod ? viewport : undefined;
+                holdingDetail = false;
                 metrics.frames += 1;
                 metrics.preparationMs += ready - started;
                 metrics.submissionMs += performance.now() - ready;
@@ -400,6 +421,7 @@
         })();
 
         return {schedule, present, setPaused, destroy, clear,
+            retainDetail() {holdingDetail = ownsDisplay && Boolean(detailViewport);},
             stats: () => ({...metrics, bytes, displayedLod, requestedLod, ownsDisplay})};
     }
 

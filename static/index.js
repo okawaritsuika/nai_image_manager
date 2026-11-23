@@ -4839,52 +4839,6 @@ async function sendContextImageToCanvas() {
     if (!activeImageContext) return;
     const imageContext = {...activeImageContext};
 
-    let promptInfo = imageContext.prompt || null;
-
-    if ((!promptInfo || typeof promptInfo !== 'object') && imageContext.path) {
-        try {
-            const response = await fetch('/api/prompt_info', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: imageContext.path })
-            });
-
-            const json = await response.json();
-
-            if (json.status === 'success' && json.data) {
-                const data = json.data;
-
-                const charText =
-                    Array.isArray(data.charPrompts) ? data.charPrompts.join('\n') :
-                    Array.isArray(data.characterPrompts) ? data.characterPrompts.join('\n') :
-                    String(data.charPrompt || data.characterPrompt || '');
-
-                promptInfo = {
-                    basePrompt: data.basePrompt || data.prompt || '',
-                    charPrompt: charText,
-                    negativePrompt:
-                        data.negativePrompt ||
-                        data.negative_prompt ||
-                        data.uc ||
-                        '',
-                    model: data.model,
-                    sampler: data.sampler,
-                    steps: data.steps,
-                    cfg: data.cfg,
-                    cfg_rescale: data.cfg_rescale,
-                    noise_schedule: data.noise_schedule,
-                    seed: data.seed,
-                    strength: data.strength,
-                    noise: data.noise,
-                    uc: data.uc,
-                    negative_prompt: data.negative_prompt
-                };
-            }
-        } catch (error) {
-            console.warn('캔버스 전송용 프롬프트 읽기 실패:', error);
-        }
-    }
-
     const payload = {
         src: imageContext.imgSrc,
         path: imageContext.path || '',
@@ -4892,12 +4846,17 @@ async function sendContextImageToCanvas() {
         height: imageContext.height,
         name: getImageFileName(imageContext.path || imageContext.imgSrc),
         displayName: imageContext.projectContext?.displayName || getImageFileName(imageContext.path || imageContext.imgSrc),
-        promptInfo: promptInfo || null,
+        promptInfo: imageContext.prompt || null,
         projectContext: imageContext.projectContext || null,
         importedAt: Date.now()
     };
 
-    localStorage.setItem('naia_canvas_pending_import', JSON.stringify(payload));
+    try {
+        await CanvasPendingImport.enqueue(payload);
+    } catch (error) {
+        alert(`캔버스 가져오기 정보를 전달하지 못했습니다: ${error.message || error}`);
+        return;
+    }
     location.href = '/canvas';
 }
 

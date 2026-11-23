@@ -1141,6 +1141,146 @@ test('direct picker cancel preserves the prior snapshot and stale source blocks 
     controller.dispose();
 });
 
+function manualStyleFixture(initialPrompt, canEditPrompt = () => true, acceptPrompt = () => true) {
+    const { doc, modal } = domFixture();
+    const changes = [];
+    const writes = [];
+    let prompt = clone(initialPrompt);
+    const controller = CanvasStyleLink.create({
+        document: doc,
+        fetch: async () => response([]),
+        getPrompt: () => prompt,
+        canEditPrompt,
+        setPrompt(value) {
+            writes.push(clone(value));
+            if (!acceptPrompt()) return false;
+            prompt = value;
+            return true;
+        },
+        onChange: (value) => changes.push(value),
+    });
+    const open = () => {
+        controller.openPicker();
+        doc.body.querySelectorAll('button').find((button) => button.textContent === '프롬프트에서 직접 지정').onclick();
+        return {
+            base: doc.getElementById('canvasStyleLinkManualBase'),
+            negative: doc.getElementById('canvasStyleLinkManualNegative'),
+            apply: doc.getElementById('canvasStyleLinkDirectPane').querySelector('.canvas-style-link-apply'),
+            error: doc.body.querySelector('.canvas-style-link-direct-error'),
+            negativeSource: doc.getElementById('canvasStyleLinkNegativeSource'),
+        };
+    };
+    return { controller, modal, changes, writes, open, changeSource(value) { prompt = value; } };
+}
+
+function typeManualStyle(input, value) {
+    input.value = value;
+    input.oninput();
+}
+
+test('manual entry works with blank base and negative prompts and persists only on parent save', () => {
+    const fixture = manualStyleFixture({ basePrompt: '', negativePrompt: '' });
+    const { controller, writes, changes, modal } = fixture;
+    const originalStyle = controller.snapshot();
+    const { base, negative, apply } = fixture.open();
+    assert.equal(base.parentNode.hidden, false);
+    assert.equal(apply.disabled, true);
+    typeManualStyle(base, ' , , ');
+    assert.equal(apply.disabled, true);
+    typeManualStyle(base, ' 2::ink::,  종이 질감 ');
+    typeManualStyle(negative, 'blurry');
+    assert.equal(apply.disabled, false);
+    assert.equal(apply.textContent, '입력한 그림체를 프롬프트에 추가');
+    apply.onclick();
+
+    assert.equal(modal.style.display, 'none');
+    assert.deepEqual(writes, [{ basePrompt: '2::ink::, 종이 질감', negativePrompt: 'blurry' }]);
+    const displayed = controller.groupParts('base', [
+        { token: '2::ink::', index: 0 }, { token: '종이 질감', index: 1 },
+    ]);
+    assert.deepEqual(displayed[0].indexes, [0, 1]);
+    controller.toggleExpanded('base');
+    assert.deepEqual(controller.snapshot(), originalStyle);
+    assert.deepEqual(changes, []);
+
+    controller.finishManualDraft(true);
+    assert.deepEqual(controller.snapshot(), {
+        mode: 'manual',
+        style: {
+            id: 'canvas-custom', library: 'custom', name: '직접 지정',
+            positive: '2::ink::, 종이 질감', negative: 'blurry', rangeStarts: { base: 0, negative: 0 },
+        },
+        expanded: { base: true, negative: false },
+    });
+    controller.dispose();
+});
+
+test('manual entry appends after existing tags, preserves duplicate position and can use an opposite range', () => {
+    const fixture = manualStyleFixture({ basePrompt: '  solo, 1.5::ink::, ', negativePrompt: 'blurry, artifacts' });
+    const { controller, writes } = fixture;
+    controller.restore({ mode: 'manual', style: style() });
+    const before = controller.snapshot();
+    const { base, negativeSource, apply } = fixture.open();
+    negativeSource.selectionStart = 10;
+    negativeSource.selectionEnd = 13;
+    negativeSource.onselect();
+    typeManualStyle(base, '1.5::ink::');
+    apply.onclick();
+
+    assert.deepEqual(writes, [{ basePrompt: '  solo, 1.5::ink::, 1.5::ink::', negativePrompt: 'blurry, artifacts' }]);
+    const baseParts = controller.groupParts('base', [
+        { token: 'solo', index: 0 }, { token: '1.5::ink::', index: 1 }, { token: '1.5::ink::', index: 2 },
+    ]);
+    assert.deepEqual(baseParts.find((part) => part.type === 'style').indexes, [2]);
+    const negativeParts = controller.groupParts('negative', [
+        { token: 'blurry', index: 0 }, { token: 'artifacts', index: 1 },
+    ]);
+    assert.deepEqual(negativeParts.find((part) => part.type === 'style').indexes, [1]);
+    controller.finishManualDraft(false);
+    assert.deepEqual(controller.snapshot(), before);
+    assert.equal(fixture.open().base.value, '');
+    controller.dispose();
+});
+
+test('manual entry rejects stale and oversized sources and a closed parent editor without saving a style', () => {
+    const prompt = { basePrompt: 'solo', negativePrompt: '' };
+    let editable = false;
+    const fixture = manualStyleFixture(prompt, () => editable, () => false);
+    const { controller, writes } = fixture;
+    const before = controller.snapshot();
+    assert.equal(fixture.open().base.parentNode.hidden, true);
+
+    editable = true;
+    let { base, apply, error } = fixture.open();
+    typeManualStyle(base, 'ink');
+    fixture.changeSource({ ...prompt, basePrompt: 'portrait' });
+    apply.onclick();
+    assert.match(error.textContent, /프롬프트가 변경되었습니다/);
+    assert.deepEqual(writes, []);
+
+    fixture.changeSource({ ...prompt, basePrompt: 'x'.repeat(99999) });
+    ({ base, apply, error } = fixture.open());
+    typeManualStyle(base, 'ink');
+    apply.onclick();
+    assert.match(error.textContent, /100,000자/);
+    assert.deepEqual(writes, []);
+
+    fixture.changeSource(prompt);
+    ({ base, apply, error } = fixture.open());
+    typeManualStyle(base, 'ink');
+    editable = false;
+    apply.onclick();
+    assert.match(error.textContent, /프롬프트 편집창/);
+    assert.deepEqual(writes, []);
+
+    editable = true;
+    apply.onclick();
+    assert.match(error.textContent, /프롬프트 편집창/);
+    assert.deepEqual(writes, [{ ...prompt, basePrompt: 'solo, ink' }]);
+    assert.deepEqual(controller.snapshot(), before);
+    controller.dispose();
+});
+
 test('late catalog responses do not replace a directly selected custom snapshot', async () => {
     const pending = deferredFetch();
     const { doc } = domFixture();

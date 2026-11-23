@@ -43,17 +43,18 @@
     }
 
     function statusFields() {
-        const link = localProjectLink();
+        const previewLink = root.CanvasProject?.readOnlyPreviewLink?.();
+        const link = localProjectLink() || previewLink;
         const projectBar = root.document?.getElementById('canvasProjectBar');
         const autosave = root.document?.getElementById('canvasAutosaveStatus');
         const retouch = root.CanvasRetouch;
         const fields = {
             ready,
             name: link && typeof link.name === 'string' ? link.name : activeSetupName(),
-            status: link
+            status: previewLink ? 'readonly' : link
                 ? (projectBar?.dataset?.state || 'saved')
                 : (autosave?.dataset?.state || 'saved'),
-            retouch: Boolean(retouch && typeof retouch.isOpen === 'function' && retouch.isOpen()),
+            retouch: !previewLink && Boolean(retouch && typeof retouch.isOpen === 'function' && retouch.isOpen()),
         };
         if (link) {
             if (typeof link.projectId === 'string') fields.projectId = link.projectId;
@@ -117,7 +118,8 @@
             if (typeof clipInpaintLoadingClipId !== 'undefined' && clipInpaintLoadingClipId !== null) {
                 return '클립 보정 작업이 끝난 뒤 닫아 주세요.';
             }
-            if (typeof externalCanvasImageImportBusy !== 'undefined' && externalCanvasImageImportBusy) {
+            if ((typeof externalCanvasImageImportBusy !== 'undefined' && externalCanvasImageImportBusy) ||
+                (typeof pendingCanvasImageImportBusy !== 'undefined' && pendingCanvasImageImportBusy)) {
                 return '이미지 가져오기가 끝난 뒤 닫아 주세요.';
             }
         } catch (error) {
@@ -130,6 +132,7 @@
 
     async function flush() {
         try {
+            if (root.CanvasProject?.isReadOnlyPreview?.()) return {ok: true};
             const busyError = getBusyError();
             if (busyError) return {ok: false, error: busyError};
 
@@ -300,11 +303,12 @@
 
     function setActive(active) {
         const isActive = active === true;
+        const editingDisabled = !isActive || Boolean(root.CanvasProject?.blocksLocalWrites?.());
         root.document?.body?.classList?.toggle('canvas-pane-inactive', !isActive);
         const workspace = root.document?.getElementById('canvasWorkspace');
-        if (workspace) workspace.inert = !isActive;
+        if (workspace) workspace.inert = editingDisabled;
         const header = root.document?.querySelector?.('.main-header');
-        if (header) header.inert = !isActive;
+        if (header) header.inert = !isActive || Boolean(root.CanvasProject?.isReadOnlyPreview?.());
         if (isActive && typeof root.dispatchEvent === 'function' && typeof root.Event === 'function') {
             root.dispatchEvent(new root.Event('resize'));
         }
@@ -318,6 +322,9 @@
 
     async function handleCommand(data) {
         const action = data.action;
+        if (root.CanvasProject?.blocksLocalWrites?.() && !['active', 'flush', 'preview'].includes(action)) {
+            return {ok: false, error: '현재 이 화면에서 프로젝트 캔버스를 편집할 수 없습니다.'};
+        }
         if (action !== 'active' && action !== 'flush' && !ready) {
             return {ok: false, error: '캔버스 초기화가 끝나지 않았습니다.'};
         }
@@ -364,6 +371,13 @@
 
     async function capturePreview() {
         try {
+            if (root.CanvasProject?.isReadOnlyPreview?.()) {
+                const canvas = await root.CanvasProject.loadReadOnlyCanvas();
+                if (!Array.isArray(canvas?.state?.layers)) throw new Error('서버 저장본을 읽을 수 없습니다.');
+                const preview = await root.renderMergedCanvasToDataUrl({state: canvas.state, maxDimension: 1600});
+                if (!preview?.startsWith('data:image/png')) throw new Error('캔버스 미리보기를 만들지 못했습니다.');
+                return {ok: true, preview};
+            }
             const overlay = root.document?.querySelector?.('.canvas-retouch-surface-overlay canvas');
             if (overlay && Number(overlay.width) > 0 && Number(overlay.height) > 0) {
                 const scale = Math.min(1, 1600 / Math.max(overlay.width, overlay.height));
@@ -455,6 +469,7 @@
     root.CanvasWorkspaceBridge = {
         isHost,
         get isPane() { return isPane || inlineContext !== null; },
+        get paneId() { return inlineContext?.paneId || context.paneId; },
         get stateKey() {
             return inlineContext ? state.stateKey(inlineContext.workspaceId, inlineContext.paneId) : initialStateKey;
         },

@@ -14,6 +14,7 @@ def _load_app_without_flask():
     class FakeFlask:
         def __init__(self, *_args, **_kwargs):
             self.wsgi_app = lambda environ, start_response: []
+            self.logger = mock.Mock()
             self.config = {}
             self.extensions = {}
             self.root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

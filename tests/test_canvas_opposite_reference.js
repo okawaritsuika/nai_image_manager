@@ -210,6 +210,7 @@ function harness({link = {projectId: PROJECT_ID, canvasId: FRONT_CANVAS_ID, side
         setLink(value) { currentLink = value ? {...value, revision: 1, unsaved: false} : null; },
         setProject(value) { project = value; },
         projectUrl(id = PROJECT_ID) { return `/api/daki/projects/${id}`; },
+        pickerUrl() { return `/api/daki/projects/${PROJECT_ID}?include_dimensions=0`; },
         canvasUrl(id = BACK_CANVAS_ID, projectId = PROJECT_ID) { return `/api/daki/projects/${projectId}/canvases/${id}`; }
     };
 }
@@ -290,7 +291,9 @@ test('front editing offers only back candidates and canvases; selection saves, h
     assert.equal(chooseButton(h, 'candidate', FRONT_CANDIDATE_ID), null);
     assert.equal(chooseButton(h, 'canvas', FRONT_CANVAS_ID), null);
     const candidateCard = chooseButton(h, 'candidate', BACK_CANDIDATE_ID);
+    assert.equal(h.requests[0].url, h.pickerUrl());
     assert.equal(candidateCard.children[0].loading, 'lazy');
+    assert.equal(candidateCard.children[0].src, '/image/back/one.png?preview=512');
     assert.equal(candidateCard.children[1].textContent, 'one.png');
     assert.equal(candidateCard.children[1].title, 'back/one.png');
 
@@ -302,6 +305,7 @@ test('front editing offers only back candidates and canvases; selection saves, h
     });
     assert.equal(h.saveCount(), 1);
     assert.equal(h.document.getElementById('canvasOppositePreview').hidden, false);
+    assert.equal(h.document.getElementById('canvasOppositePreviewImage').src, '/image/back/one.png');
     assert.deepEqual(h.canvasState.layers, beforeLayers);
 
     h.api.setVisible(false);
@@ -556,7 +560,6 @@ test('missing candidate is disabled and empty opposite side gives a readable mes
 
 test('a vanished selected candidate keeps its saved ID, clears stale image, and can retry', async () => {
     const h = harness();
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
     h.addResponse(h.projectUrl(), response({status: 'success', project: projectRecord({candidates: {
         front: [], back: [{id: BACK_CANDIDATE_ID, path: 'gone.png', src: '/image/gone.png', missing: true}]
     }})}));
@@ -580,7 +583,6 @@ test('a vanished selected candidate keeps its saved ID, clears stale image, and 
 
 test('an image decode failure keeps the selected ID and exposes retry without a stale preview', async () => {
     const h = harness();
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
     const brokenImageProject = normalProject();
     brokenImageProject.candidates.back[0].src = 'bad:broken-image';
     h.addResponse(h.projectUrl(), response({status: 'success', project: brokenImageProject}));
@@ -600,10 +602,7 @@ test('an image decode failure keeps the selected ID and exposes retry without a 
 test('a late project response after a new choice cannot replace the newer preview', async () => {
     const h = harness();
     const oldChoice = deferred();
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
     h.addResponse(h.projectUrl(), oldChoice.promise);
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
     h.api.linkChanged();
     h.api.open();
     await tick();
@@ -626,13 +625,9 @@ test('a late project response after a new choice cannot replace the newer previe
 test('a late canvas renderer result is ignored after a candidate is selected', async () => {
     const renderResult = deferred();
     const h = harness({renderer: () => renderResult.promise});
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
     h.addResponse(h.canvasUrl(FRONT_CANVAS_ID), response({status: 'success', project: {id: PROJECT_ID}, canvas: {
         id: FRONT_CANVAS_ID, side: 'front', name: 'Front edit', state: structuredClone(harness().canvasState)
     }}));
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
     h.api.linkChanged();
     h.api.open();
     await tick();
@@ -653,7 +648,6 @@ test('a late canvas renderer result is ignored after a candidate is selected', a
 test('leaving a project cancels work and hides controls without adding a canvas layer', async () => {
     const h = harness();
     const pending = deferred();
-    h.addResponse(h.projectUrl(), response({status: 'success', project: normalProject()}));
     h.addResponse(h.projectUrl(), pending.promise);
     h.api.linkChanged();
     h.api.open();
@@ -676,7 +670,7 @@ test('leaving a project cancels work and hides controls without adding a canvas 
 test('closing the picker cancels its pending catalog request and ignores the late result', async () => {
     const h = harness();
     const pending = deferred();
-    h.addResponse(h.projectUrl(), pending.promise);
+    h.addResponse(h.pickerUrl(), pending.promise);
     h.api.linkChanged();
     h.api.open();
     await tick();
@@ -695,7 +689,7 @@ test('closing the picker cancels its pending catalog request and ignores the lat
 test('changing canvas side cancels a picker request tied to the old opposite side', async () => {
     const h = harness();
     const pending = deferred();
-    h.addResponse(h.projectUrl(), pending.promise);
+    h.addResponse(h.pickerUrl(), pending.promise);
     h.api.linkChanged();
     h.api.open();
     await tick();

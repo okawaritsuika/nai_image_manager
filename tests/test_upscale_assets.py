@@ -324,6 +324,125 @@ class UpscaleAssetsTests(unittest.TestCase):
         self.assets.delete('animesharp')
         self.assertFalse(runtime.exists())
 
+    def _staged_model(self, previous=False, prefix=None):
+        spec = self.catalog['realcugan']
+        if prefix:
+            spec = {**spec, 'folder': prefix + '/' + spec['folder']}
+        dest = self.root / spec['folder']
+        stage = dest.with_name('.model.staging-synthetic')
+        stage.mkdir(parents=True)
+        (stage / 'model.bin').write_bytes(b'new')
+        if previous:
+            dest.mkdir()
+            (dest / 'model.bin').write_bytes(b'previous')
+        return stage, dest, spec
+
+    def test_first_install_commits_once_without_waiting(self):
+        stage, dest, spec = self._staged_model()
+        with mock.patch('naim.upscale_assets.os.replace', wraps=os.replace) as move, \
+                mock.patch('naim.upscale_assets.time.sleep') as pause:
+            self.assets._commit_stage(stage, dest, spec)
+        move.assert_called_once_with(stage, dest)
+        pause.assert_not_called()
+        self.assertEqual((dest / 'model.bin').read_bytes(), b'new')
+
+    def test_directory_install_completes_in_the_same_call_after_a_windows_handle_is_released(self):
+        stage, dest, spec = self._staged_model()
+        native_move = os.replace
+        with (stage / 'model.bin').open('rb') as reader:
+            def move(source, target):
+                if reader.closed:
+                    return native_move(source, target)
+                try:
+                    if os.name == 'nt':
+                        return native_move(source, target)
+                    error = PermissionError('synthetic sharing violation')
+                    error.winerror = 32
+                    raise error
+                finally:
+                    reader.close()
+
+            with mock.patch('naim.upscale_assets.os.replace', side_effect=move) as attempts, \
+                    mock.patch('naim.upscale_assets.time.sleep') as pause:
+                self.assets._commit_stage(stage, dest, spec)
+        self.assertEqual(attempts.call_count, 2)
+        pause.assert_called_once_with(0.03)
+        self.assertEqual((dest / 'model.bin').read_bytes(), b'new')
+
+    def test_persistent_windows_lock_restores_previous_installation_after_a_bounded_wait(self):
+        stage, dest, spec = self._staged_model(previous=True)
+        native_move = os.replace
+
+        def move(source, target):
+            if source == stage:
+                error = PermissionError('synthetic lock violation')
+                error.winerror = 33
+                raise error
+            return native_move(source, target)
+
+        with mock.patch('naim.upscale_assets.os.replace', side_effect=move), \
+                mock.patch('naim.upscale_assets.time.sleep') as pause, \
+                self.assertRaisesRegex(UpscaleAssetError, '권한|사용 중'):
+            self.assets._commit_stage(stage, dest, spec)
+        self.assertEqual(pause.call_args_list, [mock.call(delay) for delay in (0.03, 0.06, 0.12, 0.24)])
+        self.assertEqual((dest / 'model.bin').read_bytes(), b'previous')
+        self.assertFalse(list(dest.parent.glob('*.backup-*')))
+
+    def test_failed_verification_unpublishes_the_new_install_and_restores_any_previous_install(self):
+        for previous in (False, True):
+            with self.subTest(previous=previous):
+                stage, dest, spec = self._staged_model(previous=previous, prefix='old' if previous else 'new')
+                with mock.patch.object(self.assets, '_required_files_exist', return_value=False), \
+                        self.assertRaises(UpscaleAssetError):
+                    self.assets._commit_stage(stage, dest, spec)
+                if previous:
+                    self.assertEqual((dest / 'model.bin').read_bytes(), b'previous')
+                else:
+                    self.assertFalse(dest.exists())
+
+    def test_rollbacks_keep_a_concurrent_destination_and_the_previous_backup(self):
+        for timing in ('before-publish', 'after-publish', 'during-rollback'):
+            with self.subTest(timing=timing):
+                stage, dest, spec = self._staged_model(previous=True, prefix=timing)
+                native_move = os.replace
+
+                def competitor():
+                    dest.mkdir()
+                    (dest / 'other.bin').write_bytes(b'other')
+
+                def move(source, target):
+                    if source == stage and timing == 'before-publish':
+                        competitor()
+                        raise OSError('unrelated I/O error')
+                    if (source == dest and target == stage and timing == 'during-rollback'
+                            and not dest.with_name('first-model').exists()):
+                        native_move(dest, dest.with_name('first-model'))
+                        competitor()
+                        error = PermissionError('synthetic sharing violation')
+                        error.winerror = 32
+                        raise error
+                    return native_move(source, target)
+
+                def verify(_spec):
+                    if timing == 'after-publish':
+                        native_move(dest, dest.with_name('first-model'))
+                        competitor()
+                    return False
+
+                with mock.patch('naim.upscale_assets.os.replace', side_effect=move), \
+                        mock.patch.object(self.assets, '_required_files_exist', side_effect=verify), \
+                        mock.patch('naim.upscale_assets.time.sleep') as pause, \
+                        self.assertRaises((OSError, UpscaleAssetError)):
+                    self.assets._commit_stage(stage, dest, spec)
+                if timing == 'during-rollback':
+                    pause.assert_called_once_with(0.03)
+                else:
+                    pause.assert_not_called()
+                self.assertEqual((dest / 'other.bin').read_bytes(), b'other')
+                backups = list(dest.parent.glob('*.backup-*'))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual((backups[0] / 'model.bin').read_bytes(), b'previous')
+
     def test_in_use_model_cannot_be_deleted(self):
         self.assertEqual(self._download('realcugan')['state'], 'installed', self.assets.list())
         with self.assets.use('realcugan'):

@@ -31,6 +31,8 @@ const exportPromptSource = section(canvasSource,
     'function getCanvasExportPromptInfo() {', '\nfunction isCurrentCanvasDakimakuraLike(');
 const effectiveClipSource = section(canvasSource,
     'function buildEffectiveClipPromptInfo(clip) {', '\nfunction applyDisabledClipPromptControlGroups(');
+const fetchPromptSource = section(canvasSource,
+    'async function fetchPromptInfoByPath(path) {', '\nfunction updateTagTranslationEffectiveLabel(');
 const snapshotSource = section(canvasSource,
     'function buildCanvasStateSnapshot(options = {}) {', '\nfunction cloneCanvasLayersForState(');
 const mergedSnapshotSource = section(canvasSource,
@@ -330,6 +332,56 @@ test('metadata export fallback applies common settings without mutating source m
     assert.equal(imageLayer.promptInfo.seed, 91);
 });
 
+test('export uses the saved character list without replacing the source base and negative prompts', async () => {
+    const h = createHarness();
+    const {context} = h;
+    vm.runInContext(applySettingsSource + '\n' + promptTextSource + '\n' + exportPromptSource, context);
+    const original = {basePrompt: 'source base', negativePrompt: 'source negative', charPrompts: ['blue eyes, green eyes']};
+    const characters = ['blue eyes', 'green eyes'];
+    context.sharedSelectionClipPromptInfo = {basePrompt: 'clip base', charPrompts: characters};
+    for (const imageLayer of [
+        {type: 'image', promptInfo: original},
+        {type: 'image', promptInfo: {}, recoveredPrompt: original}
+    ]) {
+        h.setLayers([imageLayer]);
+        const exported = plain(await context.getCanvasExportPromptInfoAsync());
+        assert.deepEqual(exported.charPrompts, characters);
+        assert.equal(exported.charPrompt, characters.join(', '));
+        assert.equal(exported.basePrompt, original.basePrompt);
+        assert.equal(exported.negativePrompt, original.negativePrompt);
+    }
+    assert.deepEqual(original.charPrompts, ['blue eyes, green eyes']);
+});
+
+test('an unrelated or empty leftover selection prompt preserves characters on the exported image', async () => {
+    const h = createHarness();
+    const {context} = h;
+    vm.runInContext(applySettingsSource + '\n' + promptTextSource + '\n' + exportPromptSource, context);
+    const original = {basePrompt: 'new image', charPrompts: ['first', 'second']};
+    const image = {id: 4, type: 'image', sourcePath: 'new.png', promptInfo: original};
+    for (const characters of [[], ['unrelated']]) {
+        context.sharedSelectionClipPromptInfo = {basePrompt: 'old selection', charPrompts: characters};
+        h.setLayers([image, {id: 5, type: 'clip', sourcePath: 'old.png'}]);
+        assert.deepEqual(plain((await context.getCanvasExportPromptInfoAsync()).charPrompts), original.charPrompts);
+    }
+    h.setLayers([image, {id: 5, type: 'clip', sourcePath: 'new.png'}]);
+    context.sharedSelectionClipPromptInfo = {basePrompt: 'new selection', charPrompts: ['edited']};
+    assert.deepEqual(plain(context.getCanvasExportPromptInfo().charPrompts), ['edited']);
+    h.setLayers([image, {type: 'clip', sourceImageLayerId: 4}, {type: 'clip', sourceImageLayerId: 6}]);
+    assert.deepEqual(plain(context.getCanvasExportPromptInfo().charPrompts), original.charPrompts);
+});
+
+test('late metadata seeding leaves an in-progress generation settings form alone', () => {
+    const {context, nodes} = createHarness();
+    context.CanvasInpaintSettings.open();
+    nodes.get('inpaintSeed').value = '456';
+    nodes.get('canvasInpaintSettingsForm').dispatch('input');
+    context.CanvasInpaintSettings.seed({model: 'nai-diffusion-4-5-full', seed: 123});
+    assert.equal(String(nodes.get('inpaintSeed').value), '456');
+    nodes.get('canvasInpaintSettingsForm').dispatch('submit');
+    assert.equal(context.CanvasInpaintSettings.snapshot().seed, 456);
+});
+
 test('legacy settings-only image metadata remains available when no canvas settings were saved', () => {
     const h = createHarness();
     const {context} = h;
@@ -340,6 +392,28 @@ test('legacy settings-only image metadata remains available when no canvas setti
     h.setLayers([{type: 'image', visible: true, promptInfo: legacyInfo}]);
     const exported = plain(context.getCanvasExportPromptInfo());
     for (const [key, value] of Object.entries(legacyInfo)) assert.equal(exported[key], value, key);
+});
+
+test('reading source metadata preserves separate character prompts and legacy single-character text', async () => {
+    const {context} = createHarness();
+    vm.runInContext(fetchPromptSource, context, {filename: 'canvas_fetch_prompt_info.js'});
+    const characters = ['1.2::blue eyes::,\n short hair', 'green eyes, long hair'];
+    const legacy = 'silver hair,\n gray eyes';
+
+    for (const [data, expected] of [
+        [{charPrompts: characters, charPrompt: characters.join(', ')}, characters],
+        [{characterPrompts: characters}, characters],
+        [{charPrompt: legacy}, [legacy]],
+        [{charPrompts: [], charPrompt: legacy}, []]
+    ]) {
+        context.fetch = async () => ({json: async () => ({
+            status: 'success', data: {...data, cfg_rescale: 0, noise_schedule: 'native'}
+        })});
+        const info = await context.fetchPromptInfoByPath('synthetic.png');
+        assert.deepEqual(plain(info.charPrompts), expected);
+        assert.equal(info.cfg_rescale, 0);
+        assert.equal(info.noise_schedule, 'native');
+    }
 });
 
 test('recovered source metadata wins over normalized settings-only layer fallback', async () => {

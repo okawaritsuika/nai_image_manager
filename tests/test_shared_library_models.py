@@ -18,7 +18,7 @@ class SharedLibraryModelTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.legacy = Mock()
         self.legacy._catalog_root.return_value = None
         self.legacy._imported_root.return_value = None
@@ -32,7 +32,7 @@ class SharedLibraryModelTests(unittest.TestCase):
                 'positive': 'watercolor', 'negative': '', 'preview': {}}
 
     def write_artist_database(self, models, image_paths=None):
-        with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+        with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
             connection.executescript('''
                 CREATE TABLE arca_style_items (id INTEGER PRIMARY KEY, title TEXT, source_url TEXT,
                     posted_at TEXT, recommendation_count INTEGER);
@@ -67,7 +67,7 @@ class SharedLibraryModelTests(unittest.TestCase):
                          ['nai-diffusion-5-full', 'nai-diffusion-4-5-full', 'custom-model-x', 'unknown'])
         self.assertEqual([record['model_family'] for record in listed],
                          ['v5', 'v4_5', 'other', 'other'])
-        with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+        with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
             self.assertEqual(connection.execute('SELECT count(*) FROM arca_style_images').fetchone()[0], len(models))
 
     def test_artist_entry_scan_resolves_roots_once_and_rejects_unsafe_paths(self):
@@ -124,7 +124,7 @@ class SharedLibraryModelTests(unittest.TestCase):
 
     def test_vote_and_job_updates_do_not_reparse_or_reingest_source_images(self):
         self.write_artist_database(['nai-diffusion-5-full'])
-        with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+        with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
             connection.execute('ALTER TABLE arca_style_items ADD COLUMN updated_at TEXT')
             connection.execute("UPDATE arca_style_items SET updated_at='2026-01-01T00:00:00Z'")
             connection.execute('CREATE TABLE synthetic_jobs (status TEXT)')
@@ -132,16 +132,16 @@ class SharedLibraryModelTests(unittest.TestCase):
         with (patch.object(self.catalog, '_artist_entries', side_effect=AssertionError('images reparsed')),
               patch.object(self.catalog, '_legacy_entries', side_effect=AssertionError('legacy reloaded')),
               patch.object(self.catalog.store, 'ingest', side_effect=AssertionError('images rewritten'))):
-            with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+            with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
                 connection.execute('INSERT INTO synthetic_jobs VALUES (?)', ('running',))
             self.assertEqual(self.catalog.list_styles()[0]['id'], first['id'])
-            with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+            with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
                 connection.execute("UPDATE arca_style_items SET recommendation_count=9,updated_at='2026-01-02T00:00:00Z'")
             updated = self.catalog.list_styles()[0]
             self.assertEqual(updated['id'], first['id'])
             self.assertEqual(updated['recommendation_count'], 9)
             self.assertEqual(updated['recommendation_collected_at'], '2026-01-02T00:00:00Z')
-            with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+            with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
                 connection.execute("UPDATE arca_style_items SET recommendation_count=0,updated_at='2026-01-03T00:00:00Z'")
             self.assertEqual(self.catalog.list_styles()[0]['recommendation_count'], 0)
 
@@ -151,7 +151,7 @@ class SharedLibraryModelTests(unittest.TestCase):
         restarted = SharedLibraryCatalog(self.legacy, self.catalog.store.path, self.root, artist_names=frozenset())
         with patch.object(restarted, '_artist_entries', side_effect=AssertionError('cached scan reparsed')):
             self.assertEqual(restarted.list_styles()[0]['id'], first['id'])
-        with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+        with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
             connection.execute("UPDATE arca_style_images SET base_prompt='lineart'")
         with patch.object(restarted, '_artist_entries', wraps=restarted._artist_entries) as loader:
             styles = restarted.list_styles()
@@ -159,6 +159,40 @@ class SharedLibraryModelTests(unittest.TestCase):
         self.assertEqual(len(styles), 1)
         self.assertNotEqual(styles[0]['id'], first['id'])
         self.assertEqual(styles[0]['positive'], 'lineart')
+
+    def test_list_refresh_uses_one_artist_snapshot_for_source_and_votes(self):
+        self.write_artist_database(['nai-diffusion-5-full'])
+        self.catalog.list_styles()
+        self.catalog._artist_file_stamp = None
+        with patch.object(self.catalog, '_artist_state', wraps=self.catalog._artist_state) as read_state:
+            self.assertEqual(len(self.catalog.list_styles()), 1)
+        read_state.assert_called_once_with()
+
+    def test_loaded_preview_uses_indexed_source_and_checks_the_file_again(self):
+        self.write_artist_database(['nai-diffusion-5-full'], image_paths=['preview.png'])
+        image_root = self.root / 'arca_style_images'
+        image_root.mkdir()
+        preview = image_root / 'preview.png'
+        preview.write_bytes(b'synthetic preview')
+        style_id = self.catalog.list_styles()[0]['id']
+        with patch.object(self.catalog, 'refresh', wraps=self.catalog.refresh) as refresh:
+            for full in (False, True):
+                self.assertEqual(self.catalog.preview_path(style_id, full=full), preview.resolve())
+            refresh.assert_not_called()
+            preview.unlink()
+            with self.assertRaises(FileNotFoundError):
+                self.catalog.preview_path(style_id)
+            refresh.assert_called_once_with()
+
+        restored = image_root / 'restored.png'
+        restored.write_bytes(b'restored preview')
+        with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
+            connection.execute('UPDATE arca_style_images SET image_path=? WHERE id=1', (restored.name,))
+        with patch.object(self.catalog, 'refresh', wraps=self.catalog.refresh) as refresh:
+            self.assertEqual(self.catalog.preview_path(style_id, full=True), restored.resolve())
+            refresh.assert_called_once_with()
+            self.assertEqual(self.catalog.preview_path(style_id), restored.resolve())
+            refresh.assert_called_once_with()
 
     def test_bulk_vote_updates_read_sources_once_and_keep_newest_for_merged_urls(self):
         url = 'https://arca.live/b/aiart/1'
@@ -242,7 +276,7 @@ class SharedLibraryModelTests(unittest.TestCase):
         image_root.mkdir()
         preview = image_root / 'preview.synthetic'
         preview.write_bytes(b'synthetic preview')
-        with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+        with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
             connection.execute('''UPDATE arca_style_images SET image_path=?,raw_metadata_json=? WHERE id=1''',
                                ('preview.synthetic', json.dumps({'seed': 17})))
 
@@ -337,7 +371,7 @@ class SharedLibraryModelTests(unittest.TestCase):
 
     def test_artist_recommendations_use_optional_item_updated_at(self):
         database = self.root / 'artist_rater.sqlite'
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection, connection:
             connection.executescript('''
                 CREATE TABLE arca_style_items (id INTEGER PRIMARY KEY, title TEXT, source_url TEXT,
                     posted_at TEXT, recommendation_count INTEGER, updated_at TEXT);
@@ -517,7 +551,7 @@ class SharedLibraryModelTests(unittest.TestCase):
         self.catalog.store.exclude([old_legacy_id, old_artist_id])
         self.assertEqual(self.catalog.store.update_recommendations(old_url, 54, '2026-03-01T00:00:00Z'), 2)
         legacy_record['source_url'] = new_url
-        with sqlite3.connect(self.root / 'artist_rater.sqlite') as connection:
+        with closing(sqlite3.connect(self.root / 'artist_rater.sqlite')) as connection, connection:
             connection.execute('UPDATE arca_style_items SET source_url=?', (new_url,))
 
         self.catalog.refresh()

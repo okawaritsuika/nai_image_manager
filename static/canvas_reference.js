@@ -226,7 +226,7 @@ async function copyReferenceGenImageToClipboard() {
     closeReferenceGenClipboardContextMenu();
 
     if (!referenceGenSession?.currentSrc) {
-        alert('복사할 참조 이미지가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('복사할 참조 이미지가 없습니다.');
         return false;
     }
 
@@ -242,7 +242,7 @@ async function copyReferenceGenImageToClipboard() {
         showReferenceGenToast('참조 이미지를 클립보드에 복사했습니다.');
         return true;
     } catch (error) {
-        alert(`참조 이미지 복사 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`참조 이미지 복사 실패: ${error.message || error}`);
         return false;
     }
 }
@@ -293,7 +293,7 @@ async function pasteClipboardToReferenceGenImage() {
     closeReferenceGenClipboardContextMenu();
 
     if (!referenceGenSession) {
-        alert('참조 이미지 세션이 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('참조 이미지 세션이 없습니다.');
         return false;
     }
 
@@ -321,7 +321,7 @@ async function pasteClipboardToReferenceGenImage() {
         }
 
         if (!clipboard?.src) {
-            alert('가져올 클립보드 이미지가 없습니다.');
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)('가져올 클립보드 이미지가 없습니다.');
             return false;
         }
 
@@ -354,7 +354,7 @@ async function pasteClipboardToReferenceGenImage() {
         showReferenceGenToast(`클립보드 이미지를 참조 이미지로 가져왔습니다${resizeText}.`);
         return true;
     } catch (error) {
-        alert(`참조 이미지 가져오기 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`참조 이미지 가져오기 실패: ${error.message || error}`);
         return false;
     }
 }
@@ -363,7 +363,7 @@ function openReferenceGenResolutionModal() {
     closeCanvasSurfaceContextMenu();
 
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
@@ -443,7 +443,7 @@ function findReferenceGenCanvasRatioResolution(mode) {
 
 function applyReferenceGenCanvasRatioPreset(mode) {
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
@@ -480,7 +480,7 @@ function readReferenceGenResolutionInput() {
 
 async function createReferenceGenSessionFromDialog() {
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
@@ -524,7 +524,7 @@ async function createReferenceGenSessionFromDialog() {
         showReferenceGenToast('참조 이미지가 생성되었습니다.');
 
     } catch (error) {
-        alert(`참조 이미지 생성 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`참조 이미지 생성 실패: ${error.message || error}`);
     } finally {
         setReferenceGenProcessing(false);
     }
@@ -1121,7 +1121,7 @@ function hideReferenceGenBrushCursor() {
 
 function openReferenceGenPrompt() {
     if (!referenceGenSession) {
-        alert('참조 이미지 세션이 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('참조 이미지 세션이 없습니다.');
         return;
     }
 
@@ -1322,12 +1322,12 @@ function renumberReferenceGenCharPromptEditors() {
 
 async function requestReferenceGenInpaint() {
     if (!referenceGenSession) {
-        alert('참조 이미지 세션이 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('참조 이미지 세션이 없습니다.');
         return;
     }
 
     if (isReferenceGenMaskEmpty()) {
-        alert('인페인팅할 영역을 먼저 칠해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('인페인팅할 영역을 먼저 칠해 주세요.');
         return;
     }
 
@@ -1392,7 +1392,7 @@ async function requestReferenceGenInpaint() {
         showReferenceGenToast('인페인팅 결과를 받았습니다.');
 
     } catch (error) {
-        alert(`인페인팅 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`인페인팅 실패: ${error.message || error}`);
     } finally {
         setReferenceGenProcessing(false);
     }
@@ -1511,7 +1511,7 @@ function buildGptDetailPrompt(mode, bounds = null, useCharacterReference = false
 
 function openGptDetailPrompt(mode = 'eye', useCharacterReference = false) {
     if (!referenceGenSession) {
-        alert('참조 이미지 세션이 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('참조 이미지 세션이 없습니다.');
         return;
     }
 
@@ -1550,7 +1550,7 @@ async function copyGptDetailPrompt() {
         promptText.focus();
         promptText.select();
         if (!document.execCommand('copy')) {
-            alert('프롬프트를 복사할 수 없습니다. 텍스트를 직접 선택해 주세요.');
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)('프롬프트를 복사할 수 없습니다. 텍스트를 직접 선택해 주세요.');
             return;
         }
     }
@@ -1777,12 +1777,12 @@ function updateReferenceGenUpscaleInfo() {
 
 function openReferenceGenUpscaleExportModal() {
     if (!referenceGenSession || !referenceGenSession.currentSrc) {
-        alert('업스케일링할 참조 이미지가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('업스케일링할 참조 이미지가 없습니다.');
         return;
     }
 
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
@@ -1807,12 +1807,12 @@ function closeReferenceGenUpscaleExportModal() {
 
 async function startReferenceGenUpscaleExport() {
     if (!referenceGenSession || !referenceGenSession.currentSrc) {
-        alert('업스케일링할 참조 이미지가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('업스케일링할 참조 이미지가 없습니다.');
         return;
     }
 
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
@@ -1842,7 +1842,7 @@ async function startReferenceGenUpscaleExport() {
         const quality = prepared?.quality || getSelectedReferenceGenUpscaleQuality();
 
         if (size.width * size.height > 130000000) {
-            alert('목표 해상도가 너무 큽니다. 130MP 이하로 설정해 주세요.');
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)('목표 해상도가 너무 큽니다. 130MP 이하로 설정해 주세요.');
             return;
         }
 
@@ -1889,7 +1889,7 @@ async function startReferenceGenUpscaleExport() {
         }
     } catch (error) {
         if (referenceGenSession === session && session.currentSrc === source) {
-            alert(`업스케일링 내보내기 실패: ${error.message || error}`);
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)(`업스케일링 내보내기 실패: ${error.message || error}`);
         }
     } finally {
         if (processing) setReferenceGenProcessing(false);
@@ -1899,12 +1899,12 @@ async function startReferenceGenUpscaleExport() {
 
 async function exportReferenceGenToCanvas() {
     if (!referenceGenSession || !referenceGenSession.currentSrc) {
-        alert('내보낼 참조 이미지가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('내보낼 참조 이미지가 없습니다.');
         return;
     }
 
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
@@ -1927,7 +1927,7 @@ async function exportReferenceGenToCanvas() {
         );
 
     } catch (error) {
-        alert(`내보내기 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`내보내기 실패: ${error.message || error}`);
     }
 }
 

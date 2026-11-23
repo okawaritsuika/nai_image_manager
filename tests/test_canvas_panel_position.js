@@ -142,6 +142,21 @@ test('oversized panel keeps its title and toolbar beginning visible and may exte
     assert.equal(bounds.height, 700);
 });
 
+test('a narrow workspace fits the complete clip panel and uses compact tools', () => {
+    const placement = harness({width: 300});
+    placement.context.positionClipOutputPanel(placement.panel, {id: 1, x: 0, y: 0, layerWidth: 256}, {id: 2});
+    assert.equal(placement.panel.style.maxWidth, '284px');
+    assert.equal(placement.panel.style.minWidth, '284px');
+    const sizing = clipSizeHarness();
+    sizing.panel.style.maxWidth = placement.panel.style.maxWidth;
+    sizing.context.fitClipOutputPanelToImage(sizing.panel, sizing.clip);
+    assert.equal(sizing.panel.style.width, '284px');
+    assert.equal(sizing.panel.classList.contains('compact'), true);
+    sizing.context.bindClipOutputPanelResize(sizing.panel, sizing.clip, sizing.context.syncOverlay);
+    sizing.resizeHandle.onkeydown(pointerEvent({key: 'ArrowLeft'}));
+    assert.equal(sizing.panel.style.width, '284px');
+});
+
 test('scrolling and translated stage origins are accounted for without double applying zoom', () => {
     const {context, panel} = harness({stageLeft: -240, stageTop: -180, scale: 0.5});
     context.positionClipOutputPanel(panel, {id: 1, x: 0, y: 0, layerWidth: 256}, {id: 2});
@@ -167,7 +182,7 @@ test('a workspace taller than the browser keeps the panel and resize corner insi
     assert.equal(panel.style.maxHeight, '753px');
 });
 
-test('dragging a clamped negative position starts smoothly and survives rerendering', () => {
+test('dragging the panel farther left from a negative position survives rerendering', () => {
     const {context, panel} = harness({width: 300, panelWidth: 560, scale: 0.5});
     const selection = {id: 1, x: 600, y: 0, layerWidth: 512};
     context.positionClipOutputPanel(panel, selection, {id: 2});
@@ -178,11 +193,34 @@ test('dragging a clamped negative position starts smoothly and survives rerender
     vm.runInContext(source.slice(dragStart, dragEnd), context);
     const event = {button: 0, clientX: 100, clientY: 100, preventDefault() {}, stopPropagation() {}};
     context.startClipOutputPanelDrag(event, panel);
-    context.handleClipOutputPanelDragMove({...event, clientX: 110});
-    assert.equal(panel.style.left, '-31px');
+    context.handleClipOutputPanelDragMove({...event, clientX: 90});
+    assert.equal(panel.style.left, '-51px');
     assert.equal(context.clipOutputPanelPosition.custom, true);
     context.positionClipOutputPanel(panel, selection, {id: 2});
-    assert.equal(panel.style.left, '-31px');
+    assert.equal(panel.style.left, '-51px');
+});
+
+test('dragging left across the canvas origin preserves the panel position through redraw and zoom', () => {
+    const {context, panel} = harness({scale: 0.5});
+    const selection = {id: 1, x: 0, y: 0, layerWidth: 64};
+    const clip = {id: 2};
+    context.positionClipOutputPanel(panel, selection, clip);
+    assert.equal(panel.style.left, '50px');
+    panel.classList = {add() {}};
+    const dragStart = source.indexOf('function startClipOutputPanelDrag(');
+    const dragEnd = source.indexOf('\nfunction stopClipOutputPanelDrag(', dragStart);
+    vm.runInContext(source.slice(dragStart, dragEnd), context);
+    context.startClipOutputPanelDrag(pointerEvent({x: 100, y: 100}), panel);
+    context.handleClipOutputPanelDragMove(pointerEvent({x: 40, y: 110}));
+    assert.equal(panel.style.left, '-10px');
+    assert.equal(panel.style.top, '10px');
+    assert.equal(context.clipOutputPanelPosition.canvasLeft, -56);
+    context.positionClipOutputPanel(panel, selection, clip);
+    assert.equal(panel.style.left, '-10px');
+    context.getCanvasDisplayScale = () => 1;
+    context.positionClipOutputPanel(panel, selection, clip);
+    assert.equal(panel.style.left, '-38px');
+    assert.equal(panel.style.top, '20px');
 });
 
 test('automatic clip sizing follows image aspect ratio and caps tall output at available height', () => {

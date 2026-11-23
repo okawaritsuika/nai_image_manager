@@ -663,9 +663,11 @@
         }
 
         #galleryInpaintOverlay {
+            image-rendering: pixelated;
             position: absolute;
             left: 0;
             top: 0;
+            cursor: none;
             touch-action: none;
         }
 
@@ -719,24 +721,17 @@
 
         #galleryInpaintBrushCursor {
             display: none;
-            position: fixed;
-            left: 0;
-            top: 0;
-            width: 96px;
-            height: 96px;
-            border: 2px solid rgba(0, 242, 255, 0.95);
-            background: rgba(0, 128, 255, 0.16);
-            border-radius: 50%;
+            position: absolute;
             pointer-events: none;
-            z-index: 9500;
-            transform: translate(-50%, -50%);
-            box-shadow: 0 0 12px rgba(0, 242, 255, 0.45);
+            z-index: 1;
+            fill: rgba(0, 128, 255, 0.16);
+            stroke: rgba(0, 242, 255, 0.95);
+            stroke-width: 1.5px;
         }
 
         #galleryInpaintBrushCursor.eraser {
-            border-color: rgba(255, 77, 77, 0.95);
-            background: rgba(255, 77, 77, 0.12);
-            box-shadow: 0 0 12px rgba(255, 77, 77, 0.35);
+            fill: rgba(255, 77, 77, 0.12);
+            stroke: rgba(255, 77, 77, 0.95);
         }
 
         .gallery-inpaint-loading {

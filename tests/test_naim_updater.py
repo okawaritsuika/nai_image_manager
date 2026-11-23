@@ -177,7 +177,7 @@ class NaimUpdaterTests(unittest.TestCase):
             install.mkdir()
             payload.mkdir()
             for name in ("gallery_config.json", "daki_projects.json", "daki_personal_styles/catalog.json",
-                         "style_workspace.local.json"):
+                         "style_workspace.local.json", "prompt-tags.csv.local"):
                 with self.subTest(name=name):
                     (payload / name).parent.mkdir(parents=True, exist_ok=True)
                     (payload / name).write_text("{}", encoding="utf-8")

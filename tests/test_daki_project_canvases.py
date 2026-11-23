@@ -53,6 +53,78 @@ class DakiProjectCanvasTests(unittest.TestCase):
             'state': DakiProjectCanvasTests.state() if state is None else state,
         }
 
+    def test_reference_placement_round_trip_preserves_legacy_canvas_edits_and_cas(self):
+        project = self.store.create_project('Placement')
+        ref = {'src': '/canvas-imports/synthetic.png', 'name': 'Synthetic', 'x': .25, 'y': .7, 'zoom': 1.5, 'width': 384}
+        placed = {**ref, 'scale': 2, 'panX': 1}
+        state = {**self.state(), 'inpaintReference': {'reference': placed, 'include': True, 'showArea': True}}
+        canvas = self.store.create_canvas(project['id'], self.canvas('a' * 32, 'Round trip', 'front', state))
+        url = f"/api/daki/projects/{project['id']}/canvases/{canvas['id']}"
+        data = json.loads(self.path.read_text(encoding='utf-8'))
+        raw = data['projects'][0]['canvases']['front'][0]
+        self.assertEqual(raw['inpaintReferencePlacement'], {'src': ref['src'], 'scale': 2, 'panX': 1})
+        self.assertNotIn('inpaintReferencePlacement', canvas)
+        # Old canvas autosave replaces state, including its normalized descriptor, but retains siblings.
+        legacy = {**ref, 'width': 640, 'y': .2}
+        raw['state']['inpaintReference'].update(reference=legacy, include=False)
+        raw['state']['layers'][0]['oldEdit'] = 'kept'
+        raw['revision'] = 2
+        self.path.write_text(json.dumps(data), encoding='utf-8')
+        before = self.path.read_bytes()
+        recovered = self.client.get(url).json['canvas']
+        self.assertNotIn('inpaintReferencePlacement', recovered)
+        self.assertEqual(recovered['state']['inpaintReference']['reference'], {**legacy, 'scale': 2, 'panX': 1})
+        self.assertFalse(recovered['state']['inpaintReference']['include'])
+        self.assertEqual(recovered['state']['layers'][0]['oldEdit'], 'kept')
+        self.assertNotIn('inpaintReference', self.client.get(url + '?preview=1').get_data(as_text=True))
+        retry = self.client.put(url, json={'state': raw['state'], 'revision': 1})
+        self.assertEqual(retry.json['canvas']['revision'], 2)
+        self.assertEqual(self.path.read_bytes(), before)
+        headers = {'X-NAIM-Reference-Placement': '1'}
+        self.assertEqual(self.client.put(url, headers=headers, json={'state': raw['state'], 'revision': 1}).status_code, 409)
+        saved = self.client.put(url, headers=headers, json={'state': raw['state'], 'revision': 2})
+        self.assertEqual(saved.json['canvas']['revision'], 3)
+        self.assertEqual(self.client.get(url).json['canvas']['state'], raw['state'])
+        raw_after = json.loads(self.path.read_text(encoding='utf-8'))['projects'][0]['canvases']['front'][0]
+        self.assertNotIn('inpaintReferencePlacement', raw_after)
+
+    def test_newer_layer_placement_from_mixed_versions_takes_precedence_and_can_be_reset(self):
+        project = self.store.create_project('Mixed versions')
+        ref = {'src': '/canvas-imports/synthetic.png', 'x': .25}
+        state = {**self.state(), 'inpaintReference': {'reference': {**ref, 'scale': 2}, 'include': True}}
+        canvas = self.store.create_canvas(project['id'], self.canvas('b' * 32, 'Mixed', 'front', state))
+        url = f"/api/daki/projects/{project['id']}/canvases/{canvas['id']}"
+        data = json.loads(self.path.read_text(encoding='utf-8'))
+        record = data['projects'][0]['canvases']['front'][0]
+        self.assertEqual(record['inpaintReferencePlacement']['scale'], 2)
+        # The new client saves a different placement through the old server. An old client then
+        # moves that layer into a folder, drops inline placement and changes the legacy settings.
+        record['state']['layers'][0]['children'][0]['inpaintReferencePlacement'] = {'src': ref['src'], 'scale': 4}
+        record['state']['inpaintReference']['reference'] = {**ref, 'width': 512}
+        self.path.write_text(json.dumps(data), encoding='utf-8')
+        fetched = self.client.get(url).json['canvas']['state']
+        self.assertEqual(fetched['inpaintReference']['reference'], {**ref, 'width': 512, 'scale': 4})
+        del fetched['inpaintReference']['reference']['scale']
+        reset = self.client.put(url, headers={'X-NAIM-Reference-Placement': '1'}, json={'revision': 1, 'state': fetched})
+        self.assertEqual(reset.status_code, 200)
+        self.assertEqual(self.client.get(url).json['canvas']['state']['inpaintReference']['reference'], {**ref, 'width': 512})
+        self.assertNotIn('inpaintReferencePlacement', self.path.read_text(encoding='utf-8'))
+
+    def test_full_browser_backup_survives_a_change_to_the_reference_placement(self):
+        project = self.store.create_project('Portable canvas')
+        original = self.state()
+        canvas = self.store.create_canvas(project['id'], self.canvas('a' * 32, 'Portable', 'front', original))
+        ref = {'src': '/canvas-imports/portable.png', 'name': 'portable', 'width': 384,
+               'x': .25, 'y': .75, 'zoom': 2, 'scale': 3}
+        original['inpaintReference'] = {'reference': ref, 'include': True}
+        carrier = {**ref, 'include': True}
+        original['layers'][-1]['inpaintReferencePlacement'] = carrier
+        url = f"/api/daki/projects/{project['id']}/canvases/{canvas['id']}"
+        saved = self.client.put(url, json={'revision': canvas['revision'], 'state': original},
+                                headers={'X-NAIM-Reference-Placement': '1'})
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(self.client.get(url).json['canvas']['state']['layers'][-1]['inpaintReferencePlacement'], carrier)
+
     def test_project_canvas_creation_is_atomic_and_retries_are_idempotent(self):
         payload = {
             'name': '  Front & Back  ',
@@ -316,6 +388,79 @@ class DakiProjectCanvasTests(unittest.TestCase):
         conflict = self.client.put(url, json={'state': changed, 'revision': 1})
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(self.path.read_bytes(), before)
+
+    def test_restored_defaults_are_equivalent_in_both_directions(self):
+        project = self.store.create_project('Restored defaults')
+        legacy = {**self.state('saved edit'), 'canvasZoom': 1, 'clipPreviewZoom': 1}
+        restored = {
+            **legacy,
+            'isClipInpaintMergedSourceMode': False, 'sharedSelectionClipPromptControlGroups': [],
+            'sharedSelectionClipPromptInfo': None, 'inpaintSettings': None, 'oppositeReference': None,
+            'inpaintReference': {'reference': None, 'showArea': False, 'include': False},
+            'isSelectionOverlayHidden': False, 'checkedSelectionId': None,
+        }
+        for canvas_id, stored, replayed in [('1' * 32, legacy, restored), ('2' * 32, restored, legacy)]:
+            with self.subTest(canvas_id=canvas_id):
+                self.store.create_canvas(project['id'], self.canvas(canvas_id, 'Front', 'front'))
+                committed = self.store.update_canvas(project['id'], canvas_id, stored, 1)
+                self.assertEqual(committed['revision'], 2)
+                before = self.path.read_bytes()
+                zoomed = {**replayed, 'canvasZoom': 2, 'clipPreviewZoom': 0.5}
+                for revision, state in [(2, replayed), (1, replayed), (1, zoomed)]:
+                    saved = self.store.update_canvas(project['id'], canvas_id, state, revision)
+                    self.assertEqual(saved, committed)
+                    self.assertEqual(self.path.read_bytes(), before)
+                for revision, edit in [(2, {**replayed, 'canvasZoom': 2}), (3, zoomed)]:
+                    edited = self.store.update_canvas(project['id'], canvas_id, edit, revision)
+                    self.assertEqual(edited['revision'], revision + 1)
+                    self.assertEqual(self.store.get_canvas(project['id'], canvas_id)['state'], edit)
+
+    def test_stale_restored_edits_and_future_revision_remain_conflicts(self):
+        project = self.store.create_project('Conflicting restored edits')
+        canvas = self.store.create_canvas(project['id'], self.canvas('3' * 32, 'Front', 'front'))
+        committed = self.state('saved edit')
+        self.store.update_canvas(project['id'], canvas['id'], committed, 1)
+        url = f"/api/daki/projects/{project['id']}/canvases/{canvas['id']}"
+        before = self.path.read_bytes()
+        for revision, changes in [
+            (1, {'masks': []}),
+            (1, {'promptInfo': {'prompt': 'edited'}}),
+            (1, {'inpaintReference': {'reference': {'src': '/canvas-imports/other.png'}, 'include': True}}),
+            (1, {'isClipInpaintMergedSourceMode': True}),
+            (1, {'extension': {'preserve': ['changed']}}),
+            (3, {}),
+        ]:
+            with self.subTest(revision=revision, changes=changes):
+                response = self.client.put(url, json={'revision': revision, 'state': {**committed, **changes}})
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json['code'], 'canvas_conflict')
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_identical_save_at_current_or_older_revision_leaves_store_unchanged(self):
+        project = self.store.create_project('Concurrent canvas saves')
+        canvas = self.store.create_canvas(project['id'], self.canvas('8' * 32, 'Front', 'front'))
+        url = f"/api/daki/projects/{project['id']}/canvases/{canvas['id']}"
+        first = self.client.put(url, json={'state': self.state('first edit'), 'revision': 1})
+        self.assertEqual(first.json['canvas']['revision'], 2)
+        committed = {**self.state('second edit'), 'savedAt': 100}
+        second = self.client.put(url, json={'state': committed, 'revision': 2})
+        self.assertEqual(second.json['canvas']['revision'], 3)
+        before = self.path.read_bytes()
+
+        restored = {**committed, 'savedAt': 200}
+        for revision in (1, 3):
+            with self.subTest(revision=revision):
+                response = self.client.put(url, json={'state': restored, 'revision': revision})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json['canvas']['revision'], 3)
+                self.assertEqual(self.path.read_bytes(), before)
+
+        for revision, state in ((1, {**restored, 'masks': []}), (4, restored)):
+            with self.subTest(revision=revision):
+                response = self.client.put(url, json={'state': state, 'revision': revision})
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json['code'], 'canvas_conflict')
+                self.assertEqual(self.path.read_bytes(), before)
 
     def test_deleted_canvas_and_project_return_explicit_missing_target_code(self):
         project = self.store.create_project('Missing target recovery')

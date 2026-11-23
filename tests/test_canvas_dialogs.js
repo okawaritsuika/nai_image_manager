@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const {createCanvasDialogController, CANVAS_DIALOGS} = require('../static/canvas_dialogs.js');
+const {createCanvasDialogController, createCanvasNativeDialogs, CANVAS_DIALOGS} = require('../static/canvas_dialogs.js');
 
 function fixture() {
     const nodes = new Map();
@@ -153,6 +153,70 @@ test('long prompt starts at its title and a nested group dialog returns to its i
     assert.equal(f.main.inert, true);
     f.key('Escape');
     assert.equal(f.doc.activeElement, f.opener);
+});
+
+test('a native canvas dialog retains focus and Escape over an existing canvas overlay', () => {
+    const f = fixture();
+    f.show('savedCanvasSetupsModal');
+    const dialog = f.doc.body.append(new f.Node('canvasNativeDialog', 'DIALOG'));
+    const button = dialog.append(new f.Node('native-cancel', 'BUTTON'));
+    dialog.open = true;
+    button.focus();
+    for (const listener of f.doc.listeners.get('focusin')) listener({target: button});
+    const escape = f.key('Escape');
+    assert.equal(f.doc.activeElement, button);
+    assert.equal(escape.defaultPrevented, undefined);
+    assert.deepEqual(f.callbacks, []);
+});
+
+test('the themed confirmation, prompt and alert resolve in order without injecting message markup', async () => {
+    const f = fixture();
+    const dialog = new f.Node('canvasNativeDialog', 'DIALOG');
+    const controls = new Map();
+    for (const [selector, tag] of [
+        ['form', 'FORM'], ['h2', 'H2'], ['p', 'P'], ['label', 'LABEL'], ['input', 'INPUT'],
+        ['header button', 'BUTTON'], ['[data-cancel]', 'BUTTON'], ['[type="submit"]', 'BUTTON']
+    ]) {
+        controls.set(selector, dialog.append(new f.Node(selector, tag)));
+    }
+    dialog.querySelector = selector => controls.get(selector);
+    dialog.setAttribute = () => {};
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = () => { dialog.open = false; dialog.listeners.get('close')(); };
+    controls.get('[type="submit"]').classList = {toggle() {}};
+    controls.get('input').select = () => { controls.get('input').selected = true; };
+    f.doc.createElement = () => dialog;
+    const nativeDialogs = createCanvasNativeDialogs(f.doc);
+
+    const confirm = nativeDialogs.confirm({title: '합성 확인', message: '<b>표시만</b>', danger: true});
+    const prompt = nativeDialogs.prompt({message: '이름을 입력하세요.', defaultValue: '원래 이름'});
+    const alert = nativeDialogs.alert('합성 알림');
+    assert.equal(controls.get('p').textContent, '<b>표시만</b>');
+    assert.equal(f.doc.activeElement, controls.get('[data-cancel]'));
+    dialog.listeners.get('cancel')({preventDefault() {}});
+    assert.equal(await confirm, false);
+    assert.equal(f.doc.activeElement, controls.get('input'));
+    assert.equal(controls.get('input').selected, true);
+    assert.equal(controls.get('input').value, '원래 이름');
+    controls.get('input').value = '새 이름';
+    controls.get('form').listeners.get('submit')({preventDefault() {}});
+    assert.equal(await prompt, '새 이름');
+    assert.equal(controls.get('p').textContent, '합성 알림');
+    assert.equal(controls.get('[data-cancel]').hidden, true);
+    controls.get('form').listeners.get('submit')({preventDefault() {}});
+    assert.equal(await alert, undefined);
+    assert.equal(dialog.open, false);
+    assert.equal(f.doc.activeElement, f.opener);
+    const options = {distinguishDismiss: true, cancelLabel: '새 저장본으로 추가'};
+    const closed = nativeDialogs.confirm(options);
+    controls.get('header button').listeners.get('click')();
+    assert.equal(await closed, null);
+    const escaped = nativeDialogs.confirm(options);
+    dialog.listeners.get('cancel')({preventDefault() {}});
+    assert.equal(await escaped, null);
+    const copy = nativeDialogs.confirm(options);
+    controls.get('[data-cancel]').listeners.get('click')();
+    assert.equal(await copy, false);
 });
 
 test('saved list and save options work with existing close callbacks, including a callback that keeps a dialog open', () => {

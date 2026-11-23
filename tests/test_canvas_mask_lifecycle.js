@@ -8,6 +8,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'canvas.js')
 const start = source.indexOf('let activeClipMaskEditorCleanup = null;');
 const end = source.indexOf('\nfunction bindClipOutputBackgroundScrollDrag(', start);
 const editorSource = source.slice(start, end);
+const brushSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'inpaint_grid_brush.js'), 'utf8');
 
 function harness(code = editorSource) {
     const listeners = new Set();
@@ -19,14 +20,17 @@ function harness(code = editorSource) {
     const previews = [];
     const saved = [];
     const observers = new Set();
+    let rectanglesPainted = 0;
     function createCanvas() {
         const operations = [];
-        const drawing = {clearRect() {}, drawImage() {}, save() {}, restore() {}, beginPath() {},
+        const canvas = {width: 0, height: 0, operations, getContext: () => drawing};
+        const drawing = {canvas, clearRect() {}, drawImage() {}, save() {}, restore() {},
+            fillRect(x, y, width, height) {
+                operations.push([x, y, width, height, drawing.globalCompositeOperation]);
+                rectanglesPainted++;
+            },
             getImageData: () => ({data: [0, 0, 0, 255]})};
-        for (const action of ['arc', 'moveTo', 'lineTo', 'stroke', 'fill']) {
-            drawing[action] = (...args) => operations.push([action, ...args, drawing.globalCompositeOperation]);
-        }
-        return {width: 0, height: 0, operations, getContext: () => drawing};
+        return canvas;
     }
     const context = {
         console,
@@ -40,7 +44,6 @@ function harness(code = editorSource) {
             removeEventListener(type, fn) { if (type === 'resize') listeners.delete(fn); },
         },
         document: {createElement: createCanvas},
-        getClipBrushCursor: () => ({style: {}}),
         applyClipPreviewZoom() {}, resizeCanvasPreserveContent() {},
         keepDefaultClipOutputPanelVisible() {},
         bindClipOutputPanelResize() {
@@ -51,24 +54,28 @@ function harness(code = editorSource) {
         redrawMaskOverlay(canvas) { redraws++; previews.push(canvas.operations.slice()); },
         requestAnimationFrame(callback) { const id = frameId++; frames.set(id, callback); return id; },
         cancelAnimationFrame(id) { frames.delete(id); },
-        updateClipBrushCursor() {},
         persistClipMask: async (_clip, canvas) => { saved.push(canvas.operations.slice()); },
         activeClipMaskTool: 'brush', clipMaskBrushSize: 96,
         activeClipAutoMaskPickClipId: null, isClipMaskPainting: false,
     };
     vm.createContext(context);
+    vm.runInContext(brushSource, context);
     vm.runInContext(code, context);
     const pointStart = source.indexOf('function getClipMaskPoint(');
     const pointEnd = source.indexOf('\nfunction collectAutoMaskSourceCandidateLayers(', pointStart);
     vm.runInContext(source.slice(pointStart, pointEnd), context);
     function bind(index, options = {}) {
-        const wrap = {style: {}, classList: {contains: () => Boolean(options.previewMode)}};
+        const wrap = {style: {}, classList: {contains: () => Boolean(options.previewMode)},
+            addEventListener() {}, removeEventListener() {}};
         const image = {complete: Boolean(options.imageComplete), naturalWidth: 1024, naturalHeight: 1024,
             offsetLeft: 0, offsetTop: 0, clientWidth: 512, clientHeight: 512};
         const overlay = {style: {}, width: 1024, height: 1024,
             setPointerCapture() {}, releasePointerCapture() {},
-            getBoundingClientRect: () => ({left: 0, top: 0, width: 512, height: 512})};
+            getBoundingClientRect: () => ({left: 0, top: 0, width: 512, height: 512, right: 512, bottom: 512})};
+        const cursor = {style: {}, classList: {toggle() {}}, setAttribute() {},
+            firstElementChild: {setAttribute() {}}};
         const panel = {querySelector(selector) {
+            if (selector === '.clip-brush-cursor') return cursor;
             return selector.includes('image-wrap') ? wrap : selector.includes('output-image') ? image : overlay;
         }};
         context.bindClipMaskEditor(panel, {id: index, imageWidth: 1024, imageHeight: 1024, ...options});
@@ -81,7 +88,7 @@ function harness(code = editorSource) {
         pending.forEach(callback => callback());
     }
     return {context, listeners, observers, frames, bind, flushFrames, previews, saved,
-        redraws: () => redraws, resizeBindings: () => resizeBindings,
+        rectanglesPainted: () => rectanglesPainted, redraws: () => redraws, resizeBindings: () => resizeBindings,
         resizeDisposals: () => resizeDisposals};
 }
 
@@ -171,13 +178,21 @@ test('preview contains wide and tall images in both viewport axes and wheel zoom
     vm.runInContext(source.slice(viewportStart, viewportEnd) +
         source.slice(zoomStart, source.indexOf('\nfunction bindClipPreviewWheelZoom(', zoomStart)) +
         source.slice(wheelStart, wheelEnd), context);
-    const wrap = {style: {}, scrollLeft: 0, scrollTop: 0,
+    let visibleStrip = null;
+    const wrap = {style: {}, scrollLeft: 0, scrollTop: 0, querySelector: () => visibleStrip,
         getBoundingClientRect: () => ({left: 10, top: 20, width: 402, height: 602})};
     const img = {style: {}};
     const wideClip = {imageWidth: 1024, imageHeight: 512};
     context.applyClipPreviewZoom(wrap, img, wideClip);
     assert.equal(img.style.width, '400px');
     assert.equal(img.style.height, '200px');
+
+    visibleStrip = {dataset: {referenceWidth: '1024'}, style: {}};
+    context.applyClipPreviewZoom(wrap, img, wideClip);
+    assert.equal(img.style.width, '200px');
+    assert.equal(img.style.height, '100px');
+    assert.deepEqual(visibleStrip.style, {width: '200px', height: '100px'});
+    visibleStrip = null;
 
     const tallClip = {imageWidth: 512, imageHeight: 1024};
     context.applyClipPreviewZoom(wrap, img, tallClip);
@@ -215,7 +230,11 @@ test('100 pointer moves preserve every stroke while coalescing 100 previews to o
         const {overlay} = fixture.bind(1);
         overlay.onpointerdown(pointer(1));
         const startCount = fixture.redraws();
-        for (let x = 2; x <= 101; x++) overlay.onpointermove(pointer(x));
+        for (let x = 2; x <= 101; x++) {
+            const count = fixture.rectanglesPainted();
+            overlay.onpointermove(pointer(x));
+            assert.ok(fixture.rectanglesPainted() > count);
+        }
         fixture.flushFrames();
         fixture.movesRedrawn = fixture.redraws() - startCount;
         await overlay.onpointerup(pointer(101));
@@ -223,7 +242,6 @@ test('100 pointer moves preserve every stroke while coalescing 100 previews to o
     assert.equal(before.movesRedrawn, 100);
     assert.equal(after.movesRedrawn, 1);
     assert.deepEqual(after.saved, before.saved);
-    assert.equal(after.saved[0].filter(operation => operation[0] === 'lineTo').length, 100);
 });
 
 test('release before the next frame flushes the final stroke including clipped outside points', async () => {
@@ -238,8 +256,8 @@ test('release before the next frame flushes the final stroke including clipped o
     assert.equal(fixture.frames.size, 0);
     assert.equal(fixture.redraws(), before + 1);
     assert.deepEqual(fixture.previews.at(-1), fixture.saved[0]);
-    assert.deepEqual(fixture.saved[0].filter(operation => operation[0] === 'lineTo').at(-1),
-        ['lineTo', 1024, 0, 'source-over']);
+    assert.ok(fixture.saved[0].some(([x, y, w, h, mode]) =>
+        x <= 1023 && x + w === 1024 && y === 0 && h > 0 && mode === 'source-over'));
     fixture.flushFrames();
     assert.equal(fixture.redraws(), before + 1);
 });
@@ -252,8 +270,8 @@ test('pointer cancellation flushes erasing and rebinding cancels an obsolete pen
     overlay.onpointermove(pointer(64));
     await overlay.onpointercancel();
     assert.equal(fixture.frames.size, 0);
-    assert.deepEqual(fixture.saved[0].filter(operation => operation[0] === 'stroke').at(-1),
-        ['stroke', 'destination-out']);
+    assert.ok(fixture.saved[0].length > 0);
+    assert.ok(fixture.saved[0].every(rect => rect[4] === 'destination-out'));
     overlay.onpointerdown(pointer(20));
     overlay.onpointermove(pointer(40));
     assert.equal(fixture.frames.size, 1);
@@ -294,11 +312,12 @@ test('rendering a closed panel and clearing the canvas both run cleanup', () => 
 });
 
 function renderPanelHarness({oldPanel = true, oldKey, oldScrollLeft = 117, oldScrollTop = 209,
-    clipId = 42, imageWidth = 640, imageHeight = 480} = {}) {
+    clipId = 42, imageWidth = 640, imageHeight = 480, previewMode = false, resultClip = null, boundary = false} = {}) {
     const events = [];
     const clipSizeKey = `41:${clipId}:${imageWidth}x${imageHeight}`;
     const selection = {id: 41, type: 'selection', name: 'synthetic selection'};
     const clip = {id: clipId, type: 'clip', src: '/synthetic/clip.png', imageWidth, imageHeight};
+    const boundaryState = {anchor: clip, rect: {x: 2, y: 3, width: 128, height: 128}, canvasWidth: 800, canvasHeight: 600};
     let newScrollLeft = 0;
     let newScrollTop = 0;
     const wrap = {
@@ -331,11 +350,19 @@ function renderPanelHarness({oldPanel = true, oldKey, oldScrollLeft = 117, oldSc
         appendChild() { events.push('append-new-panel'); }
     };
     const context = {
+        currentCanvasWidth: 800, currentCanvasHeight: 600,
+        findCanvasLayer: () => ({layer: clip}),
+        CanvasClipBoundary: {needsRestore: () => false, get: () => boundary ? boundaryState : null},
+        bindClipBoundaryEditor() {events.push('bindClipBoundaryEditor');},
+        createClipBoundarySource: () => async () => {
+            events.push('render-boundary-scene');
+            return {toDataURL: () => '/synthetic/boundary.png'};
+        },
         disposeClipMaskEditor() { events.push('dispose-mask-editor'); },
         el: () => stage,
         getClipOutputTarget: () => ({selection, clip}),
-        getTopVisibleInpaintClipForSelection: () => null,
-        isClipInpaintPreviewMode: false,
+        getTopVisibleInpaintClipForSelection: () => resultClip?.visible ? resultClip : null,
+        isClipInpaintPreviewMode: previewMode,
         isClipInpaintMergedSourceMode: false,
         clipMergedSourcePreviewCache: {key: '', dataUrl: ''},
         clipPreviewZoom: 1,
@@ -370,8 +397,49 @@ function renderPanelHarness({oldPanel = true, oldKey, oldScrollLeft = 117, oldSc
     assert.ok(renderStart >= 0 && renderEnd > renderStart, 'renderClipOutputPanel source is present');
     vm.runInContext(source.slice(renderStart, renderEnd), context);
     context.renderClipOutputPanel();
-    return {context, events, wrap, image, clip, clipSizeKey};
+    return {context, events, wrap, image, clip, clipSizeKey, panel};
 }
+
+test('hiding all inpaint results keeps result view on and showing a result restores its preview', () => {
+    const resultClip = {id: 43, src: '/synthetic/result.png', imageWidth: 640, imageHeight: 480, visible: true};
+    const {context, wrap, clip, panel} = renderPanelHarness({previewMode: true, resultClip});
+    assert.equal(wrap.dataset.displaySrc, resultClip.src);
+
+    resultClip.visible = false;
+    context.renderClipOutputPanel();
+    assert.equal(context.isClipInpaintPreviewMode, true);
+    assert.match(panel.innerHTML, /clip-mask-tool-labeled active"\s+title="인페인팅 결과 보기 토글"\s+aria-pressed="true"/);
+    assert.equal(wrap.dataset.displaySrc, clip.src);
+
+    resultClip.visible = true;
+    context.renderClipOutputPanel();
+    assert.equal(wrap.dataset.displaySrc, resultClip.src);
+});
+
+test('an ordinary result stays visible and copies its own geometry while the boundary draft remains active', async () => {
+    const resultClip = {id: 43, src: '/synthetic/old-result.png', visible: true, imageWidth: 320, imageHeight: 128,
+        x: 50, y: 70, layerWidth: 160, layerHeight: 64, rotation: 15};
+    const {context, events, clip, wrap, panel} = renderPanelHarness({boundary: true, previewMode: true, resultClip});
+    assert.equal(wrap.dataset.displaySrc, resultClip.src);
+    assert.ok(panel.innerHTML.includes('src="' + resultClip.src + '"'));
+    assert.ok(events.includes('bindClipMaskEditor'));
+    assert.ok(!events.includes('bindClipBoundaryEditor'));
+
+    Object.assign(context, {normalizePromptInfo: value => value,
+        CanvasSelectionRotation: require('../static/canvas_selection_rotation')});
+    vm.runInContext(source.slice(source.indexOf('function getCurrentClipOutputDisplayState('),
+        source.indexOf('function buildExternalClipboardPayloadForClipOutput(')), context);
+    const clipboard = await context.captureClipOutputForClipboard(context.getCurrentClipOutputDisplayState());
+    assert.deepEqual([clipboard.src, clipboard.clipId, clipboard.x, clipboard.y, clipboard.imageWidth,
+        clipboard.imageHeight, clipboard.layerWidth, clipboard.layerHeight, clipboard.rotation],
+        [resultClip.src, 43, 50, 70, 320, 128, 160, 64, 15]);
+    assert.ok(!events.includes('render-boundary-scene'));
+    assert.equal(context.CanvasClipBoundary.get(clip).anchor, clip);
+    context.isClipInpaintPreviewMode = false;
+    context.renderClipOutputPanel();
+    assert.ok(events.includes('bindClipBoundaryEditor'));
+    assert.equal(context.CanvasClipBoundary.get(clip).anchor, clip);
+});
 
 test('rerendering the same clip restores scroll after applying its preview zoom', () => {
     const fixture = renderPanelHarness({oldPanel: true, oldScrollLeft: 117, oldScrollTop: 209});

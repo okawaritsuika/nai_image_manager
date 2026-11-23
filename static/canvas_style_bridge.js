@@ -1,4 +1,4 @@
-// Canvas owns prompts and persistence; the style controller owns display-only links.
+// Canvas owns prompts and persistence; the style controller edits links and requests draft changes.
 let canvasStyleLinkController = null;
 let canvasStyleRefreshQueued = false;
 
@@ -20,6 +20,13 @@ function getCanvasStyleLink() {
             document,
             fetch: (...args) => fetch(...args),
             getPrompt: getCanvasStylePromptSource,
+            canEditPrompt: () => !!el('clipPromptModalOverlay')?.classList.contains('open'),
+            setPrompt: ({basePrompt, negativePrompt}) => {
+                if (!el('clipPromptModalOverlay')?.classList.contains('open')) return false;
+                setClipPromptEditorValue('base', basePrompt);
+                setClipPromptEditorValue('negative', negativePrompt);
+                return true;
+            },
             onChange: () => saveCanvasState(),
             onRender: () => {
                 if (el('clipPromptModalOverlay')?.classList.contains('open')) renderAllClipPromptTokens();

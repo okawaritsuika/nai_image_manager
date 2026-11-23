@@ -4,6 +4,8 @@
     function createProjectCanvasAutosave({
         snapshot,
         send,
+        recover,
+        onRecovered = () => {},
         status = () => {},
         onSaved = () => {},
         onMissing = () => {},
@@ -23,6 +25,7 @@
         let retryRequest = null;
         let running = null;
         let lastStatus = null;
+        let committedState = null;
 
         function report(value, error) {
             if (value === lastStatus && value !== 'error' && value !== 'conflict') return;
@@ -47,8 +50,8 @@
             return Boolean(error && error.status === 409);
         }
 
-        function fail(error, request = null) {
-            const kind = isConflict(error) ? 'conflict' : 'error';
+        function fail(error, request = null, recoverable = false) {
+            const kind = recoverable || isConflict(error) ? 'conflict' : 'error';
             if (kind === 'conflict') {
                 retryRequest = null;
                 dirty = true;
@@ -57,7 +60,7 @@
             } else {
                 dirty = true;
             }
-            failure = {kind, error};
+            failure = {kind, error, recoverable};
             report(failure.kind, error);
         }
 
@@ -73,6 +76,7 @@
             const missingBinding = copyBinding();
             cancelTimer();
             binding = null;
+            committedState = null;
             failure = null;
             dirty = false;
             retryRequest = null;
@@ -87,8 +91,32 @@
             return true;
         }
 
-        async function drain(saveGeneration) {
+        async function drain(saveGeneration, initialCanvasId, needsRecovery) {
             while (binding && generation === saveGeneration && !failure && (dirty || retryRequest)) {
+                if (needsRecovery) {
+                    report('recovering');
+                    let next;
+                    try {
+                        next = await recover(copyBinding());
+                        if (generation !== saveGeneration || !binding) return false;
+                        if (!next || typeof next.canvasId !== 'string' || !next.canvasId.trim() ||
+                            next.canvasId === binding.canvasId || next.projectId !== binding.projectId ||
+                            next.side !== binding.side || !validRevision(next.revision, 1)) {
+                            throw new Error('복구된 프로젝트 캔버스의 연결 정보를 확인할 수 없습니다.');
+                        }
+                    } catch (error) {
+                        if (generation === saveGeneration && binding) fail(error, null, true);
+                        return false;
+                    }
+                    Object.assign(binding, next);
+                    needsRecovery = false;
+                    try {
+                        onRecovered(copyBinding());
+                    } catch (_) {
+                        // The new binding owns subsequent writes even if a UI update fails.
+                    }
+                    continue;
+                }
                 let request = retryRequest;
                 if (!request) {
                     const target = copyBinding();
@@ -111,6 +139,16 @@
                 } catch (error) {
                     if (generation === saveGeneration && binding) {
                         if (disconnectMissing(error)) return true;
+                        if (isConflict(error) && typeof recover === 'function') {
+                            if (binding.canvasId !== initialCanvasId) {
+                                fail(error, null, true);
+                                return false;
+                            }
+                            retryRequest = null;
+                            dirty = true;
+                            needsRecovery = true;
+                            continue;
+                        }
                         fail(error, request);
                     }
                     return false;
@@ -123,6 +161,7 @@
                 }
 
                 binding.revision = metadata.revision;
+                committedState = metadata.state ?? request.state;
                 if (retryRequest === request) retryRequest = null;
             }
 
@@ -131,7 +170,7 @@
             return true;
         }
 
-        function flush() {
+        function startFlush(needsRecovery = false) {
             cancelTimer();
             if (!binding) return Promise.resolve(true);
             if (running) return running;
@@ -139,12 +178,20 @@
             if (!dirty && !retryRequest) return Promise.resolve(true);
 
             const saveGeneration = generation;
-            let task;
-            task = drain(saveGeneration).then(result => {
+            const initialCanvasId = binding.canvasId;
+            // Install the shared promise before status and recovery callbacks can re-enter.
+            let start;
+            const task = new Promise(resolve => {start = resolve;});
+            async function finish() {
+                let result;
+                do {
+                    result = await drain(saveGeneration, initialCanvasId, needsRecovery);
+                    needsRecovery = false;
+                } while (result && generation === saveGeneration && binding && dirty);
                 if (running === task) running = null;
                 if (result && generation === saveGeneration && binding) {
                     try {
-                        onSaved(copyBinding());
+                        onSaved(copyBinding(), committedState);
                     } catch (_) {
                         // The server commit is authoritative even if a UI callback fails.
                     }
@@ -154,9 +201,14 @@
                     }
                 }
                 return result;
-            });
+            }
             running = task;
+            start(finish());
             return task;
+        }
+
+        function flush() {
+            return startFlush();
         }
 
         function schedule(immediate = false) {
@@ -169,7 +221,6 @@
             }
 
             if (running) {
-                report('saving');
                 return true;
             }
 
@@ -196,6 +247,7 @@
 
             generation++;
             binding = {...nextBinding};
+            committedState = null;
             failure = null;
             dirty = false;
             retryRequest = null;
@@ -211,10 +263,13 @@
             }
             const disconnectGeneration = generation;
             const disconnectBinding = binding;
-            if (!(await flush())) return false;
-            if (!binding) return true;
-            if (generation !== disconnectGeneration || binding !== disconnectBinding) return false;
+            do {
+                if (!(await flush())) return false;
+                if (!binding) return true;
+                if (generation !== disconnectGeneration || binding !== disconnectBinding) return false;
+            } while (dirty || running);
             binding = null;
+            committedState = null;
             failure = null;
             dirty = false;
             retryRequest = null;
@@ -233,14 +288,23 @@
             return flush();
         }
 
+        function retryConflict() {
+            if (running) return running;
+            if (!binding || !failure?.recoverable) return Promise.resolve(false);
+            failure = null;
+            return startFlush(true);
+        }
+
         return {
             connect,
             current: () => copyBinding(),
             schedule,
             flush,
             retry,
+            retryConflict,
             disconnect,
             disconnectMissing,
+            isSavePending: () => !failure && Boolean(dirty || running),
             isUnsaved: () => Boolean(dirty || retryRequest || failure || running)
         };
     }

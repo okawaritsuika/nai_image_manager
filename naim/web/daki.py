@@ -78,6 +78,7 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
         # Project settings contain prompt text and have a dedicated lightweight
         # endpoint; broad project summaries only expose canvas metadata.
         project.pop('canvasSettings', None)
+        project.pop('inpaintReferencePlacement', None)
         project.pop('detailPromptPresets', None)
         for side in SIDES:
             for candidate in project['candidates'][side]:
@@ -157,7 +158,10 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
     def project(project_id):
         return jsonify({
             'status': 'success',
-            'project': public_project(store.get_project(project_id, summary=True)),
+            'project': public_project(
+                store.get_project(project_id, summary=True),
+                include_dimensions=request.args.get('include_dimensions') != '0',
+            ),
         })
 
     @app.route(
@@ -172,8 +176,9 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
             data = body()
             settings = store.update_canvas_settings(
                 project_id, data.get('settings'), data.get('revision'),
+                knows_reference_placement=request.headers.get('X-NAIM-Reference-Placement') == '1',
             )
-        return jsonify({'status': 'success', 'settings': settings})
+        return jsonify({'status': 'success', 'settings': settings}), {'X-NAIM-Reference-Placement': '1'}
 
     @app.route('/api/daki/projects/<project_id>/candidates', methods=['POST'], endpoint='daki_add_candidate')
     @handle_errors
@@ -254,6 +259,7 @@ def register_daki_routes(app, store_path_provider, resolve_source, clean_path=No
         data = body()
         canvas = store.update_canvas(
             project_id, canvas_id, data.get('state'), data.get('revision'),
+            knows_reference_placement=request.headers.get('X-NAIM-Reference-Placement') == '1',
         )
         project = store.get_project(project_id)
         return jsonify({

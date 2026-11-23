@@ -163,7 +163,7 @@ function createHarness(fetchImpl = async () => {
         AbortController,
         devicePixelRatio: 1
     };
-    vm.runInNewContext(source, {window, module: {exports: {}}, AbortController});
+    vm.runInNewContext(source, {window, module: {exports: {}}, AbortController, Event});
     return {api: window.CanvasInpaintReference, document, host, stage, surface, window};
 }
 
@@ -252,6 +252,87 @@ test('normalizes missing state and clones valid reference snapshots', () => {
     assert.notEqual(second.reference, first.reference);
 });
 
+test('nondefault placement survives a saved layer being moved by an older editor', () => {
+    const original = {reference: {...validReference, x: 0.2, y: 0.8, zoom: 4, scale: 1.75, panY: 0}, include: false};
+    const layers = [{id: 1, type: 'image'}, {id: 2, type: 'canvas'}];
+    const copy = structuredClone(layers);
+    assert.equal(reference.storePlacement(copy, original), copy);
+    assert.deepEqual(copy[1].inpaintReferencePlacement, {...original.reference, include: false});
+    assert.deepEqual(copy[0], layers[0]);
+    assert.equal(layers[1].inpaintReferencePlacement, undefined);
+
+    const legacy = {reference: {...validReference, name: 'renamed', x: 0.3, y: 0.9, zoom: 2}, include: true};
+    const moved = [{type: 'folder', children: [{type: 'selection', children: copy}]}];
+    const restored = reference.restorePlacement(legacy, moved, {src: validReference.src, panX: 0});
+    assert.deepEqual(restored, {...legacy, reference: {...legacy.reference, scale: 1.75, panY: 0}});
+    assert.notEqual(restored.reference, legacy.reference);
+    assert.equal(legacy.reference.scale, undefined);
+    assert.deepEqual(copy, layers);
+});
+
+test('an editor without a reference setting round-trips the complete image and include choice', () => {
+    for (const include of [false, true]) {
+        for (const placement of [{}, {scale: 3.25, panX: 0, panY: 1}]) {
+            const ref = {...validReference, name: '그림 A.webp', width: 192, x: 0.2, y: 0.7, zoom: 4, ...placement};
+            const snapshot = {reference: ref, showArea: include, include};
+            const saved = reference.backupFor(snapshot);
+            assert.deepEqual(saved, {...ref, include});
+            assert.deepEqual(reference.placementFor(snapshot), 'scale' in placement ? {src: ref.src, ...placement} : null);
+            assert.deepEqual(reference.restorePlacement(undefined, [], saved), snapshot);
+            const layers = [{type: 'folder', children: [{type: 'canvas', inpaintReferencePlacement: saved}]}];
+            assert.deepEqual(reference.restorePlacement(undefined, layers), snapshot);
+            assert.deepEqual(layers, [{type: 'folder', children: [{type: 'canvas'}]}]);
+        }
+    }
+    const full = reference.backupFor({reference: validReference, include: true});
+    for (const absent of [null, {reference: null}, {reference: {...validReference, src: '/canvas-imports/new.png'}}]) {
+        assert.equal(reference.restorePlacement(absent, [], full), absent);
+    }
+    for (const incomplete of [{src: validReference.src, scale: 2}, {src: validReference.src, scale: 2, include: true},
+        {...full, include: 1}, {...full, width: 1}]) {
+        assert.equal(reference.restorePlacement(undefined, [], incomplete), undefined);
+    }
+    const previous = {reference: validReference};
+    assert.equal(reference.restorePlacement(previous, [{inpaintReferencePlacement: full}], {src: validReference.src, scale: 3}), previous);
+    assert.equal(reference.backupFor(null), null);
+    assert.equal(reference.backupFor({reference: null}), null);
+    assert.equal(reference.backupFor({reference: {...validReference, src: 'invalid'}}), null);
+});
+
+test('a direct value or a removed, different or invalid image never reuses stale placement', () => {
+    const backup = {src: validReference.src, scale: 2, panX: 0};
+    for (const ref of [
+        null, {...validReference, src: '/canvas-imports/other.png'}, {...validReference, width: 7},
+        {...validReference, scale: 1}, {...validReference, panX: 0.5}, {...validReference, panY: 0.5},
+    ]) {
+        const value = {reference: ref, preserved: true};
+        const layers = [{type: 'folder', inpaintReferencePlacement: backup,
+            children: [{type: 'empty', inpaintReferencePlacement: backup}]}];
+        assert.equal(reference.restorePlacement(value, layers, backup), value);
+        assert.deepEqual(layers, [{type: 'folder', children: [{type: 'empty'}]}]);
+    }
+    const value = {reference: validReference};
+    for (const invalid of [{...backup, scale: 0}, {...backup, scale: '2'}, {...backup, panY: 1.01}, null]) {
+        assert.equal(reference.restorePlacement(value, [], invalid), value);
+    }
+    assert.equal(reference.placementFor(value), null);
+    assert.equal(reference.placementFor({reference: {...validReference, scale: 1, panX: 0.5, panY: 0.5}}), null);
+
+    const noBase = [{type: 'empty'}, {type: 'image'}];
+    reference.storePlacement(noBase, {reference: {...validReference, scale: 2, panX: 0}});
+    assert.deepEqual(noBase[0].inpaintReferencePlacement, {...validReference, scale: 2, panX: 0, include: false});
+    reference.storePlacement(noBase, value);
+    assert.deepEqual(noBase[0].inpaintReferencePlacement, {...validReference, include: false});
+    reference.storePlacement(noBase, {reference: null});
+    assert.deepEqual(noBase, [{type: 'empty'}, {type: 'image'}]);
+    assert.deepEqual(reference.storePlacement([], value), []);
+    const invalidCarrier = [{type: 'empty', inpaintReferencePlacement: {...backup, panY: -2}}];
+    assert.deepEqual(reference.restorePlacement(value, invalidCarrier, backup), {
+        reference: {...validReference, scale: 2, panX: 0}
+    });
+    assert.deepEqual(invalidCarrier, [{type: 'empty'}]);
+});
+
 test('restored checkbox mismatch follows include while preserving both saved keys', () => {
     assert.deepEqual(reference.normalizeSnapshot({showArea: true, include: false}), {
         reference: null, showArea: false, include: false
@@ -271,6 +352,9 @@ test('invalid saved reference data normalizes to no reference', () => {
         {...validReference, name: 'x'.repeat(501)},
         {...validReference, x: Number.NaN},
         {...validReference, y: 1.01},
+        {...validReference, panY: null},
+        {...validReference, panX: -0.01},
+        {...validReference, scale: 32.01},
         {...validReference, zoom: 0.9}
     ];
     for (const item of invalid) {
@@ -352,8 +436,7 @@ test('sidebar exposes width and include controls without the crop editor', () =>
     });
     harness.api.restore({reference: validReference});
     assert.ok(findByText(harness.host, 'p', '참고 폭 320px · 포함 해제됨'));
-    assert.ok(findByText(harness.host, 'p',
-        '선택 영역을 조절하면 참고 폭을 포함한 전체 크기를 확인할 수 있습니다.'));
+    assert.equal(harness.host.querySelector('.canvas-inpaint-reference-status').hidden, true);
 
     const widthInput = findNumberInput(harness.host);
     assert.ok(widthInput);
@@ -368,15 +451,15 @@ test('sidebar exposes width and include controls without the crop editor', () =>
 
     const actionContainer = harness.document.createElement('div');
     const actionRow = harness.api.mountActions(actionContainer);
-    assert.equal(actionRow.children.length, 1);
+    assert.equal(actionRow.children.length, 2);
     assert.equal(actionRow.children[0].children[0].type, 'checkbox');
+    assert.equal(actionRow.querySelector('.canvas-reference-clip-disclosure').open, false);
 
     harness.api.restore({});
     assert.equal(widthInput.value, '320');
     assert.equal(widthInput.disabled, true);
     assert.ok(findByText(harness.host, 'p', '선택 영역을 조절하면 요청 크기를 확인할 수 있습니다.'));
-    assert.ok(findByText(harness.host, 'p',
-        '참고 이미지를 추가하고 선택 영역을 조절해 전체 크기를 확인하세요.'));
+    assert.equal(harness.host.querySelector('.canvas-inpaint-reference-status').hidden, true);
 });
 
 test('sidebar and every mounted action checkbox stay synchronized with one save per change', () => {
@@ -916,7 +999,82 @@ test('project template save keeps its project-level scope when the linked canvas
 
     assert.equal(calls.length, 2);
     assert.equal(calls[1].options.method, 'PUT');
+    assert.equal(calls[1].options.headers['X-NAIM-Reference-Placement'], '1');
+    assert.deepEqual(JSON.parse(calls[1].options.body).settings.inpaintReference, validReference);
     assert.equal(calls[1].url, `/api/daki/projects/${projectId}/canvas-settings`);
+});
+
+test('an older project server can strip placement on PUT and a reopened canvas recovers it on GET', async () => {
+    const projectId = 'b'.repeat(32);
+    const values = new Map();
+    const storage = {getItem: k => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k)};
+    let supportsPlacement = false;
+    let settings = {revision: 0, inpaintReference: null};
+    const calls = [];
+    function browser() {
+        const h = createHarness(async (url, options) => {
+            calls.push(options.method || 'GET');
+            if (options.method === 'PUT') {
+                const {scale, panX, panY, ...legacyFields} = JSON.parse(options.body).settings.inpaintReference;
+                settings = {revision: 1, inpaintReference: legacyFields};
+            }
+            const reply = jsonResponse({status: 'success', settings});
+            reply.headers = {get: name => supportsPlacement && name === 'X-NAIM-Reference-Placement' ? '1' : null};
+            return reply;
+        });
+        h.window.localStorage = storage;
+        h.api.configure({getContext: () => ({canvasWidth: 512, canvasHeight: 512}), getProjectLink: () => ({projectId})});
+        return h;
+    }
+    const writer = browser();
+    const ref = {...validReference, scale: 2, panX: 0, panY: 0.75};
+    writer.api.restore({reference: ref});
+    findByText(writer.host, 'button', '프로젝트에 등록').click();
+    await flushAsync();
+    assert.deepEqual(settings.inpaintReference, validReference);
+    assert.equal(values.size, 1);
+
+    const reader = browser();
+    const load = findByText(reader.host, 'button', '프로젝트에서 가져오기');
+    load.click(); await flushAsync();
+    assert.deepEqual({...reader.api.snapshot().reference}, ref);
+    assert.deepEqual(calls, ['GET', 'PUT', 'GET']);
+
+    supportsPlacement = true;
+    load.click(); await flushAsync();
+    assert.deepEqual({...reader.api.snapshot().reference}, ref);
+    assert.equal(values.size, 1);
+    settings = {...settings, revision: 2};
+    load.click(); await flushAsync();
+    assert.deepEqual({...reader.api.snapshot().reference}, validReference);
+    assert.equal(values.size, 0);
+    assert.deepEqual(calls, ['GET', 'PUT', 'GET', 'GET', 'GET']);
+});
+
+test('project backups track only a confirmed same-image loss and drop on resets or image changes', () => {
+    const h = createHarness();
+    const stored = new Map();
+    h.window.localStorage = {getItem: key => stored.get(key) ?? null,
+        setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key)};
+    const first = 'c'.repeat(32), other = 'd'.repeat(32);
+    const sent = {...validReference, panY: 0};
+    const legacy = {revision: 7, inpaintReference: validReference};
+    h.api.rememberProjectReference(first, sent, null, false);
+    h.api.rememberProjectReference(first, sent, {inpaintReference: {...sent}}, false);
+    h.api.rememberProjectReference(first, sent, legacy, true);
+    assert.equal(stored.size, 0);
+    const changed = {inpaintReference: {...validReference, src: '/canvas-imports/other.png'}};
+    const direct = {inpaintReference: {...validReference, panX: 0.25}};
+    for (const settings of [changed, direct, {inpaintReference: null}]) {
+        h.api.rememberProjectReference(first, sent, legacy, false);
+        assert.equal(h.api.readProjectReference(other, legacy, false), validReference);
+        assert.equal(h.api.readProjectReference(first, settings, false), settings.inpaintReference);
+        assert.equal(h.api.readProjectReference(first, legacy, false), validReference);
+        assert.equal(stored.size, 0);
+    }
+    h.api.rememberProjectReference(first, sent, legacy, false);
+    h.api.rememberProjectReference(first, validReference, legacy, true);
+    assert.equal(stored.size, 0);
 });
 
 test('sidebar reference width text describes request inclusion and clear disables it', () => {
@@ -936,4 +1094,56 @@ test('sidebar reference width text describes request inclusion and clear disable
 
     assertJsonEqual(harness.api.snapshot(), {reference: null, showArea: false, include: false});
     assertJsonEqual(harness.api.request(256, 192), {width: 256, height: 192, reference: null});
+});
+test('clip picture scale changes request pixels independently of the strip width and survives restore', () => {
+    const harness = createHarness();
+    harness.api.configure({getContext: () => ({canvasWidth: 512, canvasHeight: 512})});
+    harness.api.restore({reference: validReference, include: true});
+    const container = harness.document.createElement('div');
+    harness.document.body.appendChild(container);
+    const row = harness.api.mountActions(container);
+    const slider = row.querySelector('.canvas-reference-sizing').children[2].children[1];
+    slider.value = '50';
+    slider.dispatch('input');
+    slider.dispatch('change');
+    harness.api.restore(harness.api.snapshot());
+    const request = harness.api.request(512, 384);
+    assert.equal(request.width, 832);
+    assert.equal(request.reference.scale, 0.5);
+    assertJsonEqual(harness.api.fitBox(640, 640, 320, 384, request.reference.scale),
+        {x: 80, y: 112, width: 160, height: 160});
+    slider.value = '100';
+    slider.dispatch('change');
+    assertJsonEqual(harness.api.request(512, 384).reference, validReference);
+});
+
+test('clip strip saves a completed pan and restores the same 3200% crop for sending', () => {
+    const h = createHarness();
+    const clip = {id: 7, imageWidth: 256, imageHeight: 320};
+    const host = h.document.createElement('div');
+    h.document.body.appendChild(host);
+    const layout = [];
+    host.dispatchEvent = event => layout.push(event.type);
+    let onPan;
+    let saves = 0;
+    h.window.CanvasInpaintReferencePreview = {mount() { return {update() {}}; }, mountStrip(_, callback) {
+        onPan = callback;
+        return {update() {}};
+    }};
+    h.api.configure({getContext: () => ({canvasWidth: 512, canvasHeight: 512, clip}), save: () => saves++});
+    h.api.restore({reference: {...validReference, scale: 32}, include: true});
+    h.api.mountClipStrip(host);
+    assert.equal(host.hidden, false);
+    assert.deepEqual(layout, ['clip-reference-layout']);
+    onPan(1, 0, false);
+    assert.equal(h.api.request(256, 320).reference.panX, undefined);
+    onPan(1, 0, true);
+    assert.equal(saves, 1);
+    h.api.restore(h.api.snapshot());
+    const {reference, width} = h.api.request(256, 320);
+    assert.equal(width, 576);
+    assertJsonEqual(h.api.fitBox(960, 240, 320, 320, reference.scale, reference.panX, reference.panY),
+        {x: -9920, y: 0, width: 10240, height: 2560});
+    h.api.restore({reference, include: false});
+    assert.equal(host.hidden, true);
 });

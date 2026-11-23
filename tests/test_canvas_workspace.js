@@ -726,6 +726,37 @@ test('reopening the original local pane reuses its bridge and never creates an i
     assert.deepEqual(h.assignedUrls, []);
 });
 
+test('a closed inline project releases only after a durable close and opens a frame if another editor took its lock', async () => {
+    const h = harness({panes: [pane(PANE_ID, 'Original', {projectId: PROJECT_ID, canvasId: CANVAS_ID})]});
+    let suspended = false;
+    let pending = false;
+    let reconnecting = true;
+    h.window.CanvasProject = {
+        isUnsaved: () => pending,
+        isChangingConnection: () => reconnecting,
+        suspendClosedPane() { suspended = true; },
+        isPaneSuspended: () => suspended,
+        resumeClosedPane: async () => false
+    };
+    assert.equal(await h.workspace.close(PANE_ID), false);
+    assert.equal(h.storedManifest().panes[0].closed, false);
+    assert.equal(suspended, false);
+    reconnecting = false;
+    h.storage.failNextSetFor(h.manifestKey);
+    assert.equal(await h.workspace.close(PANE_ID), false);
+    assert.equal(suspended, false);
+    pending = true;
+    assert.equal(await h.workspace.close(PANE_ID), false);
+    assert.equal(suspended, false);
+    pending = false;
+    assert.equal(await h.workspace.close(PANE_ID), true);
+    assert.equal(suspended, true);
+    assert.equal(h.workspace.add(h.storedManifest().panes[0]), PANE_ID);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.frames().length, 1);
+    assert.equal(h.frameFor(PANE_ID).src, WorkspaceState.frameUrl(WORKSPACE_ID, h.storedManifest().panes[0]));
+});
+
 test('reopening a closed reference reuses its scoped snapshot without changing the main editor', () => {
     const closedPane = pane(SECOND_PANE_ID, 'Saved reference', {closed: true, setupId: 'synthetic-setup'});
     const h = harness({panes: [pane(PANE_ID, 'Main'), closedPane], activeId: PANE_ID});

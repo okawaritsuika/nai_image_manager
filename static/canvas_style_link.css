@@ -355,6 +355,21 @@
     overflow: auto;
 }
 
+.canvas-style-link-direct-manual {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.canvas-style-link-direct-manual[hidden] {
+    display: none;
+}
+
+.canvas-style-link-direct-manual textarea {
+    min-height: 48px;
+}
+
 .canvas-style-link-direct-preview-row {
     display: flex;
     flex-wrap: wrap;

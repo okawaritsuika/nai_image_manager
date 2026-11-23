@@ -74,11 +74,13 @@ class SharedLibraryCatalog:
         else:
             connection = sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=15)
             try:
+                connection.execute('BEGIN')
                 digest = hashlib.sha256(str(database.resolve()).casefold().encode('utf-8'))
                 # Collection jobs and vote updates also change the DB file. Only
                 # source content changes require parsing all original prompts.
+                # Walk the image table in rowid order to avoid sorting large metadata rows.
                 for row in connection.execute('''SELECT image.*,item.title,item.source_url,item.posted_at
-                    FROM arca_style_images image JOIN arca_style_items item ON item.id=image.item_id
+                    FROM arca_style_images image NOT INDEXED JOIN arca_style_items item ON item.id=image.item_id
                     WHERE image.metadata_status='ok' ORDER BY image.id'''):
                     digest.update(json.dumps(row, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
                 columns = {row[1] for row in connection.execute('PRAGMA table_info(arca_style_items)')}
@@ -95,17 +97,20 @@ class SharedLibraryCatalog:
             self._artist_file_stamp, self._artist_state_cache = stamp, state
         return state
 
-    def _refresh_recommendations(self):
+    def _read_artist_state(self):
         try:
-            _, votes, signature = self._artist_state()
+            return self._artist_state()
         except (OSError, ValueError, sqlite3.Error):
-            return
+            return ('unreadable', _stamp(self.artist_data / 'artist_rater.sqlite')), [], None
+
+    def _refresh_recommendations(self, artist_state):
+        _, votes, signature = artist_state
         if signature != self._artist_recommendations_signature:
             if self.store.update_recommendations_many(votes):
                 self._public_records_cache.clear()
             self._artist_recommendations_signature = signature
 
-    def _current_signature(self):
+    def _current_signature(self, artist_state=None):
         files = []
         for provider, names in ((self.legacy._catalog_root, ('default_styles.json', 'source_generation_options.json', 'generation_manifest.json')),
                                 (self.legacy._imported_root, ('catalog.json', 'sync_catalog.json', 'excluded_styles.json', 'source_posts.json'))):
@@ -116,10 +121,7 @@ class SharedLibraryCatalog:
             files.append(Path(recipe_module.__file__).resolve().parent.parent / 'data/shared_style_artists.json')
             dictionary = Path(get_app_dir()) / 'data/danbooru_tags.sqlite3'
             files.extend((dictionary, Path(str(dictionary) + '-wal')))
-        try:
-            artist_content = self._artist_state()[0]
-        except (OSError, ValueError, sqlite3.Error):
-            artist_content = ('unreadable', _stamp(self.artist_data / 'artist_rater.sqlite'))
+        artist_content = (artist_state if artist_state is not None else self._read_artist_state())[0]
         payload = {'version': SOURCE_SCAN_VERSION, 'artist_names': self._artist_names_signature,
                    'artist_content': artist_content,
                    'sources': [(str(path.resolve()), _stamp(path)) for path in files]}
@@ -247,9 +249,10 @@ class SharedLibraryCatalog:
 
     def refresh(self):
         with self._lock:
-            signature = self._current_signature()
+            artist_state = self._read_artist_state()
+            signature = self._current_signature(artist_state)
             if signature == self._signature and self._source_scan_ready:
-                self._refresh_recommendations()
+                self._refresh_recommendations(artist_state)
                 return
             retry_failed_scan = self._source_scan_failed
             self._public_records_cache.clear()
@@ -259,7 +262,7 @@ class SharedLibraryCatalog:
                 self.warnings = list(saved['warnings'])
                 self._signature = signature
                 self._source_scan_ready = True
-                self._refresh_recommendations()
+                self._refresh_recommendations(artist_state)
                 return
             self.warnings = []
             if not self._provided_artist_names:
@@ -274,7 +277,7 @@ class SharedLibraryCatalog:
                     complete = False
                     self.warnings.append('공유 원본 자료 일부를 읽지 못했습니다. 저장된 공용 그림체는 유지됩니다.')
             self.store.ingest(entries)
-            self._refresh_recommendations()
+            self._refresh_recommendations(artist_state)
             if complete and signature == self._current_signature():
                 self.store.save_scan_state(signature, self.warnings)
                 self._signature = signature
@@ -314,14 +317,23 @@ class SharedLibraryCatalog:
             return self._add_selection_metadata(record, [])
 
     def preview_path(self, style_id, full=False):
+        def indexed_preview():
+            sources = self.store.sources(style_id)
+            # A legacy alias keeps the same image used by its saved test.
+            sources.sort(key=lambda source: source['source_id'] != style_id)
+            return self._preview_for_sources(sources, full=full)
+
+        if self._source_scan_ready:
+            try:
+                return indexed_preview()
+            except (KeyError, FileNotFoundError):
+                # The collector can restore an existing ID under a new image path.
+                pass
         self.refresh()
         try:
-            sources = self.store.sources(style_id)
+            return indexed_preview()
         except KeyError:
             return self.legacy.preview_path(style_id, full=full)
-        # A legacy alias keeps the same image used by its saved test.
-        sources.sort(key=lambda source: source['source_id'] != style_id)
-        return self._preview_for_sources(sources, full=full)
 
     def _preview_for_sources(self, sources, full=False, resolved_roots=None):
         for source in sources:

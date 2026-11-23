@@ -1,4 +1,4 @@
-/* Project recipes group existing text; only generation settings change canvas values. */
+/* Project recipes group existing text and supply defaults for empty clip prompt fields. */
 (function (root, factory) {
     const api = factory();
     if (typeof module === 'object' && module.exports) module.exports = api;
@@ -8,9 +8,10 @@
         getLink: () => root.CanvasProject?.localLink(),
         fetch: (...args) => root.fetch(...args),
         styleRules: root.CanvasStyleLink,
+        getStyle: () => getCanvasStyleLink()?.snapshot(),
         setStyle: value => getCanvasStyleLink()?.restore(value),
         setInpaint: value => root.CanvasInpaintSettings?.update(value),
-        save: () => saveCanvasState(),
+        save: () => saveCanvasState({syncProject: true}),
         render: () => {
             if (doc.getElementById('clipPromptModalOverlay')?.classList.contains('open')) renderAllClipPromptTokens();
             renderReferenceStylePromptPreview();
@@ -74,6 +75,7 @@
         let pending = null;
         let aborter = null;
         let again = false;
+        let initialSettingsLoaded = false;
         const status = options.status || (() => {});
         const render = options.render || (() => {});
         const snapshot = () => clone(saved);
@@ -84,6 +86,7 @@
             aborter = null;
             pending = null;
             again = false;
+            initialSettingsLoaded = false;
         }
 
         function restore(value) {
@@ -155,6 +158,7 @@
                     apply(result.settings, link);
                     if (saved?.projectId === link.projectId && saved?.side === link.side
                         && saved.revision === result.settings.revision) {
+                        initialSettingsLoaded = true;
                         const active = saved.style || saved.prompt.basePrompt || saved.prompt.negativePrompt
                             || saved.prompt.charPrompts?.some(value => value.length > 0) || saved.inpaintSettings;
                         status('saved', active ? '프로젝트 연동 적용됨 · 기존 프롬프트 유지' : '프로젝트 연동 설정 없음');
@@ -179,6 +183,30 @@
             // Disconnecting stops propagation but keeps the last copied settings and groups.
             if (next) void refresh();
             else status('idle', '');
+        }
+
+        function waitForInitialSettings() {
+            const link = options.getLink();
+            if (!link) return;
+            if (contextKey === key(link) && initialSettingsLoaded) return;
+            if (contextKey === key(link) && pending) return pending;
+            if (saved?.projectId !== link.projectId || saved?.side !== link.side) return refresh();
+        }
+
+        function fillStylePrompt(info) {
+            const hasBase = Boolean(info.basePrompt.trim());
+            const hasNegative = Boolean(info.negativePrompt.trim());
+            if (hasBase && hasNegative) return info;
+            const link = options.getLink();
+            const style = saved?.style;
+            if (!style || (link && (saved.projectId !== link.projectId || saved.side !== link.side))) return info;
+            const active = options.getStyle?.();
+            if (active?.mode !== 'manual' || !active.style
+                || active.style.id !== style.id || active.style.library !== style.library
+                || active.style.positive !== style.positive || active.style.negative !== style.negative) return info;
+            return {...info,
+                basePrompt: hasBase ? info.basePrompt : style.positive,
+                negativePrompt: hasNegative ? info.negativePrompt : style.negative};
         }
 
         function groupParts(field, parts, characterIndex = null) {
@@ -230,7 +258,8 @@
             render();
             options.save();
         }
-        return {snapshot, restore, refresh, linkChanged, groupParts, toggleExpanded, cancel};
+        return {snapshot, restore, refresh, linkChanged, waitForInitialSettings, fillStylePrompt,
+            groupParts, toggleExpanded, cancel};
     }
     return {create};
 });

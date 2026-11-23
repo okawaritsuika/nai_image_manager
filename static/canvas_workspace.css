@@ -109,11 +109,13 @@ body.canvas-workspace-pane { display: flex; flex-direction: column; overflow: hi
     .canvas-workspace-pane .canvas-toolbar, .canvas-workspace-pane .canvas-layer-panel { display: none; }
     .canvas-workspace-pane.canvas-multi-tools-open:not(.canvas-retouch-editing) .canvas-toolbar,
     .canvas-workspace-pane.canvas-multi-layers-open .canvas-layer-panel,
-    .canvas-workspace-pane.canvas-retouch-editing .canvas-layer-panel,
+    .canvas-workspace-pane.canvas-retouch-editing:not(.canvas-multi-layers-open) #canvasRetouchPanel,
     .canvas-workspace-pane.canvas-daki-map-editing .canvas-layer-panel {
         display: flex; position: absolute; top: 0; bottom: 0; width: min(300px, calc(100% - 24px));
         min-width: 0; z-index: 1100; box-shadow: var(--shadow-md);
     }
     .canvas-workspace-pane.canvas-multi-tools-open .canvas-toolbar { left: 0; }
+    .canvas-workspace-pane.canvas-retouch-editing #canvasRetouchPanel { left: 0; box-sizing: border-box; }
+    .canvas-workspace-pane.canvas-retouch-editing.canvas-multi-layers-open #canvasRetouchPanel { display: none; }
     .canvas-workspace-pane .canvas-layer-panel { right: 0; }
 }

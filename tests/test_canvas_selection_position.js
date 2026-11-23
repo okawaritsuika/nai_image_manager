@@ -54,6 +54,7 @@ function makeContext({
 } = {}) {
     const canvasLayers = [];
     const calls = {renderLayerList: 0, renderCanvasLayersOnSurface: 0, saveCanvasState: 0};
+    const toasts = [];
     const workspace = {
         clientLeft,
         clientTop,
@@ -86,6 +87,7 @@ function makeContext({
         el(id) { return id === 'canvasSurface' ? surface : null; },
         countCanvasLayersByType(type) { return canvasLayers.filter((layer) => layer.type === type).length; },
         openCanvasDialog() {},
+        showToast(message) { toasts.push(message); },
         renderLayerList() { calls.renderLayerList += 1; },
         renderCanvasLayersOnSurface() { calls.renderCanvasLayersOnSurface += 1; },
         saveCanvasState() { calls.saveCanvasState += 1; }
@@ -99,7 +101,7 @@ function makeContext({
         extractFunction(canvasSource, 'isSelectionRequestSizeAllowed'),
         extractFunction(canvasSource, 'addSelectionArea')
     ].join('\n'), context);
-    return {context, calls, surface, workspace};
+    return {context, calls, surface, workspace, toasts};
 }
 
 function assertCenter(actual, expected) {
@@ -204,7 +206,7 @@ test('missing, empty, or fully clipped canvas surfaces fall back to the image ce
 
 test('new selection uses a 1024px square and keeps the visible center and save/render lifecycle', () => {
     const workspaceRect = makeRect(20, 30, 800, 620);
-    const surfaceRect = makeRect(-800, -300, 8192, 4096);
+    const surfaceRect = makeRect(-800, -800, 8192, 4096);
     const {context, calls} = makeContext({
         canvasWidth: 4096,
         canvasHeight: 2048,
@@ -237,5 +239,51 @@ test('new selection uses a 1024px square and keeps the visible center and save/r
     assert.equal(context.checkedSelectionId, selection.id);
     assert.equal(context.activeClipSelectionId, selection.id);
     assert.deepEqual(calls, {renderLayerList: 1, renderCanvasLayersOnSurface: 1, saveCanvasState: 1});
-    assert.deepEqual(surfaceRect, makeRect(-800, -300, 8192, 4096));
+    assert.deepEqual(surfaceRect, makeRect(-800, -800, 8192, 4096));
+});
+
+test('new selection keeps its default size when the viewport is next to any canvas edge', () => {
+    const canvasWidth = 4096;
+    const canvasHeight = 2048;
+    const workspaceRect = makeRect(0, 0, 360, 480);
+
+    for (const [left, top, expectedX, expectedY] of [
+        [0, 0, 0, 0],
+        [workspaceRect.width - canvasWidth, workspaceRect.height - canvasHeight, canvasWidth - 1024, canvasHeight - 1024],
+    ]) {
+        const {context} = makeContext({canvasWidth, canvasHeight, workspaceRect,
+            surfaceRect: makeRect(left, top, canvasWidth, canvasHeight)});
+
+        context.addSelectionArea();
+
+        const [selection] = context.canvasLayers;
+        assert.equal(selection.x, expectedX);
+        assert.equal(selection.y, expectedY);
+        assert.equal(selection.layerWidth, 1024);
+        assert.equal(selection.layerHeight, 1024);
+    }
+});
+
+test('new selection fits each small canvas axis without leaving the 64px grid', () => {
+    const {context} = makeContext({canvasWidth: 770, canvasHeight: 999, hasSurface: false});
+
+    context.addSelectionArea();
+
+    const [selection] = context.canvasLayers;
+    assert.equal(selection.layerWidth, 768);
+    assert.equal(selection.layerHeight, 960);
+    assert.equal(selection.x, 1);
+    assert.equal(selection.y, 20);
+    assert.equal(context.isSelectionRequestSizeAllowed(selection), true);
+});
+
+test('a canvas smaller than the minimum selection shows feedback without adding a layer', () => {
+    const {context, calls, toasts} = makeContext({canvasWidth: 63, canvasHeight: 250, hasSurface: false});
+
+    context.addSelectionArea();
+
+    assert.equal(context.canvasLayers.length, 0);
+    assert.equal(calls.saveCanvasState, 0);
+    assert.equal(toasts.length, 1);
+    assert.match(toasts[0], /64/);
 });

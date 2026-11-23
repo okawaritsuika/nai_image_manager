@@ -123,7 +123,7 @@
         s.cloneSource = null; update(s); if (s.nativeSurface) {draw(s); refreshNativeMask(s);} else schedule(s);
     }
     function persist() {
-        if (session && valid(session)) saveCanvasState();
+        if (session && valid(session)) saveCanvasState({syncProject: true});
     }
     function change(fn, coalesce = false, pixelsChanged = true, preserveNativeStroke = false) {
         const s = session;
@@ -1192,7 +1192,8 @@
             resumingDraft: Boolean(!newSession && draft),
             message: '캔버스 전체 합성본을 준비하는 중…', error: false,
             previewVersion: 0, previewEpoch: 0, previewRetries: 0, previewQueued: false, previewInFlight: false, timer: null, baseDirty: false,
-            lastChange: 0, toolbar: doc.querySelector('.canvas-toolbar')};
+            lastChange: 0, inertControls: [doc.querySelector('.canvas-toolbar'), doc.querySelector('.layer-panel-header'), byId('layerList')]
+                .filter(Boolean).map(control => [control, Boolean(control.inert)])};
         s.workingId = root.crypto?.randomUUID?.() || ('retouch-' + Date.now() + '-' + serial + '-' + Math.random().toString(36).slice(2));
         s.workingRevision = 0; s.nativeReady = false; s.nativeLocalStroke = false;
         if (root.CanvasRetouchSurface) {
@@ -1205,10 +1206,11 @@
         if (canvasEdge > maxPreviewEdge && fitScale > 0) {
             s.displayEdge = Math.min(maxPreviewEdge, Math.max(1, Math.round(canvasEdge * fitScale * (root.devicePixelRatio || 1))));
         }
-        session = s; s.toolbarInert = s.toolbar?.inert; if (s.toolbar) s.toolbar.inert = true;
+        session = s;
+        for (const [control] of s.inertControls) control.inert = true;
         root.CanvasEditorScene?.pause(true);
         doc.body.classList.add('canvas-retouch-editing'); host.hidden = false;
-        s.panel = root.CanvasRetouchPanel.create(host, actions(s)); update(s);
+        s.panel = root.CanvasRetouchPanel.create(host, actions(s), byId('canvasRetouchLayers')); update(s);
         root.CanvasWorkspaceBridge?.report();
         try {
             let basePreview = null;
@@ -1361,7 +1363,7 @@
         s.details.forEach(dialog => dialog.close()); s.panel?.destroy(); s.overlay?.remove();
         if (s.edited !== s.original) s.edited?.close();
         s.original?.close(); s.mask?.close();
-        if (s.toolbar) s.toolbar.inert = Boolean(s.toolbarInert);
+        for (const [control, inert] of s.inertControls) control.inert = inert;
         doc.body.classList.remove('canvas-retouch-editing'); byId('canvasRetouchPanel').hidden = true;
         if (syncBase) root.renderCanvasLayersOnSurface?.({zoomOnly: true});
         refreshDraftControls();

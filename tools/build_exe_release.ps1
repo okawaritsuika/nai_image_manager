@@ -1,6 +1,6 @@
 param(
     [string]$Python = (Join-Path $env:USERPROFILE "AppData\Local\Programs\Python\Python310\python.exe"),
-    [string]$Version = "1.3.5",
+    [string]$Version = "1.3.6",
     [Parameter(HelpMessage = "A new, non-existing output folder. Defaults to a unique folder under the ignored build directory.")]
     [string]$OutputRoot,
     [string]$AdditionalPythonPath
@@ -158,7 +158,7 @@ $Manifest = [ordered]@{
     sha256 = $Hash
     size = $ZipItem.Length
     payload_root = "NAI_Image_Manager"
-    summary = "Improves canvas editing and retouch performance, gallery and style workflows, and recovers canvases whose linked projects were deleted."
+    summary = "Adds canvas clip boundary expansion and pixel-grid inpainting brushes, improves project canvas recovery, and adds a Korean tag CSV download."
 }
 [IO.File]::WriteAllText(
     (Join-Path $AssetDir "release_manifest.json"),

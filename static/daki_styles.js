@@ -12,6 +12,7 @@
     let libraryTimer;
     let statsTimer;
     let statsJobId;
+    let statsStarting;
     let settingsDialog;
     let viewFilters;
     let viewActionsDispose;
@@ -49,20 +50,19 @@
     }
     function statsControls(params, container, token, actions) {
         const controls = node('div', 'daki-stats-controls');
-        const note = node('span', 'daki-test-note', '저장된 공유 그림체 전체의 추천수를 함께 갱신합니다.');
+        const idleNote = '저장된 공유 그림체 전체의 추천수를 함께 갱신합니다.';
+        const note = node('span', 'daki-test-note', idleNote);
         note.setAttribute('role', 'status');
-        const start = button('추천수만 갱신', async () => {
-            start.disabled = true;
-            note.textContent = '추천수 갱신 준비 중…';
-            try {
+        const start = button('추천수만 갱신', () => {
+            if (statsJobId || statsStarting) return;
+            statsStarting = (async () => {
                 await statsRequest('/api/style-workspace/connect', 'POST', {});
+                if (!current(token)) return;
                 const job = await statsRequest('/style-workspace/api/arca-styles/refresh-stats', 'POST', {model: 'all'});
                 statsJobId = job.job_id;
-                if (current(token)) await poll();
-            } catch (error) {
-                if (current(token)) { note.textContent = error.message; start.disabled = false; }
-            }
-        });
+            })().finally(() => { statsStarting = null; });
+            return followStart(statsStarting);
+        }, token);
         start.title = '이미지를 수집하지 않고 전체 공유 그림체의 추천수만 갱신합니다.';
         const stop = button('갱신 중지', async () => {
             stop.disabled = true;
@@ -72,8 +72,20 @@
             } catch (error) {
                 if (current(token)) { note.textContent = error.message; stop.disabled = false; }
             }
-        });
+        }, token);
         stop.hidden = true;
+        async function followStart(request) {
+            start.disabled = true;
+            note.textContent = '추천수 갱신 준비 중…';
+            try {
+                await request;
+                if (!current(token)) return;
+                if (statsJobId) await poll();
+                else { start.disabled = false; note.textContent = idleNote; }
+            } catch (error) {
+                if (current(token)) { note.textContent = error.message; start.disabled = false; }
+            }
+        }
         async function poll() {
             if (!current(token)) return;
             start.disabled = true; stop.hidden = false;
@@ -83,10 +95,11 @@
                 const summary = `추천수 갱신 · ${job.scanned_posts || 0}/${job.total_posts || 0}개 글 · 갱신 ${job.updated || 0}`;
                 if (['completed', 'failed', 'stopped'].includes(job.status)) {
                     statsJobId = null;
-                    container.replaceChildren();
+                    if (params.get('batch') || ['all', 'upper', 'v5', 'artist'].includes(params.get('category')))
+                        container.replaceChildren();
                     const reloading = render(params, container), reloadToken = revision;
-                    await reloading;
-                    if (!current(reloadToken)) return;
+                    const loaded = await reloading;
+                    if (!current(reloadToken) || loaded === false) return;
                     byId('dakiPageStatus').textContent = `${summary} · ${job.status === 'completed' ? '완료' : job.status === 'stopped' ? '중지' : '실패'}${job.error ? ' · ' + job.error : ''}`;
                     return;
                 }
@@ -103,7 +116,11 @@
             actions.append(start, stop);
             controls.appendChild(note);
         } else controls.append(start, stop, note);
-        if (statsJobId) statsTimer = root.setTimeout(poll, 1000);
+        if (statsJobId) {
+            start.disabled = true;
+            stop.hidden = false;
+            statsTimer = root.setTimeout(poll, 1000);
+        } else if (statsStarting) followStart(statsStarting);
         return controls;
     }
     function heading(title, subtitle, backHref, backText) {
@@ -135,9 +152,12 @@
         if (model === 'all') return true;
         return model === 'v5' ? style.category === 'v5' : false;
     }
-    function button(text, action) {
+    function button(text, action, token) {
         const el = node('button', 'nav-btn', text);
-        el.type = 'button'; el.onclick = action;
+        el.type = 'button';
+        el.onclick = token === undefined ? action : event => {
+            if (!el.disabled && current(token)) return action(event);
+        };
         return el;
     }
     function setCompactButtonLabels(buttonElement, fullText, compactText) {
@@ -282,7 +302,115 @@
     function statusLabel(status) {
         return ({ready:'준비됨', running:'생성 중', stopping:'현재 그림 완료 후 중지', converting:'WebP 변환 중', paused:'대기 중', completed:'완료', failed:'오류로 중지', pending:'대기 중'})[status] || status;
     }
-    async function render(params, container) {
+    function sharedRootFolders(catalog) {
+        const definitions = [
+            ['all', '기존 공유 그림체', 'naim', '원본 공유 그림체 · 대표 그림 보기 · 선택 삭제'],
+            ['artist', '그림체 관리 공유 그림체', 'artist', '그림체 관리에서 수집한 공유 그림체 · 대표 그림 보기 · 선택 삭제'],
+        ];
+        const folders = definitions.map(([id, name, source, detail]) => {
+            const styles = catalog ? folderStyles(catalog.styles, source) : [];
+            return root.Daki.folderCard(name, baseHash + '&category=' + id, catalog ? styles.length : undefined,
+                detail, styles[0]?.src);
+        });
+        if (catalog) {
+            const upperStyles = catalog.styles.filter(style => (style.category || 'upper') === 'upper');
+            if (upperStyles.length) folders.push(root.Daki.folderCard('상반신', baseHash + '&category=upper', upperStyles.length,
+                '기존 상반신 결과', upperStyles[0]?.src));
+        }
+        return folders;
+    }
+    function sharedRootView(params, container, token, catalog, batchesRequest) {
+        const status = byId('dakiPageStatus');
+        const sharedCatalog = {...catalog, styles: root.DakiStyleScope
+            ? catalog.styles.filter(style => style.category !== 'upper')
+            : catalog.styles.filter(style => style.category === 'v5')};
+        const create = button('전체 그림체로 테스트 만들기', () => openSettings(sharedCatalog), token);
+        create.disabled = !sharedCatalog.styles.length;
+        const toolbar = node('div', 'daki-style-toolbar');
+        const syncActions = node('div', 'daki-shared-sync-actions');
+        toolbar.appendChild(create);
+        toolbar.appendChild(button('공유 테스트 다운로드', () => root.DakiTestPacks?.open({onComplete: async job => {
+            if (!current(token) || !job.installed) return;
+            await loadBatches();
+        }}), token));
+        syncActions.appendChild(button('공유 그림체 최신화', () => root.DakiStyleSync.open({onComplete: async job => {
+            if (!current(token)) return;
+            const reloading = render(params, container), reloadToken = revision;
+            const loaded = await reloading;
+            if (!current(reloadToken) || loaded === false) return;
+            if (job.source === 'huggingface') {
+                if (job.published === true) {
+                    const prefix = job.status === 'failed' ? '공유 그림체 최신화 실패 · 카탈로그 반영'
+                        : job.status === 'stopped' ? '공유 그림체 최신화 중지 · 카탈로그 반영' : '공유 그림체 최신화';
+                    const updates = job.updated > 0 ? ` · 갱신 ${job.updated}` : '';
+                    status.textContent = `${prefix} · 추가 ${job.added || 0}${updates} · 필터 제외 ${job.filtered || 0} · 건너뜀 ${job.skipped || 0}`;
+                } else if (job.published === false && (job.status === 'failed' || job.status === 'stopped')) {
+                    status.textContent = `공유 그림체 최신화 ${job.status === 'failed' ? '실패' : '중지'} · 기존 목록 유지`;
+                } else if (job.status === 'failed' || job.status === 'stopped') {
+                    status.textContent = `공유 그림체 최신화 ${job.status === 'failed' ? '실패' : '중지'} · 반영 여부 확인 불가`;
+                } else if (job.published === false) {
+                    status.textContent = '공유 그림체 최신화 · 기존 목록 유지';
+                } else {
+                    status.textContent = '공유 그림체 최신화 · 반영 여부 확인 불가';
+                }
+            } else {
+                const filtered = job.filtered !== undefined ? ` · 필터 제외 ${job.filtered || 0}` : '';
+                status.textContent = `공유 그림체 최신화 · 추가 ${job.added || 0}${filtered} · 건너뜀 ${job.skipped || 0}`;
+            }
+            if (job.post_limited > 0) status.textContent += ` · 게시물 제한 ${job.post_limited}`;
+        }}), token));
+        const controls = node('div', 'daki-library-controls daki-shared-root-controls');
+        const stats = statsControls(params, container, token, syncActions);
+        toolbar.appendChild(syncActions);
+        controls.append(toolbar, stats);
+        const folders = sharedRootFolders(catalog);
+        const grid = container.querySelector('.daki-project-grid') || root.Daki.createGrid('daki-project-grid', [], false);
+        const previousControls = container.querySelector('.daki-shared-root-controls');
+        if (previousControls) previousControls.replaceWith(controls);
+        else if (grid.parentNode === container) container.insertBefore(controls, grid);
+        else container.replaceChildren(controls, grid);
+        container.querySelector('.daki-root-retry')?.remove();
+        let historyRevision = 0;
+        updateGrid(grid.dakiSharedBatches || []);
+        status.textContent = '';
+
+        function updateGrid(batches) {
+            const focusedHref = grid.contains(doc.activeElement) ? doc.activeElement?.href : null;
+            const sourceFolders = batches.some(batch => batch.origin === 'shared_upper')
+                ? folders.filter(folder => !folder.href.endsWith(baseHash + '&category=upper')) : folders;
+            grid.setItems([...sourceFolders, ...batches.filter(batch => batch.library !== 'personal').map(savedBatchCard)]);
+            grid.dakiSharedBatches = batches;
+            if (focusedHref) Array.from(grid.querySelectorAll('a')).find(link => link.href === focusedHref)?.focus({preventScroll: true});
+        }
+        async function loadBatches(request) {
+            const version = ++historyRevision;
+            try {
+                const result = await (request || api('/api/daki/style-tests'));
+                if (!current(token) || version !== historyRevision) return;
+                if (result.error) throw result.error;
+                updateGrid(result.batches);
+            } catch (error) {
+                if (current(token) && version === historyRevision) status.textContent = error.message;
+            }
+        }
+        async function syncRootLibrary() {
+            if (!current(token)) return;
+            try {
+                if (!doc.hidden && !settingsDialog?.open) {
+                    const next = await api('/api/daki/shared-styles');
+                    if (!current(token)) return;
+                    if (JSON.stringify(next.styles) !== JSON.stringify(catalog.styles)) {
+                        await render(params, container, next);
+                        return;
+                    }
+                }
+            } catch (_) { /* Keep existing folders through connection failures. */ }
+            finally { if (current(token)) libraryTimer = root.setTimeout(syncRootLibrary, 2000); }
+        }
+        libraryTimer = root.setTimeout(syncRootLibrary, 2000);
+        return loadBatches(batchesRequest);
+    }
+    async function render(params, container, initialCatalog = null) {
         leave();
         const token = revision;
         const status = byId('dakiPageStatus');
@@ -298,97 +426,44 @@
                 await renderBatch(batch.id, container, token, batch);
                 return;
             }
-            const catalog = await api('/api/daki/shared-styles');
-            if (!current(token)) return;
-            status.textContent = '';
             const category = params.get('category');
             if (!['all', 'upper', 'v5', 'artist'].includes(category)) {
                 heading('공유 그림체', '기본 폴더 · 공유 그림체 목록과 테스트', '#daki', '← daki 프로젝트');
-                const toolbar = node('div', 'daki-style-toolbar');
-                const syncActions = node('div', 'daki-shared-sync-actions');
-                const sharedCatalog = {...catalog, styles: root.DakiStyleScope
-                    ? catalog.styles.filter(style => style.category !== 'upper')
-                    : catalog.styles.filter(style => style.category === 'v5')};
-                const create = button('전체 그림체로 테스트 만들기', () => openSettings(sharedCatalog));
-                create.disabled = !sharedCatalog.styles.length;
-                toolbar.appendChild(create);
-                toolbar.appendChild(button('공유 테스트 다운로드', () => root.DakiTestPacks?.open({onComplete: async job => {
-                    if (!current(token) || !job.installed) return;
-                    try { await loadBatches(); }
-                    catch (error) { if (current(token)) status.textContent = error.message; }
-                }})));
-                syncActions.appendChild(button('공유 그림체 최신화', () => root.DakiStyleSync.open({onComplete: async job => {
-                    if (!current(token)) return;
-                    container.replaceChildren();
-                    const reloading = render(params, container), reloadToken = revision;
-                    await reloading;
-                    if (!current(reloadToken)) return;
-                    if (job.source === 'huggingface') {
-                        if (job.published === true) {
-                            const prefix = job.status === 'failed' ? '공유 그림체 최신화 실패 · 카탈로그 반영'
-                                : job.status === 'stopped' ? '공유 그림체 최신화 중지 · 카탈로그 반영' : '공유 그림체 최신화';
-                            const updates = job.updated > 0 ? ` · 갱신 ${job.updated}` : '';
-                            status.textContent = `${prefix} · 추가 ${job.added || 0}${updates} · 필터 제외 ${job.filtered || 0} · 건너뜀 ${job.skipped || 0}`;
-                        } else if (job.published === false && (job.status === 'failed' || job.status === 'stopped')) {
-                            status.textContent = `공유 그림체 최신화 ${job.status === 'failed' ? '실패' : '중지'} · 기존 목록 유지`;
-                        } else if (job.status === 'failed' || job.status === 'stopped') {
-                            status.textContent = `공유 그림체 최신화 ${job.status === 'failed' ? '실패' : '중지'} · 반영 여부 확인 불가`;
-                        } else if (job.published === false) {
-                            status.textContent = '공유 그림체 최신화 · 기존 목록 유지';
-                        } else {
-                            status.textContent = '공유 그림체 최신화 · 반영 여부 확인 불가';
-                        }
-                    } else {
-                        const filtered = job.filtered !== undefined ? ` · 필터 제외 ${job.filtered || 0}` : '';
-                        status.textContent = `공유 그림체 최신화 · 추가 ${job.added || 0}${filtered} · 건너뜀 ${job.skipped || 0}`;
-                    }
-                    if (job.post_limited > 0) status.textContent += ` · 게시물 제한 ${job.post_limited}`;
-                }})));
-                const controls = node('div', 'daki-library-controls daki-shared-root-controls');
-                const stats = statsControls(params, container, token, syncActions);
-                toolbar.appendChild(syncActions);
-                controls.append(toolbar, stats);
-                container.appendChild(controls);
-                const folders = [
-                    ['all', '기존 공유 그림체', 'naim', '원본 공유 그림체 · 대표 그림 보기 · 선택 삭제'],
-                    ['artist', '그림체 관리 공유 그림체', 'artist', '그림체 관리에서 수집한 공유 그림체 · 대표 그림 보기 · 선택 삭제'],
-                ].map(([id, name, source, detail]) => {
-                    const styles = folderStyles(catalog.styles, source);
-                    return root.Daki.folderCard(name, baseHash + '&category=' + id, styles.length, detail, styles[0]?.src);
-                });
-                const upperStyles = catalog.styles.filter(style => (style.category || 'upper') === 'upper');
-                if (upperStyles.length) folders.push(root.Daki.folderCard('상반신', baseHash + '&category=upper', upperStyles.length,
-                    '기존 상반신 결과', upperStyles[0]?.src));
-                const grid = root.Daki.createGrid('daki-project-grid', folders, false);
-                container.appendChild(grid);
-                async function loadBatches() {
-                    const {batches} = await api('/api/daki/style-tests');
-                    if (!current(token)) return;
-                    const sourceFolders = batches.some(batch => batch.origin === 'shared_upper')
-                        ? folders.filter(folder => !folder.href.endsWith(baseHash + '&category=upper')) : folders;
-                    grid.setItems([...sourceFolders, ...batches.filter(batch => batch.library !== 'personal').map(savedBatchCard)]);
+                status.textContent = '불러오는 중…';
+                const previousControls = container.querySelector('.daki-shared-root-controls');
+                previousControls?.querySelectorAll('button').forEach(control => { control.disabled = true; });
+                const previousRetry = container.querySelector('.daki-root-retry');
+                if (previousRetry) previousRetry.disabled = true;
+                if (!container.children.length) {
+                    const placeholderGrid = root.Daki.createGrid('daki-project-grid', sharedRootFolders(null), false);
+                    container.replaceChildren(placeholderGrid);
+                    placeholderGrid.dakiLayout?.();
                 }
+                const catalogRequest = initialCatalog || api('/api/daki/shared-styles');
+                const batchesRequest = api('/api/daki/style-tests').then(result => ({batches: result.batches}), error => ({error}));
+                let catalog;
                 try {
-                    await loadBatches();
-                } catch (error) { if (current(token)) status.textContent = error.message; }
-                async function syncRootLibrary() {
+                    catalog = await catalogRequest;
+                } catch (error) {
                     if (!current(token)) return;
-                    try {
-                        if (!doc.hidden && !settingsDialog?.open) {
-                            const next = await api('/api/daki/shared-styles');
-                            if (!current(token)) return;
-                            if (JSON.stringify(next.styles) !== JSON.stringify(catalog.styles)) {
-                                container.replaceChildren();
-                                await render(params, container);
-                                return;
-                            }
-                        }
-                    } catch (_) { /* Keep existing folders through connection failures. */ }
-                    finally { if (current(token)) libraryTimer = root.setTimeout(syncRootLibrary, 2000); }
+                    status.textContent = error.message;
+                    heading('공유 그림체', '원본 폴더의 연결 상태를 확인해 주세요.', '#daki', '← daki 프로젝트');
+                    container.querySelector('.daki-root-retry')?.remove();
+                    const retry = button('다시 불러오기', () => render(params, container), token);
+                    retry.classList.add('daki-root-retry');
+                    container.appendChild(retry);
+                    return false;
                 }
-                libraryTimer = root.setTimeout(syncRootLibrary, 2000);
+                if (current(token)) await sharedRootView(params, container, token, catalog, batchesRequest);
                 return;
             }
+            const titleForCategory = category === 'artist' ? '공유 그림체 · 그림체 관리 공유 그림체'
+                : category === 'all' ? '공유 그림체 · 기존 공유 그림체' : '공유 그림체 · V5 그림체';
+            heading(titleForCategory, '그림체 목록을 불러오는 중…', baseHash, '← 공유 그림체');
+            status.textContent = '불러오는 중…';
+            const catalog = initialCatalog || await api('/api/daki/shared-styles');
+            if (!current(token)) return;
+            status.textContent = '';
             const folderSource = category === 'artist' ? 'artist' : 'naim';
             const overview = category === 'all' || category === 'artist';
             let styles = folderStyles(catalog.styles, folderSource);

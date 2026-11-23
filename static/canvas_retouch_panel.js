@@ -46,7 +46,7 @@
     ];
     const NO_COPY_TYPES = new Set(['paint', 'clone', 'liquify']);
 
-    function create(host, actions) {
+    function create(host, actions, layerHost) {
         if (!host || !host.ownerDocument) throw new TypeError('CanvasRetouchPanel.create requires a DOM host');
         const doc = host.ownerDocument;
         const state = global.CanvasRetouchState || {};
@@ -359,7 +359,7 @@
         const addType = node('select', 'canvas-retouch-control');
         addType.setAttribute('aria-label', '새 보정 레이어 종류');
         for (const [type, label] of Object.entries(names)) {
-            const option = node('option', '', label);
+            const option = node('option', '', type === 'blur' ? '흐리기' : label);
             option.value = type;
             addType.append(option);
         }
@@ -390,7 +390,7 @@
         let settingsKey = null;
         let settingsRefs = null;
 
-        const toolSection = section('도구', 'canvas-retouch-tool-section');
+        const toolSection = section(layerHost ? '보정 도구' : '도구', 'canvas-retouch-tool-section');
         const toolGrid = node('div', 'canvas-retouch-tool-grid');
         const toolButtons = new Map();
         for (const tool of tools) {
@@ -517,8 +517,18 @@
 
         const otherNote = node('p', 'canvas-retouch-other-note', '반대쪽 참고 그림에서 스포이드로 색을 채취할 수 있습니다. 설정은 이 면에만 적용됩니다.');
 
-        content.append(historySection, presetSection, quickDetails, layerSection, settingsSection, toolSection,
-            brushDetails, viewSection, printDetails, finishDetails, otherNote);
+        let layerContent = null;
+        if (layerHost) {
+            layerContent = node('div', 'canvas-retouch-panel canvas-retouch-layer-content');
+            layerContent.append(layerSection, settingsSection);
+            layerHost.hidden = true;
+            layerHost.append(layerContent);
+            content.append(toolSection, brushDetails, historySection, presetSection, quickDetails,
+                viewSection, printDetails, finishDetails, otherNote);
+        } else {
+            content.append(historySection, presetSection, quickDetails, layerSection, settingsSection, toolSection,
+                brushDetails, viewSection, printDetails, finishDetails, otherNote);
+        }
 
         const footer = node('footer', 'canvas-retouch-footer');
         const resultLink = node('a', 'canvas-retouch-result-link', 'PNG 받기');
@@ -747,6 +757,7 @@
             currentView = safeView;
             const docView = safeView.doc || null;
             const hasDoc = Boolean(docView);
+            if (layerHost) layerHost.hidden = !hasDoc;
             const busy = Boolean(safeView.busy);
             const applyLabel = safeView.editingExisting ? '기존 보정 수정' : '보정 결과 적용';
             caption.textContent = safeView.editingExisting
@@ -870,6 +881,10 @@
             if (destroyed) return;
             destroyed = true;
             if (root.parentNode) root.parentNode.removeChild(root);
+            if (layerContent) {
+                if (layerContent.parentNode) layerContent.parentNode.removeChild(layerContent);
+                layerHost.hidden = true;
+            }
             rowRefs.clear();
             settingsRefs = null;
             currentView = null;

@@ -1,0 +1,99 @@
+.inpaint-send-preview {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+    width: 100%;
+    margin: 0;
+    box-sizing: border-box;
+    color: var(--text-main, #f4f4f6);
+}
+
+.inpaint-send-preview figcaption {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+    font-size: var(--ui-text-body, 12px);
+}
+
+.inpaint-send-preview figcaption span,
+.inpaint-send-preview p {
+    margin: 0;
+    color: var(--text-muted, #a6a6b2);
+    font-size: var(--ui-text-body, 12px);
+    line-height: var(--ui-leading-body, 1.5);
+    overflow-wrap: anywhere;
+}
+
+.inpaint-send-preview-frame {
+    height: 125px;
+    min-width: 0;
+    background: var(--bg-secondary, #22222a);
+}
+
+.inpaint-send-preview canvas {
+    display: block;
+    width: 100%;
+    height: 125px;
+    object-fit: contain;
+}
+
+.inpaint-send-preview canvas[hidden],
+.inpaint-send-preview-frame[hidden] {
+    display: none;
+}
+
+.inpaint-reference-strip-pane {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    background: white;
+    touch-action: none;
+    user-select: none;
+}
+
+.inpaint-reference-strip-pane[data-movable] {
+    cursor: grab;
+}
+
+.inpaint-reference-strip-pane::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 0 auto;
+    border-right: 1px solid #74747d;
+    pointer-events: none;
+}
+
+.inpaint-reference-strip-pane[data-dragging] {
+    cursor: grabbing;
+}
+
+.inpaint-reference-strip-pane:focus-visible {
+    outline: 2px solid var(--accent-blue, #46d4f3);
+    outline-offset: -2px;
+}
+
+.inpaint-reference-strip-pane > img {
+    position: absolute;
+    display: block;
+    max-width: none;
+    max-height: none;
+    pointer-events: none;
+}
+
+.inpaint-reference-strip-pane[hidden],
+.inpaint-reference-strip-pane > [hidden] {
+    display: none;
+}
+
+.inpaint-reference-strip-status {
+    display: block;
+    padding: 2px;
+    color: #444;
+    font-size: var(--ui-text-body, 12px);
+    overflow-wrap: anywhere;
+}

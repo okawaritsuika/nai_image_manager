@@ -81,7 +81,7 @@ class DakiSharedStyles:
         return data
 
     @staticmethod
-    def _image_path(root, value):
+    def _relative_image_path(value):
         if not isinstance(value, str) or not value or '\x00' in value:
             raise ValueError('공유 그림체 이미지 경로가 올바르지 않습니다.')
         relative = PurePosixPath(value.replace('\\', '/'))
@@ -89,11 +89,23 @@ class DakiSharedStyles:
                 or any(':' in part for part in relative.parts)
                 or relative.suffix.lower() not in _IMAGE_SUFFIXES):
             raise ValueError('공유 그림체 이미지 경로가 올바르지 않습니다.')
+        return relative
+
+    @classmethod
+    def _image_path(cls, root, value):
+        relative = cls._relative_image_path(value)
         root = Path(root).resolve()
         target = resolve_webp_image(root / str(relative)).resolve()
         if not target.is_relative_to(root):
             raise ValueError('공유 그림체 폴더 안의 이미지만 사용할 수 있습니다.')
         return target
+
+    def _catalog_sort_date(self, style, paths):
+        # The list needs relative paths and dates. Check filesystem targets when
+        # reading a preview or when an old record needs its file creation date.
+        for _, relative in paths.values():
+            self._relative_image_path(relative)
+        return style_sort_date(style) or style_sort_date(style, self._image_path(*paths['image']))
 
     def _load(self):
         root = self._catalog_root()
@@ -144,18 +156,16 @@ class DakiSharedStyles:
                 raise ValueError('공유 그림체 미리보기의 시드를 확인할 수 없습니다.')
             if any(type(preview.get(key)) is not int or preview[key] <= 0 for key in ('width', 'height')):
                 raise ValueError('공유 그림체 이미지 크기가 올바르지 않습니다.')
-            paths = {key: preview.get(key) for key in ('image', 'thumbnail')}
-            for value in paths.values():
-                self._image_path(root, value)
+            paths = {key: (root, preview.get(key)) for key in ('image', 'thumbnail')}
+            sort_date = self._catalog_sort_date(style, paths)
             records[sid] = {key: deepcopy(style.get(key)) for key in (
                 'id', 'name', 'model', 'positive', 'negative', 'source_image_id', 'source_url',
                 'recommendation_count', 'recommendation_collected_at')}
             records[sid].update(options=deepcopy(source['options']), seed=seed, category='upper',
-                                preview={key: preview[key] for key in ('width', 'height')})
+                                preview={key: preview[key] for key in ('width', 'height')}, sort_date=sort_date)
             if isinstance(style.get('source_posted_at'), str):
                 records[sid]['source_posted_at'] = style['source_posted_at']
-            previews[sid] = {key: (root, value) for key, value in paths.items()}
-            records[sid]['sort_date'] = style_sort_date(style, self._image_path(root, paths['image']))
+            previews[sid] = paths
         hidden_ids = set()
         active_style_ids = None
         has_active_snapshot = False
@@ -216,17 +226,15 @@ class DakiSharedStyles:
                     raise ValueError('가져온 공유 그림체 생성 설정이 올바르지 않습니다.')
                 paths = {'image': (image_root, preview.get('image')),
                          'thumbnail': (imported_root, preview.get('thumbnail'))}
-                for preview_root, relative in paths.values():
-                    self._image_path(preview_root, relative)
+                sort_date = self._catalog_sort_date(style, paths)
                 records[sid] = {key: deepcopy(style.get(key)) for key in (
                     'id', 'name', 'model', 'positive', 'negative', 'source_image_id', 'source_url',
                     'seed', 'options', 'recommendation_count', 'recommendation_collected_at')}
                 records[sid].update(category='v5',
-                                    preview={key: preview[key] for key in ('width', 'height')})
+                                    preview={key: preview[key] for key in ('width', 'height')}, sort_date=sort_date)
                 if isinstance(style.get('source_posted_at'), str):
                     records[sid]['source_posted_at'] = style['source_posted_at']
                 previews[sid] = paths
-                records[sid]['sort_date'] = style_sort_date(style, self._image_path(*paths['image']))
             # Hide exact duplicate cards, while preserving old IDs for saved tests.
             hidden_ids.update(hidden)
             if is_synced_catalog and has_active_snapshot and not set(active_style_ids).issubset(sync_style_ids):

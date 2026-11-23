@@ -409,10 +409,13 @@
         const doc = config.document || null;
         const fetchImpl = config.fetch || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
         const getPrompt = typeof config.getPrompt === 'function' ? config.getPrompt : () => ({});
+        const canEditPrompt = typeof config.canEditPrompt === 'function' && typeof config.setPrompt === 'function'
+            ? config.canEditPrompt : () => false;
         const onChange = typeof config.onChange === 'function' ? config.onChange : () => {};
         const onRender = typeof config.onRender === 'function' ? config.onRender : () => {};
 
         let state = normalizeState(null);
+        let manualDraftPrevious = null;
         let disposed = false;
         let interactionRevision = 0;
         let pickerOpen = false;
@@ -467,6 +470,8 @@
         let directApplyButton = null;
         let directErrorStatus = null;
         let directEmptyStatus = null;
+        let directManualHelp = null;
+        const directManualFields = { base: null, negative: null };
         let reviewPane = null;
         let reviewHeading = null;
         let reviewHeroImage = null;
@@ -518,7 +523,7 @@
             if (stateKey(next) === stateKey(state)) return false;
             state = next;
             try {
-                if (notify !== false) onChange(cloneState(state));
+                if (notify !== false && !manualDraftPrevious) onChange(cloneState(state));
             } finally {
                 scheduleRender();
             }
@@ -550,7 +555,15 @@
         }
 
         function snapshot() {
-            return cloneState(state);
+            // The inserted prompt and its link become permanent together when the clip editor saves.
+            return cloneState(manualDraftPrevious || state);
+        }
+
+        function finishManualDraft(save) {
+            if (!manualDraftPrevious) return;
+            const previous = manualDraftPrevious;
+            manualDraftPrevious = null;
+            if (!save) restore(previous);
         }
 
         function snapshotForStyle(style) {
@@ -922,9 +935,12 @@
             const directHelp = doc.createElement('div');
             directHelp.className = 'canvas-style-link-direct-help';
             directHelp.textContent = '그림체 부분을 드래그하거나 Shift+방향키로 선택하세요. 태그 중간을 선택하면 해당 태그 전체를 묶습니다.';
+            directManualHelp = doc.createElement('div');
+            directManualHelp.className = 'canvas-style-link-direct-help';
+            directManualHelp.textContent = '직접 입력한 태그는 해당 프롬프트 끝에 추가됩니다. 적용하려면 클립 프롬프트 창에서 저장하세요.';
+            directManualHelp.hidden = true;
             directEmptyStatus = doc.createElement('div');
             directEmptyStatus.className = 'canvas-style-link-direct-empty';
-            directEmptyStatus.textContent = '기본·네거티브 프롬프트가 비어 있어 선택할 수 없습니다.';
             directEmptyStatus.hidden = true;
 
             const createDirectField = (field, labelText, ariaLabel) => {
@@ -952,7 +968,25 @@
                 preview.setAttribute('role', 'status');
                 const clear = makeButton('선택 지우기', 'secondary', () => clearDirectRange(field));
                 previewRow.append(previewLabel, preview, clear);
-                group.append(label, textarea, previewRow);
+
+                const manual = doc.createElement('div');
+                manual.className = 'canvas-style-link-direct-manual';
+                manual.hidden = true;
+                const manualLabel = doc.createElement('label');
+                manualLabel.className = 'canvas-style-link-direct-field-label';
+                manualLabel.textContent = labelText + '에 추가할 태그';
+                const manualInput = doc.createElement('textarea');
+                manualInput.id = field === 'base' ? 'canvasStyleLinkManualBase' : 'canvasStyleLinkManualNegative';
+                manualInput.rows = 2;
+                manualInput.maxLength = MAX_PROMPT_LENGTH;
+                manualLabel.setAttribute('for', manualInput.id);
+                manualInput.oninput = () => {
+                    directError = '';
+                    renderDirectPane();
+                };
+                manual.append(manualLabel, manualInput);
+                directManualFields[field] = { group: manual, input: manualInput };
+                group.append(label, textarea, previewRow, manual);
                 return { textarea, preview, clear, group };
             };
             const baseField = createDirectField('base', '기본 프롬프트', '기본 프롬프트 구간 선택');
@@ -969,7 +1003,7 @@
             directErrorStatus.setAttribute('role', 'alert');
             directErrorStatus.hidden = true;
             directApplyButton = makeButton('선택 구간을 그림체로 연결', 'canvas-style-link-apply', applyCustomStyle);
-            directPane.append(nameField, directHelp, directEmptyStatus, baseField.group, negativeField.group,
+            directPane.append(nameField, directHelp, directManualHelp, directEmptyStatus, baseField.group, negativeField.group,
                 directErrorStatus, directApplyButton);
 
             reviewPane = doc.createElement('section');
@@ -1522,8 +1556,20 @@
             renderPicker();
         }
 
+        function readManualTags() {
+            return {
+                base: promptTokens(directManualFields.base?.input.value).join(', '),
+                negative: promptTokens(directManualFields.negative?.input.value).join(', '),
+            };
+        }
+
         function renderDirectPane() {
             if (!directPane) return;
+            const editable = canEditPrompt();
+            const typed = readManualTags();
+            const hasTypedTags = editable && !!(typed.base || typed.negative);
+            directManualHelp.hidden = !editable;
+            Object.values(directManualFields).forEach(({ group }) => { group.hidden = !editable; });
             const base = directRanges.base;
             const negative = directRanges.negative;
             if (directBasePreview) directBasePreview.textContent = base ? base.text : '선택된 태그 없음';
@@ -1533,12 +1579,19 @@
             if (directEmptyStatus) {
                 directEmptyStatus.hidden = !!(directBasePrompt && directBasePrompt.value)
                     || !!(directNegativePrompt && directNegativePrompt.value);
+                directEmptyStatus.textContent = editable
+                    ? '기본·네거티브 프롬프트가 비어 있습니다.'
+                    : '기본·네거티브 프롬프트가 비어 있어 선택할 수 없습니다.';
             }
             if (directErrorStatus) {
                 directErrorStatus.hidden = !directError;
                 directErrorStatus.textContent = directError;
             }
-            if (directApplyButton) directApplyButton.disabled = !base && !negative;
+            if (directApplyButton) {
+                directApplyButton.disabled = !hasTypedTags && !base && !negative;
+                directApplyButton.textContent = hasTypedTags
+                    ? '입력한 그림체를 프롬프트에 추가' : '선택 구간을 그림체로 연결';
+            }
         }
 
         function captureDirectRange(field, textarea) {
@@ -1557,19 +1610,41 @@
             renderDirectPane();
         }
 
+        function failDirectApply(message) {
+            directError = message;
+            renderDirectPane();
+            return false;
+        }
+
         function applyCustomStyle() {
-            if (!directRanges.base && !directRanges.negative) return false;
+            const typed = readManualTags();
+            const hasTypedTags = !!(typed.base || typed.negative);
+            if (!hasTypedTags && !directRanges.base && !directRanges.negative) return false;
             const latest = readPrompt();
             if (promptSignature(latest) !== directSourceSignature) {
-                directError = '프롬프트가 변경되었습니다. 모달을 다시 열어 구간을 지정해 주세요.';
-                renderDirectPane();
-                return false;
+                return failDirectApply('프롬프트가 변경되었습니다. 그림체 연결 창을 다시 열어 주세요.');
             }
             const typedName = directNameInput && typeof directNameInput.value === 'string'
                 ? directNameInput.value.trim().slice(0, MAX_NAME_LENGTH)
                 : '';
-            const base = directRanges.base;
-            const negative = directRanges.negative;
+            const nextPrompt = { ...latest };
+            const resolved = { ...directRanges };
+            if (hasTypedTags) {
+                if (!canEditPrompt()) return failDirectApply('클립 프롬프트 편집창에서 다시 시도해 주세요.');
+                for (const [field, key] of [['base', 'basePrompt'], ['negative', 'negativePrompt']]) {
+                    if (!typed[field]) continue;
+                    const source = latest[key];
+                    const count = promptTokens(source).length;
+                    const trimmedEnd = source.trimEnd();
+                    const delimiter = trimmedEnd.endsWith(',') ? (trimmedEnd === source ? ' ' : '') : ', ';
+                    nextPrompt[key] = count ? source + delimiter + typed[field] : typed[field];
+                    resolved[field] = { text: typed[field], start: count };
+                }
+                if (nextPrompt.basePrompt.length > MAX_PROMPT_LENGTH || nextPrompt.negativePrompt.length > MAX_PROMPT_LENGTH) {
+                    return failDirectApply('기본·네거티브 프롬프트는 각각 100,000자까지 입력할 수 있습니다.');
+                }
+            }
+            const { base, negative } = resolved;
             const custom = {
                 id: 'canvas-custom',
                 library: 'custom',
@@ -1581,7 +1656,15 @@
                     negative: negative ? negative.start : null,
                 },
             };
-            return chooseStyle(custom);
+            if (!hasTypedTags) return chooseStyle(custom);
+            if (!snapshotForStyle(custom)) return failDirectApply('입력한 그림체 태그를 확인해 주세요.');
+            if (config.setPrompt(nextPrompt) !== true) {
+                return failDirectApply('클립 프롬프트 편집창에서 다시 시도해 주세요.');
+            }
+            if (!manualDraftPrevious) manualDraftPrevious = cloneState(state);
+            const applied = chooseStyle(custom);
+            refresh();
+            return applied;
         }
 
         function openPicker() {
@@ -1601,6 +1684,7 @@
             if (directNameInput) directNameInput.value = '직접 지정';
             if (directBasePrompt) directBasePrompt.value = promptInfo.basePrompt;
             if (directNegativePrompt) directNegativePrompt.value = promptInfo.negativePrompt;
+            Object.values(directManualFields).forEach(({ input }) => { input.value = ''; });
             pickerView = lastMatches.exact.length || lastMatches.candidates.length ? 'candidates' : 'all';
             pickerSearch = '';
             pickerLibrary = 'all';
@@ -1699,6 +1783,7 @@
         function restore(value) {
             interactionRevision += 1;
             closePicker();
+            manualDraftPrevious = null;
             state = normalizeState(value);
             restoredAutoCandidate = state.mode === 'auto' && !!state.style;
             lastPromptSignature = null;
@@ -1861,6 +1946,7 @@
             refresh,
             snapshot,
             restore,
+            finishManualDraft,
             groupParts: controllerGroupParts,
             toggleExpanded,
             openPicker,

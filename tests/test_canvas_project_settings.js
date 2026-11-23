@@ -54,6 +54,7 @@ const projectMarker = parts => parts.find(part => part.type === 'style' && part.
 function harness({initialLink = link(), canApply = true} = {}) {
     let currentLink = initialLink;
     let canApplyValue = canApply;
+    let currentStyle = null;
     const requests = [];
     const queued = [];
     const styleCalls = [];
@@ -70,7 +71,8 @@ function harness({initialLink = link(), canApply = true} = {}) {
             return typeof next === 'function' ? next(url, options) : next;
         },
         styleRules: CanvasStyleLink,
-        setStyle: value => styleCalls.push(clone(value)),
+        getStyle: () => currentStyle,
+        setStyle: value => { currentStyle = clone(value); styleCalls.push(currentStyle); },
         setInpaint: value => inpaintCalls.push(clone(value)),
         save: () => { saves += 1; },
         render: () => { renders += 1; },
@@ -87,9 +89,62 @@ function harness({initialLink = link(), canApply = true} = {}) {
         get renders() { return renders; },
         enqueue: item => queued.push(item),
         setLink: value => { currentLink = value; },
+        setCurrentStyle: value => { currentStyle = value; },
         setCanApply: value => { canApplyValue = value; },
     };
 }
+
+test('linked style fills missing clip prompt fields without replacing or saving existing text', async () => {
+    const h = harness();
+    const recipe = style({positive: '1.3::artist:sample::, ink', negative: 'blurry'});
+    h.enqueue(success(settings({style: recipe, front: prompt('front group only'), inpaint: null})));
+    await h.controller.refresh();
+    const saves = h.saves;
+    const raw = {...prompt('  ', 'custom negative'), charPrompts: ['subject'], steps: 24};
+    assert.deepEqual(h.controller.fillStylePrompt(raw), {...raw, basePrompt: recipe.positive});
+    assert.deepEqual(h.controller.fillStylePrompt(prompt('custom positive', '')), prompt('custom positive', recipe.negative));
+    assert.equal(raw.basePrompt, '  ');
+    assert.equal(h.saves, saves);
+
+    h.setLink(link({projectId: OTHER_PROJECT_ID}));
+    assert.deepEqual(h.controller.fillStylePrompt(raw), raw);
+    h.setLink(link());
+    h.setCurrentStyle({mode: 'off', style: null});
+    assert.deepEqual(h.controller.fillStylePrompt(raw), raw);
+    h.setCurrentStyle({mode: 'manual', style: style({id: 'local-override'})});
+    assert.deepEqual(h.controller.fillStylePrompt(raw), raw);
+});
+
+test('opening an older canvas can wait for its initial project style, then use the latest applied recipe', async () => {
+    const h = harness();
+    h.controller.restore({projectId: PROJECT_ID, side: 'front', revision: 0, style: null});
+    const response = deferred();
+    h.enqueue(response.promise);
+    h.controller.linkChanged();
+    const ready = h.controller.waitForInitialSettings();
+    response.resolve(success(settings({style: style({positive: 'first'}), inpaint: null})));
+    await ready;
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.controller.fillStylePrompt(prompt()).basePrompt, 'first');
+
+    h.enqueue(success(settings({revision: 2, style: style({positive: 'updated'}), inpaint: null})));
+    await h.controller.refresh();
+    assert.equal(h.controller.waitForInitialSettings(), undefined);
+    assert.equal(h.controller.fillStylePrompt(prompt()).basePrompt, 'updated');
+});
+
+test('a background refresh does not delay local editing once project settings have been loaded', async () => {
+    const h = harness();
+    h.enqueue(success(settings({revision: 1})));
+    await h.controller.refresh();
+    const pending = deferred();
+    h.enqueue(pending.promise);
+    const refresh = h.controller.refresh();
+    assert.equal(h.controller.waitForInitialSettings(), undefined);
+    assert.equal(h.requests.length, 2);
+    pending.resolve(success(settings({revision: 2})));
+    await refresh;
+});
 
 test('fresh front and back settings apply once and group only their original per-side prompt text', async () => {
     const h = harness();

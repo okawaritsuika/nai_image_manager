@@ -255,9 +255,9 @@ test('initial GET shows an existing project reference and handles an empty proje
     failedMount.dispose();
 });
 
-test('upload then GET and PUT preserves settings and the saved reference width', async () => {
+test('upload then GET and PUT preserves settings and the saved reference width and scale', async () => {
     const calls = [];
-    const base = settingsResponse({revision: 9, inpaintReference: reference('old.png', {width: 448})});
+    const base = settingsResponse({revision: 9, inpaintReference: reference('old.png', {width: 448, scale: 0.5})});
     const fixture = createFixture(async (url, options = {}) => {
         calls.push({url, options});
         if (url === '/api/canvas/upload_image') {
@@ -285,7 +285,7 @@ test('upload then GET and PUT preserves settings and the saved reference width',
     assert.deepEqual(saved.settings.prompts, base.settings.prompts);
     assert.deepEqual(saved.settings.inpaintSettings, base.settings.inpaintSettings);
     assert.deepEqual(saved.settings.inpaintReference, {
-        src: '/canvas-imports/upload/new.webp', name: 'new.webp', width: 448, x: 0.5, y: 0.5, zoom: 1,
+        src: '/canvas-imports/upload/new.webp', name: 'new.webp', width: 448, scale: 0.5, x: 0.5, y: 0.5, zoom: 1,
     });
     assert.equal(controls.preview.src, '/canvas-imports/upload/new.webp?preview=256');
     assert.equal(controls.add.textContent, '이미지 교체');

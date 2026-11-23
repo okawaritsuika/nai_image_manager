@@ -351,6 +351,101 @@ body.canvas-page > #canvasWorkspace {
     flex: none;
 }
 
+.canvas-native-dialog[open] {
+    display: flex;
+    box-sizing: border-box;
+    width: min(520px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow: hidden;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-main);
+    background: var(--card-bg);
+    color: var(--text-main);
+    box-shadow: var(--shadow-md);
+    font: var(--ui-text-body, 12px)/var(--ui-leading-body, 1.5) var(--ui-font-family, 'Segoe UI', 'Malgun Gothic', sans-serif);
+}
+
+.canvas-native-dialog::backdrop { background: #000b; }
+.canvas-native-dialog [hidden] { display: none; }
+.canvas-native-dialog :focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+
+.canvas-native-dialog-shell {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+}
+
+.canvas-native-dialog-header,
+.canvas-native-dialog-footer {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 20px;
+}
+
+.canvas-native-dialog-header h2 {
+    min-width: 0;
+    margin: 0;
+    font-size: var(--ui-text-title, 16px);
+    line-height: var(--ui-leading-heading, 1.4);
+    overflow-wrap: anywhere;
+}
+
+.canvas-native-dialog-header button { flex: 0 0 auto; }
+
+.canvas-native-dialog-body {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: 0 20px 20px;
+}
+
+.canvas-native-dialog-body p {
+    margin: 0;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.canvas-native-dialog-body label {
+    display: block;
+    margin-top: 12px;
+}
+
+.canvas-native-dialog-body input {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-main);
+    font: inherit;
+}
+
+.canvas-native-dialog-footer {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    border-top: 1px solid var(--border-color);
+}
+
+.canvas-native-dialog-footer button {
+    max-width: 100%;
+    min-height: 40px;
+    padding: 8px 14px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
 .canvas-modal {
     width: 440px;
     max-width: 92vw;
@@ -717,6 +812,10 @@ body.canvas-page > #canvasWorkspace {
 
 .canvas-editor-scene-active .canvas-render-layer.image-layer > img {
     opacity: 0;
+}
+
+.canvas-editor-scene-active .canvas-render-layer.image-layer > .clip-inpaint-result-reveal {
+    animation: none;
 }
 
 .canvas-render-layer.image-layer > img:not([src]) {
@@ -1169,12 +1268,23 @@ body.canvas-page > #canvasWorkspace {
     font-size: var(--ui-text-section, 14px);
     font-weight: 600;
     color: var(--text-main);
-    margin-bottom: 8px;
+    margin-bottom: 3px;
     cursor: move;
     user-select: none;
 }
 
-.clip-output-drag-hint { color: var(--text-muted); font-size: var(--ui-text-meta, 12px); font-weight: 400; }
+.canvas-clip-output-title strong,
+.canvas-clip-output-title button { flex: none; }
+.canvas-clip-output-title .clip-output-selection-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-size: var(--ui-text-meta, 12px);
+    font-weight: 400;
+}
 
 .canvas-clip-output-meta {
     display: flex;
@@ -1183,12 +1293,11 @@ body.canvas-page > #canvasWorkspace {
     gap: 4px 10px;
     font-size: var(--ui-text-meta, 12px);
     color: var(--text-muted);
-    margin-bottom: 10px;
+    margin-bottom: 6px;
     line-height: var(--ui-leading-body, 1.5);
 }
 
 .canvas-clip-output-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.clip-output-selection-name { flex-basis: 100%; color: var(--text-main); }
 
 .canvas-clip-output-image-wrap {
     background: #2a2a32;
@@ -1226,9 +1335,9 @@ body.canvas-page > #canvasWorkspace {
 
 .clip-mask-tool-btn {
     width: 34px;
-    height: 34px;
+    height: 30px;
     padding: 0;
-    border-radius: 9px;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border-color);
     background: var(--btn-secondary);
     color: var(--text-main);
@@ -1296,10 +1405,12 @@ body.canvas-page > #canvasWorkspace {
     display: none;
     position: absolute;
     left: 50%;
-    bottom: calc(100% + 8px);
+    bottom: calc(100% + 4px);
     transform: translateX(-50%);
-    width: 160px;
-    padding: 9px 10px;
+    box-sizing: border-box;
+    width: 168px;
+    gap: 8px;
+    padding: 7px 9px;
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     border-radius: 10px;
@@ -1308,20 +1419,25 @@ body.canvas-page > #canvasWorkspace {
 }
 
 .clip-mask-tool-control.open .clip-brush-size-popover {
-    display: block;
+    display: flex;
+    align-items: center;
 }
 
-.clip-brush-size-popover {
-    display: none;
+.clip-mask-tool-control.open-below .clip-brush-size-popover {
+    top: calc(100% + 4px);
+    bottom: auto;
 }
 
 .clip-brush-size-popover input[type="range"] {
-    width: 100%;
+    flex: 1;
+    width: 0;
+    min-width: 0;
     margin: 0;
 }
 
 .clip-brush-size-readout {
-    margin-top: 4px;
+    flex: none;
+    font-variant-numeric: tabular-nums;
     font-size: var(--ui-text-meta, 12px);
     color: var(--text-muted);
     text-align: center;
@@ -1337,6 +1453,7 @@ body.canvas-page > #canvasWorkspace {
 }
 
 .clip-mask-overlay-canvas {
+    image-rendering: pixelated;
     position: absolute;
     z-index: 2;
     pointer-events: auto;
@@ -1345,35 +1462,17 @@ body.canvas-page > #canvasWorkspace {
 
 .clip-brush-cursor {
     display: none;
-    position: fixed;
-    z-index: 22000;
+    position: absolute;
+    z-index: 3;
     pointer-events: none;
-    border: 2px solid rgba(255, 255, 255, 0.95);
-    background: rgba(72, 160, 255, 0.18);
-    box-shadow:
-        0 0 0 1px rgba(0, 0, 0, 0.45),
-        0 0 12px rgba(72, 160, 255, 0.55);
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
+    fill: rgba(72, 160, 255, 0.18);
+    stroke: rgba(255, 255, 255, 0.95);
+    stroke-width: 1.5px;
 }
 
 .clip-brush-cursor.eraser {
-    background: rgba(255, 255, 255, 0.08);
-    border-style: dashed;
-}
-
-.clip-brush-cursor {
-    display: none;
-    position: fixed;
-    z-index: 22000;
-    pointer-events: none;
-    border: 2px solid rgba(255, 255, 255, 0.95);
-    background: rgba(72, 160, 255, 0.18);
-    box-shadow:
-        0 0 0 1px rgba(0, 0, 0, 0.45),
-        0 0 12px rgba(72, 160, 255, 0.55);
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
+    fill: rgba(255, 255, 255, 0.08);
+    stroke-dasharray: 4 2;
 }
 
 .clip-prompt-modal-overlay {
@@ -1709,8 +1808,8 @@ body.canvas-page > #canvasWorkspace {
 
 .canvas-clip-output-toolbar {
     display: grid;
-    gap: 8px;
-    margin-bottom: 10px;
+    gap: 4px;
+    margin-bottom: 5px;
 }
 
 .clip-output-tools-row,
@@ -1720,20 +1819,27 @@ body.canvas-page > #canvasWorkspace {
     min-width: 0;
     align-items: center;
 }
-.clip-output-tools-row { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.clip-output-tools-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.clip-output-tools-row .auto-mask { margin-right: auto; }
 .clip-output-actions-row {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    padding-top: 8px;
-    border-top: 1px solid var(--border-color);
+    grid-template-columns: auto auto minmax(0, 1fr);
+    padding-top: 6px;
 }
-.canvas-clip-output-toolbar .clip-mask-tool-btn {
-    width: 100%;
-    min-width: 0;
-    margin: 0;
-    padding: 0 6px;
+.canvas-clip-output-panel .clip-mask-tool-btn {
+    width: auto;
+    min-width: max-content;
+    margin-block: 0;
+    padding: 0 8px;
 }
-.clip-mask-tool-btn.clip-inpaint-run-btn { background: var(--success); border-color: var(--success); color: #fff; }
-.canvas-clip-output-toolbar .clip-mask-tool-btn:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.clip-output-tools-row .clip-mask-tool-btn { padding-inline: 5px; }
+.clip-mask-tool-btn.clip-inpaint-run-btn { justify-self: end; height: 34px; background: var(--success); border-color: var(--success); color: #fff; }
+.canvas-clip-output-panel .clip-mask-tool-btn:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.clip-boundary-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.clip-boundary-size { margin-left: auto; color: var(--text-muted); font-size: var(--ui-text-meta, 12px); font-variant-numeric: tabular-nums; }
 .clip-output-tools-row .clip-mask-tool-control:first-child .clip-brush-size-popover { left: 0; transform: none; }
 .clip-output-tools-row .clip-mask-tool-control:nth-child(2) .clip-brush-size-popover { left: 0; transform: none; }
 
@@ -2007,6 +2113,7 @@ body.canvas-page > #canvasWorkspace {
 
 .canvas-clip-output-panel {
     box-sizing: border-box;
+    container-type: inline-size;
     display: flex;
     flex-direction: column;
     width: min(480px, calc(100vw - 32px));
@@ -2019,7 +2126,12 @@ body.canvas-page > #canvasWorkspace {
 }
 
 .canvas-clip-output-panel > :not(.canvas-clip-output-image-wrap) { flex-shrink: 0; }
-.canvas-clip-output-panel.compact .clip-output-tools-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.canvas-clip-output-panel.compact .clip-output-tools-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.canvas-clip-output-panel.compact .clip-output-tools-row .clip-mask-tool-btn { width: 100%; margin: 0; }
+@container (max-width: 392px) {
+    .clip-output-tools-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .clip-output-tools-row .clip-mask-tool-btn { width: 100%; margin: 0; }
+}
 .canvas-clip-output-panel .clip-brush-size-popover { left: 0; transform: none; }
 .clip-output-size-actions { display: flex; align-items: center; gap: 8px; margin-top: 7px; padding-right: 18px; }
 .clip-output-auto-size { flex: none; min-height: 24px; padding: 3px 8px; font-size: var(--ui-text-body, 12px); }

@@ -12,6 +12,7 @@ import uuid
 
 from PIL import Image
 
+from naim.images.inpaint_reference import normalize_reference
 from naim.project_canvas_settings import (
     default_canvas_settings, normalize_canvas_settings,
     normalize_canvas_settings_record,
@@ -31,6 +32,8 @@ _CANVAS_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 MAX_PROJECT_CANDIDATE_NAME_UTF16_UNITS = 120
 _WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>:"/\\|?*')
 _SIDE_DISPLAY_NAMES = {'front': '앞면', 'back': '뒷면'}
+_REFERENCE_PLACEMENT = 'inpaintReferencePlacement'
+_PLACEMENT_FIELDS = ('scale', 'panX', 'panY')
 _CANVAS_PREVIEW_LAYER_FIELDS = (
     'type', 'visible', 'src', 'x', 'y', 'layerWidth', 'layerHeight',
     'imageWidth', 'imageHeight', 'pinnedReference', 'renderOnCanvas',
@@ -69,7 +72,7 @@ def _project_summary(project):
     summary = {
         key: deepcopy(value)
         for key, value in project.items()
-        if key not in ('canvasSettings', 'detailPromptPresets', 'canvases')
+        if key not in ('canvasSettings', 'detailPromptPresets', 'canvases', _REFERENCE_PLACEMENT)
     }
     if 'canvases' in project:
         summary['canvases'] = {
@@ -167,6 +170,102 @@ def _validate_canvas_state(state):
     return deepcopy(state)
 
 
+def _reference_placement(reference):
+    if not isinstance(reference, dict) or not any(key in reference for key in _PLACEMENT_FIELDS):
+        return None
+    try:
+        values = normalize_reference({key: reference[key] for key in ('src', *_PLACEMENT_FIELDS) if key in reference})
+    except ValueError:
+        # Canvas state is an extensible document. An unfamiliar descriptor must still open.
+        return None
+    changed = {key: values[key] for key in _PLACEMENT_FIELDS if key in values}
+    return {'src': values['src'], **changed} if changed else None
+
+
+def _restore_placement(reference, saved):
+    if (not isinstance(reference, dict) or not isinstance(saved, dict)
+            or reference.get('src') != saved.get('src') or any(key in reference for key in _PLACEMENT_FIELDS)):
+        return reference
+    placement = _reference_placement(saved)
+    return {**reference, **placement} if placement else reference
+
+
+def _remember_placement(record, reference):
+    # v1.3.5 rewrites the settings/state object but preserves its record's other fields.
+    placement = _reference_placement(reference)
+    if placement:
+        record[_REFERENCE_PLACEMENT] = placement
+    else:
+        record.pop(_REFERENCE_PLACEMENT, None)
+
+
+def _state_reference(state):
+    options = state.get('inpaintReference') if isinstance(state, dict) else None
+    return options.get('reference') if isinstance(options, dict) else None
+
+
+def _canvas_state_with_placement(state, saved):
+    reference = _state_reference(state)
+    if not isinstance(reference, dict) or any(key in reference for key in _PLACEMENT_FIELDS):
+        return state
+    restored = _restore_placement(reference, saved)
+    layers = state.get('layers')
+    if isinstance(layers, list) and layers:
+        bottom = layers[-1]
+        carrier = bottom if isinstance(bottom, dict) and bottom.get('type') == 'canvas' else layers[0]
+        if ((isinstance(carrier, dict) and _REFERENCE_PLACEMENT in carrier)
+                or (isinstance(saved, dict) and any(key in saved for key in _PLACEMENT_FIELDS))):
+            # A new browser can save a newer placement through an old server. That server
+            # updates its layers, but never updates the record-level backup.
+            for layer in _iter_canvas_layers(layers):
+                if _REFERENCE_PLACEMENT not in layer:
+                    continue
+                candidate = _restore_placement(reference, layer[_REFERENCE_PLACEMENT])
+                if candidate is not reference:
+                    restored = candidate
+                    break
+    if restored is reference:
+        return state
+    return {**state, 'inpaintReference': {**state['inpaintReference'], 'reference': restored}}
+
+
+def _canvas_copy(canvas):
+    record = dict(canvas)
+    record['state'] = _canvas_state_with_placement(record['state'], record.pop(_REFERENCE_PLACEMENT, None))
+    return deepcopy(record)
+
+
+def _stored_canvas_settings(project):
+    if 'canvasSettings' not in project:
+        return default_canvas_settings()
+    record = project['canvasSettings']
+    if _REFERENCE_PLACEMENT in project and isinstance(record, dict) and 'inpaintReference' in record:
+        record = {**record, 'inpaintReference': _restore_placement(record['inpaintReference'], project[_REFERENCE_PLACEMENT])}
+    return normalize_canvas_settings_record(record)
+
+
+_CANVAS_RESTORE_DEFAULTS = {
+    'canvasZoom': 1, 'clipPreviewZoom': 1, 'checkedSelectionId': None,
+    'isSelectionOverlayHidden': False, 'isClipInpaintMergedSourceMode': False,
+    'sharedSelectionClipPromptInfo': None, 'sharedSelectionClipPromptControlGroups': [],
+    'inpaintSettings': None, 'oppositeReference': None, 'projectSettingsLink': None,
+    'inpaintReference': {'reference': None, 'showArea': False, 'include': False},
+}
+
+
+def _same_saved_canvas(stored, incoming, *, stale):
+    # Old editors omitted optional defaults. Compare their meaning without migrating either file.
+    def comparable(state):
+        result = {**_CANVAS_RESTORE_DEFAULTS, **state}
+        result.pop('savedAt', None)
+        if stale:
+            # Both zoom levels also have a separate browser-local view record.
+            del result['canvasZoom'], result['clipPreviewZoom']
+        return result
+
+    return isinstance(stored, dict) and comparable(stored) == comparable(incoming)
+
+
 def _prepare_canvas(canvas):
     if not isinstance(canvas, dict):
         raise ValueError('캔버스는 JSON 객체여야 합니다.')
@@ -182,7 +281,7 @@ def _prepare_canvas(canvas):
         canvas_id = uuid.uuid4().hex
     elif not isinstance(canvas_id, str) or not _CANVAS_ID_RE.fullmatch(canvas_id):
         raise ValueError('캔버스 ID가 올바르지 않습니다.')
-    return {
+    prepared = {
         'id': canvas_id,
         'name': name,
         'side': side,
@@ -191,13 +290,15 @@ def _prepare_canvas(canvas):
         'updated_at': None,
         'state': _validate_canvas_state(canvas.get('state')),
     }
+    _remember_placement(prepared, _state_reference(prepared['state']))
+    return prepared
 
 
 def _same_canvas_request(existing, prepared):
     return (existing.get('id') == prepared['id']
             and existing.get('name') == prepared['name']
             and existing.get('side') == prepared['side']
-            and existing.get('state') == prepared['state'])
+            and _canvas_state_with_placement(existing.get('state'), existing.get(_REFERENCE_PLACEMENT)) == prepared['state'])
 
 
 def _iter_canvas_records(project):
@@ -250,13 +351,13 @@ def _image_layer_paths(layer):
     return paths
 
 
-def _iter_image_layers(layers):
+def _iter_canvas_layers(layers, layer_type=None):
     pending = list(reversed(layers)) if isinstance(layers, list) else []
     while pending:
         layer = pending.pop()
         if not isinstance(layer, dict):
             continue
-        if layer.get('type') == 'image':
+        if layer_type is None or layer.get('type') == layer_type:
             yield layer
         children = layer.get('children')
         if isinstance(children, list):
@@ -293,7 +394,7 @@ def _canvas_source_candidate(project, canvas):
     state = canvas.get('state')
     if not isinstance(state, dict):
         return None
-    for layer in _iter_image_layers(state.get('layers')):
+    for layer in _iter_canvas_layers(state.get('layers'), 'image'):
         for path in _image_layer_paths(layer):
             candidate = candidates_by_path.get(_path_key(path))
             if candidate is not None:
@@ -552,11 +653,9 @@ class DakiProjectsStore:
 
     def get_canvas_settings(self, project_id):
         project = self._find_project(self._read_snapshot(self.path), project_id)
-        if 'canvasSettings' not in project:
-            return default_canvas_settings()
-        return normalize_canvas_settings_record(project['canvasSettings'])
+        return _stored_canvas_settings(project)
 
-    def update_canvas_settings(self, project_id, settings, revision):
+    def update_canvas_settings(self, project_id, settings, revision, *, knows_reference_placement=False):
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
             raise ValueError('프로젝트 설정 revision은 0 이상의 정수여야 합니다.')
         prepared_settings = normalize_canvas_settings(settings)
@@ -564,8 +663,7 @@ class DakiProjectsStore:
         with json_lock(store_path):
             data = self._load(store_path)
             project = self._find_project(data, project_id)
-            current = (default_canvas_settings() if 'canvasSettings' not in project
-                       else normalize_canvas_settings_record(project['canvasSettings']))
+            current = _stored_canvas_settings(project)
             current_settings = {
                 key: current[key] for key in ('style', 'prompts', 'inpaintSettings')
             }
@@ -574,6 +672,10 @@ class DakiProjectsStore:
             if ('inpaintReference' not in prepared_settings
                     and 'inpaintReference' in current_settings):
                 prepared_settings['inpaintReference'] = current_settings['inpaintReference']
+            elif not knows_reference_placement and isinstance(settings.get('inpaintReference'), dict):
+                if not any(key in settings['inpaintReference'] for key in _PLACEMENT_FIELDS):
+                    prepared_settings['inpaintReference'] = _restore_placement(
+                        prepared_settings['inpaintReference'], current.get('inpaintReference'))
 
             if current['revision'] == revision + 1 and current_settings == prepared_settings:
                 return current
@@ -586,6 +688,7 @@ class DakiProjectsStore:
 
             updated = {'revision': revision + 1, **prepared_settings}
             project['canvasSettings'] = updated
+            _remember_placement(project, updated.get('inpaintReference'))
             project['updated_at'] = _now()
             write_json(store_path, data, indent=2)
             return deepcopy(updated)
@@ -717,7 +820,7 @@ class DakiProjectsStore:
                         continue
                     if (existing_project.get('id') == project_id
                             and _same_canvas_request(existing_canvas, prepared)):
-                        return deepcopy(existing_canvas)
+                        return _canvas_copy(existing_canvas)
                     raise DakiCanvasConflict('다른 탭에서 캔버스가 변경되었습니다. 다시 열어 최신 내용을 확인해 주세요.')
             canvases = project.get('canvases')
             if canvases is None:
@@ -732,7 +835,7 @@ class DakiProjectsStore:
             canvases[prepared['side']].append(prepared)
             project['updated_at'] = now
             write_json(store_path, data, indent=2)
-        return deepcopy(prepared)
+        return _canvas_copy(prepared)
 
     def rename_canvas(self, project_id, canvas_id, name, expected_name):
         """Rename one canvas if its current display name still matches the caller."""
@@ -753,13 +856,13 @@ class DakiProjectsStore:
                         '다른 탭에서 캔버스명이 변경되었습니다. 최신 내용을 확인해 주세요.'
                     )
                 if canvas.get('name') == validated_name:
-                    return deepcopy(canvas)
+                    return _canvas_copy(canvas)
                 now = _now()
                 canvas['name'] = validated_name
                 canvas['updated_at'] = now
                 project['updated_at'] = now
                 write_json(store_path, data, indent=2)
-                return deepcopy(canvas)
+                return _canvas_copy(canvas)
         raise DakiNotFoundError('다키 캔버스를 찾을 수 없습니다.')
 
     def migrate_canvas_names(self, project_id):
@@ -807,11 +910,11 @@ class DakiProjectsStore:
         project = self._find_project(self._read_snapshot(self.path), project_id)
         for canvas in _iter_canvas_records(project):
             if canvas.get('id') == canvas_id:
-                record = _canvas_preview(canvas) if preview else deepcopy(canvas)
+                record = _canvas_preview(canvas) if preview else _canvas_copy(canvas)
                 return {'id': project['id'], 'name': project['name']}, record
         raise DakiNotFoundError('다키 캔버스를 찾을 수 없습니다.')
 
-    def update_canvas(self, project_id, canvas_id, state, revision):
+    def update_canvas(self, project_id, canvas_id, state, revision, *, knows_reference_placement=False):
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
             raise ValueError('캔버스 revision은 양의 정수여야 합니다.')
         prepared_state = _validate_canvas_state(state)
@@ -822,25 +925,34 @@ class DakiProjectsStore:
             for canvas in _iter_canvas_records(project):
                 if canvas.get('id') != canvas_id:
                     continue
+                current_state = _canvas_state_with_placement(canvas.get('state'), canvas.get(_REFERENCE_PLACEMENT))
+                if not knows_reference_placement:
+                    prepared_state = _canvas_state_with_placement(prepared_state, _state_reference(current_state))
                 current_revision = canvas.get('revision')
-                if current_revision == revision + 1:
-                    # Restoring after a lost save response takes a new snapshot timestamp.
-                    # Accept only identical content; never replace a newer edit on retry.
-                    current_state = canvas.get('state')
-                    if isinstance(current_state, dict) and (
-                        {key: value for key, value in current_state.items() if key != 'savedAt'}
-                        == {key: value for key, value in prepared_state.items() if key != 'savedAt'}
-                    ):
-                        return deepcopy(canvas)
+                incoming_ref = _state_reference(prepared_state)
+                placement = _reference_placement(incoming_ref)
+                if (placement != _reference_placement(_state_reference(current_state))
+                        or (knows_reference_placement and incoming_ref and isinstance(current_revision, int) and revision < current_revision)):
+                    for layer in _iter_canvas_layers(prepared_state['layers']):
+                        if _REFERENCE_PLACEMENT not in layer:
+                            continue
+                        carrier = layer[_REFERENCE_PLACEMENT]
+                        if (not isinstance(carrier, dict) or not isinstance(incoming_ref, dict)
+                                or carrier.get('src') != incoming_ref.get('src') or _reference_placement(carrier) != placement):
+                            del layer[_REFERENCE_PLACEMENT]
+                if isinstance(current_revision, int) and revision <= current_revision:
+                    if _same_saved_canvas(current_state, prepared_state, stale=revision < current_revision):
+                        return _canvas_copy(canvas)
                 if current_revision != revision:
-                    raise DakiCanvasConflict('다른 탭에서 캔버스가 변경되었습니다. 다시 열어 최신 내용을 확인해 주세요.')
+                    raise DakiCanvasConflict('편집을 시작한 저장본과 프로젝트의 최신 저장본이 다릅니다.')
                 now = _now()
                 canvas['state'] = prepared_state
+                _remember_placement(canvas, _state_reference(prepared_state))
                 canvas['revision'] = revision + 1
                 canvas['updated_at'] = now
                 project['updated_at'] = now
                 write_json(store_path, data, indent=2)
-                return deepcopy(canvas)
+                return _canvas_copy(canvas)
         raise DakiNotFoundError('다키 캔버스를 찾을 수 없습니다.')
 
     def canvas_states(self):

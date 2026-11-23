@@ -10,9 +10,10 @@ function getInitialImageLayerGeometry(imageWidth, imageHeight, options = null) {
         canvasHeight / imageHeight
     );
     const fitScale = allowUpscale ? containScale : Math.min(containScale, 1);
+    const scale = options?.preserveOriginalSize ? 1 : fitScale;
 
-    const width = Math.max(1, Math.round(imageWidth * fitScale));
-    const height = Math.max(1, Math.round(imageHeight * fitScale));
+    const width = Math.max(1, Math.round(imageWidth * scale));
+    const height = Math.max(1, Math.round(imageHeight * scale));
 
     return {
         width,
@@ -74,14 +75,18 @@ function hasVisibleCanvasBaseLayer(layers) {
     return false;
 }
 
-function collectDrawableImageLayersForClip(layers, output = []) {
+function collectDrawableImageLayersForClip(layers, output = [], selectionOverride = null) {
     // renderCanvasLayerStack과 같은 순서: 아래 레이어부터 위 레이어 순서
     [...layers].reverse().forEach((layer) => {
         if (!layer || !layer.visible) return;
 
+        if (layer === selectionOverride?.selection) {
+            for (const selectedLayer of selectionOverride.layers) output.push(selectedLayer);
+            return;
+        }
         if (layer.type === 'folder' || layer.type === 'selection') {
             layer.children = Array.isArray(layer.children) ? layer.children : [];
-            collectDrawableImageLayersForClip(layer.children, output);
+            collectDrawableImageLayersForClip(layer.children, output, selectionOverride);
             return;
         }
 
@@ -119,6 +124,51 @@ function drawCanvasLayerImage(ctx, img, layer, offsetX = 0, offsetY = 0) {
     }
 
     ctx.drawImage(img, x, y, width, height);
+}
+
+// Snapshot layer geometry so resizing the editor or awaiting image decoding cannot
+// change the pixels of an in-flight request. Preview and submission use this same compositor.
+function createClipBoundarySource(selection, baseClip, anchor, merged) {
+    const visible = collectDrawableImageLayersForClip(selection.children);
+    const anchorId = anchor.boundaryBaseClipId === baseClip.id ? anchor.boundaryAnchorId : anchor.id;
+    const original = merged || anchorId === baseClip.id ? baseClip
+        : visible.find(layer => layer.type === 'clip' && layer.id === anchorId) || baseClip;
+    const selectedLayers = visible.filter(layer => merged || layer.type !== 'clip'
+        || layer === original || layer.boundaryBaseClipId === baseClip.id);
+    // An editable original has no canvas pixels of its own. Insert its image below this
+    // selection's results, keeping other visible layers at their actual stack positions.
+    if (!baseClip.renderOnCanvas && baseClip.visible && (merged || original === baseClip)) selectedLayers.unshift(baseClip);
+    const layers = collectDrawableImageLayersForClip(canvasLayers, [], {selection, layers: selectedLayers})
+        .filter(layer => !layer.pinnedReference);
+    const scene = layers.map(layer => {
+        const geometry = {type: layer.type, src: layer.src, x: layer.x, y: layer.y,
+            rotation: layer.rotation, layerWidth: layer.layerWidth, layerHeight: layer.layerHeight,
+            imageWidth: layer.imageWidth, imageHeight: layer.imageHeight};
+        normalizeImageLayerGeometry(geometry);
+        return geometry;
+    });
+    const whiteBase = hasVisibleCanvasBaseLayer(canvasLayers);
+    const images = new Map();
+    return async (rect, maxDimension = Infinity) => {
+        const scale = Math.min(1, maxDimension / Math.max(rect.width, rect.height));
+        const output = document.createElement('canvas');
+        output.width = Math.max(1, Math.round(rect.width * scale));
+        output.height = Math.max(1, Math.round(rect.height * scale));
+        const ctx = output.getContext('2d');
+        if (whiteBase) {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, output.width, output.height);
+        }
+        ctx.scale(output.width / rect.width, output.height / rect.height);
+        for (const layer of scene) {
+            const b = CanvasSelectionRotation.bounds(layer);
+            if (!rectsIntersect(rect.x, rect.y, rect.width, rect.height, b.x, b.y, b.width, b.height)) continue;
+            if (!images.has(layer.src)) images.set(layer.src, loadImageElementForClip(layer.src));
+            const image = await images.get(layer.src);
+            drawCanvasLayerImage(ctx, image, layer, rect.x, rect.y);
+        }
+        return output;
+    };
 }
 
 async function renderMergedCanvasToDataUrl(options = null) {

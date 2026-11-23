@@ -93,7 +93,7 @@
     }
 
     function saveUserChange() {
-        if (typeof root.saveCanvasState === 'function') root.saveCanvasState();
+        if (typeof root.saveCanvasState === 'function') root.saveCanvasState({syncProject: true});
     }
 
     async function api(url, signal) {
@@ -572,7 +572,7 @@
                 image.alt = '';
                 image.loading = 'lazy';
                 const hasImage = !item.missing && typeof item.src === 'string' && item.src.trim();
-                if (hasImage) image.src = item.src;
+                if (hasImage) image.src = `${item.src}?preview=512`;
                 else image.classList.add('is-missing');
                 button.appendChild(image);
                 const name = pickerElement('span', 'canvas-opposite-choice-name', item.name || candidateName(item.path));
@@ -610,7 +610,7 @@
         pickerController = controller;
         showPickerMessage('프로젝트의 반대쪽 그림을 불러오는 중…');
         try {
-            const result = await api(projectEndpoint(link.projectId), controller.signal);
+            const result = await api(projectEndpoint(link.projectId) + '?include_dimensions=0', controller.signal);
             if (version !== pickerVersion || controller.signal.aborted || !current.dialog.open
                 || linkKey(readLink()) !== linkKey(link)) return;
             const project = result.project;

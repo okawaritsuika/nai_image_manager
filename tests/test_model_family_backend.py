@@ -99,6 +99,7 @@ class GalleryModelFamilyMigrationTests(unittest.TestCase):
 
         class FakeFlask:
             def __init__(self, *_args, **_kwargs):
+                self.logger = mock.Mock()
                 self.config = {}
                 self.extensions = {}
                 self.wsgi_app = lambda environ, start_response: []

@@ -64,6 +64,30 @@ class DakiPreviewApiTests(unittest.TestCase):
         candidate = response.json['project']['candidates']['front'][0]
         self.assertEqual((candidate['width'], candidate['height']), (1024, 2048))
 
+    def test_project_picker_skips_image_dimensions_and_upscale_metadata(self):
+        path = self.root / 'synthetic.png'
+        Image.new('RGB', (64, 128)).save(path)
+        project = self.store.create_project('Synthetic picture', path.name, 'back')
+        canvas = self.store.create_canvas(project['id'], {
+            'name': 'Synthetic canvas', 'side': 'back',
+            'state': {'width': 64, 'height': 128, 'layers': []},
+        })
+        url = '/api/daki/projects/' + project['id']
+        with mock.patch('naim.web.daki.get_display_image_dimensions') as dimensions, \
+                mock.patch('naim.web.daki.load_upscale_badge_info') as upscale:
+            response = self.client.get(url + '?include_dimensions=0')
+        self.assertEqual(response.status_code, 200)
+        dimensions.assert_not_called()
+        upscale.assert_not_called()
+        result = response.json['project']
+        candidate = result['candidates']['back'][0]
+        self.assertEqual(candidate['src'], '/image/synthetic.png')
+        self.assertFalse(candidate['missing'])
+        self.assertNotIn('width', candidate)
+        self.assertNotIn('upscale', candidate)
+        self.assertEqual(result['canvases']['back'][0]['id'], canvas['id'])
+        self.assertEqual(self.client.get(url).json['project']['candidates']['back'][0]['width'], 64)
+
 
 if __name__ == '__main__':
     unittest.main()

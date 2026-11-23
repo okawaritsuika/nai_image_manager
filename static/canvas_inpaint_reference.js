@@ -7,6 +7,7 @@
     const WIDTH_STEP = 64;
     const MIN_ZOOM = 1;
     const MAX_ZOOM = 8;
+    const MAX_IMAGE_SCALE = 32;
     const doc = root.document || null;
 
     let state = defaultSnapshot();
@@ -23,6 +24,9 @@
     let lastProjectIdKey = null;
     let imageCacheEntry = null;
     const actionMounts = new WeakMap();
+    const sizeEditors = new WeakMap();
+    let clipPreviewOpen = false;
+    let clipStrip = null;
 
     function defaultSnapshot() {
         return {reference: null, showArea: false, include: false};
@@ -65,14 +69,20 @@
         const x = value.x === undefined ? 0.5 : value.x;
         const y = value.y === undefined ? 0.5 : value.y;
         const zoom = value.zoom === undefined ? 1 : value.zoom;
-        if (typeof name !== 'string' || name.length > 500
+        const scale = value.scale === undefined ? 1 : value.scale;
+        const panX = value.panX === undefined ? 0.5 : value.panX;
+        const panY = value.panY === undefined ? 0.5 : value.panY;
+        if (!Number.isFinite(scale) || scale < 0.1 || scale > MAX_IMAGE_SCALE || typeof name !== 'string' || name.length > 500
+            || !Number.isFinite(panX) || panX < 0 || panX > 1
+            || !Number.isFinite(panY) || panY < 0 || panY > 1
             || !Number.isInteger(width) || width < MIN_WIDTH || width > MAX_WIDTH || width % WIDTH_STEP
             || typeof x !== 'number' || !Number.isFinite(x) || x < 0 || x > 1
             || typeof y !== 'number' || !Number.isFinite(y) || y < 0 || y > 1
             || typeof zoom !== 'number' || !Number.isFinite(zoom) || zoom < MIN_ZOOM || zoom > MAX_ZOOM) {
             return null;
         }
-        return {src: value.src, name, width, x, y, zoom};
+        return {src: value.src, name, width, x, y, zoom, ...(scale === 1 ? {} : {scale}),
+            ...(panX === 0.5 ? {} : {panX}), ...(panY === 0.5 ? {} : {panY})};
     }
 
     function normalizeSnapshot(value) {
@@ -84,6 +94,113 @@
             showArea: include,
             include
         };
+    }
+
+    function placementFor(refSnapshot) {
+        if (!hasPlacementFields(refSnapshot?.reference)) return null;
+        const ref = normalizeReference(refSnapshot?.reference);
+        if (!ref || (ref.scale === undefined && ref.panX === undefined && ref.panY === undefined)) return null;
+        const placement = {src: ref.src};
+        if (ref.scale !== undefined) placement.scale = ref.scale;
+        if (ref.panX !== undefined) placement.panX = ref.panX;
+        if (ref.panY !== undefined) placement.panY = ref.panY;
+        return placement;
+    }
+
+    function backupFor(refSnapshot) {
+        const ref = normalizeReference(refSnapshot?.reference);
+        return ref ? {...ref, include: refSnapshot.include === true} : null;
+    }
+
+    function storePlacement(layers, refSnapshot) {
+        if (!Array.isArray(layers) || !layers.length) return layers;
+        const bottom = layers[layers.length - 1];
+        const carrier = bottom?.type === 'canvas' ? bottom : layers[0];
+        if (!carrier || typeof carrier !== 'object' || Array.isArray(carrier)) return layers;
+        const backup = backupFor(refSnapshot);
+        if (backup) carrier.inpaintReferencePlacement = backup;
+        else delete carrier.inpaintReferencePlacement;
+        return layers;
+    }
+
+    function hasPlacementFields(ref) {
+        return ref && ['scale', 'panX', 'panY'].some(key => Object.hasOwn(ref, key));
+    }
+
+    function restorePlacement(refSnapshot, layers, fallbackPlacement) {
+        const ref = refSnapshot?.reference;
+        const mayRestore = !hasPlacementFields(ref) && normalizeReference(ref);
+        let restored = null;
+
+        function take(candidate) {
+            if (restored || !candidate) return;
+            const full = typeof candidate.include === 'boolean' &&
+                ['src', 'name', 'width', 'x', 'y', 'zoom'].every(key => Object.hasOwn(candidate, key));
+            if (refSnapshot === undefined && full) {
+                // v1.0 through v1.2 saved the layers but omitted the entire reference setting.
+                const reference = normalizeReference(candidate);
+                if (reference) restored = {reference, showArea: candidate.include, include: candidate.include};
+            } else if (mayRestore && candidate.src === ref.src) {
+                const placement = placementFor({reference: candidate});
+                if (placement) restored = {...refSnapshot, reference: {...ref, ...placement}};
+                else if (full && normalizeReference(candidate)) restored = refSnapshot;
+            }
+        }
+        // An older editor may move or duplicate the carrier inside a folder.
+        function clearLayers(items) {
+            if (!Array.isArray(items)) return;
+            for (const layer of items) {
+                if (!layer || typeof layer !== 'object') continue;
+                if (Object.hasOwn(layer, 'inpaintReferencePlacement')) {
+                    take(layer.inpaintReferencePlacement);
+                    delete layer.inpaintReferencePlacement;
+                }
+                if (Array.isArray(layer.children)) clearLayers(layer.children);
+            }
+        }
+        clearLayers(layers);
+        take(fallbackPlacement);
+        return restored ?? refSnapshot;
+    }
+
+    function projectPlacementKey(projectId) {
+        return typeof projectId === 'string' && /^[a-f0-9]{32}$/.test(projectId)
+            ? 'naim:project-reference-placement:' + projectId : null;
+    }
+
+    function rememberProjectReference(projectId, sentReference, returnedSettings, supportsPlacement) {
+        const key = projectPlacementKey(projectId);
+        if (!key || !returnedSettings || typeof returnedSettings !== 'object') return;
+        const saved = returnedSettings.inpaintReference;
+        const sent = placementFor({reference: sentReference});
+        const revision = returnedSettings.revision;
+        const stripped = !supportsPlacement && sent && !hasPlacementFields(saved)
+            && Number.isInteger(revision) && revision >= 0 && normalizeReference(saved)?.src === sent.src;
+        try {
+            const storage = root.localStorage;
+            if (stripped) storage?.setItem(key, JSON.stringify({revision, placement: sent}));
+            else if (storage?.getItem(key)) storage.removeItem(key);
+        } catch (_) { /* Storage can be unavailable in a private browser. */ }
+    }
+
+    function readProjectReference(projectId, settings, supportsPlacement) {
+        const ref = settings?.inpaintReference ?? null;
+        const key = projectPlacementKey(projectId);
+        if (!key) return ref;
+        try {
+            const storage = root.localStorage;
+            const raw = storage?.getItem(key);
+            if (raw) {
+                const backup = JSON.parse(raw);
+                // Immediately after upgrading the server, the old PUT may still be its exact latest revision.
+                if (ref && !hasPlacementFields(ref) && (!supportsPlacement || backup?.revision === settings.revision)) {
+                    const restored = restorePlacement({reference: ref}, null, backup?.placement).reference;
+                    if (restored !== ref) return restored;
+                }
+                storage.removeItem(key);
+            }
+        } catch (_) { /* The reference from the server remains usable. */ }
+        return ref;
     }
 
     function cloneReference(value) {
@@ -122,17 +239,17 @@
         return {x, y, width, height};
     }
 
-    function fitBox(sourceWidth, sourceHeight, targetWidth, targetHeight) {
+    function fitBox(sourceWidth, sourceHeight, targetWidth, targetHeight, imageScale = 1, panX = 0.5, panY = 0.5) {
         positiveInteger(sourceWidth, '원본');
         positiveInteger(sourceHeight, '원본');
         positiveInteger(targetWidth, '대상');
         positiveInteger(targetHeight, '대상');
-        const scale = Math.min(1, targetWidth / sourceWidth, targetHeight / sourceHeight);
+        const scale = Math.min(1, targetWidth / sourceWidth, targetHeight / sourceHeight) * imageScale;
         const width = Math.max(1, Math.round(sourceWidth * scale));
         const height = Math.max(1, Math.round(sourceHeight * scale));
         return {
-            x: Math.floor((targetWidth - width) / 2),
-            y: Math.floor((targetHeight - height) / 2),
+            x: Math.floor((targetWidth - width) * panX),
+            y: Math.floor((targetHeight - height) * panY),
             width,
             height
         };
@@ -147,9 +264,9 @@
         return {width: width + reference.width, height, reference};
     }
 
-    function safeContext() {
+    function safeContext(forPreview = false) {
         try {
-            return typeof hooks.getContext === 'function' ? hooks.getContext() : null;
+            return typeof hooks.getContext === 'function' ? hooks.getContext(forPreview) : null;
         } catch (_) {
             return null;
         }
@@ -279,9 +396,8 @@
         const target = sidebarParts?.status;
         if (!target) return;
         const message = !hasCanvas() ? '캔버스를 만든 뒤 참고 이미지를 추가할 수 있습니다.' : currentStatus;
-        target.textContent = message || (state.reference
-            ? '선택 영역을 조절하면 참고 폭을 포함한 전체 크기를 확인할 수 있습니다.'
-            : '참고 이미지를 추가하고 선택 영역을 조절해 전체 크기를 확인하세요.');
+        target.textContent = message;
+        target.hidden = !message;
         target.classList.toggle('is-error', Boolean(hasCanvas() && currentStatusIsError));
     }
 
@@ -303,14 +419,20 @@
         sidebarParts.add.disabled = !canvasAvailable || busy;
         sidebarParts.oppositeLoad.disabled = !canvasAvailable || busy
             || !validOppositeLink(link) || !oppositePickerAvailable;
-        sidebarParts.widthInput.value = String(state.reference?.width || DEFAULT_WIDTH);
-        sidebarParts.widthInput.disabled = !hasRef || !canvasAvailable || busy;
+        syncSizeEditor(sidebarParts.sizing);
         sidebarParts.showArea.checked = state.showArea === true;
         sidebarParts.showArea.disabled = !hasRef || !canvasAvailable || busy;
         sidebarParts.clear.disabled = !hasRef || busy;
         sidebarParts.projectSave.disabled = !link || !hasRef || busy;
         sidebarParts.projectLoad.disabled = !link || busy;
         sidebarParts.info.textContent = referenceInfoText();
+        const src = state.reference?.src || '';
+        if (sidebarParts.thumbnail.dataset.src !== src) {
+            sidebarParts.thumbnail.dataset.src = src;
+            sidebarParts.thumbnail.hidden = !src;
+            if (src) sidebarParts.thumbnail.src = src;
+            else sidebarParts.thumbnail.removeAttribute?.('src');
+        }
         sidebarParts.name.textContent = state.reference ? state.reference.name : '등록된 참고 이미지 없음';
         sidebarParts.name.title = state.reference ? state.reference.name : '';
         syncStatus();
@@ -321,6 +443,79 @@
         if (className) node.className = className;
         if (text !== undefined) node.textContent = text;
         return node;
+    }
+
+    function createSizeEditor(inClip = false) {
+        const box = buildElement('div', 'canvas-reference-sizing');
+        const widthRow = buildElement('label', 'canvas-inpaint-reference-control');
+        widthRow.appendChild(buildElement('span', '', '참고 영역 폭'));
+        const widthInput = buildElement('input');
+        widthInput.type = 'number';
+        widthInput.min = String(MIN_WIDTH);
+        widthInput.max = String(MAX_WIDTH);
+        widthInput.step = String(WIDTH_STEP);
+        widthInput.value = String(DEFAULT_WIDTH);
+        widthInput.addEventListener('change', () => setReferenceWidth(widthInput));
+        widthRow.append(widthInput, doc.createTextNode('px'));
+
+        const scaleRow = buildElement('label', 'canvas-inpaint-reference-control');
+        const scaleInput = buildElement('input');
+        scaleInput.type = 'range';
+        scaleInput.min = '10';
+        scaleInput.max = String(MAX_IMAGE_SCALE * 100);
+        scaleInput.step = '1';
+        const percentage = buildElement('span', 'canvas-reference-percent');
+        scaleRow.append(buildElement('span', '', '그림 크기'), scaleInput, percentage);
+        const previewHost = buildElement('div');
+        const preview = inClip ? null : root.CanvasInpaintReferencePreview?.mount(previewHost);
+        const editor = {widthInput, scaleInput, percentage, preview, info: inClip ? previewHost : null};
+        widthInput.addEventListener('input', () => {
+            if (!state.reference || pendingOperation) return;
+            const width = Number(widthInput.value);
+            if (!Number.isInteger(width) || width < MIN_WIDTH || width > MAX_WIDTH || width % WIDTH_STEP) return;
+            preview?.update({...state.reference, width}, editor.clip, state.include, fitBox);
+            updateClipStrip({...state.reference, width});
+        });
+        scaleInput.addEventListener('input', () => {
+            if (!state.reference || pendingOperation) return;
+            const scale = Number(scaleInput.value) / 100;
+            percentage.textContent = scaleInput.value + '%';
+            preview?.update({...state.reference, scale}, editor.clip, state.include, fitBox);
+            updateClipStrip({...state.reference, scale});
+        });
+        scaleInput.addEventListener('change', () => {
+            if (!state.reference || pendingOperation) return;
+            const scale = Number(scaleInput.value) / 100;
+            if (scale === 1) delete state.reference.scale;
+            else state.reference.scale = scale;
+            persistAndRender(false);
+        });
+        box.append(previewHost, widthRow, scaleRow);
+        sizeEditors.set(box, editor);
+        return box;
+    }
+
+    function syncSizeEditor(box) {
+        const editor = sizeEditors.get(box);
+        if (!editor) return;
+        const ref = state.reference;
+        const disabled = !ref || !hasCanvas() || Boolean(pendingOperation);
+        editor.widthInput.disabled = editor.scaleInput.disabled = disabled;
+        editor.widthInput.value = String(ref?.width || DEFAULT_WIDTH);
+        editor.scaleInput.value = String(Math.round((ref?.scale || 1) * 100));
+        editor.percentage.textContent = editor.scaleInput.value + '%';
+        if (editor.preview && sidebarParts?.disclosure.open) {
+            editor.clip = safeContext(true)?.clip;
+            editor.preview.update(ref, editor.clip, state.include, fitBox);
+        }
+        if (editor.info) {
+            const clip = safeContext()?.clip;
+            const width = clip?.imageWidth || clip?.layerWidth;
+            const height = clip?.imageHeight || clip?.layerHeight;
+            editor.info.textContent = state.include && ref && width && height
+                ? `전송 ${width + ref.width} × ${height}px · 왼쪽 참고 그림을 끌어 위치 조절`
+                : '참고 이미지를 포함하면 클립 왼쪽에 표시됩니다.';
+        }
     }
 
     function ensureSidebar() {
@@ -336,11 +531,18 @@
         host.classList.add('canvas-inpaint-reference-controls');
 
         const disclosure = buildElement('details', 'canvas-inpaint-reference-disclosure');
+        disclosure.addEventListener('toggle', () => {
+            if (disclosure.open) syncSizeEditor(sidebarParts.sizing);
+        });
         const summary = buildElement('summary', 'canvas-inpaint-reference-summary');
         const title = buildElement('h3', 'canvas-inpaint-reference-title', '인페인팅 참고 이미지');
         summary.appendChild(title);
         const body = buildElement('div', 'canvas-inpaint-reference-body');
         const name = buildElement('p', 'canvas-inpaint-reference-name', '등록된 참고 이미지 없음');
+        const identity = buildElement('div', 'canvas-inpaint-reference-file-row');
+        const thumbnail = buildElement('img', 'canvas-inpaint-reference-thumbnail');
+        thumbnail.alt = '등록한 참고 그림';
+        identity.append(thumbnail, name);
         const status = buildElement('p', 'canvas-inpaint-reference-status');
         status.setAttribute('role', 'status');
         status.setAttribute('aria-live', 'polite');
@@ -364,24 +566,14 @@
         oppositeLoad.addEventListener('click', openOppositePicker);
         imageActions.append(add, oppositeLoad);
 
-        const widthRow = buildElement('label', 'canvas-inpaint-reference-control');
-        widthRow.appendChild(buildElement('span', '', '참고 폭'));
-        const widthInput = buildElement('input');
-        widthInput.type = 'number';
-        widthInput.min = String(MIN_WIDTH);
-        widthInput.max = String(MAX_WIDTH);
-        widthInput.step = String(WIDTH_STEP);
-        widthInput.value = String(DEFAULT_WIDTH);
-        widthInput.addEventListener('change', () => setReferenceWidth(widthInput.value));
-        widthRow.append(widthInput, doc.createTextNode('px'));
-
+        const sizing = createSizeEditor();
         const showAreaLabel = buildElement('label', 'canvas-inpaint-reference-checkbox');
         const showArea = buildElement('input');
         showArea.type = 'checkbox';
         showArea.addEventListener('change', () => {
             setReferenceIncluded(showArea.checked);
         });
-        showAreaLabel.append(showArea, doc.createTextNode('참조 영역 포함 표시'));
+        showAreaLabel.append(showArea, doc.createTextNode('전송할 이미지에 참고 영역 포함'));
 
         const info = buildElement('p', 'canvas-inpaint-reference-info');
         const projectActions = buildElement('div', 'canvas-inpaint-reference-row');
@@ -405,10 +597,10 @@
             persistAndRender();
         });
 
-        body.append(name, status, imageActions, widthRow, showAreaLabel, info, projectActions, clear, fileInput);
+        body.append(identity, imageActions, showAreaLabel, sizing, info, projectActions, clear, status, fileInput);
         disclosure.append(summary, body);
         host.appendChild(disclosure);
-        sidebarParts = {title, name, status, add, oppositeLoad, widthInput, showArea, info,
+        sidebarParts = {disclosure, title, name, thumbnail, status, add, oppositeLoad, sizing, showArea, info,
             projectSave, projectLoad, clear};
         syncControls();
     }
@@ -418,23 +610,26 @@
         fileInput.click();
     }
 
-    function setReferenceWidth(value) {
+    function setReferenceWidth(input) {
+        const value = input.value;
         if (!state.reference || pendingOperation) return;
         const numeric = typeof value === 'string' && value.trim() === '' ? Number.NaN : Number(value);
         if (!Number.isFinite(numeric)) {
-            sidebarParts.widthInput.value = String(state.reference.width);
+            input.value = String(state.reference.width);
+            render();
             return;
         }
         const width = clamp(Math.round(numeric / WIDTH_STEP) * WIDTH_STEP, MIN_WIDTH, MAX_WIDTH);
         if (width === state.reference.width) {
-            sidebarParts.widthInput.value = String(state.reference.width);
+            input.value = String(state.reference.width);
+            render();
             return;
         }
         state.reference.width = width;
         persistAndRender();
     }
 
-    function persistAndRender() {
+    function persistAndRender(redrawCanvas = true) {
         syncControls();
         syncActionMounts();
         try {
@@ -446,7 +641,7 @@
             setStatus('참고 이미지 설정을 저장하지 못했습니다. ' + error.message, true);
         }
         try {
-            if (typeof hooks.redraw === 'function') hooks.redraw();
+            if (redrawCanvas && typeof hooks.redraw === 'function') hooks.redraw();
         } catch (error) {
             setStatus('캔버스를 다시 그리지 못했습니다. ' + error.message, true);
         }
@@ -502,7 +697,8 @@
         } catch (_) {
             payload = null;
         }
-        return parseResponse(response, payload);
+        return {...parseResponse(response, payload),
+            supportsPlacement: response.headers?.get('X-NAIM-Reference-Placement') === '1'};
     }
 
     function uploadedDescriptor(payload, file) {
@@ -510,6 +706,7 @@
             src: payload.src || payload.path,
             name: payload.name || file.name || '참고 이미지',
             width: state.reference?.width || DEFAULT_WIDTH,
+            scale: state.reference?.scale,
             x: 0.5, y: 0.5, zoom: 1
         });
         if (!descriptor) throw new Error('가져온 이미지 경로 또는 이름을 확인할 수 없습니다.');
@@ -578,13 +775,14 @@
             const {revision, ...settings} = existing;
             const body = {revision, settings: {...settings, inpaintReference: reference}};
             if (!operationIsCurrent(operation)) return;
-            await fetchJson(endpoint, {
+            const saved = await fetchJson(endpoint, {
                 method: 'PUT',
-                headers: {'Content-Type': 'application/json'},
+                headers: {'Content-Type': 'application/json', 'X-NAIM-Reference-Placement': '1'},
                 body: JSON.stringify(body),
                 signal: operation.controller.signal
             });
             if (!operationIsCurrent(operation)) return;
+            rememberProjectReference(link.projectId, reference, saved.settings, saved.supportsPlacement);
             setStatus('참고 이미지를 프로젝트 설정에 등록했습니다.');
         } catch (error) {
             if (operationIsCurrent(operation)) setStatus(error.message, true);
@@ -604,7 +802,7 @@
                 signal: operation.controller.signal
             });
             if (!operationIsCurrent(operation)) return;
-            const reference = normalizeReference(result.settings?.inpaintReference);
+            const reference = normalizeReference(readProjectReference(link.projectId, result.settings, result.supportsPlacement));
             if (!reference) throw new Error('프로젝트에 가져올 참고 이미지가 없습니다.');
             await loadImage(reference.src);
             if (!operationIsCurrent(operation)) return;
@@ -778,7 +976,13 @@
             setReferenceIncluded(checkbox.checked);
         });
         label.append(checkbox, doc.createTextNode('참고 이미지 포함'));
-        row.append(label);
+        const disclosure = buildElement('details', 'canvas-reference-clip-disclosure');
+        disclosure.open = clipPreviewOpen;
+        disclosure.append(buildElement('summary', '', '전송 배치와 크기 조절'), createSizeEditor(true));
+        disclosure.addEventListener('toggle', () => {
+            if (disclosure.isConnected) clipPreviewOpen = disclosure.open;
+        });
+        row.append(label, disclosure);
         container.appendChild(row);
         actionMounts.set(container, row);
         syncActionMounts();
@@ -787,13 +991,55 @@
 
     function syncActionMounts() {
         if (!doc) return;
+        updateClipStrip(state.reference);
         doc.querySelectorAll('.canvas-inpaint-reference-actions').forEach(row => {
+            const sizing = row.querySelector('.canvas-reference-sizing');
+            if (sizing) {
+                sizing.parentElement.hidden = !state.reference;
+                if (state.reference) syncSizeEditor(sizing);
+            }
             const checkbox = row.querySelector('input[type="checkbox"]');
             if (checkbox) {
                 checkbox.checked = state.include === true;
                 checkbox.disabled = !state.reference || Boolean(pendingOperation);
             }
         });
+    }
+
+    function updateClipStrip(ref) {
+        if (!clipStrip) return;
+        const {host, view} = clipStrip;
+        if (!host.isConnected) {
+            clipStrip = null;
+            return;
+        }
+        const hidden = !ref || !state.include;
+        const width = String(ref?.width || 0);
+        const layoutChanged = host.hidden !== hidden || host.dataset.referenceWidth !== width;
+        host.hidden = hidden;
+        host.inert = Boolean(pendingOperation);
+        host.dataset.referenceWidth = width;
+        view.update(ref, safeContext()?.clip, state.include, fitBox);
+        if (layoutChanged) host.dispatchEvent(new Event('clip-reference-layout', {bubbles: true}));
+    }
+
+    function mountClipStrip(host) {
+        if (!host || !root.CanvasInpaintReferencePreview?.mountStrip) return;
+        if (clipStrip?.host !== host) {
+            const view = root.CanvasInpaintReferencePreview.mountStrip(host, (panX, panY, commit) => {
+                if (!state.reference || !state.include || pendingOperation || clipStrip?.host !== host) return;
+                const ref = normalizeReference({...state.reference, panX, panY});
+                if (!ref) return;
+                const editor = sidebarParts && sizeEditors.get(sidebarParts.sizing);
+                editor?.preview?.update(ref, editor.clip, true, fitBox);
+                if (commit && (state.reference.panX !== ref.panX || state.reference.panY !== ref.panY)) {
+                    state.reference = ref;
+                    persistAndRender(false);
+                }
+            });
+            clipStrip = {host, view};
+        }
+        updateClipStrip(state.reference);
     }
 
     function setReferenceIncluded(include) {
@@ -839,10 +1085,17 @@
         restore,
         normalizeSnapshot,
         normalizeReference,
+        placementFor,
+        backupFor,
+        storePlacement,
+        restorePlacement,
+        rememberProjectReference,
+        readProjectReference,
         fitBox,
         cropBox,
         request,
         mountActions,
+        mountClipStrip,
         render
     };
 

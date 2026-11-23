@@ -48,13 +48,15 @@ class InpaintMetadataBackendTests(unittest.TestCase):
         with zipfile.ZipFile(archive, "w") as zf:
             zf.writestr("result.png", generated_bytes.getvalue())
 
+        characters = ['blue eyes, short hair', 'green eyes, long hair']
         request_data = {
             "key": "test-key",
             "image": self._data_url(source),
             "mask": self._data_url(mask),
             "promptInfo": {"model": model, "sampler": "k_dpmpp_2m", "steps": 41,
                            "cfg": 7.5, "cfg_rescale": 0, "noise_schedule": "karras",
-                           "seed": 0, "noise": 0, "strength": 0.3},
+                           "seed": 0, "noise": 0, "strength": 0.3,
+                           "charPrompts": characters, "charPrompt": ", ".join(characters)},
             "persistResult": False,
         }
         captured = {}
@@ -88,11 +90,15 @@ class InpaintMetadataBackendTests(unittest.TestCase):
         self.assertEqual(result["promptInfo"]["sampler"], "k_dpmpp_2m")
         self.assertEqual(result["promptInfo"]["steps"], 41)
         params = captured['payload']['parameters']
+        self.assertEqual([item['char_caption'] for item in params['v4_prompt']['caption']['char_captions']],
+                         characters)
+        self.assertEqual(result['promptInfo']['charPrompts'], characters)
         for key, expected in {'scale': 7.5, 'cfg_rescale': 0, 'noise_schedule': 'karras',
                               'seed': 0, 'noise': 0, 'inpaintImg2ImgStrength': 0.3}.items():
             self.assertEqual(params[key], expected)
         png = base64.b64decode(result['image'].split(',', 1)[1])
         uploaded = self.app.extract_prompt_info_from_image_filelike(types.SimpleNamespace(stream=io.BytesIO(png)))
+        self.assertEqual(uploaded['charPrompts'], characters)
         for key in ('model', 'sampler', 'steps', 'cfg', 'cfg_rescale', 'noise_schedule', 'seed', 'strength', 'noise'):
             self.assertEqual(uploaded[key], result['promptInfo'][key], key)
 

@@ -194,6 +194,42 @@ test('downloading model can be cancelled and installed model deletion confirms r
     assert.equal(f.calls.some(call => call.url.endsWith('/animesharp/delete')), true);
 });
 
+test('canvas model deletion awaits one themed confirmation and discards a changed selection', async () => {
+    const installed = model('animesharp', 'installed');
+    const f = fixture({engine: 'animesharp', statusModels: [installed]});
+    const decision = deferred();
+    const dialogs = [];
+    f.window.CanvasNativeDialogs = {confirm: options => {
+        dialogs.push(options);
+        return decision.promise;
+    }};
+    await f.panel.open();
+
+    const deleting = f.element('ModelDelete').click();
+    const duplicate = f.element('ModelDelete').click();
+    assert.equal(dialogs.length, 1);
+    assert.equal(dialogs[0].title, '모델 삭제');
+    assert.equal(dialogs[0].confirmLabel, '삭제');
+    assert.equal(dialogs[0].danger, true);
+    assert.match(dialogs[0].message, /원본 이미지와 업스케일 결과는 보존됩니다/);
+    assert.equal(f.element('ModelDelete').disabled, true);
+
+    f.selected('lanczos');
+    decision.resolve(true);
+    await Promise.all([deleting, duplicate]);
+    assert.equal(f.confirms.length, 0);
+    assert.equal(f.calls.some(call => call.url.endsWith('/animesharp/delete')), false);
+
+    f.selected('animesharp');
+    f.fetch(async (url, options) => {
+        if (url === '/api/upscale/models') return response(success([]));
+        f.calls.push({url, options});
+        return response(success([model('animesharp', 'missing')]));
+    });
+    await f.element('ModelDelete').click();
+    assert.equal(f.calls.filter(call => call.url.endsWith('/animesharp/delete')).length, 1);
+});
+
 test('download byte progress shows installation at 100 percent and falls back when bytes are unavailable', async () => {
     let current = model('animesharp', 'downloading', {
         progress: 95,
@@ -422,6 +458,40 @@ test('NAI preview shows crop and 2x dimensions, and confirmation can be declined
         engine: 'lanczos', target_width: 2500, target_height: 8000, quality: 'standard',
     });
     assert.equal(f.panel !== null, true);
+});
+
+test('canvas NAI confirmation discards approval if the source changes or the panel closes', async () => {
+    const f = fixture({engine: 'nai', dimensions: {width: 1024, height: 2048}});
+    const plan = {
+        source_width: 1024, source_height: 2048,
+        crop_box: [192, 0, 832, 2048], crop_width: 640, crop_height: 2048,
+        input_width: 320, input_height: 1024, output_width: 640, output_height: 2048,
+    };
+    f.fetch(async url => {
+        if (url === '/api/upscale/models') return response(success([]));
+        if (url === '/api/upscale/nai/preview') return response({status: 'success', plan});
+        throw new Error(`Unexpected URL ${url}`);
+    });
+    await f.panel.open();
+
+    const dialogs = [];
+    for (const invalidate of [() => f.setIdentity('new-source'), () => f.panel.close()]) {
+        const decision = deferred();
+        f.window.CanvasNativeDialogs = {confirm: options => {
+            dialogs.push(options);
+            return decision.promise;
+        }};
+        const pending = f.panel.prepare();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(dialogs.at(-1)?.title, 'NovelAI 업스케일');
+        assert.equal(dialogs.at(-1).confirmLabel, '시작');
+        assert.match(dialogs.at(-1).message, /Anlas가 소모될 수 있습니다/);
+        invalidate();
+        decision.resolve(true);
+        assert.equal(await pending, null);
+    }
+    assert.equal(dialogs.length, 2);
+    assert.equal(f.confirms.length, 0);
 });
 
 test('waifu2x link is separate from local processing and is hidden for other engines', async () => {

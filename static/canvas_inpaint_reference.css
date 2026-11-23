@@ -172,3 +172,54 @@
     padding: 5px 8px;
 }
 
+
+.canvas-reference-sizing {
+    display: grid;
+    gap: 6px;
+    flex: 1 1 100%;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--border-color, #393944);
+    border-radius: var(--radius-sm, 8px);
+}
+
+.canvas-reference-sizing[hidden] { display: none; }
+.canvas-reference-clip-disclosure { flex: 1 1 100%; min-width: 0; }
+.canvas-reference-clip-disclosure summary { cursor: pointer; padding-block: 3px; }
+.canvas-reference-clip-disclosure[open] summary { margin-bottom: 4px; }
+.canvas-reference-sizing .canvas-inpaint-reference-control { gap: 6px; }
+.canvas-reference-sizing input[type="range"] { flex: 1 1 50px; width: 50px; min-width: 0; }
+.canvas-reference-percent { font-variant-numeric: tabular-nums; min-width: 4ch; text-align: right; }
+
+.canvas-inpaint-reference-file-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.canvas-inpaint-reference-thumbnail {
+    width: 48px;
+    height: 48px;
+    flex: none;
+    object-fit: contain;
+    border-radius: 4px;
+    background: white;
+}
+
+.canvas-clip-output-image-wrap .clip-reference-strip {
+    flex: none;
+    margin: auto 0 auto auto;
+    overflow: hidden;
+    background: white;
+}
+
+.canvas-clip-output-image-wrap.mask-editor .clip-reference-strip:not([hidden]) + img.clip-output-image {
+    margin-left: 0;
+}
+
+.canvas-clip-output-image-wrap.mask-editor .clip-reference-strip img {
+    position: absolute;
+    max-width: none;
+    max-height: none;
+}

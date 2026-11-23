@@ -312,6 +312,8 @@ function closeGalleryInpaint() {
     const layer = document.getElementById('galleryInpaintLayer');
     if (layer) layer.style.display = 'none';
 
+    galleryInpaintLayoutEvents?.abort();
+    galleryInpaintLayoutEvents = null;
     hideGalleryInpaintBrushCursor();
 
     const sessionToCleanup = galleryInpaintSession;
@@ -335,19 +337,28 @@ function resetGalleryInpaintMask() {
     galleryInpaintSession.maskDataUrl = '';
 }
 
+let galleryInpaintLayoutEvents = null;
+
 function bindGalleryInpaintEditor() {
+    galleryInpaintLayoutEvents?.abort();
+    hideGalleryInpaintBrushCursor();
     const wrap = document.getElementById('galleryInpaintImageWrap');
     const img = document.getElementById('galleryInpaintImage');
     const overlay = document.getElementById('galleryInpaintOverlay');
 
     if (!wrap || !img || !overlay || !galleryInpaintMaskCanvas) return;
 
+    galleryInpaintLayoutEvents = new AbortController();
+    const {signal} = galleryInpaintLayoutEvents;
+    const refreshCursor = () => {
+        if (galleryInpaintLastPointerEvent) updateGalleryInpaintBrushCursor(galleryInpaintLastPointerEvent, overlay);
+    };
     const syncOverlay = () => {
+        if (signal.aborted) return;
         const imgRect = img.getBoundingClientRect();
-        const wrapRect = wrap.getBoundingClientRect();
 
-        overlay.style.left = `${imgRect.left - wrapRect.left + wrap.scrollLeft}px`;
-        overlay.style.top = `${imgRect.top - wrapRect.top + wrap.scrollTop}px`;
+        overlay.style.left = `${img.offsetLeft}px`;
+        overlay.style.top = `${img.offsetTop}px`;
         overlay.style.width = `${imgRect.width}px`;
         overlay.style.height = `${imgRect.height}px`;
 
@@ -355,11 +366,13 @@ function bindGalleryInpaintEditor() {
         overlay.height = galleryInpaintMaskCanvas.height;
 
         redrawGalleryInpaintOverlay();
+        refreshCursor();
     };
 
     img.onload = syncOverlay;
     requestAnimationFrame(syncOverlay);
-    window.addEventListener('resize', syncOverlay);
+    window.addEventListener('resize', syncOverlay, {signal});
+    window.addEventListener('scroll', refreshCursor, {capture: true, passive: true, signal});
 
     overlay.onpointerdown = (event) => {
         event.preventDefault();
@@ -396,11 +409,7 @@ function bindGalleryInpaintEditor() {
         updateGalleryInpaintBrushCursor(event, overlay);
     };
 
-    overlay.onmouseleave = () => {
-        if (!galleryInpaintPainting) {
-            hideGalleryInpaintBrushCursor();
-        }
-    };
+    overlay.onmouseleave = hideGalleryInpaintBrushCursor;
 
     overlay.onpointerup = (event) => {
         galleryInpaintPainting = false;
@@ -430,45 +439,14 @@ function getGalleryInpaintPoint(event, overlay) {
 }
 
 function drawGalleryInpaintPoint(x, y) {
-    if (!galleryInpaintMaskCtx) return;
-
-    galleryInpaintMaskCtx.save();
-
-    if (galleryInpaintTool === 'eraser') {
-        galleryInpaintMaskCtx.globalCompositeOperation = 'destination-out';
-        galleryInpaintMaskCtx.fillStyle = 'rgba(0,0,0,1)';
-    } else {
-        galleryInpaintMaskCtx.globalCompositeOperation = 'source-over';
-        galleryInpaintMaskCtx.fillStyle = 'rgba(0, 128, 255, 1)';
-    }
-
-    galleryInpaintMaskCtx.beginPath();
-    galleryInpaintMaskCtx.arc(x, y, galleryInpaintBrushSize / 2, 0, Math.PI * 2);
-    galleryInpaintMaskCtx.fill();
-    galleryInpaintMaskCtx.restore();
+    const point = {x, y};
+    drawGalleryInpaintLine(point, point);
 }
 
 function drawGalleryInpaintLine(from, to) {
     if (!galleryInpaintMaskCtx) return;
-
-    galleryInpaintMaskCtx.save();
-
-    if (galleryInpaintTool === 'eraser') {
-        galleryInpaintMaskCtx.globalCompositeOperation = 'destination-out';
-        galleryInpaintMaskCtx.strokeStyle = 'rgba(0,0,0,1)';
-    } else {
-        galleryInpaintMaskCtx.globalCompositeOperation = 'source-over';
-        galleryInpaintMaskCtx.strokeStyle = 'rgba(0, 128, 255, 1)';
-    }
-
-    galleryInpaintMaskCtx.lineWidth = galleryInpaintBrushSize;
-    galleryInpaintMaskCtx.lineCap = 'round';
-    galleryInpaintMaskCtx.lineJoin = 'round';
-    galleryInpaintMaskCtx.beginPath();
-    galleryInpaintMaskCtx.moveTo(from.x, from.y);
-    galleryInpaintMaskCtx.lineTo(to.x, to.y);
-    galleryInpaintMaskCtx.stroke();
-    galleryInpaintMaskCtx.restore();
+    InpaintGridBrush.paint(galleryInpaintMaskCtx, from, to, galleryInpaintBrushSize,
+        'rgba(0, 128, 255, 1)', galleryInpaintTool === 'eraser');
 }
 
 function updateGalleryInpaintBrushCursor(event, overlay) {
@@ -476,7 +454,6 @@ function updateGalleryInpaintBrushCursor(event, overlay) {
         hideGalleryInpaintBrushCursor();
         return;
     }
-    galleryInpaintLastPointerEvent = event;
     const cursor = document.getElementById('galleryInpaintBrushCursor');
     if (!cursor || !overlay) return;
 
@@ -488,22 +465,17 @@ function updateGalleryInpaintBrushCursor(event, overlay) {
         event.clientY < rect.top ||
         event.clientY > rect.bottom
     ) {
-        cursor.style.display = 'none';
+        hideGalleryInpaintBrushCursor();
         return;
     }
 
-    const displayScale = rect.width / Math.max(1, overlay.width);
-    const displaySize = Math.max(4, galleryInpaintBrushSize * displayScale);
-
-    cursor.style.display = 'block';
-    cursor.style.width = `${displaySize}px`;
-    cursor.style.height = `${displaySize}px`;
-    cursor.style.left = `${event.clientX}px`;
-    cursor.style.top = `${event.clientY}px`;
-    cursor.classList.toggle('eraser', galleryInpaintTool === 'eraser');
+    galleryInpaintLastPointerEvent = event;
+    InpaintGridBrush.showCursor(cursor, overlay, getGalleryInpaintPoint(event, overlay),
+        galleryInpaintBrushSize, galleryInpaintTool === 'eraser');
 }
 
 function hideGalleryInpaintBrushCursor() {
+    galleryInpaintLastPointerEvent = null;
     const cursor = document.getElementById('galleryInpaintBrushCursor');
     if (cursor) cursor.style.display = 'none';
 }
@@ -529,15 +501,12 @@ function toggleGalleryInpaintMaskVisible() {
 function applyGalleryInpaintMaskVisibility() {
     const overlay = document.getElementById('galleryInpaintOverlay');
     const btn = document.getElementById('galleryInpaintMaskToggleBtn');
-    const cursor = document.getElementById('galleryInpaintBrushCursor');
-
     if (overlay) {
         overlay.style.opacity = galleryInpaintMaskVisible ? '1' : '0';
+        overlay.style.cursor = galleryInpaintMaskVisible ? '' : 'auto';
     }
 
-    if (cursor) {
-        cursor.style.display = galleryInpaintMaskVisible ? cursor.style.display : 'none';
-    }
+    if (!galleryInpaintMaskVisible) hideGalleryInpaintBrushCursor();
 
     if (btn) {
         btn.innerText = galleryInpaintMaskVisible ? '선택범위 숨김' : '선택범위 표시';

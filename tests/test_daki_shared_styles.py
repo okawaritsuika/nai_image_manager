@@ -140,8 +140,19 @@ class DakiSharedStylesTests(unittest.TestCase):
         original = self.catalog / self.style['preview']['image']
         stat = original.stat()
         stamp = getattr(stat, 'st_birthtime', stat.st_ctime)
-        self.assertEqual(self.store.get_style('shared-one')['sort_date'],
-                         datetime.fromtimestamp(stamp, timezone.utc).isoformat())
+        with mock.patch.object(self.store, '_image_path', wraps=self.store._image_path) as resolve_image:
+            self.assertEqual(self.store.get_style('shared-one')['sort_date'],
+                             datetime.fromtimestamp(stamp, timezone.utc).isoformat())
+        resolve_image.assert_called_once_with(self.catalog.resolve(), 'images/one.png')
+
+    def test_catalog_dates_skip_resolving_images_until_requested(self):
+        self.style['source_posted_at'] = '2026-01-02T03:04:05+00:00'
+        self.save()
+        with mock.patch.object(self.store, '_image_path', wraps=self.store._image_path) as resolve_image:
+            self.assertEqual(self.store.list_styles()[0]['sort_date'], self.style['source_posted_at'])
+            resolve_image.assert_not_called()
+            self.assertEqual(self.store.preview_path('shared-one'), (self.catalog / 'thumbs/one.webp').resolve())
+        resolve_image.assert_called_once_with(self.catalog.resolve(), 'thumbs/one.webp')
 
     def test_source_counts_refresh_without_changing_recipes_or_excluded_style_access(self):
         imported = self.root / 'imported'

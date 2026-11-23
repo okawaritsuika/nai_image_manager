@@ -163,7 +163,7 @@ async function api(url, options = {}) {
       headers: { 'Accept': 'application/json', ...(options.headers || {}) } });
     const data = await response.json().catch(() => ({}));
     if (disposed) throw new DOMException('Dictionary view was closed.', 'AbortError');
-    if (!response.ok) throw new Error(data.error || data.detail || '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+    if (!response.ok) throw new Error(data.error || data.detail || data.message || '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.');
     return data;
   } finally {
     options.signal?.removeEventListener('abort', forwardAbort);
@@ -1119,6 +1119,64 @@ async function init() {
     if (bootstrapController === controller) bootstrapController = null;
   }
 }
+
+const promptTagImportUrl = '/api/prompt-tags/import';
+const promptTagImportDialog = $('promptTagImportDialog');
+const promptTagImportStatus = $('promptTagImportStatus');
+let promptTagStatusController = null;
+let importingPromptTags = false;
+
+listen($('openPromptTagImport'), 'click', async () => {
+  promptTagImportDialog.showModal();
+  if (importingPromptTags) return;
+  promptTagStatusController?.abort();
+  const controller = new AbortController();
+  promptTagStatusController = controller;
+  promptTagImportStatus.textContent = '적용 상태를 확인하는 중입니다…';
+  try {
+    const result = await api(promptTagImportUrl, { signal: controller.signal });
+    if (controller.signal.aborted || !promptTagImportDialog.open) return;
+    if (result.status !== 'success' || typeof result.imported !== 'boolean') throw new Error();
+    promptTagImportStatus.textContent = result.import_state === 'invalid'
+      ? '저장된 CSV를 읽지 못해 기본 태그를 사용하고 있습니다. 다시 다운로드해 주세요.'
+      : result.imported ? '한글 태그 CSV가 적용되어 있습니다.' : '현재 기본 태그를 사용하고 있습니다.';
+  } catch {
+    if (!disposed && !controller.signal.aborted && promptTagImportDialog.open) {
+      promptTagImportStatus.textContent = '적용 상태를 확인하지 못했습니다.';
+    }
+  } finally {
+    if (promptTagStatusController === controller) promptTagStatusController = null;
+  }
+});
+listen($('closePromptTagImport'), 'click', () => promptTagImportDialog.close());
+listen(promptTagImportDialog, 'close', () => {
+  if (!promptTagImportDialog.open) promptTagStatusController?.abort();
+});
+listen($('promptTagImportForm'), 'submit', async event => {
+  event.preventDefault();
+  if (importingPromptTags) return;
+  promptTagStatusController?.abort();
+  const submit = $('submitPromptTagImport');
+  importingPromptTags = submit.disabled = true;
+  promptTagImportStatus.textContent = '한글 태그를 다운로드하고 적용하는 중입니다…';
+  try {
+    const result = await api('/api/prompt-tags/download', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    if (result.status !== 'success' || !Number.isSafeInteger(result.count)) {
+      throw new Error('자동완성 적용 결과를 확인하지 못했습니다.');
+    }
+    if (!disposed) promptTagImportStatus.textContent = `태그 ${number(result.count)}개를 자동완성에 적용했습니다.`;
+  } catch (error) {
+    if (!disposed) {
+      promptTagImportStatus.textContent = error.name === 'AbortError'
+        ? '자동완성 적용 결과를 확인하지 못했습니다.' : error.message;
+    }
+  } finally {
+    importingPromptTags = false;
+    if (!disposed) submit.disabled = false;
+  }
+});
 
 listen($('tagSearch'), 'input', event => { state.query = event.target.value; filterTags(); });
 listen($('categorySearch'), 'input', renderCategories);

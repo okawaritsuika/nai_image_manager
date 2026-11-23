@@ -118,3 +118,20 @@ test('old server 404 never falls back to replacing the whole saved list', async 
     assert.equal(await result, false);
     assert.equal(requests.length, 1);
 });
+
+test('a rejected last save leaves only acknowledged setups available to the next backup check', async () => {
+    const {context, requests} = harness();
+    const current = setup('already-on-server', 1);
+    const newer = setup('new-but-not-saved', 2);
+    const first = context.persistSavedCanvasSetups([current]);
+    await ready();
+    const second = context.persistSavedCanvasSetups([current, newer], {upserts: [newer]});
+    requests[0].finish(response([current]));
+    await first;
+    await ready();
+    assert.deepEqual(Array.from(context.loadSavedCanvasSetups(true), item => item.id), [current.id]);
+    requests[1].finish({ok: false, status: 500, json: async () => ({status: 'error'})});
+    assert.equal(await second, false);
+    assert.deepEqual(Array.from(context.loadSavedCanvasSetups(), item => item.id), [current.id]);
+    assert.deepEqual(Array.from(context.loadSavedCanvasSetups(true), item => item.id), [current.id]);
+});

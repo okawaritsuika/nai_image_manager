@@ -86,6 +86,56 @@ class ProjectCanvasSettingsTests(unittest.TestCase):
             'zoom': 1.5,
         }
 
+    def test_reference_placement_survives_an_old_settings_save_and_explicit_reset(self):
+        url = self.settings_url()
+        body = self.settings()
+        placement = {'scale': 2, 'panX': 0, 'panY': .8}
+        ref = self.reference()
+        body['inpaintReference'] = {**ref, **placement}
+        created = self.client.put(url, json={'revision': 0, 'settings': body})
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.headers.get('X-NAIM-Reference-Placement'), '1')
+        data = json.loads(self.path.read_text(encoding='utf-8'))
+        project = data['projects'][0]
+        self.assertEqual(project['inpaintReferencePlacement'], {'src': ref['src'], **placement})
+        # v1.3.5 rewrites only canvasSettings and its revision, dropping unknown reference fields.
+        old_reference = {**ref, 'width': 640, 'x': .3, 'zoom': 2}
+        project['canvasSettings'].update(revision=2, inpaintReference=old_reference)
+        self.path.write_text(json.dumps(data), encoding='utf-8')
+        before = self.path.read_bytes()
+        read = self.client.get(url)
+        self.assertEqual(read.headers.get('X-NAIM-Reference-Placement'), '1')
+        recovered = read.json['settings']
+        self.assertEqual(recovered['inpaintReference'], {**old_reference, **placement})
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertNotIn('inpaintReferencePlacement', self.client.get('/api/daki/projects').get_data(as_text=True))
+        body['inpaintReference'] = old_reference
+        response = self.client.put(url, json={'revision': 2, 'settings': body})
+        self.assertEqual(response.json['settings'], recovered)
+        self.assertEqual(self.path.read_bytes(), before)
+        response = self.client.put(url, headers={'X-NAIM-Reference-Placement': '1'}, json={'revision': 2, 'settings': body})
+        self.assertEqual(response.json['settings']['inpaintReference'], old_reference)
+        self.assertEqual(response.json['settings']['revision'], 3)
+        self.assertNotIn('inpaintReferencePlacement', json.loads(self.path.read_text(encoding='utf-8'))['projects'][0])
+        retry = self.client.put(url, headers={'X-NAIM-Reference-Placement': '1'}, json={'revision': 2, 'settings': body})
+        self.assertEqual(retry.json, response.json)
+
+    def test_reference_template_only_recovers_missing_fields_for_the_same_image(self):
+        for change in (None, {**self.reference(), 'src': '/canvas-imports/other.png'},
+                       {**self.reference(), 'scale': 1}, {**self.reference(), 'panY': .2}):
+            with self.subTest(change=change):
+                project = self.store.create_project('Alternatives')
+                settings = {**self.settings(), 'inpaintReference': {**self.reference(), 'scale': 3, 'panX': .1}}
+                self.store.update_canvas_settings(project['id'], settings, 0)
+                saved = self.store.update_canvas_settings(project['id'], {**settings, 'inpaintReference': change}, 1)
+                expected = self.reference() if change and change.get('scale') == 1 else change
+                self.assertEqual(saved['inpaintReference'], expected)
+                record = next(p for p in json.loads(self.path.read_text(encoding='utf-8'))['projects'] if p['id'] == project['id'])
+                if change and change.get('panY') == .2:
+                    self.assertEqual(record['inpaintReferencePlacement'], {'src': change['src'], 'panY': .2})
+                else:
+                    self.assertNotIn('inpaintReferencePlacement', record)
+
     def test_image_style_and_side_characters_round_trip_without_prompt_rewriting(self):
         settings = self.settings()
         settings['style'] = self.image_style()

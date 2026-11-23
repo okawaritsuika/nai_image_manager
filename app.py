@@ -104,7 +104,8 @@ QUALITY_PRESETS_FILE = os.path.join(CURRENT_DIR, "quality_presets.json")
 TAG_DATA_DIR = os.path.join(CURRENT_DIR, "data")
 TAG_CATEGORY_FILE = os.path.join(TAG_DATA_DIR, "tag_categories_ko.generated.json")
 TAG_CATEGORY_OVERRIDE_FILE = os.path.join(TAG_DATA_DIR, "tag_categories_ko.json")
-register_prompt_suggestion_routes(app, os.path.join(TAG_DATA_DIR, 'prompt_tags'))
+register_prompt_suggestion_routes(app, os.path.join(TAG_DATA_DIR, 'prompt_tags'),
+                                  os.path.join(CURRENT_DIR, 'prompt-tags.csv.local'))
 TAG_DB_FILE = os.path.join(TAG_DATA_DIR, "danbooru_tags.sqlite3")
 TAG_GROUP_LABELS = {
     "expression": "표정",
@@ -5674,6 +5675,7 @@ def read_canvas_image_bytes(image_ref):
 
 from naim.images.inpaint import (
     prepare_inpaint_mask_bytes,
+    prepare_inpaint_masks,
     image_to_png_bytes,
     blend_canvas_inpaint_result_with_source,
 )
@@ -5878,9 +5880,10 @@ def canvas_inpaint():
     if not api_key:
         return jsonify({"status": "error", "message": "NAI API Key가 없습니다."}), 400
 
+    masked_patch = data.get("maskedPatch") is True
     try:
         image_bytes = read_canvas_image_bytes(data.get("image"))
-        mask_bytes = prepare_inpaint_mask_bytes(read_canvas_image_bytes(data.get("mask")))
+        mask_bytes, blend_mask = prepare_inpaint_masks(read_canvas_image_bytes(data.get("mask")), masked_patch=masked_patch)
         reference = normalize_reference(data.get("reference"))
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
@@ -5989,11 +5992,15 @@ def canvas_inpaint():
                     inpainted = blend_canvas_inpaint_result_with_source(
                         image_bytes,
                         generated_data,
-                        mask_bytes,
-                        feather=int(prompt_info.get("feather") or prompt_info.get("mask_blur") or 0)
+                        blend_mask,
+                        feather=int(prompt_info.get("feather") or prompt_info.get("mask_blur") or 0),
+                        masked_patch=masked_patch,
                     )
                     img_data = image_to_png_bytes(inpainted, prompt_info)
-                    image_data_url = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}"
+                    image_data_url = None
+                    if (project_context is not None or data.get("persistResult") is False
+                            or data.get("includeResultImage") is not False):
+                        image_data_url = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}"
 
                     if project_context is not None:
                         try:
@@ -6050,7 +6057,7 @@ def canvas_inpaint():
                         "status": "success",
                         "src": src,
                         "name": saved_name,
-                        "image": image_data_url,
+                        **({"image": image_data_url} if image_data_url is not None else {}),
                         "promptInfo": prompt_info,
                         "model": prompt_info["model"],
                         "sampler": prompt_info.get("sampler"),

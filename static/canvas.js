@@ -369,7 +369,6 @@ function showToast(message) {
 }
 
 const CANVAS_STATE_KEY = window.CanvasWorkspaceBridge?.stateKey || 'naia_canvas_state_v1';
-const CANVAS_PENDING_IMPORT_KEY = 'naia_canvas_pending_import';
 const CANVAS_DISPLAY_PREVIEW_MAX_SIDE = 4096;
 const CANVAS_IMPORT_SESSION_ID = `canvas_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 const CANVAS_IMPORT_CLEANUP_DELAY = 2500;
@@ -410,6 +409,7 @@ let savedCanvasSetupsLoadPromise = null;
 let savedCanvasSetupsSavePromise = Promise.resolve();
 let canvasLegacySetupMigrationMessage = '';
 let pendingCanvasImportPayload = null;
+let pendingCanvasImportMode = null;
 let externalCanvasImageImportBusy = false;
 let canvasImportManagerItems = [];
 let selectedCanvasImportManagerRef = '';
@@ -418,9 +418,24 @@ let canvasImportManagerFilter = 'all';
 window.addEventListener('load', async () => {
     if (window.CanvasWorkspaceBridge?.isHost) return;
     if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.configure({
-        getContext: () => ({...getClipOutputTarget(), canvasWidth: currentCanvasWidth,
-            canvasHeight: currentCanvasHeight, selectionHidden: isSelectionOverlayHidden}),
-        save: () => saveCanvasState(),
+        getContext: (forPreview = false) => {
+            const target = getClipOutputTarget();
+            let clip = target?.clip;
+            const boundary = globalThis.CanvasClipBoundary?.get(clip);
+            if (boundary) {
+                clip = getBoundaryReferenceClip(target, boundary, forPreview);
+            } else if (forPreview && clip && isClipInpaintMergedSourceMode) {
+                const key = buildClipMergedSourcePreviewKey(target.selection, clip);
+                if (clipMergedSourcePreviewCache.key !== key || !clipMergedSourcePreviewCache.dataUrl) {
+                    ensureClipMergedSourcePreview(target.selection, clip, key);
+                }
+                clip = {imageWidth: clip.imageWidth || clip.layerWidth, imageHeight: clip.imageHeight || clip.layerHeight,
+                    src: clipMergedSourcePreviewCache.key === key ? clipMergedSourcePreviewCache.dataUrl : ''};
+            }
+            return {clip, selection: target?.selection, canvasWidth: currentCanvasWidth,
+                canvasHeight: currentCanvasHeight, selectionHidden: isSelectionOverlayHidden};
+        },
+        save: () => saveCanvasState({syncProject: true}),
         redraw: () => renderCanvasLayersOnSurface(),
         getProjectLink: () => window.CanvasProject?.localLink(),
         sessionId: CANVAS_IMPORT_SESSION_ID
@@ -430,10 +445,17 @@ window.addEventListener('load', async () => {
 
     updateCanvasRatioInfo();
     restoreCanvasState();
-    if (window.CanvasProject) await CanvasProject.initialize();
+    if (window.CanvasProject && await CanvasProject.initialize() === false) {
+        if (!window.CanvasWorkspaceBridge?.isPane && CanvasPendingImport.hasPending()) {
+            CanvasProject.forwardPendingImport?.();
+        }
+        window.CanvasWorkspaceBridge?.ready();
+        return;
+    }
+    if (!window.CanvasProject?.blocksLocalWrites?.()) void migrateCanvasLayerDataUrlsToServer();
     await loadSharedClipPromptGroups(true);
     updateSelectionOverlayToggleUI();
-    if (!window.CanvasWorkspaceBridge?.isPane) await consumePendingCanvasImport();
+    if (!window.CanvasWorkspaceBridge?.isPane && !window.CanvasProject?.blocksLocalWrites?.()) await consumePendingCanvasImport();
 
     document.addEventListener('mousemove', handleLayerMoveMouseMove);
     document.addEventListener('mouseup', handleLayerMoveMouseUp);
@@ -500,6 +522,7 @@ window.addEventListener('load', async () => {
     });
 
     document.addEventListener('keydown', (event) => {
+        if (globalThis.CanvasProject?.blocksLocalWrites?.()) return;
         if (handleClipOutputClipboardShortcut(event)) {
             return;
         }
@@ -538,7 +561,7 @@ window.addEventListener('resize', () => {
 });
 
 function saveCanvasStateBeforeLeaving() {
-    if (!currentCanvasWidth || !currentCanvasHeight) return;
+    if (window.CanvasProject?.isReadOnlyPreview?.() || !currentCanvasWidth || !currentCanvasHeight) return;
     // Leaving is a flush, not a new edit: do not start a fresh project request
     // after beforeunload has already checked whether all changes were saved.
     window.CanvasProject?.flush();
@@ -546,20 +569,23 @@ function saveCanvasStateBeforeLeaving() {
 }
 
 async function clearCurrentCanvasCompletely() {
+    if (globalThis.CanvasProject?.blocksLocalWrites?.()) return;
     const hasCanvas = Boolean(currentCanvasWidth && currentCanvasHeight) ||
         (Array.isArray(canvasLayers) && canvasLayers.length > 0);
 
     if (!hasCanvas) {
-        alert('초기화할 캔버스가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('초기화할 캔버스가 없습니다.');
         return;
     }
 
-    const ok = confirm(
-        '현재 캔버스를 완전히 초기화할까요?\n\n' +
-        '캔버스 크기, 레이어, 선택 영역, 클립 이미지, 인페인팅 결과가 모두 사라집니다.'
-    );
+    const currentLayers = canvasLayers;
+    const title = '현재 캔버스를 완전히 초기화할까요?';
+    const message = '캔버스 크기, 레이어, 선택 영역, 클립 이미지, 인페인팅 결과가 모두 사라집니다.';
+    const ok = await (globalThis.CanvasNativeDialogs
+        ? CanvasNativeDialogs.confirm({title, message, confirmLabel: '초기화', danger: true})
+        : confirm(`${title}\n\n${message}`));
 
-    if (!ok) return;
+    if (!ok || canvasLayers !== currentLayers) return;
 
     if (window.CanvasProject && !await CanvasProject.leave()) return;
     disposeClipMaskEditor();
@@ -599,6 +625,7 @@ async function clearCurrentCanvasCompletely() {
     clipInpaintLoadingClipId = null;
     isClipInpaintPreviewMode = false;
     isClipInpaintMergedSourceMode = false;
+    clearClipMergedSourcePreviewCache();
 
     sharedSelectionClipPromptInfo = null;
     sharedSelectionClipPromptControlGroups = [];
@@ -617,6 +644,7 @@ async function clearCurrentCanvasCompletely() {
     try {
         localStorage.removeItem(window.CanvasWorkspaceBridge?.stateKey || CANVAS_STATE_KEY);
         localStorage.removeItem(CANVAS_STATE_KEY + ':view');
+        clearCanvasPlacementBackup(localStorage, CANVAS_STATE_KEY);
     } catch (error) {
         console.warn('Canvas state clear failed:', error);
     }
@@ -648,6 +676,7 @@ async function clearCurrentCanvasCompletely() {
 }
 
 function openCanvasDialog() {
+    if (globalThis.CanvasProject?.blocksLocalWrites?.()) return;
     const modal = el('canvasCreateModal');
     if (modal) {
         modal.style.display = 'flex';
@@ -954,7 +983,14 @@ function addSelectionArea() {
         return;
     }
 
+    if (currentCanvasWidth < SELECTION_MIN_SIZE || currentCanvasHeight < SELECTION_MIN_SIZE) {
+        showToast(`선택 영역을 만들려면 캔버스의 가로와 세로가 각각 ${SELECTION_MIN_SIZE}px 이상이어야 합니다.`);
+        return;
+    }
+
     const size = 1024;
+    const width = Math.floor(Math.min(size, currentCanvasWidth) / SELECTION_SIZE_STEP) * SELECTION_SIZE_STEP;
+    const height = Math.floor(Math.min(size, currentCanvasHeight) / SELECTION_SIZE_STEP) * SELECTION_SIZE_STEP;
     const center = getSelectionAreaCreationCenter();
     const selection = {
         id: layerIdSeq++,
@@ -963,10 +999,10 @@ function addSelectionArea() {
         type: 'selection',
         expanded: true,
         hasInpaintResult: false,
-        x: Math.round(center.x - size / 2),
-        y: Math.round(center.y - size / 2),
-        layerWidth: size,
-        layerHeight: size,
+        x: Math.max(0, Math.min(currentCanvasWidth - width, Math.round(center.x - width / 2))),
+        y: Math.max(0, Math.min(currentCanvasHeight - height, Math.round(center.y - height / 2))),
+        layerWidth: width,
+        layerHeight: height,
         children: []
     };
 
@@ -1209,11 +1245,12 @@ function toggleCanvasLayerVisibility(layerId, event) {
     clearClipMergedSourcePreviewCache();
     clipMergedSourcePreviewSeq += 1;
 
-    renderLayerList();
-    renderCanvasLayersOnSurface();
-    if (isClipInpaintMergedSourceMode) {
-        renderClipOutputPanel();
-    }
+    const result = found.layer.type === 'clip' && found.layer.renderOnCanvas ? found.layer : null;
+    // A legacy selection can use its only direct result as the editable clip.
+    const redrawSelection = result && found.parent?.type === 'selection' && isSelectionChecked(found.parent.id) &&
+        !found.parent.children.some(layer => layer !== result && layer.type === 'clip' && layer.visible && layer.src);
+    renderLayerList(null, result);
+    renderCanvasLayersOnSurface({visibilityChanged: true, toggledClip: result, redrawSelection});
     saveCanvasState();
 }
 
@@ -1250,7 +1287,7 @@ async function deleteCanvasLayer(layerId, event) {
 
     const totalNodes = getAllCanvasLayerNodes();
     if (totalNodes.length <= 1) {
-        alert('레이어는 최소 1개 이상 필요합니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('레이어는 최소 1개 이상 필요합니다.');
         return;
     }
 
@@ -1290,11 +1327,22 @@ async function deleteCanvasLayer(layerId, event) {
     cleanupDetachedCanvasImportRefs(detachedRefs);
 }
 
-function renderLayerList() {
+function renderLayerList(inpaintInsert = null, toggledClip = null) {
     if (typeof refreshCanvasStyleLink === 'function') refreshCanvasStyleLink();
     if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.refresh();
     const list = el('layerList');
     if (!list) return;
+    if (toggledClip) {
+        const row = list.querySelector(`.layer-item[data-layer-id="${Number(toggledClip.id)}"]`);
+        const button = row?.querySelector('.layer-visibility-btn');
+        if (button) {
+            row.classList.toggle('hidden-layer', !toggledClip.visible);
+            button.classList.toggle('is-visible', toggledClip.visible);
+            button.classList.toggle('is-hidden', !toggledClip.visible);
+            updateImageResizePanel();
+            return;
+        }
+    }
 
     // Keep the row under the pointer in place when a generated result is inserted.
     const hovered = list.querySelector('.layer-item:hover');
@@ -1314,19 +1362,34 @@ function renderLayerList() {
         }, true);
     }
 
-    list.innerHTML = '';
-
-    if (!canvasLayers.length) {
-        list.innerHTML = '<div class="layer-empty">캔버스를 생성하면 레이어가 표시됩니다.</div>';
-        return;
+    if (!inpaintInsert || !insertInpaintResultRow(list, inpaintInsert)) {
+        list.innerHTML = '';
+        if (!canvasLayers.length) {
+            list.innerHTML = '<div class="layer-empty">캔버스를 생성하면 레이어가 표시됩니다.</div>';
+            return;
+        }
+        renderLayerTree(canvasLayers, list, 0);
     }
-
-    renderLayerTree(canvasLayers, list, 0);
     if (anchorId) {
         const anchor = list.querySelector(`.layer-item[data-layer-id="${Number(anchorId)}"]`);
         if (anchor) list.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
     }
     updateImageResizePanel();
+}
+
+function insertInpaintResultRow(list, {folder, result}) {
+    const row = list.querySelector(`.folder-item[data-layer-id="${Number(folder.id)}"]`);
+    const children = row?.nextElementSibling;
+    if (!children?.classList.contains('layer-children')) return false;
+
+    const depth = Number(row.style.getPropertyValue('--layer-depth')) + 1;
+    const fragment = document.createDocumentFragment();
+    list.querySelector('.layer-item.active')?.classList.remove('active');
+    renderLayerTree([result], fragment, depth);
+    children.querySelector(':scope > .folder-empty')?.remove();
+    children.prepend(fragment);
+    row.querySelector('.layer-meta').textContent = `폴더 · ${folder.children.length}개`;
+    return true;
 }
 
 function getCanvasLayerDeletePointerTarget(event) {
@@ -1475,8 +1538,6 @@ function renderLayerTree(layers, container, depth) {
             };
         }
 
-        // 폴더와 캔버스 레이어는 드래그 대상에서 제외.
-        // 일반 레이어/이미지 레이어만 폴더 안으로 넣을 수 있게 함.
         if (!isCanvas) {
             item.draggable = true;
 
@@ -1617,7 +1678,7 @@ let canvasViewSaveTimer = null;
 function saveCanvasView() {
     clearTimeout(canvasViewSaveTimer);
     canvasViewSaveTimer = null;
-    if (!currentCanvasWidth || !currentCanvasHeight) return true;
+    if (!currentCanvasWidth || !currentCanvasHeight || window.CanvasProject?.blocksLocalWrites?.()) return true;
     try {
         localStorage.setItem(CANVAS_STATE_KEY + ':view', JSON.stringify({
             savedAt: Date.now(), width: currentCanvasWidth, height: currentCanvasHeight, canvasZoom, clipPreviewZoom
@@ -1628,28 +1689,48 @@ function saveCanvasView() {
 
 function getCanvasAutosave() {
     if (!canvasAutosave) canvasAutosave = createCanvasAutosave({
-        snapshot: () => ({...buildCanvasStateSnapshot({preserveMasks: Boolean(window.CanvasProject?.localLink() || window.CanvasWorkspaceBridge?.isPane)}),
+        snapshot: () => ({...buildCanvasStateSnapshot({
+            preserveMasks: Boolean(window.CanvasProject?.localLink() || window.CanvasWorkspaceBridge?.isPane), preserveBoundaryMask: true
+        }),
             projectLink: window.CanvasProject?.localLink() || null,
             ...(window.CanvasWorkspaceBridge?.isPane ? {workspaceSetupId: activeCanvasSetupId} : {})}),
-        write: text => localStorage.setItem(window.CanvasWorkspaceBridge?.stateKey || CANVAS_STATE_KEY, text),
-        status: setCanvasAutosaveStatus
+        canWrite: () => !window.CanvasProject?.blocksLocalWrites?.(),
+        write: (text, state) => writeCanvasAutosaveSnapshot(
+            localStorage, window.CanvasWorkspaceBridge?.stateKey || CANVAS_STATE_KEY, text, state,
+            () => window.CanvasProject?.canRestoreFromServer?.(state)
+        ),
+        status: setCanvasAutosaveStatus,
+        isProjectSavePending: () => window.CanvasProject?.isSavePending?.()
     });
     return canvasAutosave;
 }
-function setCanvasAutosaveStatus(state) {
+function setCanvasAutosaveStatus(state, errorName) {
     const box = document.getElementById('canvasAutosaveStatus');
     const label = document.getElementById('canvasAutosaveMessage');
     const retry = document.getElementById('canvasAutosaveRetry');
     if (!box || !label || !retry) return;
-    box.hidden = state === 'idle';
+    box.hidden = state === 'idle' || state === 'project-pending';
     box.dataset.state = state;
-    label.textContent = state === 'error'
-        ? '자동 저장 실패. 현재 작업은 화면에 남아 있습니다. 다시 시도하거나 현재 캔버스 저장으로 보관하세요.'
-        : state === 'pending' ? '자동 저장 대기 중…' : '이 브라우저에 자동 저장됨';
+    if (box.hidden) {
+        label.textContent = '';
+    } else if (state === 'error') {
+        const reason = errorName === 'QuotaExceededError'
+            ? '브라우저 저장 공간이 부족해 임시 백업에 실패했습니다.'
+            : '브라우저에 임시 백업을 저장하지 못했습니다.';
+        const next = window.CanvasProject?.localLink()
+            ? '프로젝트 저장 상태는 상단에서 확인할 수 있습니다.'
+            : '현재 캔버스 저장으로 작업을 보관할 수 있습니다.';
+        label.textContent = reason + ' ' + next;
+    } else if (state === 'project') {
+        label.textContent = '프로젝트 저장본에서 다시 열 수 있습니다.';
+    } else {
+        label.textContent = state === 'pending' ? '브라우저 임시 백업 대기 중…' : '이 브라우저에 임시 백업됨';
+    }
     retry.hidden = state !== 'error';
     window.CanvasWorkspaceBridge?.report();
 }
 function saveCanvasState(options = {}) {
+    if (window.CanvasProject?.blocksLocalWrites?.()) return false;
     if (options.viewOnly) {
         if (options.immediate) return saveCanvasView();
         if (canvasViewSaveTimer === null) canvasViewSaveTimer = setTimeout(saveCanvasView, 200);
@@ -1657,7 +1738,7 @@ function saveCanvasState(options = {}) {
     }
 
     const edited = typeof recordCanvasEditHistory === 'function' ? recordCanvasEditHistory() : true;
-    if (edited) window.CanvasProject?.schedule(Boolean(options.immediate));
+    if (edited || options.syncProject) window.CanvasProject?.schedule(Boolean(options.immediate));
     return getCanvasAutosave().schedule(Boolean(options.immediate));
 }
 window.addEventListener('beforeunload', event => {
@@ -1865,12 +1946,12 @@ async function cleanupDetachedCanvasImportRefs(refs) {
 }
 
 function buildCanvasStateSnapshot(options = {}) {
-    return {
+    const snapshot = {
         version: 2,
         savedAt: Date.now(),
         width: currentCanvasWidth,
         height: currentCanvasHeight,
-        layers: cloneCanvasLayersForState(canvasLayers, options.preserveMasks === true),
+        layers: cloneCanvasLayersForState(canvasLayers, options.preserveMasks === true, options.preserveBoundaryMask === true),
         activeLayerId,
         layerIdSeq,
         styleLink: typeof getCanvasStyleLink === 'function' ? getCanvasStyleLink()?.snapshot() : undefined,
@@ -1892,14 +1973,17 @@ function buildCanvasStateSnapshot(options = {}) {
         clipPreviewZoom: typeof clipPreviewZoom !== 'undefined' ? clipPreviewZoom : 1,
         isClipInpaintMergedSourceMode: Boolean(isClipInpaintMergedSourceMode)
     };
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.storePlacement?.(snapshot.layers, snapshot.inpaintReference);
+    return snapshot;
 }
 
-function cloneCanvasLayersForState(layers = [], preserveMasks = false) {
+function cloneCanvasLayersForState(layers = [], preserveMasks = false, preserveBoundaryMask = false) {
     const copies = structuredClone(Array.isArray(layers) ? layers : []);
+    if (preserveMasks) return copies;
     const clearSnapshotMasks = (items) => {
         items.forEach((layer) => {
-            if (layer.type === 'clip' && !preserveMasks) {
-                clearClipInpaintMask(layer);
+            if (layer.type === 'clip') {
+                clearClipInpaintMask(layer, preserveBoundaryMask);
             }
 
             if ((layer.type === 'folder' || layer.type === 'selection') && Array.isArray(layer.children)) {
@@ -1924,13 +2008,18 @@ function collectClipInpaintMaskRefs(clip) {
     return [...refs];
 }
 
-function clearClipInpaintMask(clip) {
+function clearClipInpaintMask(clip, preserveBoundaryMask = false) {
     if (!clip || clip.type !== 'clip') return;
 
     delete clip.maskSrc;
     delete clip.maskDataUrl;
     delete clip.maskWidth;
     delete clip.maskHeight;
+    if (clip.boundaryDraft && !preserveBoundaryMask) {
+        delete clip.boundaryDraft.maskDataUrl;
+        delete clip.boundaryDraft.maskX;
+        delete clip.boundaryDraft.maskY;
+    }
 }
 
 function restoreCanvasState() {
@@ -1944,21 +2033,33 @@ function restoreCanvasState() {
 
         const state = JSON.parse(raw);
 
+        if (state?.projectRestoreOnly === true && state.projectLink?.unsaved === false) {
+            window.CanvasProject?.restoreLocalLink(state.projectLink, state);
+            renderLayerList();
+            return;
+        }
+
         if (!state || !state.width || !state.height) {
             renderLayerList();
             return;
         }
 
+        // Local zoom overrides belong to the editor, not the pending project write.
+        const displayState = {...state};
         try {
             const view = JSON.parse(localStorage.getItem(CANVAS_STATE_KEY + ':view'));
             if (view?.width === state.width && view.height === state.height && view.savedAt >= state.savedAt) {
-                if (Number.isFinite(view.canvasZoom)) state.canvasZoom = view.canvasZoom;
-                if (Number.isFinite(view.clipPreviewZoom)) state.clipPreviewZoom = view.clipPreviewZoom;
+                if (Number.isFinite(view.canvasZoom)) displayState.canvasZoom = view.canvasZoom;
+                if (Number.isFinite(view.clipPreviewZoom)) displayState.clipPreviewZoom = view.clipPreviewZoom;
             }
         } catch (_) { /* The document remains usable if its view record is unavailable. */ }
 
-        applyCanvasStateSnapshot(state);
-        window.CanvasProject?.restoreLocalLink(state.projectLink);
+        applyCanvasStateSnapshot(displayState, {
+            deferMigration: true,
+            referencePlacement: (state.inpaintReference === undefined || state.inpaintReference?.reference) && typeof readCanvasPlacementBackup === 'function'
+                ? readCanvasPlacementBackup(localStorage, CANVAS_STATE_KEY, state) : null
+        });
+        window.CanvasProject?.restoreLocalLink(state.projectLink, state);
 
     } catch (error) {
         console.warn('Canvas state restore failed:', error);
@@ -1971,10 +2072,12 @@ function closePendingCanvasImportModal() {
     if (modal) modal.remove();
 
     pendingCanvasImportPayload = null;
+    pendingCanvasImportMode = null;
 }
 
 function showPendingCanvasImportModal(payload) {
     pendingCanvasImportPayload = payload;
+    pendingCanvasImportMode = null;
 
     const existing = el('pendingCanvasImportModal');
     if (existing) existing.remove();
@@ -1982,17 +2085,13 @@ function showPendingCanvasImportModal(payload) {
     const hasCanvas = hasUsableCurrentCanvas();
     const alreadySaved = isCurrentCanvasAlreadySaved();
     const hasPrompt = Boolean(payload.hasPromptInfo || hasAnyPromptText(payload.promptInfo));
-    const promptStatusHtml = hasPrompt
-        ? `
-            <div class="canvas-tool-hint" style="margin-bottom:14px;">
-                프롬프트를 읽었습니다. 갤러리에서 가져온 이미지처럼 프롬프트 정보가 레이어에 함께 들어갑니다.
-            </div>
-        `
-        : `
-            <div class="canvas-tool-hint" style="margin-bottom:14px;">
-                이 이미지에서 읽을 수 있는 프롬프트를 찾지 못했습니다. 이미지만 레이어로 가져옵니다.
-            </div>
-        `;
+    const hasSettings = canvasInpaintHasGenerationSettings(payload.promptInfo);
+    const promptStatus = hasPrompt
+        ? '프롬프트를 읽었습니다. 프롬프트 정보가 레이어에 함께 들어갑니다.'
+        : hasSettings ? '생성 설정을 레이어에 함께 가져옵니다.'
+        : payload.path
+            ? '가져올 때 원본 이미지의 프롬프트를 읽습니다.'
+            : '이 이미지에서 읽을 수 있는 프롬프트를 찾지 못했습니다. 이미지만 레이어로 가져옵니다.';
 
     const modal = document.createElement('div');
     modal.id = 'pendingCanvasImportModal';
@@ -2011,7 +2110,19 @@ function showPendingCanvasImportModal(payload) {
                 <strong style="color:var(--text-main);">${escapeHtml(payload.name || '이미지')}</strong>
             </div>
 
-            ${promptStatusHtml}
+            <div class="canvas-tool-hint" style="margin-bottom:14px;">${promptStatus}</div>
+
+            <div id="pendingCanvasImportConflict" class="canvas-tool-hint" style="margin-bottom:14px;" hidden>
+                <p id="pendingCanvasImportConflictMessage" role="status" style="margin:0 0 8px;">
+                    프로젝트 저장이 충돌했습니다. 현재 작업을 새 캔버스로 보관한 뒤 그림을 추가할 수 있습니다.
+                </p>
+                <button type="button" class="secondary" onclick="CanvasProject.previewLatest(false)">
+                    서버 최신본 미리보기
+                </button>
+                <button id="pendingCanvasImportRecover" type="button" class="secondary" onclick="recoverPendingCanvasImportConflict(this)">
+                    내 작업을 새 캔버스로 보관
+                </button>
+            </div>
 
             ${
                 !hasCanvas
@@ -2033,20 +2144,27 @@ function showPendingCanvasImportModal(payload) {
                     `
             }
 
+            ${hasCanvas ? `
+                <label class="canvas-ratio-toggle">
+                    <input type="checkbox" id="pendingImportOriginalSize">
+                    <span>원본 해상도로 가져오기</span>
+                </label>
+            ` : ''}
+
             <div class="canvas-modal-actions" style="display:flex; flex-direction:column; gap:8px;">
                 ${
                     hasCanvas
                         ? `
-                            <button class="success" onclick="confirmPendingCanvasImport('append')" style="width:100%;">
+                            <button class="success" data-canvas-import-mode onclick="confirmPendingCanvasImport('append')" style="width:100%;">
                                 기존 캔버스에 그림 추가
                             </button>
 
-                            <button class="secondary" onclick="confirmPendingCanvasImport('reset')" style="width:100%;">
+                            <button class="secondary" data-canvas-import-mode onclick="confirmPendingCanvasImport('reset')" style="width:100%;">
                                 기존 캔버스를 초기화하고 그림 추가
                             </button>
                         `
                         : `
-                            <button class="success" onclick="confirmPendingCanvasImport('append')" style="width:100%;">
+                            <button class="success" data-canvas-import-mode onclick="confirmPendingCanvasImport('append')" style="width:100%;">
                                 새 캔버스로 가져오기
                             </button>
                         `
@@ -2060,10 +2178,47 @@ function showPendingCanvasImportModal(payload) {
     `;
 
     document.body.appendChild(modal);
+    updatePendingCanvasImportConflict();
+}
+
+function updatePendingCanvasImportConflict() {
+    const conflictPanel = el('pendingCanvasImportConflict');
+    if (!conflictPanel) return;
+    const conflict = Boolean(window.CanvasProject?.hasSaveConflict?.());
+    conflictPanel.hidden = !conflict;
+    el('pendingCanvasImportRecover').textContent = pendingCanvasImportMode
+        ? '내 작업을 새 캔버스로 보관하고 계속' : '내 작업을 새 캔버스로 보관';
+    el('pendingCanvasImportModal').querySelectorAll('[data-canvas-import-mode]').forEach(button => {
+        button.hidden = conflict;
+    });
+}
+
+async function recoverPendingCanvasImportConflict(button) {
+    const payload = pendingCanvasImportPayload;
+    const mode = pendingCanvasImportMode;
+    button.disabled = true;
+    try {
+        if (!await window.CanvasProject.recoverConflict()) {
+            if (button.isConnected) {
+                el('pendingCanvasImportConflictMessage').textContent =
+                    '작업 사본을 저장하지 못했습니다. 현재 작업과 가져올 그림은 그대로 있습니다. 다시 시도해 주세요.';
+            }
+            return;
+        }
+        if (button.isConnected && pendingCanvasImportPayload === payload) {
+            pendingCanvasImportMode = null;
+            updatePendingCanvasImportConflict();
+            if (mode) await confirmPendingCanvasImport(mode);
+            else el('pendingCanvasImportModal').querySelector('[data-canvas-import-mode]')?.focus();
+        }
+    } finally {
+        button.disabled = false;
+    }
 }
 
 async function resetCanvasForPendingImport() {
     if (window.CanvasProject && !await CanvasProject.leave()) return false;
+    clearClipMergedSourcePreviewCache();
     if (typeof getCanvasStyleLink === 'function') getCanvasStyleLink()?.restore(null);
     if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.restore(null);
     if (typeof CanvasRetouch !== 'undefined') CanvasRetouch.restore(null);
@@ -2103,16 +2258,41 @@ async function confirmPendingCanvasImport(mode) {
     const shouldSaveBeforeImport = Boolean(saveCheckbox && saveCheckbox.checked);
 
     try {
-        await importPendingCanvasImage(payload, {reset: mode === 'reset', saveCurrent: shouldSaveBeforeImport});
+        const imported = await importPendingCanvasImage(payload, {
+            reset: mode === 'reset',
+            saveCurrent: shouldSaveBeforeImport,
+            preserveOriginalSize: mode === 'append' && el('pendingImportOriginalSize')?.checked === true
+        });
+        if (!imported && pendingCanvasImportPayload === payload) {
+            if (window.CanvasProject?.hasSaveConflict?.()) pendingCanvasImportMode = mode;
+            updatePendingCanvasImportConflict();
+        }
 
     } catch (error) {
-        alert(`캔버스 이미지 가져오기 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`캔버스 이미지 가져오기 실패: ${error.message || error}`);
     }
 }
 
-function cancelPendingCanvasImport() {
-    localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
-    closePendingCanvasImportModal();
+async function cancelPendingCanvasImport() {
+    const payload = pendingCanvasImportPayload;
+    if (!payload || pendingCanvasImageImportBusy) return;
+    pendingCanvasImageImportBusy = true;
+    try {
+        if (localCanvasImports[0] === payload) localCanvasImports.shift();
+        else {
+            const result = await CanvasPendingImport.withHead(payload, () => CanvasPendingImport.acknowledge(payload));
+            if (result === 'busy') return;
+        }
+        if (pendingCanvasImportPayload !== payload) return;
+        importedPendingCanvasPayload = null;
+        closePendingCanvasImportModal();
+    } catch (error) {
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`가져오기 취소 실패: ${error.message || error}`);
+        return;
+    } finally {
+        pendingCanvasImageImportBusy = false;
+    }
+    await consumePendingCanvasImport(false);
 }
 
 function formatCanvasImportSize(bytes) {
@@ -2342,7 +2522,7 @@ function importCanvasImportManagerItem(ref) {
     if (!item) return;
 
     closeCanvasImportManagerModal();
-    showPendingCanvasImportModal({
+    return queueLocalCanvasImport({
         src: item.src,
         path: item.src,
         width: item.width,
@@ -2360,12 +2540,22 @@ async function deleteCanvasImportManagerItem(ref) {
 
     const status = getCanvasImportUsageStatus(ref);
     if (!status.deletable) {
-        alert(`${status.label}이라 삭제하지 않았습니다.\n${status.detail}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`${status.label}이라 삭제하지 않았습니다.\n${status.detail}`);
         return;
     }
 
-    const ok = confirm(`'${item.name || '외부 이미지'}' 파일을 삭제할까요?\n현재 캔버스나 저장된 캔버스에서 사용 중이면 삭제되지 않습니다.`);
-    if (!ok) return;
+    const title = '외부 이미지 삭제';
+    const message = `'${item.name || '외부 이미지'}' 파일을 삭제할까요?\n현재 캔버스나 저장된 캔버스에서 사용 중이면 삭제되지 않습니다.`;
+    const ok = await (globalThis.CanvasNativeDialogs
+        ? CanvasNativeDialogs.confirm({title, message, confirmLabel: '삭제', danger: true})
+        : confirm(message));
+    if (!ok || !canvasImportManagerItems.includes(item)) return;
+
+    const currentUsage = getCanvasImportUsageStatus(ref);
+    if (!currentUsage.deletable) {
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`${currentUsage.label}이라 삭제하지 않았습니다.\n${currentUsage.detail}`);
+        return;
+    }
 
     try {
         const response = await fetch('/api/canvas/cleanup_import_refs', {
@@ -2385,13 +2575,13 @@ async function deleteCanvasImportManagerItem(ref) {
         if (Number(data.deleted || 0) > 0) {
             showToast('외부 이미지를 삭제했습니다.');
         } else {
-            alert('삭제되지 않았습니다. 현재 캔버스나 저장된 캔버스에서 사용 중일 수 있습니다.');
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)('삭제되지 않았습니다. 현재 캔버스나 저장된 캔버스에서 사용 중일 수 있습니다.');
         }
 
         await loadCanvasImportManagerItems();
 
     } catch (error) {
-        alert(`외부 이미지 삭제 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`외부 이미지 삭제 실패: ${error.message || error}`);
     }
 }
 
@@ -2413,10 +2603,10 @@ async function handleExternalCanvasImageSelected(input) {
 }
 
 async function importExternalCanvasImageFile(file) {
-    if (!file) return;
+    if (!file || globalThis.CanvasProject?.blocksLocalWrites?.()) return;
 
     if (!isSupportedExternalCanvasImage(file)) {
-        alert('PNG, JPG, WebP 이미지만 가져올 수 있습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('PNG, JPG, WebP 이미지만 가져올 수 있습니다.');
         return;
     }
 
@@ -2461,10 +2651,10 @@ async function importExternalCanvasImageFile(file) {
             throw new Error('업로드된 이미지 경로가 없습니다.');
         }
 
-        showPendingCanvasImportModal(payload);
+        await queueLocalCanvasImport(payload);
 
     } catch (error) {
-        alert(`외부 이미지 가져오기 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`외부 이미지 가져오기 실패: ${error.message || error}`);
 
     } finally {
         externalCanvasImageImportBusy = false;
@@ -2540,7 +2730,7 @@ function bindExternalCanvasImageDropAndPaste() {
     if (document.body) document.body.dataset.externalImagePasteBound = '1';
 
     document.addEventListener('paste', async (event) => {
-        if (isEditablePasteTarget(event.target)) return;
+        if (globalThis.CanvasProject?.blocksLocalWrites?.() || isEditablePasteTarget(event.target)) return;
 
         let file = CanvasImageClipboard.readEventFile(event.clipboardData);
         const pasteToSelection = isClipOutputKeyboardTargetActive();
@@ -2564,62 +2754,112 @@ function bindExternalCanvasImageDropAndPaste() {
     });
 }
 
-async function consumePendingCanvasImport() {
-    const raw = localStorage.getItem(CANVAS_PENDING_IMPORT_KEY);
-    if (!raw) return;
+async function queueLocalCanvasImport(payload) {
+    localCanvasImports.push({...payload, chooseImportMode: true});
+    await consumePendingCanvasImport(false);
+}
 
+async function nextPendingCanvasImport() {
+    if (!pendingGalleryImportRequests) return localCanvasImports[0];
+    let gallery;
     try {
-        const payload = JSON.parse(raw);
-        if (!payload || !payload.src) {
-            localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
-            return;
-        }
-
-        // 캔버스가 없으면 물어보지 않고 바로 새 캔버스로 가져온다.
-        if (!hasUsableCurrentCanvas()) {
-            await importPendingCanvasImage(payload);
-            return;
-        }
-
-        // 기존 캔버스가 있으면 추가/초기화 선택 모달을 띄운다.
-        showPendingCanvasImportModal(payload);
-
+        gallery = await CanvasPendingImport.peek();
     } catch (error) {
-        localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
-        alert(`캔버스 이미지 가져오기 실패: ${error.message || error}`);
+        pendingGalleryImportRequests = 0;
+        if (!localCanvasImports.length) throw error;
+    }
+    const local = localCanvasImports[0];
+    if (!gallery) {
+        pendingGalleryImportRequests = 0;
+        return local;
+    }
+    return local && Number(local.importedAt) < Number(gallery.importedAt) ? local : gallery;
+}
+
+async function consumePendingCanvasImport(receiveGallery = true) {
+    if (window.CanvasProject?.blocksLocalWrites?.()) return;
+    // A workspace pane receives gallery work only when its project editor was explicitly signalled.
+    if (receiveGallery) {
+        pendingGalleryImportRequests = window.CanvasWorkspaceBridge?.isPane ? pendingGalleryImportRequests + 1 : 1;
+    }
+    if (pendingCanvasImportPayload || pendingCanvasImageImportBusy) return;
+    let payload;
+    try {
+        payload = await nextPendingCanvasImport();
+        if (!payload || pendingCanvasImportPayload || pendingCanvasImageImportBusy) return;
+        if (window.CanvasWorkspaceBridge?.isPane && payload !== localCanvasImports[0]) {
+            pendingGalleryImportRequests = Math.max(0, pendingGalleryImportRequests - 1);
+        }
+        if (!payload.chooseImportMode && !hasUsableCurrentCanvas() && !window.CanvasProject?.hasSaveConflict?.()) {
+            pendingCanvasImportPayload = payload;
+            if (await importPendingCanvasImage(payload) || pendingCanvasImportPayload !== payload) return;
+        }
+        showPendingCanvasImportModal(payload);
+    } catch (error) {
+        if (payload && pendingCanvasImportPayload === payload) showPendingCanvasImportModal(payload);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`캔버스 이미지 가져오기 실패: ${error.message || error}`);
     }
 }
 
 let pendingCanvasImageImportBusy = false;
+let importedPendingCanvasPayload = null;
+const localCanvasImports = [];
+let pendingGalleryImportRequests = 0;
 
-async function importPendingCanvasImage(payload, {reset = false, saveCurrent = false} = {}) {
+function pendingCanvasImageInfo(payload) {
+    const width = Math.round(Number(payload.width)), height = Math.round(Number(payload.height));
+    if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) return {width, height};
+    return loadImageInfo(payload.src);
+}
+
+async function importPendingCanvasImage(payload, {reset = false, saveCurrent = false, preserveOriginalSize = false} = {}) {
     if (pendingCanvasImageImportBusy) return false;
     pendingCanvasImageImportBusy = true;
+    const local = payload === localCanvasImports[0];
+    let result;
     try {
-        const project = window.CanvasProject;
-        const target = project ? await project.prepareImageImport(payload.projectContext) : null;
-        if (target === false) return false;
+        const importHead = async () => {
+            const imported = local ? importedPendingCanvasPayload === payload : CanvasPendingImport.same(importedPendingCanvasPayload, payload);
+            if (!imported) {
+                const project = window.CanvasProject;
+                if (project?.hasSaveConflict?.() || project?.blocksLocalWrites?.()) return false;
+                const target = project ? await project.prepareImageImport(payload.projectContext) : null;
+                if (target === false) return false;
+                const imageInfo = await pendingCanvasImageInfo(payload);
+                if (saveCurrent && !isCurrentCanvasAlreadySaved()) await saveCurrentCanvasSetupSilently();
+                if (project?.hasSaveConflict?.() || project?.blocksLocalWrites?.()) return false;
+                if (!local && !CanvasPendingImport.isHead(payload)) return 'stale';
+                const current = project?.localLink();
+                if (target && current && target.projectId !== current.projectId && !await project.leave()) return false;
+                if (reset && !await resetCanvasForPendingImport()) return false;
 
-        if (saveCurrent && !isCurrentCanvasAlreadySaved()) await saveCurrentCanvasSetupSilently();
-        // Flush the old project before the imported layer can enter its autosave snapshot.
-        const current = project?.localLink();
-        if (target && current && target.projectId !== current.projectId && !await project.leave()) return false;
-        if (reset && !await resetCanvasForPendingImport()) return false;
-
-        localStorage.removeItem(CANVAS_PENDING_IMPORT_KEY);
-        closePendingCanvasImportModal();
-        await importImageLayer(payload);
-        if (target) {
-            try {
-                await project.connectImportedImage(target, payload);
-            } catch (error) {
-                showToast('그림은 가져왔지만 프로젝트 연결에 실패했습니다. 「Daki 프로젝트 연결」에서 다시 연결해 주세요. ' + error.message);
+                const layer = await importImageLayer(payload, {preserveOriginalSize, imageInfo});
+                importedPendingCanvasPayload = payload;
+                if (target) {
+                    try {
+                        await project.connectImportedImage(target, payload);
+                    } catch (error) {
+                        showToast('그림은 가져왔지만 프로젝트 연결에 실패했습니다. 「Daki 프로젝트 연결」에서 다시 연결해 주세요. ' + error.message);
+                    }
+                }
+                if (layer?.sourcePath && !hasAnyPromptText(layer.promptInfo) && !canvasInpaintHasGenerationSettings(payload.promptInfo)) {
+                    void loadImportedImagePrompt(layer);
+                }
             }
-        }
-        return true;
+            if (local) localCanvasImports.shift();
+            else await CanvasPendingImport.acknowledge(payload);
+            importedPendingCanvasPayload = null;
+            return true;
+        };
+        result = local ? await importHead() : await CanvasPendingImport.withHead(payload, importHead);
     } finally {
         pendingCanvasImageImportBusy = false;
     }
+    if (result === true || result === 'stale') {
+        closePendingCanvasImportModal();
+        await consumePendingCanvasImport(false);
+    }
+    return result === true;
 }
 
 function loadImageInfo(src) {
@@ -2634,12 +2874,8 @@ function loadImageInfo(src) {
     });
 }
 
-async function importImageLayer(payload) {
-    const payloadWidth = Math.round(Number(payload.width) || 0);
-    const payloadHeight = Math.round(Number(payload.height) || 0);
-    const info = payloadWidth > 0 && payloadHeight > 0
-        ? { width: payloadWidth, height: payloadHeight }
-        : await loadImageInfo(payload.src);
+async function importImageLayer(payload, options = null) {
+    const info = options?.imageInfo || await pendingCanvasImageInfo(payload);
 
     // 캔버스가 없으면 가져온 이미지 크기로 새 캔버스 생성
     if (!currentCanvasWidth || !currentCanvasHeight) {
@@ -2650,19 +2886,11 @@ async function importImageLayer(payload) {
     }
 
     const initialGeometry = getInitialImageLayerGeometry(info.width, info.height, {
-        allowUpscale: true
+        allowUpscale: true,
+        preserveOriginalSize: options?.preserveOriginalSize
     });
 
     if (typeof CanvasInpaintSettings !== 'undefined') CanvasInpaintSettings.seed(payload.promptInfo);
-    let promptInfo = normalizePromptInfo(payload.promptInfo);
-
-    if ((!promptInfo || !hasAnyPromptText(promptInfo)) && payload.path) {
-        const fetchedPrompt = await fetchPromptInfoByPath(payload.path);
-        if (typeof CanvasInpaintSettings !== 'undefined') CanvasInpaintSettings.seed(fetchedPrompt);
-        if (fetchedPrompt && hasAnyPromptText(fetchedPrompt)) {
-            promptInfo = fetchedPrompt;
-        }
-    }
     const newLayerId = layerIdSeq++;
 
     const layer = {
@@ -2673,7 +2901,7 @@ async function importImageLayer(payload) {
         type: 'image',
         src: payload.src,
         sourcePath: payload.path || '',
-        promptInfo,
+        promptInfo: normalizePromptInfo(payload.promptInfo),
         promptControlGroups: [],
         imageWidth: info.width,
         imageHeight: info.height,
@@ -2689,13 +2917,28 @@ async function importImageLayer(payload) {
     renderCanvas(currentCanvasWidth, currentCanvasHeight);
     renderLayerList();
     saveCanvasState();
+    return layer;
+}
+
+async function loadImportedImagePrompt(layer) {
+    const initialPrompt = layer.promptInfo;
+    const sourcePath = layer.sourcePath;
+    const promptInfo = await fetchPromptInfoByPath(sourcePath);
+    if (!promptInfo || findCanvasLayer(layer.id)?.layer !== layer
+        || layer.promptInfo !== initialPrompt || layer.sourcePath !== sourcePath) return;
+
+    const seeded = typeof CanvasInpaintSettings !== 'undefined' && CanvasInpaintSettings.seed(promptInfo);
+    const hasMetadata = hasAnyPromptText(promptInfo) || canvasInpaintHasGenerationSettings(promptInfo);
+    if (hasMetadata) layer.promptInfo = promptInfo;
+    if (hasMetadata || seeded) saveCanvasState({syncProject: true});
 }
 
 function renderCanvasLayersOnSurface(options = {}) {
     const surface = el('canvasSurface');
     if (!surface) return;
 
-    if (canvasHotGeometryFrame !== null) {
+    const hadPendingGeometry = canvasHotGeometryFrame !== null;
+    if (hadPendingGeometry) {
         cancelAnimationFrame(canvasHotGeometryFrame);
         canvasHotGeometryFrame = null;
     }
@@ -2704,19 +2947,30 @@ function renderCanvasLayersOnSurface(options = {}) {
     const displayScale = getCanvasDisplayScale();
     if (options.zoomOnly && renderCanvasLayersOnSurfaceZoomOnly(surface, displayScale)) return;
 
-    surface.innerHTML = '';
-
+    const insert = options.inpaintInsert;
+    const toggled = options.toggledClip;
+    let wasTiled = false;
+    let isTiled = false;
     if (window.CanvasSourceTilesAvailable && window.CanvasEditorScene?.configureSources) {
-        window.CanvasEditorScene.configureSources(collectDrawableImageLayersForClip(canvasLayers),
+        const layers = collectDrawableImageLayersForClip(canvasLayers);
+        wasTiled = (insert || toggled) && (window.CanvasEditorScene.usesTiledSource?.(toggled || insert.result) ||
+            layers.some(layer => window.CanvasEditorScene.usesTiledSource?.(layer)));
+        window.CanvasEditorScene.configureSources(layers,
             currentCanvasWidth, currentCanvasHeight, Boolean(window.CanvasRetouch?.isOpen() ||
                 (typeof canvasLayerEraserEnabled !== 'undefined' && canvasLayerEraserEnabled)));
+        isTiled = (insert || toggled) && layers.some(layer => window.CanvasEditorScene.usesTiledSource?.(layer));
     }
-    renderCanvasLayerStack(canvasLayers, surface, displayScale);
-    syncCanvasEditorScene(surface);
+    const incremental = !hadPendingGeometry && !options.redrawSelection && !wasTiled && !isTiled;
+    const toggledInPlace = incremental && toggled && updateInpaintResultVisibilityOnSurface(surface, displayScale, toggled);
+    if (!toggledInPlace && !(incremental && insert && insertInpaintResultOnSurface(surface, displayScale, insert))) {
+        surface.innerHTML = '';
+        renderCanvasLayerStack(canvasLayers, surface, displayScale);
+    }
+    syncCanvasEditorScene(surface, options);
     renderMultiLayerTransformOverlay(surface, displayScale);
     renderClampedImageResizeHandles(surface, displayScale);
     renderClipOutputPanel();
-    renderPinnedReferencePanel();
+    if (!toggledInPlace) renderPinnedReferencePanel();
     renderCanvasResizeHandles(surface, displayScale);
     renderCanvasResizeSpacingGuides(surface, displayScale);
     if (typeof syncCanvasLayerEraser === 'function') syncCanvasLayerEraser();
@@ -2728,11 +2982,54 @@ function renderCanvasLayersOnSurface(options = {}) {
     if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.render();
 }
 
-function syncCanvasEditorScene(surface) {
+function updateInpaintResultVisibilityOnSurface(surface, displayScale, clip) {
+    if (isImageResizeMode || isCanvasResizeMode || isLayerMoveMode || selectedLayerIds.size > 1 ||
+        canvasLayerEraserEnabled || window.CanvasRetouch?.isOpen()) return false;
+    const id = Number(clip.id);
+    const node = surface.querySelector(`.image-layer[data-layer-id="${id}"]`);
+    if (node) {
+        node.querySelector('img').classList.remove('clip-inpaint-result-reveal');
+        if (clip.visible) updateCanvasLayerNodeGeometry(clip, displayScale, node);
+        node.style.display = clip.visible ? '' : 'none';
+        return true;
+    }
+    // A result hidden when the project opened has a stack position but no decoded image yet.
+    const slot = surface.querySelector(`template[data-inpaint-slot="${id}"]`);
+    if (!slot || !clip.visible) return false;
+    const fragment = document.createDocumentFragment();
+    renderCanvasLayerStack([clip], fragment, displayScale, findSelectionParentForLayerId(id));
+    slot.replaceWith(fragment);
+    return true;
+}
+
+function insertInpaintResultOnSurface(surface, displayScale, {selection, folder, result}) {
+    if (isImageResizeMode || isCanvasResizeMode || isLayerMoveMode || selectedLayerIds.size > 1 ||
+        canvasLayerEraserEnabled || window.CanvasRetouch?.isOpen()) return false;
+    // The previous top sibling anchors the new image relative to other selections and overlays.
+    const previous = folder.children.find((layer, index) => index > 0 && layer.visible);
+    if (previous?.type !== 'clip' || !previous.renderOnCanvas) return false;
+    let anchor = surface.querySelector(`.image-layer[data-layer-id="${Number(previous.id)}"]`);
+    if (!anchor) return false;
+    // Hidden siblings above the visible anchor must stay below this new result when shown again.
+    for (const sibling of folder.children.slice(1, folder.children.indexOf(previous))) {
+        const id = Number(sibling.id);
+        const slot = surface.querySelector(`.image-layer[data-layer-id="${id}"], template[data-inpaint-slot="${id}"]`);
+        if (slot) { anchor = slot; break; }
+    }
+
+    const fragment = document.createDocumentFragment();
+    renderCanvasLayerStack([result], fragment, displayScale, selection);
+    anchor.after(fragment);
+    surface.querySelector('.active-selection')?.classList.remove('active-selection');
+    return true;
+}
+
+function syncCanvasEditorScene(surface, {appendedClipId, toggledClip, visibilityChanged} = {}) {
     if (!window.CanvasEditorScene || typeof collectDrawableImageLayersForClip !== 'function') return;
     window.CanvasEditorScene.refresh({surface, workspace: surface.closest('.canvas-workspace'),
         width: currentCanvasWidth, height: currentCanvasHeight,
-        layers: collectDrawableImageLayersForClip(canvasLayers),
+        layers: collectDrawableImageLayersForClip(canvasLayers), appendedClipId, toggledClipId: toggledClip?.id,
+        visibilityChanged,
         paused: Boolean(window.CanvasRetouch?.isOpen() ||
             (typeof canvasLayerEraserEnabled !== 'undefined' && canvasLayerEraserEnabled))});
 }
@@ -3648,7 +3945,14 @@ function startSelectionMoveFromCanvasEvent(event, layer, resizeHandle = null) {
 function renderCanvasLayerStack(layers, surface, displayScale, parentSelection = null) {
     // 배열 앞쪽이 위 레이어이므로, 화면에는 아래 레이어부터 먼저 그림
     [...layers].reverse().forEach((layer) => {
-        if (!layer.visible) return;
+        if (!layer.visible) {
+            if (layer.type === 'clip' && layer.renderOnCanvas && layer.src) {
+                const slot = document.createElement('template');
+                slot.dataset.inpaintSlot = String(layer.id);
+                surface.appendChild(slot);
+            }
+            return;
+        }
 
         if (layer.type === 'folder') {
             layer.children = Array.isArray(layer.children) ? layer.children : [];
@@ -3919,7 +4223,7 @@ async function fitCanvasSizeToContextImageLayer() {
             layer.imageWidth = width;
             layer.imageHeight = height;
         } catch (error) {
-            alert(`이미지 크기를 읽을 수 없습니다: ${error.message || error}`);
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)(`이미지 크기를 읽을 수 없습니다: ${error.message || error}`);
             return;
         }
     }
@@ -3969,7 +4273,7 @@ async function openOriginalLayerDetailEditor() {
     const layer = found?.layer;
 
     if (!canUseLayerAsDetailSource(layer)) {
-        alert('디테일을 적용할 이미지 또는 클립 레이어를 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('디테일을 적용할 이미지 또는 클립 레이어를 찾을 수 없습니다.');
         return;
     }
 
@@ -3977,7 +4281,7 @@ async function openOriginalLayerDetailEditor() {
         const detailSource = await getLayerDetailSource(layer);
 
         if (!detailSource) {
-            alert('디테일을 적용할 이미지 크기를 읽을 수 없습니다.');
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)('디테일을 적용할 이미지 크기를 읽을 수 없습니다.');
             return;
         }
 
@@ -4008,7 +4312,7 @@ async function openOriginalLayerDetailEditor() {
         showReferenceGenToast('원본 이미지에서 디테일 영역을 선택할 수 있습니다.');
 
     } catch (error) {
-        alert(`원본 디테일 편집을 열 수 없습니다: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`원본 디테일 편집을 열 수 없습니다: ${error.message || error}`);
     }
 }
 
@@ -4097,7 +4401,7 @@ async function matchClipPromptToContextImageLayer() {
     const layer = found?.layer;
 
     if (!layer || layer.type !== 'image') {
-        alert('프롬프트를 가져올 이미지 레이어를 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('프롬프트를 가져올 이미지 레이어를 찾을 수 없습니다.');
         return;
     }
 
@@ -4115,7 +4419,7 @@ async function matchClipPromptToContextImageLayer() {
         }
 
         if (!hasAnyPromptText(promptInfo)) {
-            alert(
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)(
                 '이 이미지 레이어에서 프롬프트를 찾지 못했습니다.\n' +
                 '이미지 레이어에 promptInfo가 있거나 sourcePath로 원본 메타데이터를 읽을 수 있어야 합니다.'
             );
@@ -4157,7 +4461,7 @@ async function matchClipPromptToContextImageLayer() {
         showCanvasPromptMatchMessage('이미지 레이어의 프롬프트로 맞췄습니다.');
 
     } catch (error) {
-        alert(`프롬프트 맞춤 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`프롬프트 맞춤 실패: ${error.message || error}`);
     }
 }
 
@@ -4401,7 +4705,7 @@ function setCanvasResizeMode(enabled) {
 
 function toggleCanvasResizeMode() {
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
@@ -5479,8 +5783,8 @@ function canDropLayerOnTarget(sourceId, targetId, position) {
 
     if (position === 'inside') {
         if (target.type !== 'folder' && target.type !== 'selection') return false;
-        if (source.type === 'folder' || source.type === 'selection' || source.type === 'canvas') return false;
-        return true;
+        if (source.type === 'selection') return target.type === 'folder';
+        return source.type !== 'folder';
     }
 
     if (position !== 'before' && position !== 'after') return false;
@@ -6512,8 +6816,17 @@ function getCurrentClipOutputDisplayState() {
 
     const previewClip = getTopVisibleInpaintClipForSelection(target.selection, target.clip);
     const showInpaintPreview = Boolean(isClipInpaintPreviewMode && previewClip);
+    const boundary = globalThis.CanvasClipBoundary?.get(target.clip);
+    if (boundary && !(showInpaintPreview && previewClip.boundaryBaseClipId == null)) {
+        const rect = {...boundary.rect};
+        return {selection: target.selection, baseClip: target.clip, boundaryRect: rect,
+            displayClip: {...boundary.anchor, x: rect.x, y: rect.y, imageWidth: rect.width,
+                imageHeight: rect.height, layerWidth: rect.width, layerHeight: rect.height, rotation: 0},
+            displaySrc: boundary.anchor.src, isMergedPreview: isClipInpaintMergedSourceMode,
+            renderSource: createClipBoundarySource(target.selection, target.clip, boundary.anchor, isClipInpaintMergedSourceMode)};
+    }
 
-    const mergedPreviewKey = isClipInpaintMergedSourceMode
+    const mergedPreviewKey = !showInpaintPreview && isClipInpaintMergedSourceMode
         ? buildClipMergedSourcePreviewKey(target.selection, target.clip)
         : '';
 
@@ -6537,6 +6850,13 @@ function getCurrentClipOutputDisplayState() {
 
 function clonePromptControlGroupsForClipboard(groups) {
     return Array.isArray(groups) ? structuredClone(groups) : [];
+}
+
+async function captureClipOutputForClipboard(state) {
+    if (state.boundaryRect) {
+        state.displaySrc = (await state.renderSource(state.boundaryRect)).toDataURL('image/png');
+    }
+    return buildClipboardPayloadFromClipOutputState(state);
 }
 
 function buildClipboardPayloadFromClipOutputState(state) {
@@ -6570,7 +6890,7 @@ function buildExternalClipboardPayloadForClipOutput(imageDataUrl, state) {
     if (!imageDataUrl || !state?.selection || !state.baseClip) return null;
 
     // Match inpainting placement; a previewed result may have been moved or resized.
-    const sourceClip = state.baseClip;
+    const sourceClip = state.boundaryRect ? state.displayClip : state.baseClip;
 
     return {
         src: imageDataUrl,
@@ -6619,20 +6939,19 @@ async function copyClipOutputToInternalClipboard() {
 
     const state = getCurrentClipOutputDisplayState();
     if (!state?.displaySrc) {
-        alert('복사할 클립 결과가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('복사할 클립 결과가 없습니다.');
         return false;
     }
 
-    clipOutputInternalClipboard = buildClipboardPayloadFromClipOutputState(state);
-
     try {
+        clipOutputInternalClipboard = await captureClipOutputForClipboard(state);
         await writeClipOutputToSystemClipboard(state.displaySrc);
 
         if (typeof showToast === 'function') {
             showToast('클립 결과를 클립보드에 복사했습니다.');
         }
     } catch (error) {
-        alert(`복사 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`복사 실패: ${error.message || error}`);
         return false;
     }
 
@@ -6644,7 +6963,7 @@ async function pasteInternalClipboardToClipInpaintResults(options = {}) {
 
     const state = getCurrentClipOutputDisplayState();
     if (!state?.selection || !state.baseClip) {
-        alert('붙여넣을 선택 영역을 먼저 선택해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('붙여넣을 선택 영역을 먼저 선택해 주세요.');
         return false;
     }
 
@@ -6665,11 +6984,11 @@ async function pasteInternalClipboardToClipInpaintResults(options = {}) {
         }
 
         if (!clipboard?.src && options.preferCurrentOutput) {
-            clipboard = buildClipboardPayloadFromClipOutputState(state);
+            clipboard = await captureClipOutputForClipboard(state);
         }
 
         if (!clipboard?.src) {
-            alert('가져올 클립보드 이미지가 없습니다.');
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)('가져올 클립보드 이미지가 없습니다.');
             return false;
         }
 
@@ -6742,7 +7061,7 @@ async function pasteInternalClipboardToClipInpaintResults(options = {}) {
 
         return true;
     } catch (error) {
-        alert(`가져오기 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`가져오기 실패: ${error.message || error}`);
         return false;
     }
 }
@@ -6848,14 +7167,14 @@ async function clipSelectionFromContext() {
     const selection = found?.layer;
 
     if (!selection || selection.type !== 'selection') {
-        alert('선택 영역을 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('선택 영역을 찾을 수 없습니다.');
         return;
     }
 
     try {
         await createClipFromSelection(selection);
     } catch (error) {
-        alert(`클립 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`클립 실패: ${error.message || error}`);
     }
 }
 
@@ -6964,6 +7283,7 @@ async function createClipFromSelection(selection) {
         type: 'clip',
         src: savedSrc,
         sourceSelectionId: selection.id,
+        ...(sourceLayerForPrompt ? {sourceImageLayerId: sourceLayerForPrompt.id} : {}),
         sourcePath: sourceLayerForPrompt?.sourcePath || '',
         promptInfo: clipPromptInfo,
         promptControlGroups: Array.isArray(sourceLayerForPrompt?.promptControlGroups)
@@ -7006,12 +7326,12 @@ async function copyMergedCanvasImageToClipboard() {
     closeCanvasSurfaceContextMenu();
 
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
     if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
-        alert('현재 브라우저에서 이미지 클립보드 복사를 지원하지 않습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('현재 브라우저에서 이미지 클립보드 복사를 지원하지 않습니다.');
         return;
     }
 
@@ -7026,10 +7346,10 @@ async function copyMergedCanvasImageToClipboard() {
         if (typeof showToast === 'function') {
             showToast('캔버스 통합본을 클립보드에 복사했습니다.');
         } else {
-            alert('캔버스 통합본을 클립보드에 복사했습니다.');
+            (globalThis.CanvasNativeDialogs?.alert ?? alert)('캔버스 통합본을 클립보드에 복사했습니다.');
         }
     } catch (error) {
-        alert(`복사 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`복사 실패: ${error.message || error}`);
     }
 }
 
@@ -7047,7 +7367,7 @@ function buildMergedCanvasDownloadName() {
 
 async function downloadMergedCanvasImage() {
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('먼저 캔버스를 생성해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('먼저 캔버스를 생성해 주세요.');
         return;
     }
 
@@ -7072,7 +7392,7 @@ async function downloadMergedCanvasImage() {
             showToast('캔버스 통합본 다운로드를 시작했습니다.');
         }
     } catch (error) {
-        alert(`외부 이미지 내보내기 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`외부 이미지 내보내기 실패: ${error.message || error}`);
     } finally {
         if (button) {
             button.disabled = false;
@@ -7095,7 +7415,7 @@ async function buildMergedOnlyCanvasStateSnapshot(dataUrl = null, exportedPrompt
     const imageLayerId = 1;
     const baseLayerId = 2;
 
-    return {
+    const snapshot = {
         version: 2,
         savedAt: Date.now(),
         width: currentCanvasWidth,
@@ -7142,6 +7462,8 @@ async function buildMergedOnlyCanvasStateSnapshot(dataUrl = null, exportedPrompt
         canvasZoom: 1,
         clipPreviewZoom: typeof clipPreviewZoom !== 'undefined' ? clipPreviewZoom : 1
     };
+    if (typeof CanvasInpaintReference !== 'undefined') CanvasInpaintReference.storePlacement?.(snapshot.layers, snapshot.inpaintReference);
+    return snapshot;
 }
 
 function getPrimaryPromptSourceLayer(selection) {
@@ -7332,7 +7654,7 @@ function restoreSelectionPositionToClipOutput() {
     const sourcePosition = getClipSourceSelectionPosition(clip);
 
     if (!selection || !clip || !sourcePosition) {
-        alert('되돌릴 클립 위치를 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('되돌릴 클립 위치를 찾을 수 없습니다.');
         return false;
     }
 
@@ -7414,7 +7736,9 @@ function keepDefaultClipOutputPanelVisible(panel) {
     // The workspace can extend below a short browser window. Keep the resize corner reachable.
     const visibleWidth = Math.min(workspace.clientWidth, window.innerWidth - workspaceRect.left - workspace.clientLeft);
     const visibleHeight = Math.min(workspace.clientHeight, window.innerHeight - workspaceRect.top - workspace.clientTop);
-    panel.style.maxWidth = `${Math.max(420, visibleWidth - 16)}px`;
+    const maxWidth = Math.max(1, visibleWidth - 16);
+    panel.style.maxWidth = `${maxWidth}px`;
+    panel.style.minWidth = `${Math.min(320, maxWidth)}px`;
     panel.style.maxHeight = `${Math.max(340, visibleHeight - 16)}px`;
     if (clipOutputPanelPosition?.custom) return;
     const panelRect = panel.getBoundingClientRect();
@@ -7439,7 +7763,13 @@ function bindClipOutputPanelDrag(panel) {
     const title = panel.querySelector('.canvas-clip-output-title');
     if (!title) return;
 
-    title.onmousedown = (event) => startClipOutputPanelDrag(event, panel);
+    title.onmousedown = (event) => {
+        if (!event.target.closest('button')) startClipOutputPanelDrag(event, panel);
+    };
+    // Dismiss before the first stroke without replacing its pointer target.
+    panel.addEventListener('pointerdown', (event) => {
+        if (!event.target.closest('.clip-mask-tool-control')) closeClipMaskSizePopover();
+    }, true);
 }
 
 function getClipOutputViewportSize(wrap) {
@@ -7455,12 +7785,13 @@ function getClipOutputViewportSize(wrap) {
 function fitClipOutputPanelToImage(panel, clip) {
     const wrap = panel.querySelector('.canvas-clip-output-image-wrap');
     if (!wrap || !clip) return;
-    const naturalWidth = Math.max(1, Number(clip.imageWidth) || 512);
+    const strip = panel.querySelector('.clip-reference-strip:not([hidden])');
+    const naturalWidth = Math.max(1, Number(clip.imageWidth) || 512) + Number(strip?.dataset.referenceWidth || 0);
     const naturalHeight = Math.max(1, Number(clip.imageHeight) || 512);
     const maxWidth = Math.min(546, parseFloat(panel.style.maxWidth) || window.innerWidth - 32);
     const maxHeight = parseFloat(panel.style.maxHeight) || window.innerHeight - 32;
     panel.dataset.manualSize = '';
-    panel.classList.remove('compact');
+    panel.classList.toggle('compact', maxWidth < 420);
     panel.style.width = `${maxWidth}px`;
     panel.style.height = 'auto';
     // With a zero flex basis the viewport contributes only its borders here.
@@ -7493,7 +7824,7 @@ function bindClipOutputPanelResize(panel, clip, syncOverlay) {
     const resize = (start, factor) => {
         const maxWidth = parseFloat(panel.style.maxWidth) || window.innerWidth - 32;
         const maxHeight = parseFloat(panel.style.maxHeight) || window.innerHeight - 32;
-        const minFactor = Math.max((320 - start.chromeWidth) / start.width, 64 / start.height);
+        const minFactor = Math.max((Math.min(320, maxWidth) - start.chromeWidth) / start.width, 64 / start.height);
         factor = Math.max(minFactor, Math.min(factor, (maxWidth - start.chromeWidth) / start.width));
         const setWidth = () => {
             const width = start.width * factor + start.chromeWidth;
@@ -7578,9 +7909,7 @@ function handleClipOutputPanelDragMove(event) {
     const drag = activeClipOutputPanelDrag;
     const displayScale = Math.max(getCanvasDisplayScale(), 0.01);
     const gap = 18;
-    // A default panel may sit left of the stage after viewport clamping.
-    // Keep that starting position reachable so its first drag does not jump.
-    const nextLeft = Math.max(Math.min(0, drag.startLeft), Math.round(drag.startLeft + event.clientX - drag.startClientX));
+    const nextLeft = Math.round(drag.startLeft + event.clientX - drag.startClientX);
     const nextTop = Math.round(drag.startTop + event.clientY - drag.startClientY);
 
     drag.panel.style.left = `${nextLeft}px`;
@@ -7588,7 +7917,7 @@ function handleClipOutputPanelDragMove(event) {
 
     clipOutputPanelPosition = {
         ...(clipOutputPanelPosition || {}),
-        canvasLeft: drag.startLeft < 0 ? (nextLeft - gap) / displayScale : Math.max(0, (nextLeft - gap) / displayScale),
+        canvasLeft: (nextLeft - gap) / displayScale,
         canvasTop: nextTop / displayScale,
         custom: true
     };
@@ -7599,6 +7928,94 @@ function stopClipOutputPanelDrag() {
 
     activeClipOutputPanelDrag.panel?.classList.remove('dragging');
     activeClipOutputPanelDrag = null;
+}
+
+function toggleClipBoundaryExpansion() {
+    const target = getClipOutputTarget();
+    if (!target) return;
+    const preview = isClipInpaintPreviewMode && getTopVisibleInpaintClipForSelection(target.selection, target.clip);
+    const anchor = preview?.boundaryBaseClipId === target.clip.id
+        ? findCanvasLayer(preview.boundaryAnchorId)?.layer || target.clip
+        : preview || target.clip;
+    CanvasClipBoundary.toggle(target.clip, anchor, currentCanvasWidth, currentCanvasHeight);
+    isClipInpaintPreviewMode = false;
+    activeClipAutoMaskPickClipId = null;
+    closeClipMaskSizePopover();
+    renderClipOutputPanel();
+    saveCanvasState();
+}
+
+function selectClipBoundaryAdjust() {
+    const state = CanvasClipBoundary.get(getClipOutputTarget()?.clip);
+    if (!state) return;
+    state.adjusting = true;
+    activeClipAutoMaskPickClipId = null;
+    closeClipMaskSizePopover();
+    renderClipOutputPanel();
+}
+
+function selectClipBoundaryPaint() {
+    const state = CanvasClipBoundary.get(getClipOutputTarget()?.clip);
+    if (state) state.adjusting = false;
+}
+
+function getBoundaryReferenceClip(target, state, forPreview) {
+    const rect = {...state.rect};
+    const panel = el('canvasStage')?.querySelector('.canvas-clip-output-panel');
+    const key = [rect.x, rect.y, rect.width, rect.height].join(',');
+    if (forPreview && panel?.boundarySource && panel.boundaryReference?.key !== key) {
+        const preview = {key, src: ''};
+        panel.boundaryReference = preview;
+        panel.boundarySource(rect, 768).then(canvas => {
+            if (!panel.isConnected || panel.boundaryReference !== preview) return;
+            preview.src = canvas.toDataURL('image/png');
+            CanvasInpaintReference.render();
+        }).catch(() => {});
+    }
+    return {id: target.clip.id, imageWidth: rect.width, imageHeight: rect.height,
+        src: panel?.boundaryReference?.key === key ? panel.boundaryReference.src : ''};
+}
+
+function bindClipBoundaryEditor(panel, target, state, previewOnly) {
+    const wrap = panel.querySelector('.canvas-clip-output-image-wrap');
+    wrap.oncontextmenu = event => {
+        if (!event.target.closest?.('.clip-reference-strip')) openClipOutputClipboardContextMenu(event);
+    };
+    const commit = maskChanged => {
+        CanvasClipBoundary.commit(target.clip, state, maskChanged);
+        saveCanvasState();
+        if (!maskChanged) globalThis.CanvasInpaintReference?.render();
+    };
+    const autoMask = point => {
+        const {x, y, width, height} = state.rect;
+        const area = {x, y, layerWidth: width, layerHeight: height, rotation: 0};
+        const mask = document.createElement('canvas');
+        mask.width = width;
+        mask.height = height;
+        const layer = findAutoMaskSourceLayerAtMaskPoint(area, area, {x: point.x - x, y: point.y - y}, mask);
+        if (!layer || !applyAutoMaskAboveSourceLayer(area, area, layer, mask)) {
+            showToast('클릭한 위치에서 기준 그림 레이어를 찾을 수 없습니다.');
+            return;
+        }
+        CanvasClipBoundary.replaceMask(state, mask);
+        activeClipAutoMaskPickClipId = null;
+        commit(true);
+        renderClipOutputPanel();
+    };
+    const cleanup = CanvasClipBoundaryEditor.mount(panel, state, {
+        previewOnly,
+        renderSource: panel.boundarySource, getBrushSize: () => clipMaskBrushSize, autoMask,
+        getTool: () => activeClipAutoMaskPickClipId === target.clip.id ? 'auto' : activeClipMaskTool,
+        getSteps: () => buildEffectiveClipPromptInfo(target.clip).steps,
+        getRequestEstimate(rect, steps) {
+            const {requestSize, referenceMissing} = getCanvasSizeWarning(rect.width, rect.height, true);
+            return {width: requestSize.width, height: requestSize.height,
+                cost: referenceMissing ? 0 : getExpectedAnlasCost(requestSize.width, requestSize.height, steps)};
+        },
+        onEdit: commit, onError: error => showToast('경계 확장 미리보기 실패: ' + error.message)
+    });
+    const stopResize = bindClipOutputPanelResize(panel, target.clip, () => keepDefaultClipOutputPanelVisible(panel));
+    activeClipMaskEditorCleanup = () => { cleanup(); stopResize(); };
 }
 
 function renderClipOutputPanel() {
@@ -7623,6 +8040,20 @@ function renderClipOutputPanel() {
 
     stage.classList.add('has-clip-output');
 
+    if (globalThis.CanvasClipBoundary?.needsRestore(target.clip)) {
+        const anchor = findCanvasLayer(target.clip.boundaryDraft.anchorId)?.layer;
+        CanvasClipBoundary.restore(target.clip, anchor, currentCanvasWidth, currentCanvasHeight)
+            .then(restored => {
+                if (restored && getClipOutputTarget()?.clip === target.clip) renderClipOutputPanel();
+            }).catch(error => showToast('경계 확장 복원 실패: ' + error.message));
+    }
+    let boundaryState = globalThis.CanvasClipBoundary?.get(target.clip);
+    if (boundaryState && (boundaryState.canvasWidth !== currentCanvasWidth ||
+        boundaryState.canvasHeight !== currentCanvasHeight || findCanvasLayer(boundaryState.anchor.id)?.layer !== boundaryState.anchor)) {
+        CanvasClipBoundary.toggle(target.clip, boundaryState.anchor, boundaryState.canvasWidth, boundaryState.canvasHeight);
+        boundaryState = null;
+    }
+
     const panel = document.createElement('div');
     panel.className = 'canvas-clip-output-panel';
     panel.dataset.clipId = String(target.clip.id);
@@ -7639,7 +8070,8 @@ function renderClipOutputPanel() {
     const showInpaintPreview = Boolean(isClipInpaintPreviewMode && previewClip);
 
     // 결과 보기는 요청 소스의 통합 설정과 독립적으로 전환한다.
-    const mergedPreviewKey = isClipInpaintMergedSourceMode
+    const useBoundaryView = boundaryState && !(showInpaintPreview && previewClip.boundaryBaseClipId == null);
+    const mergedPreviewKey = !boundaryState && !showInpaintPreview && isClipInpaintMergedSourceMode
         ? buildClipMergedSourcePreviewKey(target.selection, target.clip)
         : '';
 
@@ -7649,8 +8081,8 @@ function renderClipOutputPanel() {
         clipMergedSourcePreviewCache.key === mergedPreviewKey &&
         clipMergedSourcePreviewCache.dataUrl;
 
-    if (isClipInpaintMergedSourceMode && !showInpaintPreview && !hasMergedPreview) {
-        ensureClipMergedSourcePreview(target.selection, target.clip);
+    if (mergedPreviewKey && !hasMergedPreview) {
+        ensureClipMergedSourcePreview(target.selection, target.clip, mergedPreviewKey);
     }
 
     const displayClip = showInpaintPreview && previewClip
@@ -7666,21 +8098,22 @@ function renderClipOutputPanel() {
         ? 'canvas-clip-output-image-wrap mask-editor preview-mode'
         : 'canvas-clip-output-image-wrap mask-editor';
 
-    if (isClipInpaintPreviewMode && !previewClip) {
-        isClipInpaintPreviewMode = false;
-    }
-
     const isLoading = clipInpaintLoadingClipId === target.clip.id;
 
     panel.innerHTML = `
-        <div class="canvas-clip-output-title">클립 결과 <span class="clip-output-drag-hint">드래그로 이동</span></div>
-        <div class="canvas-clip-output-meta">
+        <div class="canvas-clip-output-title">
+            <strong title="드래그로 이동">클립 결과</strong>
             <span class="clip-output-selection-name" title="${escapeHtml(target.selection.name || '선택 영역')}">${escapeHtml(target.selection.name || '선택 영역')}</span>
+            <button type="button" class="clip-mask-tool-btn clip-mask-tool-labeled ${boundaryState ? 'active' : ''}"
+                    aria-pressed="${Boolean(boundaryState)}" onclick="toggleClipBoundaryExpansion()">경계 확장</button>
+        </div>
+        <div class="canvas-clip-output-meta">
             <span>${displayClip.imageWidth} × ${displayClip.imageHeight}px</span>
             <span class="clip-preview-zoom-readout">${Math.round(clipPreviewZoom * 100)}%</span>
             ${
                 showInpaintPreview && previewClip
                     ? `<span class="clip-preview-mode-label" title="인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}">인페인팅 보기: ${escapeHtml(previewClip.name || '결과')}</span>`
+                    : boundaryState ? '<span class="clip-preview-mode-label">경계 확장 편집</span>'
                     : isClipInpaintMergedSourceMode
                         ? `<span class="clip-preview-mode-label">${hasMergedPreview ? '통합 소스 보기' : '통합 소스 생성 중...'}</span>`
                         : `<span class="clip-preview-mode-label">마스크 편집 보기</span>`
@@ -7689,60 +8122,22 @@ function renderClipOutputPanel() {
 
         <div class="canvas-clip-output-toolbar">
             <div class="clip-output-tools-row" role="group" aria-label="클립 편집 도구">
-            <div class="clip-mask-tool-control ${openClipMaskSizeTool === 'brush' ? 'open' : ''}">
-                <button class="clip-mask-tool-btn clip-mask-tool-labeled ${activeClipMaskTool === 'brush' ? 'active' : ''}"
-                        title="브러시"
-                        aria-pressed="${activeClipMaskTool === 'brush'}"
-                        onclick="toggleClipMaskToolSizePopover('brush', event)">
-                    브러시
-                </button>
-                <div class="clip-brush-size-popover">
-                    <input type="range"
-                        min="${CLIP_MASK_BRUSH_MIN}"
-                        max="${CLIP_MASK_BRUSH_MAX}"
-                        step="${CLIP_MASK_BRUSH_STEP}"
-                        value="${clipMaskBrushSize}"
-                        oninput="setClipMaskBrushSize(this.value)">
-                    <div class="clip-brush-size-readout">${clipMaskBrushSize}px</div>
-                </div>
-            </div>
-
-            <div class="clip-mask-tool-control ${openClipMaskSizeTool === 'eraser' ? 'open' : ''}">
-                <button class="clip-mask-tool-btn clip-mask-tool-labeled ${activeClipMaskTool === 'eraser' ? 'active' : ''}"
-                        title="지우개"
-                        aria-pressed="${activeClipMaskTool === 'eraser'}"
-                        onclick="toggleClipMaskToolSizePopover('eraser', event)">
-                    지우개
-                </button>
-                <div class="clip-brush-size-popover">
-                    <input type="range"
-                        min="${CLIP_MASK_BRUSH_MIN}"
-                        max="${CLIP_MASK_BRUSH_MAX}"
-                        step="${CLIP_MASK_BRUSH_STEP}"
-                        value="${clipMaskBrushSize}"
-                        oninput="setClipMaskBrushSize(this.value)">
-                    <div class="clip-brush-size-readout">${clipMaskBrushSize}px</div>
-                </div>
-            </div>
-
-            <button class="clip-mask-tool-btn clip-mask-tool-labeled ${showInpaintPreview ? 'active' : ''}"
-                    title="인페인팅 결과 보기 토글"
-                    aria-pressed="${showInpaintPreview}"
-                    onclick="toggleClipInpaintPreview()">
-                결과 보기
-            </button>
-
-            <button class="clip-mask-tool-btn selection-overlay-toggle ${isSelectionOverlayHidden ? '' : 'active'}"
-                    title="선택 영역 박스 표시 전환"
-                    onclick="toggleClipOutputSelectionOverlayVisibility()">
-                ${isSelectionOverlayHidden ? '선택 OFF' : '선택 ON'}
-            </button>
-
-            <button class="clip-mask-tool-btn restore-position"
-                    title="선택 영역과 함께 이동한 그림을 클립한 원래 위치로 되돌리기"
-                    onclick="restoreSelectionPositionToClipOutput()">
-                위치
-            </button>
+            ${[['brush', '브러시'], ['eraser', '지우개']].map(([tool, label]) => {
+                const selected = activeClipMaskTool === tool && !boundaryState?.adjusting
+                    && activeClipAutoMaskPickClipId !== target.clip.id && !showInpaintPreview;
+                const open = openClipMaskSizeTool === tool && selected;
+                return `<div class="clip-mask-tool-control ${open ? 'open' : ''}" data-mask-tool="${tool}">
+                    <button type="button" class="clip-mask-tool-btn clip-mask-tool-labeled ${selected ? 'active' : ''}"
+                            aria-pressed="${selected}" aria-expanded="${open}" aria-controls="clip-size-${tool}"
+                            onclick="toggleClipMaskToolSizePopover('${tool}', event)">${label}</button>
+                    <div class="clip-brush-size-popover" id="clip-size-${tool}">
+                        <input type="range" aria-label="${label} 크기"
+                               min="${CLIP_MASK_BRUSH_MIN}" max="${CLIP_MASK_BRUSH_MAX}" step="${CLIP_MASK_BRUSH_STEP}"
+                               value="${clipMaskBrushSize}" oninput="setClipMaskBrushSize(this.value)">
+                        <span class="clip-brush-size-readout">${clipMaskBrushSize}px</span>
+                    </div>
+                </div>`;
+            }).join('')}
 
             <button class="clip-mask-tool-btn clip-mask-tool-labeled auto-mask ${activeClipAutoMaskPickClipId === target.clip.id ? 'active' : ''}"
                     title="클릭한 그림 레이어 기준으로 위 레이어 영역을 제외해 자동 선택"
@@ -7750,38 +8145,57 @@ function renderClipOutputPanel() {
                     onclick="toggleClipAutoMaskPickMode(${target.clip.id})">
                 자동 선택
             </button>
+
+            <button class="clip-mask-tool-btn clip-mask-tool-labeled ${isClipInpaintPreviewMode ? 'active' : ''}"
+                    title="인페인팅 결과 보기 토글"
+                    aria-pressed="${isClipInpaintPreviewMode}"
+                    onclick="toggleClipInpaintPreview()">
+                결과 보기
+            </button>
+
+            <button class="clip-mask-tool-btn selection-overlay-toggle ${isSelectionOverlayHidden ? '' : 'active'}"
+                    title="선택 영역 박스 표시 전환"
+                    aria-pressed="${!isSelectionOverlayHidden}"
+                    onclick="toggleClipOutputSelectionOverlayVisibility()">
+                ${isSelectionOverlayHidden ? '선택 OFF' : '선택 ON'}
+            </button>
+
+            <button class="clip-mask-tool-btn restore-position"
+                    title="선택 영역과 함께 이동한 그림을 클립한 원래 위치로 되돌리기"
+                    onclick="restoreSelectionPositionToClipOutput()">
+                위치 복원
+            </button>
             </div>
-
-            <div class="clip-output-actions-row" role="group" aria-label="인페인팅 설정과 실행">
-            <button class="clip-mask-tool-btn clip-mask-tool-labeled prompt-btn"
-                    title="프롬프트"
-                    onclick="openClipPromptModal(${target.clip.id})">
-                프롬프트
-            </button>
-
-            <button class="clip-mask-tool-btn merged-source-toggle ${isClipInpaintMergedSourceMode ? 'active' : ''}"
-                    title="ON: 클립 이미지와 인페인팅 결과를 통합한 이미지에 마스크를 적용해서 요청 / OFF: 기존처럼 클립 이미지와 마스크만 요청"
-                    onclick="toggleClipInpaintMergedSourceMode()">
-                통합 ${isClipInpaintMergedSourceMode ? 'ON' : 'OFF'}
-            </button>
-
-            <button class="clip-mask-tool-btn clip-mask-tool-labeled clip-inpaint-run-btn"
-                    title="인페인팅"
-                    onclick="requestClipInpainting(${target.clip.id})">
-                인페인팅
-            </button>
-            </div>
+            ${boundaryState && !showInpaintPreview ? `<div class="clip-boundary-controls">
+                <button type="button" class="clip-mask-tool-btn clip-mask-tool-labeled ${boundaryState.adjusting ? 'active' : ''}"
+                        aria-pressed="${boundaryState.adjusting}" title="모서리를 드래그해 크기 조절, 네모 안을 드래그해 이동"
+                        onclick="selectClipBoundaryAdjust()">범위 조절</button>
+                <span class="clip-boundary-size">전송 ${boundaryState.rect.width} × ${boundaryState.rect.height} px</span>
+            </div>` : ''}
         </div>
 
         <div class="${imageWrapClass}" data-clip-id="${target.clip.id}">
+            <div class="clip-reference-strip" hidden></div>
             <img class="clip-output-image" src="${escapeHtml(displayClip.src)}" alt="clip result">
             <canvas class="clip-mask-overlay-canvas"></canvas>
+            <svg id="clipBrushCursor" class="clip-brush-cursor" aria-hidden="true" preserveAspectRatio="none"><path vector-effect="non-scaling-stroke"></path></svg>
 
             <div class="clip-inpaint-loading ${isLoading ? 'show' : ''}" aria-hidden="${!isLoading}">
                 <div class="clip-inpaint-loading-spinner" aria-hidden="true"></div>
                 <div class="clip-inpaint-loading-text" role="status" aria-live="polite">${escapeHtml(clipInpaintLoadingMessage)}</div>
                 <div class="clip-inpaint-loading-track" aria-hidden="true"></div>
             </div>
+        </div>
+        <div class="clip-output-actions-row" role="group" aria-label="인페인팅 설정과 실행">
+            <button class="clip-mask-tool-btn clip-mask-tool-labeled prompt-btn"
+                    title="프롬프트" onclick="openClipPromptModal(${target.clip.id})">프롬프트</button>
+            <button class="clip-mask-tool-btn merged-source-toggle ${isClipInpaintMergedSourceMode ? 'active' : ''}"
+                    title="ON: 클립 이미지와 인페인팅 결과를 통합한 이미지에 마스크를 적용해서 요청 / OFF: 기존처럼 클립 이미지와 마스크만 요청"
+                    aria-pressed="${isClipInpaintMergedSourceMode}" onclick="toggleClipInpaintMergedSourceMode()">
+                통합 ${isClipInpaintMergedSourceMode ? 'ON' : 'OFF'}
+            </button>
+            <button class="clip-mask-tool-btn clip-mask-tool-labeled clip-inpaint-run-btn"
+                    title="인페인팅" onclick="requestClipInpainting(${target.clip.id})">인페인팅</button>
         </div>
         <div class="clip-output-size-actions">
             <button type="button" class="secondary clip-output-auto-size" title="클립 이미지에 맞는 자동 크기로 되돌리기">자동 크기</button>
@@ -7791,12 +8205,15 @@ function renderClipOutputPanel() {
     `;
 
     stage.appendChild(panel);
+    if (boundaryState) panel.boundarySource = createClipBoundarySource(target.selection, target.clip,
+        boundaryState.anchor, isClipInpaintMergedSourceMode);
     if (typeof CanvasInpaintReference !== 'undefined') {
         CanvasInpaintReference.mountActions(panel.querySelector('.clip-output-actions-row'));
+        CanvasInpaintReference.mountClipStrip(panel.querySelector('.clip-reference-strip'));
         CanvasInpaintReference.render();
     }
     positionClipOutputPanel(panel, target.selection, target.clip);
-    if (panel.dataset.manualSize !== '1') fitClipOutputPanelToImage(panel, target.clip);
+    if (panel.dataset.manualSize !== '1') fitClipOutputPanelToImage(panel, showInpaintPreview && !useBoundaryView ? displayClip : target.clip);
     keepDefaultClipOutputPanelVisible(panel);
     bindClipOutputPanelDrag(panel);
 
@@ -7806,11 +8223,12 @@ function renderClipOutputPanel() {
         outputWrap.dataset.displayClipId = String(displayClip.id || target.clip.id || '');
     }
 
-    bindClipMaskEditor(panel, target.clip);
+    if (useBoundaryView) bindClipBoundaryEditor(panel, target, boundaryState, showInpaintPreview);
+    else bindClipMaskEditor(panel, showInpaintPreview ? displayClip : target.clip);
     syncClipInpaintProcessing(panel);
-    if (previousPreviewScroll && oldPanel.dataset.clipSizeKey === panel.dataset.clipSizeKey && outputWrap) {
+    if (!useBoundaryView && previousPreviewScroll && oldPanel.dataset.clipSizeKey === panel.dataset.clipSizeKey && outputWrap) {
         // Restore only after zoom establishes the new scroll range.
-        applyClipPreviewZoom(outputWrap, panel.querySelector('.clip-output-image'), target.clip);
+        applyClipPreviewZoom(outputWrap, panel.querySelector('.clip-output-image'), showInpaintPreview ? displayClip : target.clip);
         outputWrap.scrollLeft = previousPreviewScroll.left;
         outputWrap.scrollTop = previousPreviewScroll.top;
     }
@@ -7855,28 +8273,55 @@ async function requestClipInpainting(clipId) {
     const selection = findSelectionParentForLayerId(clipId);
 
     if (!clip || clip.type !== 'clip' || !selection) {
-        alert('인페인팅할 클립을 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('인페인팅할 클립을 찾을 수 없습니다.');
         return;
     }
 
-    const mask = clip.maskDataUrl || clip.maskSrc || '';
-    if (!mask) {
-        alert('인페인팅 마스크를 먼저 칠해 주세요.');
+    const boundary = globalThis.CanvasClipBoundary?.get(clip);
+    if (!boundary && globalThis.CanvasClipBoundary?.isRestoring?.(clip)) {
+        showToast('경계 확장 마스크를 불러오는 중입니다.');
         return;
     }
+    const crop = boundary ? {...boundary.rect} : null;
+    const submittedDraft = boundary?.draft;
+    if (crop && !isSelectionRequestSizeAllowed({layerWidth: crop.width, layerHeight: crop.height})) {
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('전송 범위가 너무 큽니다. 네모의 모서리를 안쪽으로 줄여 주세요.');
+        return;
+    }
+    let mask;
+    try {
+        mask = boundary ? CanvasClipBoundary.snapshotMask(boundary)?.toDataURL('image/png')
+            : clip.maskDataUrl || clip.maskSrc || '';
+    } catch (error) {
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('전송 범위의 마스크를 읽을 수 없습니다: ' + error.message);
+        return;
+    }
+    if (!mask) {
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('인페인팅 마스크를 먼저 칠해 주세요.');
+        return;
+    }
+    const cropSource = boundary
+        ? createClipBoundarySource(selection, clip, boundary.anchor, isClipInpaintMergedSourceMode) : null;
 
     let preparedFocus;
     try {
+        if (typeof CanvasProjectSettings !== 'undefined') {
+            const ready = CanvasProjectSettings.waitForInitialSettings();
+            if (ready) {
+                await ready;
+                if (clipInpaintLoadingClipId || findCanvasLayer(clipId)?.layer !== clip) return;
+            }
+        }
         const original = buildEffectiveClipPromptInfo(clip);
         preparedFocus = typeof CanvasDakiFocus !== 'undefined'
             ? await CanvasDakiFocus.prepare(clip, original) : {promptInfo: original};
     } catch (error) {
-        alert('부위 설정을 확인해 주세요: ' + error.message);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('부위 설정을 확인해 주세요: ' + error.message);
         return;
     }
     const requestPromptInfo = preparedFocus.promptInfo;
-    const requestWidth = clip.imageWidth || clip.layerWidth;
-    const requestHeight = clip.imageHeight || clip.layerHeight;
+    const requestWidth = crop?.width || clip.imageWidth || clip.layerWidth;
+    const requestHeight = crop?.height || clip.imageHeight || clip.layerHeight;
     const requestSteps = parseInt(requestPromptInfo.steps || 28, 10) || 28;
     let referenceRequest;
     try {
@@ -7884,7 +8329,7 @@ async function requestClipInpainting(clipId) {
             ? CanvasInpaintReference.request(requestWidth, requestHeight)
             : {width: requestWidth, height: requestHeight, reference: null};
     } catch (error) {
-        alert(error.message);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(error.message);
         return;
     }
 
@@ -7907,9 +8352,13 @@ async function requestClipInpainting(clipId) {
     );
 
     try {
-        const requestImage = isClipInpaintMergedSourceMode
-            ? await renderMergedClipSourceToDataUrl(selection, clip)
+        const requestImage = cropSource ? (await cropSource(crop)).toDataURL('image/png') : isClipInpaintMergedSourceMode
+            ? await getClipMergedSourceDataUrl(selection, clip)
             : clip.src;
+        if (crop && (findCanvasLayer(clipId)?.layer !== clip || findCanvasLayer(selection.id)?.layer !== selection)) {
+            showToast('캔버스가 바뀌어 인페인팅 요청을 중단했습니다.');
+            return;
+        }
 
         const response = await fetch('/api/canvas/inpaint', {
             method: 'POST',
@@ -7919,9 +8368,11 @@ async function requestClipInpainting(clipId) {
                 mask,
                 width: requestWidth,
                 height: requestHeight,
+                ...(crop ? {maskedPatch: true} : {}),
                 promptInfo: requestPromptInfo,
                 ...(referenceRequest.reference ? {reference: referenceRequest.reference} : {}),
                 tempCategory: 'canvas_inpaint',
+                includeResultImage: false,
                 tempSessionId: CANVAS_IMPORT_SESSION_ID
             })
         });
@@ -7952,15 +8403,19 @@ async function requestClipInpainting(clipId) {
             promptControlGroups: Array.isArray(clip.promptControlGroups)
                 ? structuredClone(clip.promptControlGroups)
                 : [],
-            imageWidth: clip.imageWidth,
-            imageHeight: clip.imageHeight,
-            x: clip.x,
-            y: clip.y,
-            rotation: CanvasSelectionRotation.angle(clip.rotation),
-            layerWidth: clip.layerWidth,
-            layerHeight: clip.layerHeight,
+            imageWidth: crop?.width ?? clip.imageWidth,
+            imageHeight: crop?.height ?? clip.imageHeight,
+            x: crop?.x ?? clip.x,
+            y: crop?.y ?? clip.y,
+            rotation: crop ? 0 : CanvasSelectionRotation.angle(clip.rotation),
+            layerWidth: crop?.width ?? clip.layerWidth,
+            layerHeight: crop?.height ?? clip.layerHeight,
             createdAt: Date.now()
         };
+        if (boundary) {
+            resultClip.boundaryBaseClipId = clip.id;
+            resultClip.boundaryAnchorId = boundary.anchor.boundaryAnchorId ?? boundary.anchor.id;
+        }
         if (preparedFocus.folderRegion) resultClip.dakiGenerationFocus = {
             region: preparedFocus.folderRegion, regions: preparedFocus.regions,
             prompt: preparedFocus.addedPrompt
@@ -7970,25 +8425,30 @@ async function requestClipInpainting(clipId) {
         inpaintFolder.children.unshift(resultClip);
         selection.expanded = true;
 
-        // 새 인페인팅 결과가 생기면 통합 소스 미리보기가 달라지므로 캐시를 버린다.
-        clearClipMergedSourcePreviewCache();
+        // 통합 입력은 다음 요청에서 기존 레이어 순서를 확인한 뒤 다시 사용한다.
+        if (!isClipInpaintMergedSourceMode) clearClipMergedSourcePreviewCache();
         clipMergedSourcePreviewSeq += 1;
 
         migrateAllSelectionClipsToSharedPromptOwner(clip.promptOwnerId || clip.id);
 
-        activeLayerId = resultClip.id;
-        activeClipSelectionId = selection.id;
-        checkedSelectionId = selection.id;
+        const inpaintInsert = Number(checkedSelectionId) === Number(selection.id)
+            ? {selection, folder: inpaintFolder, result: resultClip} : null;
+        if (boundary) {
+            CanvasClipBoundary.finishPass(clip, boundary, crop, submittedDraft);
+            if (inpaintInsert) isClipInpaintPreviewMode = false;
+        } else {
+            activeLayerId = resultClip.id;
+            activeClipSelectionId = selection.id;
+            checkedSelectionId = selection.id;
+            isClipInpaintPreviewMode = true;
+        }
 
-        // 완료 후에는 자동으로 인페인팅 보기 상태
-        isClipInpaintPreviewMode = true;
-
-        renderLayerList();
-        renderCanvasLayersOnSurface();
+        renderLayerList(inpaintInsert);
+        renderCanvasLayersOnSurface({inpaintInsert, appendedClipId: resultClip.id});
         animateClipInpaintResult(resultClip.id);
         saveCanvasState();
     } catch (error) {
-        alert(`인페인팅 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`인페인팅 실패: ${error.message || error}`);
     } finally {
         setClipInpaintProcessing(clipId, false);
     }
@@ -8012,7 +8472,6 @@ function findSelectionParentForLayerId(layerId, layers = canvasLayers, currentSe
 
 function setClipMaskTool(tool, button) {
     activeClipMaskTool = tool === 'eraser' ? 'eraser' : 'brush';
-    updateClipBrushCursorMode();
     renderClipOutputPanel();
 }
 
@@ -8023,13 +8482,38 @@ function toggleClipMaskToolSizePopover(tool, event) {
     }
 
     const nextTool = tool === 'eraser' ? 'eraser' : 'brush';
-    const wasOpen = openClipMaskSizeTool === nextTool;
-
+    const panel = document.querySelector('.canvas-clip-output-panel');
+    const needsRender = !panel || isClipInpaintPreviewMode || Boolean(panel.querySelector('.clip-boundary-active'));
     activeClipMaskTool = nextTool;
-    openClipMaskSizeTool = wasOpen ? null : nextTool;
-
-    updateClipBrushCursorMode();
-    renderClipOutputPanel();
+    openClipMaskSizeTool = nextTool;
+    activeClipAutoMaskPickClipId = null;
+    isClipInpaintPreviewMode = false;
+    selectClipBoundaryPaint();
+    if (needsRender) {
+        renderClipOutputPanel();
+    } else {
+        // The mounted mask may contain unsaved strokes or a pending bitmap decode.
+        // Switching tools must not replace its canvas or restart that decode.
+        for (const control of panel.querySelectorAll('.clip-mask-tool-control')) {
+            const selected = control.dataset.maskTool === nextTool;
+            control.classList.remove('open-below');
+            control.classList.toggle('open', selected);
+            const button = control.querySelector('button');
+            button.classList.toggle('active', selected);
+            button.setAttribute('aria-pressed', String(selected));
+            button.setAttribute('aria-expanded', String(selected));
+        }
+        const auto = panel.querySelector('.auto-mask');
+        auto.classList.remove('active');
+        auto.setAttribute('aria-pressed', 'false');
+    }
+    const control = document.querySelector('.clip-mask-tool-control.open');
+    if (!control) return;
+    const popover = control.querySelector('.clip-brush-size-popover');
+    const workspace = control.closest('.canvas-workspace');
+    const visibleTop = Math.max(0, workspace?.getBoundingClientRect().top || 0);
+    if (popover.getBoundingClientRect().top < visibleTop) control.classList.add('open-below');
+    if (event?.detail === 0) control.querySelector('button').focus({preventScroll: true});
 }
 
 function closeClipMaskSizePopover() {
@@ -8037,7 +8521,8 @@ function closeClipMaskSizePopover() {
 
     openClipMaskSizeTool = null;
     document.querySelectorAll('.clip-mask-tool-control.open').forEach((control) => {
-        control.classList.remove('open');
+        control.classList.remove('open', 'open-below');
+        control.querySelector('button').setAttribute('aria-expanded', 'false');
     });
 }
 
@@ -8073,9 +8558,10 @@ function bindClipMaskEditor(panel, clip) {
 
     if (!wrap || !img || !overlayCanvas || !clip) return;
 
-    const cursor = getClipBrushCursor();
+    const cursor = panel.querySelector('.clip-brush-cursor');
 
     wrap.oncontextmenu = (event) => {
+        if (event.target.closest?.('.clip-reference-strip')) return;
         openClipOutputClipboardContextMenu(event);
     };
 
@@ -8092,11 +8578,13 @@ function bindClipMaskEditor(panel, clip) {
     let clipAlphaSampler = null;
     let disposed = false;
     let maskPreviewFrame = null;
+    let hoverEvent = null;
     let dirtyBounds = null;
-    const markMaskBounds = (from, to = from) => {
-        const radius = Math.max(1, clipMaskBrushSize / 2) + 2;
-        const bounds = {left: Math.min(from.x, to.x) - radius, top: Math.min(from.y, to.y) - radius,
-            right: Math.max(from.x, to.x) + radius, bottom: Math.max(from.y, to.y) + radius};
+    const drawMaskStroke = (from, to = from) => {
+        const bounds = InpaintGridBrush.paint(maskCtx, from, to, clipMaskBrushSize,
+            '#ffffff', activeClipMaskTool === 'eraser');
+        if (!bounds) return;
+        maskDirty = true;
         if (!dirtyBounds) dirtyBounds = bounds;
         else {
             dirtyBounds.left = Math.min(dirtyBounds.left, bounds.left);
@@ -8148,7 +8636,7 @@ function bindClipMaskEditor(panel, clip) {
             canvas.width = maskCanvas.width;
             canvas.height = maskCanvas.height;
 
-            const ctx = canvas.getContext('2d');
+            const ctx = canvas.getContext('2d', {willReadFrequently: true});
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
             clipAlphaSampler = ctx;
@@ -8170,46 +8658,31 @@ function bindClipMaskEditor(panel, clip) {
         }
     };
 
-    const drawMaskDot = (point) => {
-        if (!point) return;
-
-        maskCtx.save();
-        maskCtx.globalCompositeOperation = activeClipMaskTool === 'eraser' ? 'destination-out' : 'source-over';
-        maskCtx.fillStyle = '#ffffff';
-
-        const radius = Math.max(1, clipMaskBrushSize / 2);
-        maskCtx.beginPath();
-        maskCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-        maskCtx.fill();
-        maskCtx.restore();
-
-        maskDirty = true;
-        markMaskBounds(point);
+    const refreshHoveredCursor = () => {
+        if (!hoverEvent) return;
+        const rect = overlayCanvas.getBoundingClientRect();
+        if (!rect.width || !rect.height || hoverEvent.clientX < rect.left || hoverEvent.clientX > rect.right ||
+            hoverEvent.clientY < rect.top || hoverEvent.clientY > rect.bottom) {
+            cursor.style.display = 'none';
+            return;
+        }
+        const point = getClipMaskPoint(hoverEvent, overlayCanvas, maskCanvas, rect);
+        const pickingSource = activeClipAutoMaskPickClipId === Number(clip.id);
+        if (pickingSource || (!isClipMaskPainting && isTransparentClipPoint(point))) {
+            cursor.style.display = 'none';
+            overlayCanvas.style.cursor = pickingSource ? 'crosshair' : 'grab';
+            return;
+        }
+        overlayCanvas.style.cursor = '';
+        InpaintGridBrush.showCursor(cursor, overlayCanvas, point, clipMaskBrushSize, activeClipMaskTool === 'eraser');
     };
-
-    const drawMaskStrokeSegment = (from, to) => {
-        if (!from || !to) return;
-
-        maskCtx.save();
-        maskCtx.globalCompositeOperation = activeClipMaskTool === 'eraser' ? 'destination-out' : 'source-over';
-        maskCtx.strokeStyle = '#ffffff';
-        maskCtx.fillStyle = '#ffffff';
-        maskCtx.lineWidth = clipMaskBrushSize;
-        maskCtx.lineCap = 'round';
-        maskCtx.lineJoin = 'round';
-
-        maskCtx.beginPath();
-        maskCtx.moveTo(from.x, from.y);
-        maskCtx.lineTo(to.x, to.y);
-        maskCtx.stroke();
-
-        maskCtx.beginPath();
-        maskCtx.arc(to.x, to.y, maskCtx.lineWidth / 2, 0, Math.PI * 2);
-        maskCtx.fill();
-
-        maskCtx.restore();
-        maskDirty = true;
-        markMaskBounds(from, to);
+    const trackCursor = (event) => {
+        hoverEvent = event;
+        refreshHoveredCursor();
+    };
+    const hideCursor = () => {
+        hoverEvent = null;
+        cursor.style.display = 'none';
     };
 
     const syncOverlayPosition = () => {
@@ -8232,6 +8705,7 @@ function bindClipMaskEditor(panel, clip) {
         dirtyBounds = null; // Resizing the overlay requires a full redraw.
         renderMaskPreview();
         keepDefaultClipOutputPanelVisible(panel);
+        refreshHoveredCursor();
     };
 
     const resizeObserver = typeof ResizeObserver === 'function'
@@ -8246,13 +8720,20 @@ function bindClipMaskEditor(panel, clip) {
             maskPreviewFrame = null;
         }
         window.removeEventListener('resize', syncOverlayPosition);
+        wrap.removeEventListener('clip-reference-layout', syncOverlayPosition);
+        wrap.removeEventListener('scroll', refreshHoveredCursor);
+        panel.oninput = null;
         resizeObserver?.disconnect();
         disposeResize();
         img.onload = null;
     };
 
     resizeObserver?.observe(panel);
+    resizeObserver?.observe(wrap);
     window.addEventListener('resize', syncOverlayPosition);
+    wrap.addEventListener('clip-reference-layout', syncOverlayPosition);
+    wrap.addEventListener('scroll', refreshHoveredCursor);
+    panel.oninput = refreshHoveredCursor;
 
     img.onload = () => {
         syncOverlayPosition();
@@ -8335,7 +8816,7 @@ function bindClipMaskEditor(panel, clip) {
                 })
                 .catch((error) => {
                     activeClipAutoMaskPickClipId = null;
-                    alert(`자동 선택 실패: ${error.message || error}`);
+                    (globalThis.CanvasNativeDialogs?.alert ?? alert)(`자동 선택 실패: ${error.message || error}`);
                     renderCanvasLayersOnSurface();
                 });
             return;
@@ -8348,23 +8829,19 @@ function bindClipMaskEditor(panel, clip) {
         overlayCanvas.setPointerCapture(event.pointerId);
 
         lastPoint = point;
-        drawMaskDot(lastPoint);
+        drawMaskStroke(lastPoint);
         renderMaskPreview();
-        updateClipBrushCursor(event, overlayCanvas, maskCanvas, cursor);
+        trackCursor(event);
     };
 
     overlayCanvas.onpointermove = (event) => {
-        updateClipBrushCursor(event, overlayCanvas, maskCanvas, cursor);
+        trackCursor(event);
 
         if (!isClipMaskPainting) return;
 
         const point = getClipMaskPoint(event, overlayCanvas, maskCanvas);
 
-        if (lastPoint) {
-            drawMaskStrokeSegment(lastPoint, point);
-        } else {
-            drawMaskDot(point);
-        }
+        drawMaskStroke(lastPoint || point, point);
 
         lastPoint = point;
         queueMaskPreview();
@@ -8380,12 +8857,14 @@ function bindClipMaskEditor(panel, clip) {
             overlayCanvas.releasePointerCapture(event.pointerId);
         } catch (e) {}
 
+        refreshHoveredCursor();
         if (maskPreviewFrame !== null) renderMaskPreview();
         await persistClipMask(clip, maskCanvas);
         maskDirty = true;
     };
 
     overlayCanvas.onpointercancel = async () => {
+        hideCursor();
         isClipMaskPainting = false;
         lastPoint = null;
         if (maskPreviewFrame !== null) renderMaskPreview();
@@ -8393,16 +8872,8 @@ function bindClipMaskEditor(panel, clip) {
         maskDirty = true;
     };
 
-    overlayCanvas.onmouseenter = (event) => {
-        cursor.style.display = 'block';
-        updateClipBrushCursor(event, overlayCanvas, maskCanvas, cursor);
-    };
-
-    overlayCanvas.onmouseleave = () => {
-        if (!isClipMaskPainting) {
-            cursor.style.display = 'none';
-        }
-    };
+    overlayCanvas.onmouseenter = trackCursor;
+    overlayCanvas.onmouseleave = hideCursor;
 }
 
 function bindClipOutputBackgroundScrollDrag(wrap) {
@@ -8453,30 +8924,12 @@ function bindClipOutputBackgroundScrollDrag(wrap) {
     wrap.addEventListener('pointercancel', stopDrag);
 }
 
-function getClipBrushCursor() {
-    let cursor = el('clipBrushCursor');
-
-    if (!cursor) {
-        cursor = document.createElement('div');
-        cursor.id = 'clipBrushCursor';
-        cursor.className = 'clip-brush-cursor';
-        document.body.appendChild(cursor);
-    }
-
-    return cursor;
-}
-
-function updateClipBrushCursorMode() {
-    const cursor = el('clipBrushCursor');
-    if (!cursor) return;
-
-    cursor.classList.toggle('eraser', activeClipMaskTool === 'eraser');
-}
-
 function toggleClipAutoMaskPickMode(clipId) {
     const id = Number(clipId);
     activeClipAutoMaskPickClipId = activeClipAutoMaskPickClipId === id ? null : id;
     if (activeClipAutoMaskPickClipId === id) {
+        if (globalThis.CanvasClipBoundary?.get(getClipOutputTarget()?.clip)) selectClipBoundaryPaint();
+        closeClipMaskSizePopover();
         isClipInpaintPreviewMode = false;
     }
     renderCanvasLayersOnSurface();
@@ -8488,24 +8941,7 @@ function toggleClipAutoMaskPickMode(clipId) {
     }
 }
 
-function updateClipBrushCursor(event, overlayCanvas, maskCanvas, cursor) {
-    if (!cursor || !overlayCanvas || !maskCanvas) return;
-
-    const rect = overlayCanvas.getBoundingClientRect();
-    const scale = rect.width / maskCanvas.width;
-    const displaySize = Math.max(4, clipMaskBrushSize * scale);
-
-    cursor.style.display = 'block';
-    cursor.style.width = `${displaySize}px`;
-    cursor.style.height = `${displaySize}px`;
-    cursor.style.left = `${event.clientX}px`;
-    cursor.style.top = `${event.clientY}px`;
-    cursor.classList.toggle('eraser', activeClipMaskTool === 'eraser');
-}
-
-function getClipMaskPoint(event, overlayCanvas, maskCanvas) {
-    const rect = overlayCanvas.getBoundingClientRect();
-
+function getClipMaskPoint(event, overlayCanvas, maskCanvas, rect = overlayCanvas.getBoundingClientRect()) {
     const x = ((event.clientX - rect.left) / rect.width) * maskCanvas.width;
     const y = ((event.clientY - rect.top) / rect.height) * maskCanvas.height;
 
@@ -8650,7 +9086,7 @@ function applyAutoMaskAboveSourceLayer(selection, clip, targetLayer, maskCanvas)
 async function applyClipAutoMaskFromPreviewClick(event, clip, overlayCanvas, maskCanvas) {
     const selection = findSelectionParentForLayerId(clip?.id);
     if (!selection) {
-        alert('자동 선택 기준이 될 선택영역을 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('자동 선택 기준이 될 선택영역을 찾을 수 없습니다.');
         return false;
     }
 
@@ -8658,7 +9094,7 @@ async function applyClipAutoMaskFromPreviewClick(event, clip, overlayCanvas, mas
     const targetLayer = findAutoMaskSourceLayerAtMaskPoint(selection, clip, point, maskCanvas);
 
     if (!targetLayer) {
-        alert('클릭한 위치에서 기준 그림 레이어를 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('클릭한 위치에서 기준 그림 레이어를 찾을 수 없습니다.');
         return false;
     }
 
@@ -8902,7 +9338,7 @@ async function openClipPromptModal(clipId) {
     const clip = found?.layer;
 
     if (!clip || clip.type !== 'clip') {
-        alert('클립을 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('클립을 찾을 수 없습니다.');
         return;
     }
     // 프롬프트가 비어 있으면, 프롬프트 창을 열기 전에 자동 복구 시도
@@ -8912,12 +9348,17 @@ async function openClipPromptModal(clipId) {
             clip
         );
     }
+    if (typeof CanvasProjectSettings !== 'undefined') {
+        const ready = CanvasProjectSettings.waitForInitialSettings();
+        if (ready) await ready;
+    }
+    if (findCanvasLayer(clipId)?.layer !== clip) return;
 
     applySharedSelectionPromptToClip(clip);
 
     const owner = getPromptOwnerLayer(clip) || clip;
     if (!owner) {
-        alert('프롬프트 소유 레이어를 찾을 수 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('프롬프트 소유 레이어를 찾을 수 없습니다.');
         return;
     }
 
@@ -8931,8 +9372,10 @@ async function openClipPromptModal(clipId) {
         ? CanvasInpaintSettings.apply(owner.promptInfo)
         : owner.promptInfo);
 
-    setClipPromptEditorValue('base', owner.promptInfo.basePrompt || '');
-    setClipPromptEditorValue('negative', owner.promptInfo.negativePrompt || '');
+    const editorPrompt = typeof CanvasProjectSettings !== 'undefined'
+        ? CanvasProjectSettings.fillStylePrompt(owner.promptInfo) : owner.promptInfo;
+    setClipPromptEditorValue('base', editorPrompt.basePrompt || '');
+    setClipPromptEditorValue('negative', editorPrompt.negativePrompt || '');
     setClipCharPromptValues(owner.promptInfo.charPrompts || owner.promptInfo.charPrompt || '');
     const selection = findSelectionParentForLayerId(clip.id);
     el('clipInstancePromptInput').value = typeof selection?.instancePrompt === 'string' ? selection.instancePrompt : '';
@@ -8957,6 +9400,7 @@ async function openClipPromptModal(clipId) {
 
 function closeClipPromptModal() {
     if (typeof CanvasDetailPresets !== 'undefined') CanvasDetailPresets.closePicker();
+    if (typeof getCanvasStyleLink === 'function') getCanvasStyleLink()?.finishManualDraft(false);
     el('clipPromptModalOverlay')?.classList.remove('open');
     if (typeof CanvasDakiFocus !== 'undefined') CanvasDakiFocus.refresh();
     if (typeof refreshCanvasStyleLink === 'function') refreshCanvasStyleLink();
@@ -8978,6 +9422,17 @@ function saveClipPromptModal() {
     const settings = readGenerationSettings('clip');
     if (!settings) return;
     const selection = findSelectionParentForLayerId(clip.id);
+    const previousCharacters = normalizePromptInfo(owner.promptInfo).charPrompts;
+    if (previousCharacters.length !== charPrompts.length || previousCharacters.some((value, i) => value !== charPrompts[i])) {
+        let sourceImage = clip.sourceImageLayerId != null ? findCanvasLayer(clip.sourceImageLayerId)?.layer : null;
+        if (!sourceImage) {
+            const candidates = clip.sourcePath
+                ? getAllCanvasLayerNodes().filter(layer => layer.type === 'image' && layer.sourcePath === clip.sourcePath)
+                : selection ? collectPromptSourceLayersFromSelection(selection) : [];
+            if (candidates.length === 1) sourceImage = candidates[0];
+        }
+        if (sourceImage?.type === 'image') sourceImage.exportCharPrompts = charPrompts.slice();
+    }
     if (selection) {
         selection.instancePrompt = el('clipInstancePromptInput').value.trim();
         selection.instanceNegativePrompt = el('clipInstanceNegativePromptInput').value.trim();
@@ -8997,7 +9452,9 @@ function saveClipPromptModal() {
 
     syncPromptStateFromOwner(clip);
 
-    saveCanvasState();
+    if (typeof getCanvasStyleLink === 'function') getCanvasStyleLink()?.finishManualDraft(true);
+    // The geometry undo history intentionally excludes prompt edits.
+    saveCanvasState({syncProject: true});
     closeClipPromptModal();
 }
 
@@ -9072,14 +9529,10 @@ async function fetchPromptInfoByPath(path) {
 
         const data = json.data || {};
 
-        const charText =
-            Array.isArray(data.charPrompts) ? data.charPrompts.join('\n') :
-            Array.isArray(data.characterPrompts) ? data.characterPrompts.join('\n') :
-            String(data.charPrompt || data.characterPrompt || '');
-
         const promptInfo = normalizePromptInfo({
             basePrompt: data.basePrompt || data.prompt || '',
-            charPrompt: charText,
+            charPrompts: [data.charPrompts, data.characterPrompts].find(Array.isArray),
+            charPrompt: String(data.charPrompt || data.characterPrompt || ''),
             negativePrompt: pickNegativePromptText(data),
             model: data.model,
             sampler: data.sampler,
@@ -10671,7 +11124,7 @@ function collectVisibleInpaintClipsForMergedSource(layers, excludeClipId = null,
     return output;
 }
 
-async function renderMergedClipSourceToDataUrl(selection, baseClip) {
+async function renderMergedClipSourceToDataUrl(selection, baseClip, options = {}) {
     if (!selection || !baseClip || !baseClip.src) {
         throw new Error('통합할 클립을 찾을 수 없습니다.');
     }
@@ -10694,75 +11147,68 @@ async function renderMergedClipSourceToDataUrl(selection, baseClip) {
     const ctx = offscreen.getContext('2d');
     ctx.clearRect(0, 0, width, height);
 
-    const baseImg = await loadImageElementForClip(baseClip.src);
-    ctx.drawImage(baseImg, 0, 0, width, height);
-
+    // Capture the placement used by this cache key before image decoding can yield.
     const selectionX = Number(selection.x || 0);
     const selectionY = Number(selection.y || 0);
-    const inpaintClips = collectVisibleInpaintClipsForMergedSource(
-        selection.children || [],
-        baseClip.id
-    );
+    const baseWidth = Number(baseClip.layerWidth || width);
+    const baseHeight = Number(baseClip.layerHeight || height);
+    const baseX = Number(baseClip.x ?? selectionX);
+    const baseY = Number(baseClip.y ?? selectionY);
+    const baseCenterX = Number(baseClip.x || 0) + baseWidth / 2;
+    const baseCenterY = Number(baseClip.y || 0) + baseHeight / 2;
+    const baseAngle = CanvasSelectionRotation.angle(baseClip.rotation);
+    const inpaintClips = (options.layers || collectVisibleInpaintClipsForMergedSource(
+        selection.children || [], baseClip.id
+    )).map(layer => ({...layer}));
+    if (options.previousCanvas) {
+        ctx.drawImage(options.previousCanvas, 0, 0);
+    } else {
+        const baseImg = await loadImageElementForClip(baseClip.src);
+        ctx.drawImage(baseImg, 0, 0, width, height);
+    }
 
     for (const layer of inpaintClips) {
         const img = await loadImageElementForClip(layer.src);
 
-        if (CanvasSelectionRotation.angle(baseClip.rotation) || CanvasSelectionRotation.angle(layer.rotation)) {
-            const baseWidth = Number(baseClip.layerWidth || width);
-            const baseHeight = Number(baseClip.layerHeight || height);
+        if (baseAngle || CanvasSelectionRotation.angle(layer.rotation)) {
             ctx.save();
             ctx.translate(width / 2, height / 2);
             ctx.scale(width / baseWidth, height / baseHeight);
-            ctx.rotate(-CanvasSelectionRotation.angle(baseClip.rotation) * Math.PI / 180);
-            ctx.translate(-(Number(baseClip.x || 0) + baseWidth / 2), -(Number(baseClip.y || 0) + baseHeight / 2));
+            ctx.rotate(-baseAngle * Math.PI / 180);
+            ctx.translate(-baseCenterX, -baseCenterY);
             drawCanvasLayerImage(ctx, img, layer);
             ctx.restore();
             continue;
         }
 
-        const drawX = Math.round(Number(layer.x || selectionX) - selectionX);
-        const drawY = Math.round(Number(layer.y || selectionY) - selectionY);
-        const drawWidth = Math.round(Number(layer.layerWidth || layer.imageWidth || width));
-        const drawHeight = Math.round(Number(layer.layerHeight || layer.imageHeight || height));
+        const drawX = Math.round((Number(layer.x ?? baseX) - baseX) * width / baseWidth);
+        const drawY = Math.round((Number(layer.y ?? baseY) - baseY) * height / baseHeight);
+        const drawWidth = Math.round(Number(layer.layerWidth || layer.imageWidth || baseWidth) * width / baseWidth);
+        const drawHeight = Math.round(Number(layer.layerHeight || layer.imageHeight || baseHeight) * height / baseHeight);
 
         ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
     }
 
-    return offscreen.toDataURL('image/png');
+    const png = await new Promise((resolve, reject) => offscreen.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('통합 이미지를 PNG로 변환하지 못했습니다.'));
+    }, 'image/png'));
+    const dataUrl = await CanvasImageClipboard.toDataUrl(png);
+    if (options.cacheEntry) options.cacheEntry.canvas = offscreen;
+    return dataUrl;
 }
 
-function buildClipMergedSourcePreviewKey(selection, baseClip) {
+function buildClipMergedSourcePreviewKey(selection, baseClip, layers) {
     if (!selection || !baseClip) return '';
-
-    const parts = [
-        `selection:${selection.id}`,
-        `base:${baseClip.id}`,
-        `baseSrc:${baseClip.src || ''}`,
-        `baseSize:${baseClip.imageWidth || baseClip.layerWidth || 0}x${baseClip.imageHeight || baseClip.layerHeight || 0}`,
-        `selectionPos:${selection.x || 0},${selection.y || 0}`,
-        `baseRotation:${baseClip.rotation || 0}`
-    ];
-
-    const inpaintClips = collectVisibleInpaintClipsForMergedSource(
-        selection.children || [],
-        baseClip.id
-    );
-
-    inpaintClips.forEach((clip) => {
-        parts.push([
-            clip.id,
-            clip.src || '',
-            clip.visible === false ? 'hidden' : 'visible',
-            clip.renderOnCanvas ? 'render' : 'no-render',
-            clip.x || 0,
-            clip.y || 0,
-            clip.layerWidth || clip.imageWidth || 0,
-            clip.layerHeight || clip.imageHeight || 0,
-            clip.rotation || 0
-        ].join(':'));
-    });
-
-    return parts.join('|');
+    const clips = layers || collectVisibleInpaintClipsForMergedSource(selection.children, baseClip.id);
+    return JSON.stringify([
+        selection.id, selection.x || 0, selection.y || 0, baseClip.id, baseClip.src,
+        baseClip.imageWidth || baseClip.layerWidth || selection.layerWidth || 0,
+        baseClip.imageHeight || baseClip.layerHeight || selection.layerHeight || 0,
+        baseClip.x || 0, baseClip.y || 0, baseClip.layerWidth || 0, baseClip.layerHeight || 0, baseClip.rotation || 0,
+        clips.map(clip => [clip.id, clip.src, clip.x || 0, clip.y || 0,
+            clip.layerWidth || clip.imageWidth || 0, clip.layerHeight || clip.imageHeight || 0, clip.rotation || 0])
+    ]);
 }
 
 function clearClipMergedSourcePreviewCache() {
@@ -10772,15 +11218,41 @@ function clearClipMergedSourcePreviewCache() {
     };
 }
 
-async function ensureClipMergedSourcePreview(selection, baseClip) {
+function getClipMergedSourceDataUrl(selection, baseClip, key) {
+    const layers = collectVisibleInpaintClipsForMergedSource(selection.children, baseClip.id);
+    key ??= buildClipMergedSourcePreviewKey(selection, baseClip, layers);
+    const previous = clipMergedSourcePreviewCache;
+    if (previous.key === key) {
+        return previous.dataUrl || previous.pending;
+    }
+    // An append is safe only if every lower layer still contributes exactly the same pixels in the same order.
+    const canAppend = previous.canvas && previous.layerCount < layers.length &&
+        previous.key === buildClipMergedSourcePreviewKey(selection, baseClip, layers.slice(0, previous.layerCount));
+    const entry = {key, dataUrl: '', layerCount: layers.length};
+    clipMergedSourcePreviewCache = entry;
+    entry.pending = renderMergedClipSourceToDataUrl(selection, baseClip, {
+        layers: canAppend ? layers.slice(previous.layerCount) : layers,
+        previousCanvas: canAppend ? previous.canvas : null,
+        cacheEntry: entry
+    }).then(dataUrl => {
+        entry.dataUrl = dataUrl;
+        entry.pending = null;
+        return dataUrl;
+    }, error => {
+        if (clipMergedSourcePreviewCache === entry) clearClipMergedSourcePreviewCache();
+        throw error;
+    });
+    return entry.pending;
+}
+
+async function ensureClipMergedSourcePreview(selection, baseClip, key = buildClipMergedSourcePreviewKey(selection, baseClip)) {
     if (!selection || !baseClip || !isClipInpaintMergedSourceMode) return;
 
-    const key = buildClipMergedSourcePreviewKey(selection, baseClip);
     if (!key) return;
 
     if (
         clipMergedSourcePreviewCache.key === key &&
-        clipMergedSourcePreviewCache.dataUrl
+        (clipMergedSourcePreviewCache.dataUrl || clipMergedSourcePreviewCache.previewRequested)
     ) {
         return;
     }
@@ -10788,9 +11260,12 @@ async function ensureClipMergedSourcePreview(selection, baseClip) {
     const seq = ++clipMergedSourcePreviewSeq;
 
     try {
-        const dataUrl = await renderMergedClipSourceToDataUrl(selection, baseClip);
+        const pending = getClipMergedSourceDataUrl(selection, baseClip, key);
+        const entry = clipMergedSourcePreviewCache;
+        entry.previewRequested = true;
+        await pending;
 
-        if (seq !== clipMergedSourcePreviewSeq) return;
+        if (seq !== clipMergedSourcePreviewSeq || entry !== clipMergedSourcePreviewCache) return;
         if (!isClipInpaintMergedSourceMode) return;
 
         const currentTarget = getClipOutputTarget();
@@ -10799,12 +11274,11 @@ async function ensureClipMergedSourcePreview(selection, baseClip) {
         const latestKey = buildClipMergedSourcePreviewKey(selection, baseClip);
         if (latestKey !== key) return;
 
-        clipMergedSourcePreviewCache = {
-            key,
-            dataUrl
-        };
-
-        renderClipOutputPanel();
+        if (isClipInpaintPreviewMode && getTopVisibleInpaintClipForSelection(selection, baseClip)) {
+            window.CanvasInpaintReference?.render();
+        } else {
+            renderClipOutputPanel();
+        }
 
     } catch (error) {
         console.warn('Merged clip source preview failed:', error);
@@ -10893,7 +11367,7 @@ function addClipPromptControlGroup() {
     const clip = getActiveClipForPromptControl();
 
     if (!clip) {
-        alert('클립 프롬프트 모달을 먼저 열어주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('클립 프롬프트 모달을 먼저 열어주세요.');
         return;
     }
 
@@ -11070,12 +11544,16 @@ function findClipPromptControlGroup(groupId) {
     return groups.find((group) => Number(group.id) === Number(groupId)) || null;
 }
 
-function editClipPromptControlGroupName(groupId) {
+async function editClipPromptControlGroupName(groupId) {
     const group = findClipPromptControlGroup(groupId);
     if (!group) return;
 
-    const nextName = prompt('영역 이름을 입력하세요.', group.name || '');
-    if (!nextName || !nextName.trim()) return;
+    const message = '영역 이름을 입력하세요.';
+    const defaultValue = group.name || '';
+    const nextName = await (globalThis.CanvasNativeDialogs
+        ? CanvasNativeDialogs.prompt({title: '영역 이름 변경', message, defaultValue, confirmLabel: '이름 변경'})
+        : prompt(message, defaultValue));
+    if (!nextName?.trim() || findClipPromptControlGroup(groupId) !== group) return;
 
     group.name = nextName.trim();
 
@@ -11107,19 +11585,24 @@ function toggleClipPromptControlGroupExpanded(groupId) {
     saveCanvasState();
 }
 
-function deleteClipPromptControlGroup(groupId) {
+async function deleteClipPromptControlGroup(groupId) {
     const owner = getActiveClipForPromptControl();
     if (!owner) return;
 
     const groups = ensureClipPromptControlGroups(owner);
-    const index = groups.findIndex((group) => Number(group.id) === Number(groupId));
+    const group = groups.find((item) => Number(item.id) === Number(groupId));
 
+    if (!group) return;
+
+    const groupName = group.name || '제어 그룹';
+    const message = `'${groupName}' 제어그룹을 삭제할까요?`;
+    const ok = await (globalThis.CanvasNativeDialogs
+        ? CanvasNativeDialogs.confirm({title: '제어그룹 삭제', message, confirmLabel: '삭제', danger: true})
+        : confirm(message));
+    if (!ok || getActiveClipForPromptControl() !== owner || owner.promptControlGroups !== groups) return;
+
+    const index = groups.indexOf(group);
     if (index < 0) return;
-
-    const groupName = groups[index].name || '제어 그룹';
-    const ok = confirm(`'${groupName}' 제어그룹을 삭제할까요?`);
-    if (!ok) return;
-
     groups.splice(index, 1);
     
     syncAllPromptCopiesFromOwners();
@@ -11414,11 +11897,13 @@ function isClipPromptGroupDisabledByControls(tokens, disabledState) {
 function buildEffectiveClipPromptInfo(clip) {
     applySharedSelectionPromptToClip(clip);
 
-    const baseInfo = normalizePromptInfo(
+    const rawInfo = normalizePromptInfo(
         hasAnyPromptText(clip?.promptInfo)
             ? clip.promptInfo
             : getSharedSelectionClipPromptInfo()
     );
+    const baseInfo = typeof CanvasProjectSettings !== 'undefined'
+        ? CanvasProjectSettings.fillStylePrompt(rawInfo) : rawInfo;
 
     const groups = ensureClipPromptControlGroups(clip);
 
@@ -12052,11 +12537,13 @@ function applyClipPreviewZoom(wrap, img, clip) {
 
     const naturalWidth = Number(clip.imageWidth || img.naturalWidth || 512);
     const naturalHeight = Number(clip.imageHeight || img.naturalHeight || 512);
+    const strip = wrap.querySelector('.clip-reference-strip:not([hidden])');
+    const stripWidth = Number(strip?.dataset.referenceWidth || 0);
 
     // At the default zoom the complete clip fits both axes. Explicit wheel zoom still scrolls.
     // Use the border box so scrollbars appearing during zoom do not change the base scale.
     const viewport = getClipOutputViewportSize(wrap);
-    const fitScale = Math.min(Math.max(1, viewport.width) / naturalWidth,
+    const fitScale = Math.min(Math.max(1, viewport.width) / (naturalWidth + stripWidth),
         Math.max(1, viewport.height) / naturalHeight);
 
     const baseWidth = Math.max(1, Math.floor(naturalWidth * fitScale));
@@ -12067,6 +12554,10 @@ function applyClipPreviewZoom(wrap, img, clip) {
 
     img.style.width = `${displayWidth}px`;
     img.style.height = `${displayHeight}px`;
+    if (stripWidth) {
+        strip.style.width = `${Math.max(1, Math.round(Math.floor(stripWidth * fitScale) * clipPreviewZoom))}px`;
+        strip.style.height = `${displayHeight}px`;
+    }
     img.style.maxWidth = 'none';
     img.style.maxHeight = 'none';
 }
@@ -12077,7 +12568,7 @@ function bindClipPreviewWheelZoom(wrap, img, clip, afterZoom) {
     wrap.dataset.clipZoomWheelBound = '1';
 
     wrap.addEventListener('wheel', (event) => {
-        if (event.target === wrap) return;
+        if (event.target === wrap || event.target.closest?.('.clip-reference-strip')) return;
         handleClipPreviewWheelZoom(event, wrap, img, clip, afterZoom);
     }, { passive: false });
 }
@@ -12136,8 +12627,8 @@ function isCurrentCanvasAlreadySaved() {
         return true;
     }
 
-    const currentStateKey = normalizeCanvasStateForCompare(buildCanvasStateSnapshot());
-    const savedList = loadSavedCanvasSetups();
+    const currentStateKey = normalizeCanvasStateForCompare(buildCanvasStateSnapshot({preserveBoundaryMask: true}));
+    const savedList = loadSavedCanvasSetups(true);
 
     return savedList.some((item) => {
         return normalizeCanvasStateForCompare(item.state) === currentStateKey;
@@ -12149,7 +12640,7 @@ async function saveCurrentCanvasSetupSilently(name = '') {
         return null;
     }
 
-    const snapshot = buildCanvasStateSnapshot();
+    const snapshot = buildCanvasStateSnapshot({preserveBoundaryMask: true});
     const saveName = String(name || '').trim() ||
         `가져오기 전 캔버스 ${currentCanvasWidth}×${currentCanvasHeight}`;
 
@@ -12164,6 +12655,7 @@ function hasUsableCurrentCanvas() {
 }
 
 async function migrateCanvasLayerDataUrlsToServer() {
+    const originalLayers = canvasLayers;
     const layers = getAllCanvasLayerNodes()
         .filter((layer) => {
             return layer &&
@@ -12177,10 +12669,15 @@ async function migrateCanvasLayerDataUrlsToServer() {
     let didUpdate = false;
 
     for (const layer of layers) {
+        if (originalLayers !== canvasLayers || window.CanvasProject?.blocksLocalWrites?.()) return;
         try {
-            layer.src = await saveClipDataUrlToServer(layer.src, {
+            const originalSrc = layer.src;
+            const savedSrc = await saveClipDataUrlToServer(originalSrc, {
                 category: layer.type === 'clip' && layer.renderOnCanvas ? 'canvas_inpaint' : 'canvas'
             });
+            if (originalLayers !== canvasLayers || window.CanvasProject?.blocksLocalWrites?.()) return;
+            if (layer.src !== originalSrc || findCanvasLayer(layer.id)?.layer !== layer) continue;
+            layer.src = savedSrc;
             didUpdate = true;
         } catch (error) {
             console.warn('Canvas layer data URL migration failed:', error);
@@ -12202,7 +12699,7 @@ function getCanvasExportPromptInfo() {
             hasAnyPromptText(layer.promptInfo);
     });
 
-    if (imageLayer) return applyCanvasInpaintSettingsToPromptInfo(imageLayer.promptInfo);
+    if (imageLayer) return getCanvasExportImagePromptInfo(imageLayer, allLayers);
 
     const clipLayer = allLayers.find((layer) => {
         return layer.type === 'clip' &&
@@ -12234,6 +12731,27 @@ function getCanvasExportPromptInfo() {
     return applyCanvasInpaintSettingsToPromptInfo(null);
 }
 
+function getCanvasExportImagePromptInfo(image, layers) {
+    const info = applyCanvasInpaintSettingsToPromptInfo(image.promptInfo);
+    const explicit = image.exportCharPrompts;
+    if (Array.isArray(explicit)) return {...info, charPrompts: explicit.slice(), charPrompt: buildLegacyCharPromptText(explicit)};
+    if (!hasAnyPromptText(sharedSelectionClipPromptInfo)) return info;
+    const {charPrompts, charPrompt} = normalizePromptInfo(sharedSelectionClipPromptInfo);
+    if (!charPrompts.length) return info;
+    // Older files may only have the same characters flattened into a single string.
+    if (charPrompt !== info.charPrompt) {
+        let matched = false;
+        for (const layer of layers) {
+            if (layer.type !== 'clip') continue;
+            if (layer.sourceImageLayerId != null ? String(layer.sourceImageLayerId) !== String(image.id)
+                : !image.sourcePath || layer.sourcePath !== image.sourcePath) return info;
+            matched = true;
+        }
+        if (!matched) return info;
+    }
+    return {...info, charPrompts, charPrompt};
+}
+
 async function getCanvasExportPromptInfoAsync() {
     const direct = getCanvasExportPromptInfo();
 
@@ -12258,9 +12776,9 @@ async function getCanvasExportPromptInfoAsync() {
                 layer.promptInfo = normalizePromptInfo(recovered);
                 saveCanvasState();
             }
-            return applyCanvasInpaintSettingsToPromptInfo(
-                hasAnyPromptText(recovered) ? layer.promptInfo : recovered
-            );
+            return hasAnyPromptText(recovered)
+                ? getCanvasExportImagePromptInfo(layer, allLayers)
+                : applyCanvasInpaintSettingsToPromptInfo(recovered);
         }
     }
 
@@ -12329,7 +12847,7 @@ let canvasExportBusy = false;
 
 async function exportMergedCanvasToClassified() {
     if (!currentCanvasWidth || !currentCanvasHeight) {
-        alert('내보낼 캔버스가 없습니다.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('내보낼 캔버스가 없습니다.');
         return;
     }
     if (canvasExportBusy) return;
@@ -12467,7 +12985,7 @@ async function exportMergedCanvasToClassified() {
     } catch (error) {
         const message = `${exported ? '그림 내보내기는 완료되었습니다. 캔버스 정리·저장 확인 필요' : '통합 내보내기 실패'}: ${error.message || error}`;
         if (progress) progress.fail(message);
-        else alert(message);
+        else (globalThis.CanvasNativeDialogs?.alert ?? alert)(message);
         progressDone = true;
     } finally {
         // Early identity checks may abort before a terminal progress message.
@@ -12592,12 +13110,12 @@ async function saveTagTranslationFromModal() {
     const targetTag = getEffectiveTagTranslationTarget();
 
     if (!targetTag) {
-        alert('저장할 태그 단어를 하나 이상 활성화해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('저장할 태그 단어를 하나 이상 활성화해 주세요.');
         return;
     }
 
     if (!raw) {
-        alert('저장할 내용을 입력해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('저장할 내용을 입력해 주세요.');
         return;
     }
 
@@ -12637,7 +13155,7 @@ async function saveTagTranslationFromModal() {
         closeTagTranslationModal();
 
     } catch (error) {
-        alert(`태그 번역 저장 실패: ${error.message || error}`);
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)(`태그 번역 저장 실패: ${error.message || error}`);
     }
 }
 
@@ -13160,7 +13678,7 @@ function getActiveImageLayer() {
     const layer = found?.layer;
 
     if (!layer || layer.type !== 'image') {
-        alert('이미지 레이어를 선택해 주세요.');
+        (globalThis.CanvasNativeDialogs?.alert ?? alert)('이미지 레이어를 선택해 주세요.');
         return null;
     }
 
@@ -13261,7 +13779,7 @@ function getSelectedCanvasSaveMode() {
 }
 
 async function updateCanvasSetupItem(setupId, name, snapshot, options = {}) {
-    const list = loadSavedCanvasSetups();
+    const list = loadSavedCanvasSetups().slice();
     const index = list.findIndex((item) => item.id === setupId);
 
     if (index < 0) {
@@ -13281,6 +13799,9 @@ async function updateCanvasSetupItem(setupId, name, snapshot, options = {}) {
         state: snapshot
     };
 
+    const placement = typeof CanvasInpaintReference !== 'undefined' && CanvasInpaintReference.backupFor?.(snapshot.inpaintReference);
+    if (placement) nextItem.inpaintReferencePlacement = placement;
+    else delete nextItem.inpaintReferencePlacement;
     list[index] = nextItem;
     const saved = await persistSavedCanvasSetups(list, {upserts: [nextItem], removeIds: []});
     if (!saved) {
@@ -13303,7 +13824,7 @@ function findCanvasSetupByName(name) {
 }
 
 async function saveCanvasSetupItem(name, snapshot, options = {}) {
-    const list = loadSavedCanvasSetups();
+    const list = loadSavedCanvasSetups().slice();
 
     const item = {
         id: `canvas_setup_${Date.now()}_${Math.random().toString(16).slice(2)}`,
@@ -13316,6 +13837,8 @@ async function saveCanvasSetupItem(name, snapshot, options = {}) {
         state: snapshot
     };
 
+    const placement = typeof CanvasInpaintReference !== 'undefined' && CanvasInpaintReference.backupFor?.(snapshot.inpaintReference);
+    if (placement) item.inpaintReferencePlacement = placement;
     list.unshift(item);
     const saved = await persistSavedCanvasSetups(list, {upserts: [item], removeIds: []});
     if (!saved) {
@@ -13336,6 +13859,7 @@ async function replaceCurrentCanvasWithMergedImage() {
 
 async function resetCurrentCanvasAfterSave() {
     if (window.CanvasProject && !await CanvasProject.leave()) return false;
+    clearClipMergedSourcePreviewCache();
     const width = currentCanvasWidth;
     const height = currentCanvasHeight;
 

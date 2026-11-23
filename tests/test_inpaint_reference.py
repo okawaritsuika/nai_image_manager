@@ -45,6 +45,11 @@ class InpaintReferenceTests(unittest.TestCase):
 
     def test_normalize_reference_accepts_limits_and_rejects_invalid_values(self):
         self.assertEqual(normalize_reference(self.reference(width=1024, x=0, y=1, zoom=8))["width"], 1024)
+        self.assertEqual(normalize_reference(self.reference(scale=0.1))["scale"], 0.1)
+        self.assertEqual(normalize_reference(self.reference(scale=1, panX=0.5, panY=0.5)),
+                         normalize_reference(self.reference()))
+        at_limits = normalize_reference(self.reference(scale=32, panX=0, panY=1))
+        self.assertEqual((at_limits["scale"], at_limits["panX"], at_limits["panY"]), (32, 0, 1))
         invalid_values = [
             [],
             {},
@@ -75,6 +80,15 @@ class InpaintReferenceTests(unittest.TestCase):
             self.reference(zoom=float("nan")),
             self.reference(zoom=0.99),
             self.reference(zoom=8.01),
+            self.reference(scale=False),
+            self.reference(scale="0.5"),
+            self.reference(scale=float("nan")),
+            self.reference(scale=0.099),
+            self.reference(scale=32.01),
+            self.reference(panX=True),
+            self.reference(panX=-0.01),
+            self.reference(panY=1.01),
+            self.reference(panY=float("nan")),
         ]
         for value in invalid_values:
             with self.subTest(value=value):
@@ -165,6 +179,50 @@ class InpaintReferenceTests(unittest.TestCase):
                     self.assertEqual(combined.getpixel((0, 0)), (255, 255, 255))
                     self.assertEqual(combined.getpixel((63, 127)), (255, 255, 255))
                     self.assertEqual(combined.getpixel((64, 0)), (10, 20, 30))
+
+    def test_reference_scale_changes_only_centered_picture_pixels(self):
+        source = self.png_bytes(Image.new("RGB", (32, 64), "blue"))
+        mask = self.png_bytes(Image.new("RGB", (32, 64), "white"))
+        picture = self.png_bytes(Image.new("RGB", (128, 64), "red"))
+        result = prepare_reference_input(source, mask, picture, self.reference(width=64, scale=0.5))
+
+        expected = Image.new("RGB", (96, 64), "white")
+        expected.paste("red", (16, 24, 48, 40))
+        expected.paste("blue", (64, 0, 96, 64))
+        with Image.open(io.BytesIO(result["image"])) as combined:
+            self.assertEqual(combined.size, expected.size)
+            self.assertEqual(combined.tobytes(), expected.tobytes())
+        expected_mask = Image.new("RGB", expected.size, "black")
+        expected_mask.paste("white", (64, 0, 96, 64))
+        with Image.open(io.BytesIO(result["mask"])) as combined_mask:
+            self.assertEqual(combined_mask.tobytes(), expected_mask.tobytes())
+
+    def test_scaled_pan_matches_visible_pixels_across_strip_edges(self):
+        source = self.png_bytes(Image.new("RGB", (16, 64), "blue"))
+        mask = self.png_bytes(Image.new("RGB", (16, 64), "white"))
+        cases = (
+            # Dimensions, scale, pan, drawn size and origin before clipping.
+            ((128, 32), 2, (0, 1), (128, 32), (0, 32)),
+            ((128, 32), 2, (1, 0), (128, 32), (-64, 0)),
+            ((32, 128), 2, (1, 0), (32, 128), (32, 0)),
+            ((32, 128), 2, (0, 1), (32, 128), (0, -64)),
+            ((19, 19), 8, (0.25, 0.75), (152, 152), (-22, -66)),
+            ((19, 19), 32, (0.25, 0.75), (608, 608), (-136, -408)),
+            ((21, 21), 3.2, (0.5, 0.5), (67, 67), (-2, -2)),
+        )
+        for size, scale, pan, drawn_size, origin in cases:
+            with self.subTest(size=size, scale=scale, pan=pan):
+                picture = Image.new("RGB", size)
+                picture.putdata([(x, y, (x + y) % 256)
+                                 for y in range(size[1]) for x in range(size[0])])
+                result = prepare_reference_input(source, mask, self.png_bytes(picture),
+                    self.reference(width=64, scale=scale, panX=pan[0], panY=pan[1]))
+                expected_strip = Image.new("RGB", (64, 64), "white")
+                expected_strip.paste(picture.resize(drawn_size, Image.Resampling.LANCZOS), origin)
+                with Image.open(io.BytesIO(result["image"])) as combined:
+                    self.assertEqual(combined.size, (80, 64))
+                    self.assertEqual(combined.crop((0, 0, 64, 64)).tobytes(), expected_strip.tobytes())
+                    self.assertEqual(combined.crop((64, 0, 80, 64)).getcolors(), [(1024, (0, 0, 255))])
 
     def test_prepare_input_flattens_alpha_and_applies_exif_orientation(self):
         source = self.png_bytes(Image.new("RGB", (64, 128), (1, 2, 3)))
